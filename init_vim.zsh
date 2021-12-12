@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/zsh
 
 VIMRC_PATH=~/.vimrc
 
