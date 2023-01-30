@@ -50,8 +50,8 @@ alias gbparent='git show-branch \
     | sed "s/^.*\[//"'
 
 alias gsq="git reset --soft \$(git merge-base HEAD \$(gbparent)) && git commit"
-alias gremreb="gfetch \$(gbparent) && greb \$(gbparent)"
-alias gsqreb="gfetch \$(gbparent) && gsq && greb \$(gbparent)"
+alias gremreb="gfetch \$(gbparent) && greb origin/\$(gbparent)"
+alias gsqreb="gfetch \$(gbparent) && gsq && greb origin/\$(gbparent)"
 
 alias gresempty="git reset --soft \$(git log -1 --grep='.' --pretty=format:'%h')"
 alias gsempty="gresempty && gsc"
