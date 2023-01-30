@@ -1,5 +1,0 @@
-# dotfile
-
-Packages:
-- fzf
-- zsh
