@@ -1,0 +1,115 @@
+
+ZSH_THEME="robbyrussell"
+
+plugins=(
+    git
+    macos
+    npm
+    node
+    jsontools
+    docker-compose
+    docker
+    common-aliases
+    dotenv
+    emoji
+    extract
+    gcloud
+    gitignore
+    z
+    zsh-syntax-highlighting
+)
+
+source $ZSH/oh-my-zsh.sh
+
+# Fzf 
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# Git aliases
+alias glog="git log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --branches"
+alias gac="git add . && git commit -a -m"
+alias gam="git commit --amend"
+alias gsc="gac '' --allow-empty-message"
+alias gscp="gac '' --allow-empty-message && git push"
+alias gpf="git push --force-with-lease"
+alias gsw="git switch"
+alias gswc="git switch --create"
+alias gst="git status"
+alias gpsu="git push --set-upstream origin"
+
+function gacp() { gac "$@" && git push }
+
+alias gfetch="git fetch origin"
+alias greb="git rebase"
+alias grebc="git rebase --continue"
+
+alias gbparent='git show-branch \
+    | sed -E "s/([\^~]+.+)*].*//" \
+    | grep "\*" \
+    | grep -v "$(git rev-parse --abbrev-ref HEAD)" \
+    | head -n1 \
+    | sed "s/^.*\[//"'
+
+alias gsq="git reset --soft \$(git merge-base HEAD \$(gbparent)) && git commit"
+alias gremreb="gfetch \$(gbparent) && greb \$(gbparent)"
+alias gsqreb="gfetch \$(gbparent) && gsq && greb \$(gbparent)"
+
+alias gresempty="git reset --soft \$(git log -1 --grep='.' --pretty=format:'%h')"
+alias gsempty="gresempty && gsc"
+alias gamempty="gresempty && gam"
+
+# Open the Pull Request URL for your current directory's branch (base branch defaults to main)
+alias giturl="git remote -v | awk '/fetch/{print \$2}' | sed -Ee 's#(git@|git://)#https://#' -e 's@com:@com/@' -e 's%\.git$%%' | awk '/github/'"
+function gitprs() {
+  github_url=`giturl`;
+  prs_page=$github_url"/pulls"
+  open $prs_page
+}
+function openpr() {
+  github_url=`giturl`;
+  branch_name=`git symbolic-ref HEAD | cut -d"/" -f 3,4`;
+  pr_url=$github_url"/compare/$(gbparent)..."$branch_name
+  open $pr_url;
+}
+
+
+# Run git push and then immediately open the Pull Request URL
+function gpr() {
+  git push origin HEAD
+ 
+  if [ $? -eq 0 ]; then
+    openpr
+  else
+    echo 'failed to push commits and open a pull request.';
+  fi
+}
+
+# Debug shell scripts
+alias shcheck="shellcheck"
+alias traceon="set -x"
+alias traceoff="set +x"
+
+# Npm
+alias ni="npm i"
+alias nid="npm i -D"
+alias nr="npm run"
+alias nrs="npm run start"
+alias nver="npm version"
+
+# Yarn
+alias ya="yarn add"
+alias yad="yarn add --dev"
+alias yr="yarn run"
+alias yrs="yarn start"
+alias yver="yarn version"
+
+# Docker
+alias dockup="docker-compose up -d"
+alias dockdown="docker-compose down"
+
+# Other aliases
+alias usage="du -h -d1"
+alias runport="lsof -i"
+alias srczsh="source ~/.zshrc"
+alias vizsh="vim ~/.zshrc"
+alias ..="cd .."
+alias ...="cd ../.."
