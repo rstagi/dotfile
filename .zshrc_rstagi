@@ -42,7 +42,7 @@ alias gfetch="git fetch origin"
 alias greb="git rebase"
 alias grebc="git rebase --continue"
 
-alias gbparent='git show-branch \
+alias gbparent='git fetch -p && git show-branch \
     | sed -E "s/([\^~]+.+)*].*//" \
     | grep "\*" \
     | grep -v "$(git rev-parse --abbrev-ref HEAD)" \
