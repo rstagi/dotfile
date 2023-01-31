@@ -43,7 +43,7 @@ alias greb="git rebase"
 alias grebc="git rebase --continue"
 
 alias gbparent='git show-branch \
-    | sed -E "s/([\^~]+.+)*].*//" \
+    | sed -E "s/([\^~]+.*)*].*//" \
     | grep "\*" \
     | grep -v "$(git rev-parse --abbrev-ref HEAD)" \
     | head -n1 \
