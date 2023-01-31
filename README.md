@@ -299,5 +299,5 @@ brew install raycast  
 - **Speedtest**
 - **Window Management**
 - **iTerm**
-
+- **Notion**
 ---
