@@ -26,6 +26,7 @@ source $ZSH/oh-my-zsh.sh
 
 # Git aliases
 alias glog="git log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --branches"
+alias grst="git restore --staged ."
 alias gaac="git add . && git commit -a --interactive"
 alias gac="git add --patch && git commit --interactive"
 alias gam="git commit --amend"
