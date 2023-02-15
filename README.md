@@ -71,139 +71,33 @@ Istruzioni su https://github.com/ohmyzsh/ohmyzsh
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 ```
 
-Plugins in `.zshrc`:
-
-```bash
-plugins=(
-     git
-     macos
-     npm
-     node
-     jsontools
-     docker-compose
-     docker
-     common-aliases
-     dotenv
-     emoji
-     extract
-     gcloud
-     gitignore
-     z
-     zsh-syntax-highlighting
- )
-```
-
-Per abilitare zsh-syntax-highlighting devi anche lanciare il seguente comando:
-
+Now, we'll install some plugins and setup some new tools. To do so, run the following command to enable the `zsh-syntax-highlighting` plugin:
 ```bash
 git clone https://github.com/zsh-users/zsh-syntax-highlighting.git $ZSH_CUSTOM/plugins/zsh-syntax-highlighting
 ```
 
-### Altri tool
+And the following one to install some tools we use:
 
 ```bash
 brew install tree ack fzf shellcheck trash-cli
 $(brew --prefix)/opt/fzf/install
 ```
 
-### Useful aliases & functions
-
-Aggiornata January 30, 2023 
-
+After that, everyhing else you might need for oh-my-zsh and other tools is already present in an `.zshrc` extension in this repository! So make sure to clone this repository in your home:
 ```bash
-# Git aliases
-alias glog="git log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --branches"
-alias gac="git add . && git commit -a -m"
-alias gam="git commit --amend"
-alias gsc="gac '' --allow-empty-message"
-alias gscp="gac '' --allow-empty-message && git push"
-alias gpf="git push --force-with-lease"
-alias gsw="git switch"
-alias gswc="git switch --create"
-alias gst="git status"
-alias gpsu="git push --set-upstream origin"
-
-function gacp() { gac "$@" && git push }
-
-alias gfetch="git fetch origin"
-alias greb="git rebase"
-alias grebc="git rebase --continue"
-
-alias gbparent='git show-branch \
-    | sed -E "s/([\^~]+.+)*].*//" \
-    | grep "\*" \
-    | grep -v "$(git rev-parse --abbrev-ref HEAD)" \
-    | head -n1 \
-    | sed "s/^.*\[//"'
-
-alias gsq="git reset --soft \$(git merge-base HEAD \$(gbparent)) && git commit"
-alias gremreb="gfetch \$(gbparent) && greb \$(gbparent)"
-alias gsqreb="gfetch \$(gbparent) && gsq && greb \$(gbparent)"
-
-alias gresempty="git reset --soft \$(git log -1 --grep='.' --pretty=format:'%h')"
-alias gsempty="gresempty && gsc"
-alias gamempty="gresempty && gam"
-
-# Open the Pull Request URL for your current directory's branch (base branch defaults to main)
-alias giturl="git remote -v | awk '/fetch/{print \$2}' | sed -Ee 's#(git@|git://)#https://#' -e 's@com:@com/@' -e 's%\.git$%%' | awk '/github/'"
-function gitprs() {
-  github_url=`giturl`;
-  prs_page=$github_url"/pulls"
-  open $prs_page
-}
-function openpr() {
-  github_url=`giturl`;
-  branch_name=`git symbolic-ref HEAD | cut -d"/" -f 3,4`;
-  pr_url=$github_url"/compare/$(gbparent)..."$branch_name
-  open $pr_url;
-}
-
-# Run git push and then immediately open the Pull Request URL
-function gpr() {
-  git push origin HEAD
- 
-  if [ $? -eq 0 ]; then
-    openpr
-  else
-    echo 'failed to push commits and open a pull request.';
-  fi
-}
-
-# Debug shell scripts
-alias shcheck="shellcheck"
-alias traceon="set -x"
-alias traceoff="set +x"
-
-# Npm
-alias ni="npm i"
-alias nid="npm i -D"
-alias nr="npm run"
-alias nrs="npm run start"
-alias nver="npm version"
-
-# Yarn
-alias ya="yarn add"
-alias yad="yarn add --dev"
-alias yr="yarn run"
-alias yrs="yarn start"
-alias yver="yarn version"
-
-# Docker
-alias dockup="docker-compose up -d"
-alias dockdown="docker-compose down"
-
-# Other aliases
-alias usage="du -h -d1"
-alias runport="lsof -i"
-alias srczsh="source ~/.zshrc"
-alias vizsh="vim ~/.zshrc"
-alias ..="cd .."
-alias ...="cd ../.."
+git clone git@github.com:rstagi/dotfile.git ~/dotfile
 ```
 
-In ogni caso, dare un’occhiata [al repository su GitHub](https://github.com/rstagi/dotfile) dedicato a queste configurazioni, che dovrebbe già comprendere tutte quelle di qui sopra. Ci sono sia degli script per configurare tutto in automatico, sia l’estensione del `.zshrc` con tutti gli alias e le function di sopra (aggiornate).
+And make your `.zshrc` look like the following:
+```
+export ZSH="$HOME/.oh-my-zsh"
+source ~/dotfile/.zshrc-ext
+```
 
----
+Such extension contains the following:
+- oh-my-zsh plugins and themes
+- fzf configuration
+- useful aliases for tools like git, npm, yarn, docker and others!
 
 ## Git
 
@@ -259,8 +153,21 @@ Poi:
 
 ## Tmux
 
+To install it run the following:
+
 ```bash
 brew install tmux
+```
+
+Then, intstall the Tmux Package Manager (TPM) by cloning its repository:
+
+```
+git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+```
+
+And finally source the `.tmux.conf` extension that is present in this repository! You can do so by creating a new file `~/.tmux.conf` and write the following line:
+```
+source-file ~/dotfile/.tmux-ext.conf
 ```
 
 ---
