@@ -28,8 +28,6 @@ source $ZSH/oh-my-zsh.sh
 alias glog="git log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --branches"
 alias gac="git add . && git commit -a -m"
 alias gam="git commit --amend"
-alias gsc="gac '' --allow-empty-message"
-alias gscp="gac '' --allow-empty-message && git push"
 alias gpf="git push --force-with-lease"
 alias gsw="git switch"
 alias gswc="git switch --create"
