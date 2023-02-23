@@ -34,7 +34,7 @@ alias gsw="git switch"
 alias gswc="git switch --create"
 alias gst="git status"
 alias gpsu="git push --set-upstream origin"
-alias git_branches_list_local_only="git for-each-ref --format '%(refname) %(upstream:track)' refs/heads | awk '\$2 == \"[gone]\" {sub(\"refs/heads/\", \"\", \$1); print \$1}'"
+alias git_list_local_only_branches="git for-each-ref --format '%(refname) %(upstream:track)' refs/heads | awk '\$2 == \"[gone]\" {sub(\"refs/heads/\", \"\", \$1); print \$1}'"
 
 function git_delete_branch_prompt() {
   branch=$1
@@ -45,7 +45,7 @@ function git_delete_branch_prompt() {
   fi
 }
 
-alias git_branches_prune_local_only="git fetch -p && for branch in \$(git_branches_list_local_only); do git_delete_branch_prompt \$branch; done"
+alias git_prune_local_branches="git fetch -p && for branch in \$(git_list_local_only_branches); do git_delete_branch_prompt \$branch; done"
 
 function gacp() { gac "$@" && git push }
 
