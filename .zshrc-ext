@@ -33,7 +33,7 @@ alias gpf="git push --force-with-lease"
 alias gsw="git switch"
 alias gswc="git switch --create"
 alias gst="git status"
-alias gpsu="git push --set-upstream origin $(git branch --show-current)"
+alias gpsu="git push --set-upstream origin \$(git branch --show-current)"
 alias git_list_local_only_branches="git for-each-ref --format '%(refname) %(upstream:track)' refs/heads | awk '\$2 == \"[gone]\" {sub(\"refs/heads/\", \"\", \$1); print \$1}'"
 
 function git_delete_branch_prompt() {
