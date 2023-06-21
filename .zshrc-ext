@@ -103,9 +103,10 @@ function gitprs() {
   open $prs_page
 }
 function openpr() {
+  target_branch="${1:-master}"
   github_url=`giturl`;
   branch_name=`git symbolic-ref HEAD | cut -d"/" -f 3,4`;
-  pr_url=$github_url"/compare/$(gbparent)..."$branch_name;
+  pr_url=$github_url"/compare/$target_branch..."$branch_name;
   open $pr_url;
 }
 function opengit() {
