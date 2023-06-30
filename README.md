@@ -38,6 +38,7 @@ brew install --cask \
     google-chrome \
     flux \
     rectangle \ 
+    ripgrep \
 		spotify \
     transmission \
     vlc
