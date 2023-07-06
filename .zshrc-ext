@@ -106,7 +106,7 @@ function openpr() {
   target_branch="${1:-master}"
   github_url=`giturl`;
   branch_name=`git symbolic-ref HEAD | cut -d"/" -f 3,4`;
-  pr_url=$github_url"/compare/$target_branch..."$branch_name;
+  pr_url=$github_url"/compare/$1..."$branch_name;
   open $pr_url;
 }
 function opengit() {
@@ -115,6 +115,8 @@ function opengit() {
   github_url=$base_github_url"/tree/"$branch_name;
   open $github_url;
 }
+
+function glreb(){ gsw $1 && gl && gsw - && greb $1; }
 
 
 # Run git push and then immediately open the Pull Request URL
