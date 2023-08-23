@@ -153,6 +153,14 @@ alias yver="yarn version"
 alias dockup="docker-compose up -d"
 alias dockdown="docker-compose down"
 
+# Terraform
+alias tf="terraform"
+alias tfi="terraform init"
+alias tfa="terraform apply --parallelism=100"
+alias tfu="terraform force-unlock"
+
+
+
 # Other aliases
 alias usage="du -h -d1"
 alias runport="lsof -i"
@@ -169,4 +177,6 @@ then
   autoload -Uz compinit
   compinit
 fi
+
+
 
