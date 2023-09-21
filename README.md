@@ -14,41 +14,9 @@ Some part might be redundant with the code, or might not be updated.
 
 ## Homebrew
 
-Per installarlo:
-
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
 ```
-
-### Quicklook plugins (???)
-
-```bash
-brew install qlcolorcode qlstephen qlmarkdown quicklook-json qlimagesize suspicious-package apparency quicklookase qlvideo
-xattr -cr ~/Library/QuickLook/*.qlgenerator
-```
-
-### Altri software utili
-
-```bash
-brew install --cask \
-		aldente \
-    appcleaner \
-    bitwarden \  
-    cheatsheet \
-    google-chrome \
-    flux \
-    rectangle \ 
-    ripgrep \
-		spotify \
-    transmission \
-    vlc
-```
-
----
-
-## RunCat
-
-Da AppStore (purtroppo).
 
 ---
 
@@ -64,41 +32,30 @@ brew install --cask iterm2
 brew install zsh
 ```
 
-### Oh My Zsh
+---
 
-Istruzioni su https://github.com/ohmyzsh/ohmyzsh
-
+## Python
+Install pyenv:
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+brew install pyenv
 ```
 
-Now, we'll install some plugins and setup some new tools. To do so, run the following command to enable the `zsh-syntax-highlighting` plugin:
+Install some dependencies:
 ```bash
-git clone https://github.com/zsh-users/zsh-syntax-highlighting.git $ZSH_CUSTOM/plugins/zsh-syntax-highlighting
+brew install openssl readline sqlite3 xz zlib
 ```
 
-And the following one to install some tools we use:
-
+Add the following to your `.zshrc` (already present in the `.zshrc-ext` extension):
 ```bash
-brew install tree ack fzf shellcheck trash-cli
-$(brew --prefix)/opt/fzf/install
+export PYENV_ROOT="$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
 ```
 
-After that, everyhing else you might need for oh-my-zsh and other tools is already present in an `.zshrc` extension in this repository! So make sure to clone this repository in your home:
+Finally, install the latest Python version ([check which one it is](https://docs.python.org/3/whatsnew/changelog.html)):
 ```bash
-git clone git@github.com:rstagi/dotfile.git ~/dotfile
+CFLAGS="-I$(brew --prefix xz)/include -I$(brew --prefix openssl)/include" LDFLAGS="-L$(brew --prefix xz)/lib -L$(brew --prefix openssl)/lib" pyenv install <PYTHON_VERSION>
 ```
-
-And make your `.zshrc` look like the following:
-```
-export ZSH="$HOME/.oh-my-zsh"
-source ~/dotfile/.zshrc-ext
-```
-
-Such extension contains the following:
-- oh-my-zsh plugins and themes
-- fzf configuration
-- useful aliases for tools like git, npm, yarn, docker and others!
 
 ## Git
 
@@ -116,8 +73,11 @@ git config --global credential.helper osxkeychain
 
 ---
 
-## Vim
+## NeoVim
 
+TODO.
+
+DEPRECATED:
 ```bash
 brew install vim
 ```
@@ -154,13 +114,15 @@ Poi:
 
 ## Tmux
 
+TODO: review
+
 To install it run the following:
 
 ```bash
 brew install tmux
 ```
 
-Then, intstall the Tmux Package Manager (TPM) by cloning its repository:
+Then, install the Tmux Package Manager (TPM) by cloning its repository:
 
 ```
 git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
@@ -189,23 +151,119 @@ brew install raycast  
 - **Clipboard History**
 - **Code Stash**
 - **Coffee**
+- **Color picker**
 - **Define Word**
 - **Floating Notes**
     - **Toggle Floating Notes Focus** Hotkey: `Option + .`
-- **************Format JSON**************
+- **Format JSON**
 - **GitHub**
 - **Google Search**
 - **Google Translate**
 - **Google Workspace**
-- **Jira**
+- **My Password** (1password)
 - **Navigation**
+- **Notion**
 - **Search Emoji**
-- **Search Project Manager**
 - **Set Audio Device**
 - **Show Cheatsheets**
 - **Snippets**
 - **Speedtest**
 - **Window Management**
 - **iTerm**
-- **Notion**
+
 ---
+
+## Terraform
+
+Simply do the following:
+```
+brew install tfenv
+tfenv install latest
+```
+
+---
+
+## Kubectl
+
+Install `kubectl` and `krew`:
+```
+brew install kubectl
+kubectl plugin install krew
+```
+
+Then, install the following plugins:
+```
+kubectl krew install ctx
+kubectl krew install ns
+```
+
+---
+
+### Quicklook plugins (???)
+
+```bash
+brew install qlcolorcode qlstephen qlmarkdown quicklook-json qlimagesize suspicious-package apparency quicklookase qlvideo
+xattr -cr ~/Library/QuickLook/*.qlgenerator
+```
+
+### Altri software utili
+
+```bash
+brew install \
+    1password \
+    1password/tap/1password-cli \
+    appcleaner \ 
+    google-chrome \
+    flux \
+    rectangle \ 
+    ripgrep \
+		spotify \
+    transmission \
+    vlc \
+    google-cloud-sdk
+```
+
+---
+
+
+## Oh My Zsh
+
+Istruzioni su https://github.com/ohmyzsh/ohmyzsh
+
+```bash
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+```
+
+Now, we'll install some plugins and setup some new tools. To do so, run the following command to enable the `zsh-syntax-highlighting` plugin:
+```bash
+git clone https://github.com/zsh-users/zsh-syntax-highlighting.git $ZSH_CUSTOM/plugins/zsh-syntax-highlighting
+```
+
+And the following one to install some tools we use:
+
+```bash
+brew install tree ack fzf shellcheck trash-cli
+$(brew --prefix)/opt/fzf/install
+```
+
+After that, everyhing else you might need for oh-my-zsh and other tools is already present in an `.zshrc` extension in this repository! So make sure to clone this repository in your home:
+```bash
+git clone git@github.com:rstagi/dotfile.git ~/dotfile
+```
+
+And make your `.zshrc` look like the following:
+```
+export ZSH="$HOME/.oh-my-zsh"
+source ~/dotfile/.zshrc-ext
+```
+
+Such extension contains the following:
+- oh-my-zsh plugins and themes
+- fzf configuration
+- useful aliases for tools like git, npm, yarn, docker and others!
+
+---
+
+## RunCat
+
+Da AppStore (purtroppo).
