@@ -10,7 +10,6 @@ plugins=(
     docker-compose
     docker
     common-aliases
-    dotenv
     emoji
     extract
     gcloud
@@ -21,9 +20,14 @@ plugins=(
 
 source $ZSH/oh-my-zsh.sh
 
+autoload -U +X bashcompinit && bashcompinit
+
+
 # Nvm
 export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" 
+[ -s "$NVM_DIR/bash_completion"  ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+export NVM_LAZY_LOAD=true
 
 autoload -U add-zsh-hook
 load-nvmrc() {
@@ -160,7 +164,6 @@ alias tfa="terraform apply --parallelism=100"
 alias tfu="terraform force-unlock"
 
 
-
 # Other aliases
 alias usage="du -h -d1"
 alias runport="lsof -i"
@@ -178,5 +181,13 @@ then
   compinit
 fi
 
+# Setup gcloud path and completion
+if [ -f ' /Users/rsta/Dev/google-cloud-sdk/path.zsh.inc'  ]; then . '/Users/rsta/Dev/google-cloud-sdk/path.zsh.inc'; fi
+if [ -f '/Users/rsta/Dev/google-cloud-sdk/completion.zsh.inc'  ]; then . '/Users/rsta/Dev/google-cloud-sdk/completion.zsh.inc'; fi
+export USE_GKE_GCLOUD_AUTH_PLUGIN=True
 
+# Kubernetes
+alias k="kubectl"
+export PATH="${PATH}:${HOME}/.krew/bin"
+source <(kubectl completion zsh)
 
