@@ -1,0 +1,10 @@
+[user]
+	name = rstagi
+	email = r.stagi96@gmail.com
+[credential]
+	helper = osxkeychain
+[filter "lfs"]
+	process = git-lfs filter-process
+	required = true
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
