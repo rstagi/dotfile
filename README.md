@@ -59,15 +59,20 @@ CFLAGS="-I$(brew --prefix xz)/include -I$(brew --prefix openssl)/include" LDFLAG
 
 ## Git
 
+Install git:
 ```bash
 brew install git
-git config --global user.name "rstagi"
-git config --global user.email "r.stagi96@gmail.com"
 ```
 
-Per usare il clone via HTTPS, ed evitare il prompt di username e password ogni volta, lanciare il seguente comando:
-
+Then, configure it. If you have already cloned the `dotfile` repository, then you can simply run the following command:
 ```bash
+ln -s ~/dotfile/.gitconfig ~/.gitconfig
+```
+
+Otherwise, configure it manually like this:
+```bash
+git config --global user.name "rstagi"
+git config --global user.email "r.stagi96@gmail.com"
 git config --global credential.helper osxkeychain
 ```
 
