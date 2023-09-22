@@ -18,17 +18,6 @@ plugins=(
 [ -f ~/.zshrc_additional_plugins_list ] && source ~/.zshrc_additional_plugins_list
 source $ZSH/oh-my-zsh.sh
 
-autoload -U +X bashcompinit && bashcompinit
-
-# Enable autocompletion for brew installed software
-if type brew &>/dev/null
-then
-  FPATH="$(brew --prefix)/share/zsh/site-functions:${FPATH}"
-
-  autoload -Uz compinit
-  compinit
-fi
-
 # Aliases
 alias shcheck="shellcheck"
 alias traceon="set -x"
@@ -40,11 +29,17 @@ alias vizsh="vim ~/.zshrc"
 alias ..="cd .."
 alias ...="cd ../.."
 
-# Fzf 
-[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
-
-[ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
 source ~/dotfile/.zshrc_git_ext
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+[ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
 
+autoload -U +X bashcompinit && bashcompinit
 
-# source ~/dotfile/.zshrc_docker_ext
+# Enable autocompletion for brew installed software
+if type brew &>/dev/null
+then
+  FPATH="$(brew --prefix)/share/zsh/site-functions:${FPATH}"
+
+  autoload -Uz compinit
+  compinit
+fi

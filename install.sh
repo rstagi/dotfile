@@ -39,7 +39,7 @@ esac
 
 
 is_already_installed() {
-  brew list | grep "$1" > /dev/null
+  brew list | grep ^$1$ > /dev/null
 }
 
 # Install zsh
@@ -59,7 +59,7 @@ fi
 # Install python with pyenv
 install_pyenv() {
   brew update && brew install pyenv
-  echo "source $HOME/dotfile/.zshrc_python_ext" >> $HOME/.zshrc
+  echo "source $HOME/dotfile/.zshrc_python_ext" >> $HOME/.zshrc_ext
 }
 upgrade_pyenv() {
   brew update && brew upgrade pyenv
@@ -128,12 +128,32 @@ else
   link_zshrc
 fi
 
+# Install gh
+install_gh() {
+  brew update && brew install gh
+  TARGET_PATH="$(brew --prefix)/share/zsh/site-functions"
+  [ ! -f "$TARGET_PATH/_gh" ] && mkdir -p $TARGET_PATH && gh completion -s zsh > "$TARGET_PATH/_gh" && chmod +x "$TARGET_PATH/_gh"
+  packages_to_be_configured+=("gh")
+}
+if is_already_installed "gh"; then
+  echo "gh is already installed"
+else
+  read -p "gh is not installed. Do you want to install it? (y/n) " choice
+  case "$choice" in
+    y|Y|yes|YES )
+      install_gh
+    ;;
+    * ) echo "ok, skipping gh";;
+  esac
+fi
+
+
 # Install nvm and node
 install_nvm() {
   brew update && brew install nvm
   echo "plugins+=(npm)" >> $HOME/.zshrc_additional_plugins
   echo "plugins+=(node)" >> $HOME/.zshrc_additional_plugins
-  echo "source $HOME/dotfile/.zshrc_node_ext" >> $HOME/.zshrc
+  echo "source $HOME/dotfile/.zshrc_node_ext" >> $HOME/.zshrc_ext
 }
 install_node() {
   nvm install node
@@ -160,7 +180,7 @@ fi
 # Install terraform
 install_terraform() {
   brew update && brew install tfenv && tfenv install latest
-  echo "source $HOME/dotfile/.zshrc_terraform_ext" >> $HOME/.zshrc
+  echo "source $HOME/dotfile/.zshrc_terraform_ext" >> $HOME/.zshrc_ext
 }
 if is_already_installed "tfenv"; then
   echo "terraform is already installed"
@@ -176,7 +196,7 @@ fi
 install_gcloud() {
   brew update && brew install --cask google-cloud-sdk
   echo "plugins+=(gcloud)" >> $HOME/.zshrc_additional_plugins
-  echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> $HOME/.zshrc
+  echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> $HOME/.zshrc_ext
 }
 if is_already_installed "google-cloud-sdk"; then
   echo "google-cloud-sdk is already installed"
@@ -193,7 +213,7 @@ install_kubectl() {
   brew update && brew install kubernetes-cli krew
   kubectl krew install ctx
   kubectl krew install ns
-  echo "source $HOME/dotfile/.zshrc_k8s_ext" >> $HOME/.zshrc
+  echo "source $HOME/dotfile/.zshrc_k8s_ext" >> $HOME/.zshrc_ext
 }
 if is_already_installed "kubernetes-cli"; then
   echo "kubectl is already installed"
@@ -246,10 +266,10 @@ fi
 # Install iterm2
 install_iterm2() {
   brew update && brew install --cask iterm2
+  packages_to_be_configured+=("iterm2")
 }
 if is_already_installed "iterm2"; then
   echo "iTerm2 is already installed"
-  packages_to_be_configured+=("iterm2")
 else
   read -p "iTerm2 is not installed. Do you want to install it? (y/n) " choice
   case "$choice" in
@@ -374,7 +394,7 @@ else
   case "$choice" in
     y|Y|yes|YES )
       install_ripgrep
-      echo "source $HOME/dotfile/.zshrc_ripgrep_ext" >> $HOME/.zshrc
+      echo "source $HOME/dotfile/.zshrc_ripgrep_ext" >> $HOME/.zshrc_ext
     ;;
     * ) echo "ok, skipping ripgrep";;
   esac
