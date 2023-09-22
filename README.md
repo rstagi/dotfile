@@ -9,7 +9,11 @@ Run the following command to install everything:
 
 ## Manual configurations
 
-There are some packages to be configured manually. Here follows the most significant list:
+There are some packages to be configured manually.
+
+### .zshrc extension
+
+The `.zshrc` file after the installation checks if a `~/.zshrc_ext` file exists and, if so, it sources it. This is useful to add some custom configurations that are not present in the main file.
 
 ### Raycast
 

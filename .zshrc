@@ -40,9 +40,11 @@ alias vizsh="vim ~/.zshrc"
 alias ..="cd .."
 alias ...="cd ../.."
 
-source ~/dotfile/.zshrc_git_ext
-
 # Fzf 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+[ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
+source ~/dotfile/.zshrc_git_ext
+
 
 # source ~/dotfile/.zshrc_docker_ext
