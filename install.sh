@@ -17,6 +17,7 @@ fi
 echo "Installing dependencies..."
 brew install openssl readline sqlite3 xz zlib graphviz jq git tree ack fzf shellcheck trash-cli
 $(brew --prefix)/opt/fzf/install
+softwareupdate --install-rosetta
 
 # Cloning dotfile repo
 if [ -d "$HOME/dotfile" ]; then
@@ -240,7 +241,40 @@ else
 fi
 
 # Install docker
-# TODO: see how to install docker the "BSP way"
+install_docker_desktop() {
+  brew update && brew install --cask docker
+}
+install_docker_lima() {
+  brew update && brew install colima docker docker-credential-helper
+}
+extend_docker() {
+  # Install docker-buildx
+  brew install docker-buildx
+  mkdir -p ~/.docker/cli-plugins
+  ln -sfn $(which docker-buildx) ~/.docker/cli-plugins/docker-buildx
+
+  # Extend zshrc
+  echo "source $HOME/dotfile/.zshrc_docker_ext" >> $HOME/.zshrc_ext
+}
+install_doker() {
+  read -p "Do you want to install docker using docker desktop or lima? ([d]esktop/[l]ima) " choice
+  case "$choice" in
+    d|desktop ) install_docker_desktop;;
+    l|lima ) install_docker_lima;;
+    * ) echo "Unrecognized option, exiting" && exit;;
+  esac
+  extend_docker
+  packages_to_be_configured+=("docker")
+}
+if is_already_installed "docker"; then
+  echo "docker is already installed"
+else
+  read -p "docker is not installed. Do you want to install it? (y/n) " choice
+  case "$choice" in
+    y|Y|yes|YES ) install_docker;;
+    * ) echo "ok, skipping docker";;
+  esac
+fi
 
 # Install neovim
 # TODO: explore the different configurations
