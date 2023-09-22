@@ -1,6 +1,7 @@
 [user]
 	name = rstagi
 	email = r.stagi96@gmail.com
+	signingkey = ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN+GpddNUeYHhW16Ye3Y9SBFZmJsA2xifBIR3cf4oDmI
 [credential]
 	helper = osxkeychain
 [filter "lfs"]
@@ -8,3 +9,9 @@
 	required = true
 	clean = git-lfs clean -- %f
 	smudge = git-lfs smudge -- %f
+[gpg]
+	format = ssh
+[gpg "ssh"]
+	program = /Applications/1Password.app/Contents/MacOS/op-ssh-sign
+[commit]
+	gpgsign = true

@@ -1,0 +1,3 @@
+# Docker
+alias dockup="docker-compose up -d"
+alias dockdown="docker-compose down"

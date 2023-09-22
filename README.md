@@ -1,156 +1,24 @@
 # Dotfile
 
-## Warning
+## Automatic install
 
-The following guide has been exported from a Notion page and thus still needs to be translated in english.
-Some part might be redundant with the code, or might not be updated.
-
-## XCode (solo per build iOS)
-
-- Installare XCode da AppStore
-- Installare i tool da linea di comando con `xcode-select --install`
-
----
-
-## Homebrew
-
+Run the following command to install everything:
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/rstagi/dotfile/master/install.sh)"
 ```
 
----
+## Manual configurations
 
-## ITerm2
+There are some packages to be configured manually. Here follows the most significant list:
 
-```bash
-brew install --cask iterm2
-```
+### Raycast
 
-### Zsh
-
-```bash
-brew install zsh
-```
-
----
-
-## Python
-Install pyenv:
-```bash
-brew install pyenv
-```
-
-Install some dependencies:
-```bash
-brew install openssl readline sqlite3 xz zlib
-```
-
-Add the following to your `.zshrc` (already present in the `.zshrc-ext` extension):
-```bash
-export PYENV_ROOT="$HOME/.pyenv"
-command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init -)"
-```
-
-Finally, install the latest Python version ([check which one it is](https://docs.python.org/3/whatsnew/changelog.html)):
-```bash
-CFLAGS="-I$(brew --prefix xz)/include -I$(brew --prefix openssl)/include" LDFLAGS="-L$(brew --prefix xz)/lib -L$(brew --prefix openssl)/lib" pyenv install <PYTHON_VERSION>
-```
-
-## Git
-
-Install git:
-```bash
-brew install git
-```
-
-Then, configure it. If you have already cloned the `dotfile` repository, then you can simply run the following command:
-```bash
-ln -s ~/dotfile/.gitconfig ~/.gitconfig
-```
-
-Otherwise, configure it manually like this:
-```bash
-git config --global user.name "rstagi"
-git config --global user.email "r.stagi96@gmail.com"
-git config --global credential.helper osxkeychain
-```
-
----
-
-## NeoVim
-
-TODO.
-
-DEPRECATED:
-```bash
-brew install vim
-```
-
-Per installare ****Ultimate vimrc****, che è un set di plugin e configurazioni per vim, lanciare:
-
-```bash
-git clone https://github.com/amix/vimrc.git ~/.vim_runtime
-sh ~/.vim_runtime/install_awesome_vimrc.sh
-```
-
-Infine, per installare **Maximum awesome**, che è un plugin manager per vim, lanciare in punto definito:
-
-```bash
-git clone https://github.com/square/maximum-awesome.git
-cd maximum-awesome
-rake
-```
-
----
-
-## Visual Studio Code
-
-```bash
-brew install --cask visual-studio-code
-```
-
-Poi:
-
-- abilitare l’integrazione con la command line: [https://code.visualstudio.com/docs/setup/mac#_launching-from-the-command-line](https://code.visualstudio.com/docs/setup/mac#_launching-from-the-command-line)
-- fare accesso per il sync con il mio account.
-
----
-
-## Tmux
-
-TODO: review
-
-To install it run the following:
-
-```bash
-brew install tmux
-```
-
-Then, install the Tmux Package Manager (TPM) by cloning its repository:
-
-```
-git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-```
-
-And finally source the `.tmux.conf` extension that is present in this repository! You can do so by creating a new file `~/.tmux.conf` and write the following line:
-```
-source-file ~/dotfile/.tmux-ext.conf
-```
-
----
-
-## Raycast
-
-```bash
-brew install raycast  
-```
-
+Replace the Spotlight shortcut with Raycast:
 - Remove Spotlight shortcut `CMD + space` from Keyboard Settings > Keyboard Shortcuts > Spotlight
 - Set Raycast Hotkey to `CMD + space` in Raycast Settings > General
 
 ### Extensions list
-
+TODO: add the missing hot keys
 - **Brew**
     - **Search** Hotkey: `Option + B`
 - **Clipboard History**
@@ -176,99 +44,86 @@ brew install raycast  
 - **Window Management**
 - **iTerm**
 
----
+### Visual Studio Code
 
-## Terraform
+Enable the cli integration following the instructions at [https://code.visualstudio.com/docs/setup/mac#_launching-from-the-command-line](https://code.visualstudio.com/docs/setup/mac#_launching-from-the-command-line):
+- `Cmd + Shift + P`
+- Type `shell command`
+- Select `Shell Command: Install 'code' command in PATH`
 
-Simply do the following:
+Then login with my GitHub account and sync everything else.
+
+### 1Password
+
+Login with my account (or accounts) and sync everything. Then, configure the SSH Agent to use 1Password as a source for SSH keys. (TODO: explain how)
+
+Finally, configure the browser extension to use the 1Password app instead of the web interface.
+
+### Obsidian
+
+Clone the `obsidian-work` repository in the `~/Documents` folder:
 ```
-brew install tfenv
-tfenv install latest
-```
-
----
-
-## Kubectl
-
-Install `kubectl` and `krew`:
-```
-brew install kubectl
-kubectl plugin install krew
-```
-
-Then, install the following plugins:
-```
-kubectl krew install ctx
-kubectl krew install ns
+cd ~/Documents
+git clone git@github.com:rstagi/obsidian-work.git
 ```
 
----
+Then run Obsidian and select the open an existing folder as workspace option, selecting the `~/Documents/obsidian-work` folder.
 
-### Quicklook plugins (???)
 
-```bash
-brew install qlcolorcode qlstephen qlmarkdown quicklook-json qlimagesize suspicious-package apparency quicklookase qlvideo
-xattr -cr ~/Library/QuickLook/*.qlgenerator
-```
+### iTerm2
+TODO: ???
 
-### Altri software utili
 
-```bash
-brew install \
-    1password \
-    1password/tap/1password-cli \
-    appcleaner \ 
-    google-chrome \
-    flux \
-    rectangle \ 
-    ripgrep \
-		spotify \
-    transmission \
-    vlc \
-    google-cloud-sdk
-```
+### RunCat
+
+This package needs to be installed manually from the AppStore.
 
 ---
 
+# Deprecated documentation
 
-## Oh My Zsh
+## NeoVim
 
-Istruzioni su https://github.com/ohmyzsh/ohmyzsh
+TODO.
+
+DEPRECATED:
+```bash
+brew install vim
+```
+
+Per installare ****Ultimate vimrc****, che è un set di plugin e configurazioni per vim, lanciare:
 
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+git clone https://github.com/amix/vimrc.git ~/.vim_runtime
+sh ~/.vim_runtime/install_awesome_vimrc.sh
 ```
 
-Now, we'll install some plugins and setup some new tools. To do so, run the following command to enable the `zsh-syntax-highlighting` plugin:
-```bash
-git clone https://github.com/zsh-users/zsh-syntax-highlighting.git $ZSH_CUSTOM/plugins/zsh-syntax-highlighting
-```
-
-And the following one to install some tools we use:
+Infine, per installare **Maximum awesome**, che è un plugin manager per vim, lanciare in punto definito:
 
 ```bash
-brew install tree ack fzf shellcheck trash-cli
-$(brew --prefix)/opt/fzf/install
+git clone https://github.com/square/maximum-awesome.git
+cd maximum-awesome
+rake
 ```
 
-After that, everyhing else you might need for oh-my-zsh and other tools is already present in an `.zshrc` extension in this repository! So make sure to clone this repository in your home:
+## Tmux
+
+TODO: review
+
+To install it run the following:
+
 ```bash
-git clone git@github.com:rstagi/dotfile.git ~/dotfile
+brew install tmux
 ```
 
-And make your `.zshrc` look like the following:
+Then, install the Tmux Package Manager (TPM) by cloning its repository:
+
 ```
-export ZSH="$HOME/.oh-my-zsh"
-source ~/dotfile/.zshrc-ext
+git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 ```
 
-Such extension contains the following:
-- oh-my-zsh plugins and themes
-- fzf configuration
-- useful aliases for tools like git, npm, yarn, docker and others!
+And finally source the `.tmux.conf` extension that is present in this repository! You can do so by creating a new file `~/.tmux.conf` and write the following line:
+```
+source-file ~/dotfile/.tmux-ext.conf
+```
 
----
-
-## RunCat
-
-Da AppStore (purtroppo).

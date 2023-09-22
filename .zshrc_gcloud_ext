@@ -1,0 +1,4 @@
+# Setup gcloud path and completion
+if [ -f ' /Users/rsta/Dev/google-cloud-sdk/path.zsh.inc'  ]; then . '/Users/rsta/Dev/google-cloud-sdk/path.zsh.inc'; fi
+if [ -f '/Users/rsta/Dev/google-cloud-sdk/completion.zsh.inc'  ]; then . '/Users/rsta/Dev/google-cloud-sdk/completion.zsh.inc'; fi
+export USE_GKE_GCLOUD_AUTH_PLUGIN=True
