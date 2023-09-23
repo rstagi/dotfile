@@ -16,7 +16,7 @@ plugins=(
     # docker
 )
 [ -f ~/.zshrc_additional_plugins_list ] && source ~/.zshrc_additional_plugins_list
-source $ZSH/oh-my-zsh.sh
+source $HOME/.oh-my-zsh/oh-my-zsh.sh
 
 # Aliases
 alias shcheck="shellcheck"
@@ -43,3 +43,4 @@ then
   autoload -Uz compinit
   compinit
 fi
+

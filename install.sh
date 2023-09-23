@@ -149,38 +149,40 @@ else
 fi
 
 
-# Install nvm and node
-install_nvm() {
-  brew update && brew install nvm
+# Install fnm and node
+install_fnm() {
+  brew update && brew install fnm
+}
+install_node() {
+  fnm install --latest 
   echo "plugins+=(npm)" >> $HOME/.zshrc_additional_plugins
   echo "plugins+=(node)" >> $HOME/.zshrc_additional_plugins
   echo "source $HOME/dotfile/.zshrc_node_ext" >> $HOME/.zshrc_ext
+  npm install --global yarn
 }
-install_node() {
-  nvm install node
-}
-if is_already_installed "nvm"; then
-  read -p "nvm is already installed. Do you want to install the latest node version? (y/n) " choice
+if is_already_installed "fnm"; then
+  read -p "fnm is already installed. Do you want to install the latest node version? (y/n) " choice
   case "$choice" in
     y|Y|yes|YES )
       install_node
     ;;
-    * ) echo "ok, skipping nvm";;
+    * ) echo "ok, skipping node";;
   esac
 else
-  read -p "nvm is not installed. Do you want to install it? (y/n) " choice
+  read -p "node is not installed. Do you want to install it? (y/n) " choice
   case "$choice" in
     y|Y|yes|YES )
-      install_nvm
+      install_fnm
       install_node
     ;;
-    * ) echo "ok, skipping nvm";;
+    * ) echo "ok, skipping node";;
   esac
 fi
 
 # Install terraform
 install_terraform() {
   brew update && brew install tfenv && tfenv install latest
+  terraform -install-autocomplete
   echo "source $HOME/dotfile/.zshrc_terraform_ext" >> $HOME/.zshrc_ext
 }
 if is_already_installed "tfenv"; then
@@ -198,6 +200,9 @@ install_gcloud() {
   brew update && brew install --cask google-cloud-sdk
   echo "plugins+=(gcloud)" >> $HOME/.zshrc_additional_plugins
   echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> $HOME/.zshrc_ext
+  gcloud auth login --update-adc --enable-gdrive-access
+  gcloud auth application-default login
+  gcloud_installed=true
 }
 if is_already_installed "google-cloud-sdk"; then
   echo "google-cloud-sdk is already installed"
@@ -255,16 +260,20 @@ extend_docker() {
 
   # Extend zshrc
   echo "source $HOME/dotfile/.zshrc_docker_ext" >> $HOME/.zshrc_ext
+
+  if [ "$gcloud_installed" = "true" ]; then
+    gcloud auth configure-docker
+  fi
 }
 install_doker() {
-  read -p "Do you want to install docker using docker desktop or lima? ([d]esktop/[l]ima) " choice
-  case "$choice" in
-    d|desktop ) install_docker_desktop;;
-    l|lima ) install_docker_lima;;
-    * ) echo "Unrecognized option, exiting" && exit;;
-  esac
-  extend_docker
-  packages_to_be_configured+=("docker")
+      read -p "Do you want to install docker using docker desktop or lima? ([d]esktop/[l]ima) " choice
+      case "$choice" in
+        d|desktop ) install_docker_desktop;;
+        l|lima ) install_docker_lima;;
+        * ) echo "Unrecognized option, exiting" && exit;;
+      esac
+      extend_docker
+      packages_to_be_configured+=("docker")
 }
 if is_already_installed "docker"; then
   echo "docker is already installed"
