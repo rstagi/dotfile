@@ -10,15 +10,18 @@ plugins=(
     z
     zsh-syntax-highlighting
     jsontools
-
-    # # Docker
-    # docker-compose
-    # docker
 )
 [ -f ~/.zshrc_additional_plugins_list ] && source ~/.zshrc_additional_plugins_list
+export DISABLE_MAGIC_FUNCTIONS=true
 source $HOME/.oh-my-zsh/oh-my-zsh.sh
 
+# Key bindings
+bindkey "[D" backward-word
+bindkey "[C" forward-word
+bindkey '^[^?' backward-kill-word
+
 # Aliases
+alias tmux="tmux -u"
 alias shcheck="shellcheck"
 alias traceon="set -x"
 alias traceoff="set +x"

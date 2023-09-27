@@ -15,9 +15,23 @@ fi
 
 # Install necessary dependencies
 echo "Installing dependencies..."
-brew install openssl readline sqlite3 xz zlib graphviz jq git tree ack fzf shellcheck trash-cli
-$(brew --prefix)/opt/fzf/install
-softwareupdate --install-rosetta
+brew tap homebrew/cask-fonts
+brew install openssl readline sqlite3 xz zlib graphviz jq git tree ack fzf shellcheck trash-cli font-jetbrains-mono-nerd-font
+
+read -p "Do you want to setup fzf? (y/n) " choice
+case "$choice" in
+  y|Y|yes|YES ) $(brew --prefix)/opt/fzf/install;;
+  * ) echo "ok, skipping git configuration";;
+esac
+
+
+read -p "Do you want to setup rosetta? (y/n) " choice
+case "$choice" in
+  y|Y|yes|YES ) softwareupdate --install-rosetta;;
+  * ) echo "ok, skipping git configuration";;
+esac
+
+
 
 # Cloning dotfile repo
 if [ -d "$HOME/dotfile" ]; then
@@ -286,6 +300,13 @@ else
 fi
 
 # Install neovim
+install_neovim() {
+  brew update && brew install neovim
+  echo "source $HOME/dotfile/.zshrc_vim_ext" >> $HOME/.zshrc_ext
+  git clone https://github.com/NvChad/NvChad ~/.config/nvim --depth 1 
+  sh -c 'curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
+       https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+}
 # TODO: explore the different configurations
 
 # Install tmux
@@ -309,7 +330,9 @@ fi
 # Install iterm2
 install_iterm2() {
   brew update && brew install --cask iterm2
+  ln -s $HOME/dotfile/iterm2_profiles.json $HOME/Library/Application\ Support/iTerm2/DynamicProfiles/profiles.json
   packages_to_be_configured+=("iterm2")
+  # TODO: add configuration instructions (e.g.: set "Default rstagi" as default profile)
 }
 if is_already_installed "iterm2"; then
   echo "iTerm2 is already installed"
@@ -437,7 +460,6 @@ else
   case "$choice" in
     y|Y|yes|YES )
       install_ripgrep
-      echo "source $HOME/dotfile/.zshrc_ripgrep_ext" >> $HOME/.zshrc_ext
     ;;
     * ) echo "ok, skipping ripgrep";;
   esac
@@ -506,6 +528,23 @@ else
       install_obsidian
     ;;
     * ) echo "ok, skipping obsidian";;
+  esac
+fi
+
+# Install insomnia 
+install_insomnia() {
+  brew update && brew install --cask insomnia 
+  packages_to_be_configured+=("insomnia")
+}
+if is_already_installed "insomnia"; then
+  echo "insomnia is already installed"
+else
+  read -p "insomnia is not installed. Do you want to install it? (y/n) " choice
+  case "$choice" in
+    y|Y|yes|YES )
+      install_insomnia 
+    ;;
+    * ) echo "ok, skipping insomnia";;
   esac
 fi
 
