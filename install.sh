@@ -299,6 +299,22 @@ else
   esac
 fi
 
+# Install tmux
+install_tmux() {
+  brew update && brew install tmux
+  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+  ln -s $HOME/dotfile/.tmux.conf $HOME/.tmux.conf
+}
+if is_already_installed "tmux"; then
+  echo "tmux is already installed"
+else
+  read -p "tmux is not installed. Do you want to install it? (y/n) " choice
+  case "$choice" in
+    y|Y|yes|YES ) install_tmux;;
+    * ) echo "ok, skipping tmux";;
+  esac
+fi
+
 # Install neovim
 install_neovim() {
   brew update && brew install neovim
@@ -307,9 +323,6 @@ install_neovim() {
   sh -c 'curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
        https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
 }
-# TODO: explore the different configurations
-
-# Install tmux
 # TODO: explore the different configurations
 
 # Install raycast
