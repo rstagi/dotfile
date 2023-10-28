@@ -11,7 +11,7 @@ Run the following command to install everything:
 
 There are some packages to be configured manually.
 
-### .zshrc extension
+### .zshrc extensions
 
 The `.zshrc` file after the installation checks if a `~/.zshrc_ext` file exists and, if so, it sources it. This is useful to add some custom configurations that are not present in the main file.
 
@@ -21,7 +21,7 @@ Replace the Spotlight shortcut with Raycast:
 - Remove Spotlight shortcut `CMD + space` from Keyboard Settings > Keyboard Shortcuts > Spotlight
 - Set Raycast Hotkey to `CMD + space` in Raycast Settings > General
 
-### Extensions list
+#### Extensions list
 TODO: add the missing hot keys
 - **Brew**
     - **Search** Hotkey: `Option + B`
@@ -48,15 +48,6 @@ TODO: add the missing hot keys
 - **Window Management**
 - **iTerm**
 
-### Visual Studio Code
-
-Enable the cli integration following the instructions at [https://code.visualstudio.com/docs/setup/mac#_launching-from-the-command-line](https://code.visualstudio.com/docs/setup/mac#_launching-from-the-command-line):
-- `Cmd + Shift + P`
-- Type `shell command`
-- Select `Shell Command: Install 'code' command in PATH`
-
-Then login with my GitHub account and sync everything else.
-
 ### 1Password
 
 Login with my account (or accounts) and sync everything. Then, configure the SSH Agent to use 1Password as a source for SSH keys. (TODO: explain how)
@@ -82,52 +73,10 @@ TODO: ???
 
 This package needs to be installed manually from the AppStore.
 
----
+### Launch Apps at startup
 
-# Deprecated documentation
-
-## NeoVim
-
-TODO.
-
-DEPRECATED:
-```bash
-brew install vim
-```
-
-Per installare ****Ultimate vimrc****, che è un set di plugin e configurazioni per vim, lanciare:
-
-```bash
-git clone https://github.com/amix/vimrc.git ~/.vim_runtime
-sh ~/.vim_runtime/install_awesome_vimrc.sh
-```
-
-Infine, per installare **Maximum awesome**, che è un plugin manager per vim, lanciare in punto definito:
-
-```bash
-git clone https://github.com/square/maximum-awesome.git
-cd maximum-awesome
-rake
-```
-
-## Tmux
-
-TODO: review
-
-To install it run the following:
-
-```bash
-brew install tmux
-```
-
-Then, install the Tmux Package Manager (TPM) by cloning its repository:
-
-```
-git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-```
-
-And finally source the `.tmux.conf` extension that is present in this repository! You can do so by creating a new file `~/.tmux.conf` and write the following line:
-```
-source-file ~/dotfile/.tmux-ext.conf
-```
+Go to `Settings > General > Login items` and set the following apps to start when logging in:
+- Raycast
+- Rectangle
+- RunCat
 
