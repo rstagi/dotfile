@@ -54,21 +54,6 @@ Login with my account (or accounts) and sync everything. Then, configure the SSH
 
 Finally, configure the browser extension to use the 1Password app instead of the web interface.
 
-### Obsidian
-
-Clone the `obsidian-work` repository in the `~/Documents` folder:
-```
-cd ~/Documents
-git clone git@github.com:rstagi/obsidian-work.git
-```
-
-Then run Obsidian and select the open an existing folder as workspace option, selecting the `~/Documents/obsidian-work` folder.
-
-
-### iTerm2
-TODO: ???
-
-
 ### RunCat
 
 This package needs to be installed manually from the AppStore.
