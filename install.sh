@@ -24,15 +24,6 @@ case "$choice" in
   * ) echo "ok, skipping git configuration";;
 esac
 
-
-read -p "Do you want to setup rosetta? (y/n) " choice
-case "$choice" in
-  y|Y|yes|YES ) softwareupdate --install-rosetta;;
-  * ) echo "ok, skipping git configuration";;
-esac
-
-
-
 # Cloning dotfile repo
 if [ -d "$HOME/dotfile" ]; then
   echo "dotfile repo already exists"
@@ -319,11 +310,19 @@ fi
 install_neovim() {
   brew update && brew install neovim
   echo "source $HOME/dotfile/.zshrc_vim_ext" >> $HOME/.zshrc_ext
-  git clone https://github.com/NvChad/NvChad ~/.config/nvim --depth 1 
-  sh -c 'curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
-       https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+  # git clone https://github.com/NvChad/NvChad ~/.config/nvim --depth 1 
+  # sh -c 'curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
+  #      https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+  # TODO: add my configuration
 }
-# TODO: add my configuration
+if is_already_installed "nvim"; then
+  echo "neovim is already installed"
+else
+  read -p "neovim is not installed. Do you want to install it? (y/n) " choice
+  case "$choice" in
+    y|Y|yes|YES ) install_neovim;;
+  esac
+fi
 
 # Install raycast
 install_raycast() {
@@ -340,35 +339,32 @@ else
   esac
 fi
 
-# Install iterm2
-install_iterm2() {
-  brew update && brew install --cask iterm2
-  ln -s $HOME/dotfile/iterm2_profiles.json $HOME/Library/Application\ Support/iTerm2/DynamicProfiles/profiles.json
-  packages_to_be_configured+=("iterm2")
-  # TODO: add configuration instructions (e.g.: set "Default rstagi" as default profile)
+# Install ghostty
+install_ghostty() {
+  brew update && brew install --cask ghostty
 }
-if is_already_installed "iterm2"; then
-  echo "iTerm2 is already installed"
+if is_already_installed "ghostty"; then
+  echo "ghostty is already installed"
 else
-  read -p "iTerm2 is not installed. Do you want to install it? (y/n) " choice
+  read -p "ghostty is not installed. Do you want to install it? (y/n) " choice
   case "$choice" in
-    y|Y|yes|YES ) install_iterm2;;
-    * ) echo "ok, skipping iTerm2";;
+    y|Y|yes|YES ) install_ghostty;;
+    * ) echo "ok, skipping ghostty";;
   esac
 fi
 
 # Install visual-studio-code
-install_vscode() {
-  brew update && brew install --cask visual-studio-code
-  packages_to_be_configured+=("visual-studio-code")
+install_cursor() {
+  brew update && brew install --cask cursor
+  packages_to_be_configured+=("cursor")
 }
-if is_already_installed "visual-studio-code"; then
-  echo "visual-studio-code is already installed"
+if is_already_installed "cursor"; then
+  echo "cursor is already installed"
 else
-  read -p "visual-studio-code is not installed. Do you want to install it? (y/n) " choice
+  read -p "cursor is not installed. Do you want to install it? (y/n) " choice
   case "$choice" in
-    y|Y|yes|YES ) install_vscode;;
-    * ) echo "ok, skipping visual-studio-code";;
+    y|Y|yes|YES ) install_cursor;;
+    * ) echo "ok, skipping cursor";;
   esac
 fi
 
@@ -431,21 +427,6 @@ else
   esac
 fi
 
-# Install flux -> TODO: run at startup
-install_flux() {
-  brew update && brew install --cask flux
-  packages_to_be_configured+=("flux")
-}
-if is_already_installed "flux"; then
-  echo "flux is already installed"
-else
-  read -p "flux is not installed. Do you want to install it? (y/n) " choice
-  case "$choice" in
-    y|Y|yes|YES ) install_flux;;
-    * ) echo "ok, skipping flux";;
-  esac
-fi
-
 
 # Install rectangle -> TODO: run at startup
 install_rectangle() {
@@ -478,86 +459,17 @@ else
   esac
 fi
 
-# Install spotify
-install_spotify() {
-  brew update && brew install --cask spotify
-  packages_to_be_configured+=("spotify")
+install_arc() {
+  brew update && brew install --cask arc
+  packages_to_be_configured+=("arc")
 }
-if is_already_installed "spotify"; then
-  echo "spotify is already installed"
+if is_already_installed "arc"; then
+  echo "arc is already installed"
 else
-  read -p "spotify is not installed. Do you want to install it? (y/n) " choice
+  read -p "arc is not installed. Do you want to install it? (y/n) " choice
   case "$choice" in
-    y|Y|yes|YES )
-      install_spotify
-    ;;
-    * ) echo "ok, skipping spotify";;
-  esac
-fi
-
-# Install transmission
-install_transmission() {
-  brew update && brew install --cask transmission
-}
-if is_already_installed "transmission"; then
-  echo "transmission is already installed"
-else
-  read -p "transmission is not installed. Do you want to install it? (y/n) " choice
-  case "$choice" in
-    y|Y|yes|YES )
-      install_transmission
-    ;;
-    * ) echo "ok, skipping transmission";;
-  esac
-fi
-
-# Install vlc
-install_vlc() {
-  brew update && brew install --cask vlc
-}
-if is_already_installed "vlc"; then
-  echo "vlc is already installed"
-else
-  read -p "vlc is not installed. Do you want to install it? (y/n) " choice
-  case "$choice" in
-    y|Y|yes|YES )
-      install_vlc
-    ;;
-    * ) echo "ok, skipping vlc";;
-  esac
-fi
-
-# Install obsidian
-install_obsidian() {
-  brew update && brew install --cask obsidian
-  packages_to_be_configured+=("obsidian")
-}
-if is_already_installed "obsidian"; then
-  echo "obsidian is already installed"
-else
-  read -p "obsidian is not installed. Do you want to install it? (y/n) " choice
-  case "$choice" in
-    y|Y|yes|YES )
-      install_obsidian
-    ;;
-    * ) echo "ok, skipping obsidian";;
-  esac
-fi
-
-# Install insomnia 
-install_insomnia() {
-  brew update && brew install --cask insomnia 
-  packages_to_be_configured+=("insomnia")
-}
-if is_already_installed "insomnia"; then
-  echo "insomnia is already installed"
-else
-  read -p "insomnia is not installed. Do you want to install it? (y/n) " choice
-  case "$choice" in
-    y|Y|yes|YES )
-      install_insomnia 
-    ;;
-    * ) echo "ok, skipping insomnia";;
+    y|Y|yes|YES ) install_arc;;
+    * ) echo "ok, skipping arc";;
   esac
 fi
 
