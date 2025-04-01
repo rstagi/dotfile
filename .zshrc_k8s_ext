@@ -1,5 +1,7 @@
 # Kubernetes
 alias k="kubectl"
+alias kubectx="kubectl ctx"
+alias kubens="kubectl ns"
 export PATH="${PATH}:${HOME}/.krew/bin"
 source <(kubectl completion zsh)
 complete -F __start_kubectl k
