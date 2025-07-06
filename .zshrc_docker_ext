@@ -1,3 +1,8 @@
 # Docker
 alias dockup="docker-compose up -d"
 alias dockdown="docker-compose down"
+
+# Source Docker completions if they exist
+if [ -f /Applications/Docker.app/Contents/Resources/etc/docker.zsh-completion ]; then
+  source /Applications/Docker.app/Contents/Resources/etc/docker.zsh-completion
+fi

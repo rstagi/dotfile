@@ -1,11 +1,8 @@
 # Nvm
-# export NVM_DIR="$HOME/.nvm"
-# [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && \. "/opt/homebrew/opt/nvm/nvm.sh"  # This loads nvm
-# [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && \. "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"  # This loads nvm
+export NVM_DIR="$HOME/.nvm"
+[ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && \. "/opt/homebrew/opt/nvm/nvm.sh"  # This loads nvm
+[ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && \. "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"  # This loads nvm
 # export NVM_LAZY_LOAD=true
-
-eval "$(fnm env --use-on-cd)"
-alias nvm=fnm
 
 # Npm
 alias ni="npm i"
@@ -20,3 +17,15 @@ alias yad="yarn add --dev"
 alias yr="yarn run"
 alias yrs="yarn start"
 alias yver="yarn version"
+
+# Automatically run nvm use when entering a directory with a .nvmrc file
+auto_nvm_use() {
+  if [ -f ".nvmrc" ]; then
+    nvm use
+  fi
+}
+
+# Add the function to the chpwd hook to trigger on directory change
+autoload -U add-zsh-hook
+add-zsh-hook chpwd auto_nvm_use
+

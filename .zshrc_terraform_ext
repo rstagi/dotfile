@@ -14,3 +14,7 @@ alias tfo="terraform output"
 alias tfv="terraform validate"
 alias tfc="terraform console"
 alias tfgr="terraform graph | dot -Tpng > graph.png"
+
+# Enable Terraform autocompletion
+autoload -U +X bashcompinit && bashcompinit
+complete -o nospace -C /opt/homebrew/bin/terraform terraform
