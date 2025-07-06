@@ -9,7 +9,11 @@ alias gswc="git switch --create"
 alias gst="git status"
 alias gpsu="git push --set-upstream origin \$(git branch --show-current)"
 alias git_list_local_only_branches="git for-each-ref --format '%(refname) %(upstream:track)' refs/heads | awk '\$2 == \"[gone]\" {sub(\"refs/heads/\", \"\", \$1); print \$1}'"
-
+alias gllob="git_list_local_only_branches"
+alias gd="git diff"
+alias gc="git commit"
+alias ga="git add"
+alias gp="git push"
 
 function git_delete_branch_prompt() {
   branch=$1

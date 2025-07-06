@@ -1,43 +1,123 @@
 #!/bin/bash
 
-# Check if brew is already installed
-if ! command -v brew &> /dev/null
-then
-  echo "brew could not be found"
-  echo "Installing brew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  echo >> $HOME/.zprofile
-  echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> $HOME/.zprofile
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-else
-  echo "brew is already installed"
-  brew update && brew upgrade
-fi
+# Global variables
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tmuxai" "claude-code" "workon")
+REQUESTED_PACKAGES=()
+INTERACTIVE_MODE=true
+DRY_RUN=false
+gcloud_installed=false
 
-# Install necessary dependencies
-echo "Installing dependencies..."
-brew install openssl readline sqlite3 xz zlib graphviz jq git tree ack fzf shellcheck trash-cli font-jetbrains-mono-nerd-font
-
-# Cloning dotfile repo
-if [ -d "$HOME/dotfile" ]; then
-  echo "dotfile repo already exists"
-else
-  echo "Cloning dotfile repo..."
-  git clone https://github.com/rstagi/dotfile.git $HOME/dotfile
-fi
-
-# Configuring git
-link_gitconfig() {
-  [ -f "$HOME/.gitconfig" ] && mv $HOME/.gitconfig $HOME/.gitconfig.bak
-  ln -s $HOME/dotfile/.gitconfig $HOME/.gitconfig
+# Dependency mapping
+get_dependencies() {
+  case $1 in
+    "workon") echo "tmux tmuxai claude-code" ;;
+    "kubectl") echo "gcloud" ;;
+    "docker") echo "gcloud" ;;
+    "zsh") echo "" ;;
+    "python") echo "pyenv pipx" ;;
+    *) echo "" ;;
+  esac
 }
-read -p "Do you want to configure git with the proper dotfile? (y/n) " choice
-case "$choice" in
-  y|Y|yes|YES ) link_gitconfig;;
-  * ) echo "ok, skipping git configuration";;
-esac
+
+# Parse command line arguments
+parse_arguments() {
+  if [ $# -eq 0 ]; then
+    INTERACTIVE_MODE=true
+    return
+  fi
+  
+  INTERACTIVE_MODE=false
+  
+  for arg in "$@"; do
+    case $arg in
+      --list)
+        echo "Available packages:"
+        printf '%s\n' "${AVAILABLE_PACKAGES[@]}"
+        exit 0
+        ;;
+      --help|-h)
+        echo "Usage: $0 [package1] [package2] ... [packageN]"
+        echo "       $0 --list"
+        echo "       $0 --dry-run [package1] [package2] ... [packageN]"
+        echo ""
+        echo "Available packages:"
+        printf '%s\n' "${AVAILABLE_PACKAGES[@]}"
+        exit 0
+        ;;
+      --dry-run)
+        DRY_RUN=true
+        ;;
+      *)
+        REQUESTED_PACKAGES+=("$arg")
+        ;;
+    esac
+  done
+  
+  # Validate requested packages
+  for package in "${REQUESTED_PACKAGES[@]}"; do
+    if [[ ! " ${AVAILABLE_PACKAGES[@]} " =~ " ${package} " ]]; then
+      echo "Error: Unknown package '$package'"
+      echo "Use --list to see available packages"
+      exit 1
+    fi
+  done
+}
+
+# Install prerequisites (always run)
+install_prerequisites() {
+  echo "=== Installing Prerequisites ==="
+  
+  # Check if brew is already installed
+  if ! command -v brew &> /dev/null
+  then
+    echo "brew could not be found"
+    echo "Installing brew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    echo >> $HOME/.zprofile
+    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> $HOME/.zprofile
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  else
+    echo "brew is already installed"
+    brew update && brew upgrade
+  fi
+
+  # Install necessary dependencies
+  echo "Installing dependencies..."
+  brew install openssl readline sqlite3 xz zlib graphviz jq git tree ack fzf shellcheck trash-cli font-jetbrains-mono-nerd-font
+}
+
+# Setup core configuration (always run)
+setup_core() {
+  echo "=== Setting up Core Configuration ==="
+  
+  # Cloning dotfile repo
+  if [ -d "$HOME/dotfile" ]; then
+    echo "dotfile repo already exists"
+  else
+    echo "Cloning dotfile repo..."
+    git clone https://github.com/rstagi/dotfile.git $HOME/dotfile
+  fi
+
+  # Configuring git
+  link_gitconfig() {
+    [ -f "$HOME/.gitconfig" ] && mv $HOME/.gitconfig $HOME/.gitconfig.bak
+    ln -s $HOME/dotfile/.gitconfig $HOME/.gitconfig
+  }
+  
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    read -p "Do you want to configure git with the proper dotfile? (y/n) " choice
+    case "$choice" in
+      y|Y|yes|YES ) link_gitconfig;;
+      * ) echo "ok, skipping git configuration";;
+    esac
+  else
+    echo "Configuring git automatically..."
+    link_gitconfig
+  fi
+}
 
 
+# Utility functions
 is_already_installed() {
   brew list | grep ^$1$ > /dev/null
 }
@@ -59,249 +139,417 @@ install_pkg_if_needed() {
     echo "$1 is already installed"
     return 0
   else
-    if read_yes "$1 is not installed. Do you want to install it?"; then
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "$1 is not installed. Do you want to install it?"; then
+        install_pkg $1 $2
+        return 0
+      else
+        return 1
+      fi
+    else
+      echo "Installing $1..."
       install_pkg $1 $2
       return 0
-    else
-      return 1
     fi
   fi
 }
 
-## Important packages ##
-install_pkg_if_needed "arc" "--cask"
-install_pkg_if_needed "warp" "--cask"
-install_pkg_if_needed "cursor" "--cask"
-install_pkg_if_needed "rectangle" "--cask"
-
-if read_yes "Important packages have been installed. Would you like to continue with the optional stuff?"; then
-  echo "Alright, let's go!"
-else
-  exit
-fi
-
-## Optional stuff"
-
-# Configure fzf
-if read_yes "Do you want to setup fzf?"; then
-  $(brew --prefix)/opt/fzf/install
-fi
-
-# Install zsh
-install_zsh() {
-  brew update && brew install zsh && chsh zsh
-}
-install_pkg_if_needed "zsh"
-
-# Install python with pyenv
-configure_python() {
-  brew update && brew upgrade pyenv
-  echo "source $HOME/dotfile/.zshrc_python_ext" >> $HOME/.zshrc_ext
-  export PYENV_ROOT="$HOME/.pyenv"
-  command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
-  eval "$(pyenv init -)"
-  CFLAGS="-I$(brew --prefix xz)/include -I$(brew --prefix openssl)/include" LDFLAGS="-L$(brew --prefix xz)/lib -L$(brew --prefix openssl)/lib" pyenv install -s 3
-}
-if install_pkg_if_needed "pyenv" && read_yes "Do you want to configure python?"; then
-  install_pkg_if_needed "pipx"
-  configure_python
-fi
-
-# Install oh-my-zsh
-install_oh_my_zsh() {
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-  brew install qlcolorcode qlstephen qlmarkdown quicklook-json suspicious-package apparency quicklookase qlvideo
-  xattr -cr ~/Library/QuickLook/*.qlgenerator
-  pipx install pygments
-}
-install_zsh_syntax_highlighting() {
-  git clone https://github.com/zsh-users/zsh-syntax-highlighting.git $ZSH_CUSTOM/plugins/zsh-syntax-highlighting
-}
-link_zshrc() {
-  [ -f "$HOME/.zshrc" ] && mv $HOME/.zshrc $HOME/.zshrc.bak
-  ln -s $HOME/dotfile/.zshrc $HOME/.zshrc
-}
-if [ -d "$HOME/.oh-my-zsh" ]; then
-  echo "oh-my-zsh is already installed"
-else
-  if ! read_yes "oh-my-zsh is not installed, but it's required. Do you want to install it?"; then
-    exit
+# Dependency resolution
+resolve_dependencies() {
+  local package=$1
+  local deps=$(get_dependencies "$package")
+  
+  if [ -n "$deps" ]; then
+    echo "Installing dependencies for $package: $deps"
+    for dep in $deps; do
+      if [[ " ${AVAILABLE_PACKAGES[@]} " =~ " ${dep} " ]]; then
+        install_package $dep
+      else
+        echo "Installing special dependency: $dep"
+        case $dep in
+          "pyenv") install_pkg_if_needed "pyenv" ;;
+          "pipx") install_pkg_if_needed "pipx" ;;
+        esac
+      fi
+    done
   fi
-  install_oh_my_zsh
-fi
-if [ -f "$HOME/.zshrc" ]; then
-  if read_yes ".zshrc already exists. Do you want to override it?"; then
-    if [ -d "$HOME/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting" ]; then
-      echo "zsh-syntax-highlighting is already installed"
-    else
-      echo "zsh-syntax-highlighting is not installed. Installing it..."
-      install_zsh_syntax_highlighting
+}
+
+# Package installation functions
+install_package() {
+  local package=$1
+  echo "=== Installing $package ==="
+  
+  # Resolve dependencies first
+  resolve_dependencies $package
+  
+  case $package in
+    "arc") install_pkg_if_needed "arc" "--cask" ;;
+    "warp") install_pkg_if_needed "warp" "--cask" ;;
+    "cursor") install_pkg_if_needed "cursor" "--cask" ;;
+    "rectangle") install_pkg_if_needed "rectangle" "--cask" ;;
+    "fzf") install_fzf ;;
+    "zsh") install_zsh ;;
+    "python") install_python ;;
+    "gh") install_gh ;;
+    "node") install_node ;;
+    "terraform") install_terraform ;;
+    "gcloud") install_gcloud ;;
+    "kubectl") install_kubectl ;;
+    "helm") install_pkg_if_needed "helm" ;;
+    "docker") install_docker ;;
+    "tmux") install_tmux ;;
+    "neovim") install_neovim ;;
+    "raycast") install_pkg_if_needed "raycast" "--cask" ;;
+    "ghostty") install_pkg_if_needed "ghostty" ;;
+    "slack") install_pkg_if_needed "slack" "--cask" ;;
+    "1password") install_1password ;;
+    "appcleaner") install_pkg_if_needed "appcleaner" ;;
+    "google-chrome") install_pkg_if_needed "google-chrome" ;;
+    "ripgrep") install_pkg_if_needed "ripgrep" ;;
+    "tmuxai") install_pkg_if_needed "tmuxai" ;;
+    "claude-code") install_claude_code ;;
+    "workon") install_workon ;;
+    *) echo "Unknown package: $package" ;;
+  esac
+}
+
+# Individual package installation functions
+install_fzf() {
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    if read_yes "Do you want to setup fzf?"; then
+      $(brew --prefix)/opt/fzf/install
     fi
-    link_zshrc
   else
-    echo "ok, skipping .zshrc override"
+    echo "Configuring fzf..."
+    $(brew --prefix)/opt/fzf/install
   fi
-else
-  link_zshrc
-fi
-
-# Install gh
-configure_gh() {
-  TARGET_PATH="$(brew --prefix)/share/zsh/site-functions"
-  [ ! -f "$TARGET_PATH/_gh" ] && mkdir -p $TARGET_PATH && gh completion -s zsh > "$TARGET_PATH/_gh" && chmod +x "$TARGET_PATH/_gh"
 }
-if install_pkg_if_needed "gh" && read_yes "Do you want to configure gh?"; then
-  configure_gh
-fi
 
-# Install nvm and node
+install_zsh() {
+  if install_pkg_if_needed "zsh"; then
+    brew update && brew install zsh && chsh zsh
+    
+    # Install zsh-syntax-highlighting via brew
+    install_pkg_if_needed "zsh-syntax-highlighting"
+    
+    # Link .zshrc
+    link_zshrc() {
+      [ -f "$HOME/.zshrc" ] && mv $HOME/.zshrc $HOME/.zshrc.bak
+      ln -s $HOME/dotfile/.zshrc $HOME/.zshrc
+    }
+    
+    if [ -f "$HOME/.zshrc" ]; then
+      if [ "$INTERACTIVE_MODE" = true ]; then
+        if read_yes ".zshrc already exists. Do you want to override it?"; then
+          link_zshrc
+        else
+          echo "ok, skipping .zshrc override"
+        fi
+      else
+        echo "Overriding .zshrc..."
+        link_zshrc
+      fi
+    else
+      link_zshrc
+    fi
+  fi
+}
+
+
+install_python() {
+  if install_pkg_if_needed "pyenv"; then
+    install_pkg_if_needed "pipx"
+    configure_python() {
+      brew update && brew upgrade pyenv
+      echo "source $HOME/dotfile/.zshrc_python_ext" >> $HOME/.zshrc_ext
+      export PYENV_ROOT="$HOME/.pyenv"
+      command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init -)"
+      CFLAGS="-I$(brew --prefix xz)/include -I$(brew --prefix openssl)/include" LDFLAGS="-L$(brew --prefix xz)/lib -L$(brew --prefix openssl)/lib" pyenv install -s 3
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure python?"; then
+        configure_python
+      fi
+    else
+      echo "Configuring python..."
+      configure_python
+    fi
+  fi
+}
+
+install_gh() {
+  if install_pkg_if_needed "gh"; then
+    configure_gh() {
+      TARGET_PATH="$(brew --prefix)/share/zsh/site-functions"
+      [ ! -f "$TARGET_PATH/_gh" ] && mkdir -p $TARGET_PATH && gh completion -s zsh > "$TARGET_PATH/_gh" && chmod +x "$TARGET_PATH/_gh"
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure gh?"; then
+        configure_gh
+      fi
+    else
+      echo "Configuring gh..."
+      configure_gh
+    fi
+  fi
+}
+
 install_node() {
-  nvm install --latest 
-  echo "plugins+=(npm)" >> $HOME/.zshrc_additional_plugins
-  echo "plugins+=(node)" >> $HOME/.zshrc_additional_plugins
-  echo "source $HOME/dotfile/.zshrc_node_ext" >> $HOME/.zshrc_ext
-  npm install --global yarn
-}
-if install_pkg_if_needed "nvm" && read_yes "Do you want to install node?"; then
-  install_node
-fi
-
-# Install terraform
-configure_terraform() {
-  tfenv install latest
-  terraform -install-autocomplete
-  echo "source $HOME/dotfile/.zshrc_terraform_ext" >> $HOME/.zshrc_ext
-}
-if install_pkg_if_needed "tfenv" && read_yes "Do you want to configure terraform?"; then
-  configure_terraform
-fi
-
-# Install gcloud
-configure_gcloud() {
-  echo "plugins+=(gcloud)" >> $HOME/.zshrc_additional_plugins
-  echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> $HOME/.zshrc_ext
-  gcloud auth login --update-adc --enable-gdrive-access
-  gcloud auth application-default login
-  gcloud_installed=true
-}
-if install_pkg_if_needed "google-cloud-sdk" && read_yes "Do you want to configure gcloud?"; then
-  install_gcloud
-fi
-
-# Install kubectl
-configure_kubectl() {
-  brew update && brew install krew
-  kubectl krew install ctx
-  kubectl krew install ns
-  echo "source $HOME/dotfile/.zshrc_k8s_ext" >> $HOME/.zshrc_ext
-}
-if install_pkg_if_needed "kubernetes-cli" && read_yes "Do you want to configure kubectl?"; then
-  configure_kubectl
-fi
-
-# Install helm
-install_pkg_if_needed "helm"
-
-# Install docker
-configure_docker() {
-  # Install docker-buildx
-  brew install docker-buildx
-  mkdir -p ~/.docker/cli-plugins
-  ln -sfn $(which docker-buildx) ~/.docker/cli-plugins/docker-buildx
-
-  # Extend zshrc
-  echo "source $HOME/dotfile/.zshrc_docker_ext" >> $HOME/.zshrc_ext
-
-  if [ "$gcloud_installed" = "true" ]; then
-    gcloud auth configure-docker
+  if install_pkg_if_needed "nvm"; then
+    configure_node() {
+      nvm install --latest 
+      echo "plugins+=(npm)" >> $HOME/.zshrc_additional_plugins
+      echo "plugins+=(node)" >> $HOME/.zshrc_additional_plugins
+      echo "source $HOME/dotfile/.zshrc_node_ext" >> $HOME/.zshrc_ext
+      npm install --global yarn
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to install node?"; then
+        configure_node
+      fi
+    else
+      echo "Installing node..."
+      configure_node
+    fi
   fi
 }
-if install_pkg_if_needed "docker" "--cask" && read_yes "Do you want to configure docker?"; then
-  configure_docker
-fi
 
-# Install tmux
-configure_tmux() {
-  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-  ln -s $HOME/dotfile/.tmux.conf $HOME/.tmux.conf
+install_terraform() {
+  if install_pkg_if_needed "tfenv"; then
+    configure_terraform() {
+      tfenv install latest
+      terraform -install-autocomplete
+      echo "source $HOME/dotfile/.zshrc_terraform_ext" >> $HOME/.zshrc_ext
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure terraform?"; then
+        configure_terraform
+      fi
+    else
+      echo "Configuring terraform..."
+      configure_terraform
+    fi
+  fi
 }
-if install_pkg_if_needed "tmux" && read_yes "Do you want to configure tmux?"; then
-  configure_tmux
-fi
 
-# Install neovim
-configure_neovim() {
-  echo "source $HOME/dotfile/.zshrc_vim_ext" >> $HOME/.zshrc_ext
+install_gcloud() {
+  if install_pkg_if_needed "google-cloud-sdk"; then
+    configure_gcloud() {
+      echo "plugins+=(gcloud)" >> $HOME/.zshrc_additional_plugins
+      echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> $HOME/.zshrc_ext
+      gcloud auth login --update-adc --enable-gdrive-access
+      gcloud auth application-default login
+      gcloud_installed=true
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure gcloud?"; then
+        configure_gcloud
+      fi
+    else
+      echo "Configuring gcloud..."
+      configure_gcloud
+    fi
+  fi
 }
-if install_pkg_if_needed "neovim" && read_yes "Do you want to configure neovim?"; then
-  configure_neovim
-fi
 
-# Install raycast
-install_pkg_if_needed "raycast" "--cask"
-
-# Install ghostty
-install_pkg_if_needed "ghostty"
-
-# Install Slack
-install_pkg_if_needed "slack" "--cask"
-
-# Install 1password
-configure_1password() {
-  brew update && brew install --cask 1password/tap/1password-cli
+install_kubectl() {
+  if install_pkg_if_needed "kubernetes-cli"; then
+    configure_kubectl() {
+      brew update && brew install krew
+      kubectl krew install ctx
+      kubectl krew install ns
+      echo "source $HOME/dotfile/.zshrc_k8s_ext" >> $HOME/.zshrc_ext
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure kubectl?"; then
+        configure_kubectl
+      fi
+    else
+      echo "Configuring kubectl..."
+      configure_kubectl
+    fi
+  fi
 }
-if install_pkg_if_needed "1password" && read_yes "Do you want to configure 1password?"; then
-  configure_1password
-fi
 
-# Install appcleaner
-install_pkg_if_needed "appcleaner"
+install_docker() {
+  if install_pkg_if_needed "docker" "--cask"; then
+    configure_docker() {
+      # Install docker-buildx
+      brew install docker-buildx
+      mkdir -p ~/.docker/cli-plugins
+      ln -sfn $(which docker-buildx) ~/.docker/cli-plugins/docker-buildx
 
-# Install Google Chrome
-install_pkg_if_needed "google-chrome"
+      # Extend zshrc
+      echo "source $HOME/dotfile/.zshrc_docker_ext" >> $HOME/.zshrc_ext
 
-# Install ripgrep
-install_pkg_if_needed "ripgrep"
+      if [ "$gcloud_installed" = "true" ]; then
+        gcloud auth configure-docker
+      fi
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure docker?"; then
+        configure_docker
+      fi
+    else
+      echo "Configuring docker..."
+      configure_docker
+    fi
+  fi
+}
 
-# Install tmuxai
-install_pkg_if_needed "tmuxai"
+install_tmux() {
+  if install_pkg_if_needed "tmux"; then
+    configure_tmux() {
+      git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+      ln -s $HOME/dotfile/.tmux.conf $HOME/.tmux.conf
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure tmux?"; then
+        configure_tmux
+      fi
+    else
+      echo "Configuring tmux..."
+      configure_tmux
+    fi
+  fi
+}
 
-# Install claude code
+install_neovim() {
+  if install_pkg_if_needed "neovim"; then
+    configure_neovim() {
+      echo "source $HOME/dotfile/.zshrc_vim_ext" >> $HOME/.zshrc_ext
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure neovim?"; then
+        configure_neovim
+      fi
+    else
+      echo "Configuring neovim..."
+      configure_neovim
+    fi
+  fi
+}
+
+install_1password() {
+  if install_pkg_if_needed "1password"; then
+    configure_1password() {
+      brew update && brew install --cask 1password/tap/1password-cli
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure 1password?"; then
+        configure_1password
+      fi
+    else
+      echo "Configuring 1password..."
+      configure_1password
+    fi
+  fi
+}
+
 install_claude_code() {
-  npm install -g @anthropic-ai/claude-code
-}
-if ! command -v claude &> /dev/null; then
-  if read_yes "claude-code is not installed. Do you want to install it?"; then
-    install_claude_code
-  fi
-else
-  echo "claude-code is already installed"
-fi
-
-# Install workon
-configure_workon() {
-  # Check and install required dependencies
-  if ! is_already_installed "tmux"; then
-    echo "tmux is required for workon but not installed. Installing..."
-    install_pkg "tmux"
-  fi
-  
-  if ! is_already_installed "tmuxai"; then
-    echo "tmuxai is required for workon but not installed. Installing..."
-    install_pkg "tmuxai"
-  fi
-  
   if ! command -v claude &> /dev/null; then
-    echo "claude-code is required for workon but not installed. Installing..."
-    install_claude_code
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "claude-code is not installed. Do you want to install it?"; then
+        npm install -g @anthropic-ai/claude-code
+      fi
+    else
+      echo "Installing claude-code..."
+      npm install -g @anthropic-ai/claude-code
+    fi
+  else
+    echo "claude-code is already installed"
+  fi
+}
+
+install_workon() {
+  # Dependencies are handled by resolve_dependencies
+  configure_workon() {
+    mkdir -p $HOME/bin
+    ln -s $HOME/dotfile/workon.sh $HOME/bin/workon
+    chmod +x $HOME/dotfile/workon.sh
+  }
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    if read_yes "Do you want to install workon.sh?"; then
+      configure_workon
+    fi
+  else
+    echo "Installing workon..."
+    configure_workon
+  fi
+}
+
+# Main execution logic
+main() {
+  parse_arguments "$@"
+  
+  # Always install prerequisites and core setup (unless dry-run)
+  if [ "$DRY_RUN" = true ]; then
+    echo "=== DRY RUN: Would install prerequisites and core setup ==="
+  else
+    install_prerequisites
+    setup_core
   fi
   
-  mkdir -p $HOME/bin
-  ln -s $HOME/dotfile/workon.sh $HOME/bin/workon
-  chmod +x $HOME/dotfile/workon.sh
-}
-if read_yes "Do you want to install workon.sh?"; then
-  configure_workon
-fi
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    # Original interactive mode
+    echo "=== Important packages ==="
+    install_pkg_if_needed "arc" "--cask"
+    install_pkg_if_needed "warp" "--cask"
+    install_pkg_if_needed "cursor" "--cask"
+    install_pkg_if_needed "rectangle" "--cask"
 
-echo "Done!"
+    if read_yes "Important packages have been installed. Would you like to continue with the optional stuff?"; then
+      echo "Alright, let's go!"
+    else
+      exit
+    fi
+
+    # Continue with all optional packages in interactive mode
+    install_fzf
+    install_zsh
+    install_python
+    install_gh
+    install_node
+    install_terraform
+    install_gcloud
+    install_kubectl
+    install_pkg_if_needed "helm"
+    install_docker
+    install_tmux
+    install_neovim
+    install_pkg_if_needed "raycast" "--cask"
+    install_pkg_if_needed "ghostty"
+    install_pkg_if_needed "slack" "--cask"
+    install_1password
+    install_pkg_if_needed "appcleaner"
+    install_pkg_if_needed "google-chrome"
+    install_pkg_if_needed "ripgrep"
+    install_pkg_if_needed "tmuxai"
+    install_claude_code
+    install_workon
+  else
+    # Selective installation mode
+    if [ "$DRY_RUN" = true ]; then
+      echo "=== DRY RUN: Would install requested packages ==="
+      for package in "${REQUESTED_PACKAGES[@]}"; do
+        echo "Would install: $package"
+        deps=$(get_dependencies "$package")
+        if [ -n "$deps" ]; then
+          echo "  Dependencies: $deps"
+        fi
+      done
+    else
+      echo "=== Installing requested packages ==="
+      for package in "${REQUESTED_PACKAGES[@]}"; do
+        install_package "$package"
+      done
+    fi
+  fi
+  
+  echo "Done!"
+}
+
+# Run main function with all arguments
+main "$@"
