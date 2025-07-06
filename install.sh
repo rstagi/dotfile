@@ -263,8 +263,39 @@ install_pkg_if_needed "google-chrome"
 # Install ripgrep
 install_pkg_if_needed "ripgrep"
 
+# Install tmuxai
+install_pkg_if_needed "tmuxai"
+
+# Install claude code
+install_claude_code() {
+  npm install -g @anthropic-ai/claude-code
+}
+if ! command -v claude &> /dev/null; then
+  if read_yes "claude-code is not installed. Do you want to install it?"; then
+    install_claude_code
+  fi
+else
+  echo "claude-code is already installed"
+fi
+
 # Install workon
 configure_workon() {
+  # Check and install required dependencies
+  if ! is_already_installed "tmux"; then
+    echo "tmux is required for workon but not installed. Installing..."
+    install_pkg "tmux"
+  fi
+  
+  if ! is_already_installed "tmuxai"; then
+    echo "tmuxai is required for workon but not installed. Installing..."
+    install_pkg "tmuxai"
+  fi
+  
+  if ! command -v claude &> /dev/null; then
+    echo "claude-code is required for workon but not installed. Installing..."
+    install_claude_code
+  fi
+  
   mkdir -p $HOME/bin
   ln -s $HOME/dotfile/workon.sh $HOME/bin/workon
   chmod +x $HOME/dotfile/workon.sh
