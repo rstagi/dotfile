@@ -80,17 +80,9 @@ autoload -U compinit; compinit
 
 ### Custom configs
 export GOOGLE_CLOUD_PROJECT="rstagi"
-tmuxai() {
-        if [ -z "$TMUXAI_OPENROUTER_API_KEY" ]; then
-                export TMUXAI_OPENROUTER_API_KEY=$(op read "op://x6e2n24b4sulpuiof67o7ofblm/dpzmwdypttkv3xn37ib2jbylvi/key")
-        fi
-        command tmuxai "$@"
-}
 
 # Source zsh-syntax-highlighting
 source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 
-
-# Added by CodeRabbit CLI installer
 export PATH="/Users/rstagi/.local/bin:$PATH"
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"

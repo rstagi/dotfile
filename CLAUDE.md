@@ -66,4 +66,4 @@ if [ -z "$SECRET_KEY" ]; then
 fi
 ```
 
-Use wrapper functions to auto-fetch on first use (see `claude()` in `.zshrc_ralph_ext`, `tmuxai()` in `.zshrc`).
+Use wrapper functions to auto-fetch on first use (see `claude()` in `.zshrc_ralph_ext`).

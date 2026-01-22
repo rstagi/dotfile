@@ -17,5 +17,3 @@
 	gpgsign = true
 [url "ssh://git@github.com"]
 	insteadOf = https://github.com
-[coderabbit]
-	machineId = cli/4a3b7470a2b8451bac908e3ef854b5cf

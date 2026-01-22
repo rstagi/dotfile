@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tmuxai" "claude-code" "ralph")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "claude-code" "ralph")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -207,7 +207,6 @@ install_package() {
     "appcleaner") install_pkg_if_needed "appcleaner" ;;
     "google-chrome") install_pkg_if_needed "google-chrome" ;;
     "ripgrep") install_pkg_if_needed "ripgrep" ;;
-    "tmuxai") install_pkg_if_needed "tmuxai" ;;
     "claude-code") install_claude_code ;;
     "ralph") install_ralph ;;
     *) echo "Unknown package: $package" ;;
@@ -526,7 +525,6 @@ main() {
     install_pkg_if_needed "appcleaner"
     install_pkg_if_needed "google-chrome"
     install_pkg_if_needed "ripgrep"
-    install_pkg_if_needed "tmuxai"
     install_claude_code
     install_ralph
   else
