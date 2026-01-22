@@ -483,21 +483,10 @@ install_ralph() {
 
 install_claude_config() {
   configure_claude() {
-    mkdir -p ~/.claude/{agents,skills}
-
-    # Symlink agents from dotfile
-    for agent in ~/dotfile/.claude/agents/*.md; do
-      [ -f "$agent" ] && ln -sf "$agent" ~/.claude/agents/
-    done
-
-    # Symlink skills from dotfile (whole directories)
-    for skill_dir in ~/dotfile/.claude/skills/*/; do
-      if [ -d "$skill_dir" ]; then
-        skill_name=$(basename "$skill_dir")
-        rm -rf ~/.claude/skills/"$skill_name"
-        ln -sfn "$skill_dir" ~/.claude/skills/
-      fi
-    done
+    # Symlink entire agents and skills folders from dotfile
+    rm -rf ~/.claude/agents ~/.claude/skills
+    ln -sfn ~/dotfile/.claude/agents ~/.claude/agents
+    ln -sfn ~/dotfile/.claude/skills ~/.claude/skills
 
     # Add MCP servers (idempotent)
     claude mcp list --scope user 2>/dev/null | grep -q context7 || \
