@@ -492,7 +492,11 @@ install_claude_config() {
 
     # Symlink skills from dotfile (whole directories)
     for skill_dir in ~/dotfile/.claude/skills/*/; do
-      [ -d "$skill_dir" ] && ln -sfn "$skill_dir" ~/.claude/skills/
+      if [ -d "$skill_dir" ]; then
+        skill_name=$(basename "$skill_dir")
+        rm -rf ~/.claude/skills/"$skill_name"
+        ln -sfn "$skill_dir" ~/.claude/skills/
+      fi
     done
 
     # Add MCP servers (idempotent)
