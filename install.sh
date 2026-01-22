@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "claude-code" "ralph")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "claude-code" "ralph" "claude-config")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -15,6 +15,7 @@ get_dependencies() {
     "zsh") echo "" ;;
     "python") echo "pyenv pipx" ;;
     "ralph") echo "node" ;;
+    "claude-config") echo "claude-code" ;;
     *) echo "" ;;
   esac
 }
@@ -209,6 +210,7 @@ install_package() {
     "ripgrep") install_pkg_if_needed "ripgrep" ;;
     "claude-code") install_claude_code ;;
     "ralph") install_ralph ;;
+    "claude-config") install_claude_config ;;
     *) echo "Unknown package: $package" ;;
   esac
 }
@@ -476,6 +478,39 @@ install_ralph() {
     fi
   else
     echo "ralph is already installed"
+  fi
+}
+
+install_claude_config() {
+  configure_claude() {
+    mkdir -p ~/.claude/{agents,skills}
+
+    # Symlink agents from dotfile
+    for agent in ~/dotfile/.claude/agents/*.md; do
+      [ -f "$agent" ] && ln -sf "$agent" ~/.claude/agents/
+    done
+
+    # Symlink skills from dotfile (whole directories)
+    for skill_dir in ~/dotfile/.claude/skills/*/; do
+      [ -d "$skill_dir" ] && ln -sfn "$skill_dir" ~/.claude/skills/
+    done
+
+    # Add MCP servers (idempotent)
+    claude mcp list --scope user 2>/dev/null | grep -q context7 || \
+      claude mcp add --scope user context7 -- npx -y @upstash/context7-mcp
+    claude mcp list --scope user 2>/dev/null | grep -q playwright || \
+      claude mcp add --scope user playwright -- npx @playwright/mcp@latest
+
+    echo "Claude config installed (agents, skills, MCP servers)"
+  }
+
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    if read_yes "Do you want to configure Claude (agents, skills, MCP)?"; then
+      configure_claude
+    fi
+  else
+    echo "Configuring Claude..."
+    configure_claude
   fi
 }
 

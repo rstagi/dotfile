@@ -22,7 +22,7 @@ macOS dotfile repo w/ automated dev environment setup. Installs shell config, CL
 ./install.sh --dry-run <packages>
 
 # Lint shell scripts
-shellcheck install.sh afk-ralph.sh
+shellcheck install.sh afk-ralph.sh afk-ralph-github.sh
 ```
 
 ## Architecture
@@ -67,3 +67,28 @@ fi
 ```
 
 Use wrapper functions to auto-fetch on first use (see `claude()` in `.zshrc_ralph_ext`).
+
+## Ralph GitHub Integration
+
+`ralphg <issue-number>` - autonomous Claude on GitHub issue PRD
+
+**Flow:**
+1. Fetches PRD from issue body
+2. Creates worktree at `~/.ralph-worktrees/<repo>-issue-<N>`
+3. Runs Claude iterations (TDD for backend, Playwright for frontend)
+4. Commits per task, logs progress as issue comments
+5. Opens draft PR when complete
+
+**Commands:**
+```bash
+ralphg 123           # Run Ralph on issue #123
+ralphg 123 30        # Max 30 iterations
+```
+
+**Cleanup:**
+```bash
+git worktree remove ~/.ralph-worktrees/<repo>-issue-<N>
+git branch -d ralph/issue-<N>
+```
+
+**Issue template:** `templates/issue-prd-template.md`

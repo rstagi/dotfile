@@ -5,5 +5,16 @@ claude() {
   if [ -z "$PERPLEXITY_API_KEY" ]; then
     export PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
   fi
+  if [ -z "$CONTEXT7_API_KEY" ]; then
+    export CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
+  fi
   command claude "$@"
 }
+
+# GitHub-integrated Ralph
+ralph_github() {
+  [ -z "$PERPLEXITY_API_KEY" ] && export PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
+  [ -z "$CONTEXT7_API_KEY" ] && export CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
+  "$HOME/dotfile/afk-ralph-github.sh" "$@"
+}
+alias ralphg="ralph_github"

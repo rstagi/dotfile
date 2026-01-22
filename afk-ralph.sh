@@ -2,7 +2,15 @@
 set -e
 
 if [ -z "$1" ]; then
-  echo "Usage: $0 <iterations>"
+  echo "Usage: $0 <prd-file> [max-iterations]"
+  exit 1
+fi
+
+PRD_FILE="$1"
+MAX_ITERATIONS="${2:-20}"
+
+if [ ! -f "$PRD_FILE" ]; then
+  echo "Error: PRD file '$PRD_FILE' not found"
   exit 1
 fi
 
@@ -12,10 +20,10 @@ if [ -z "$PERPLEXITY_API_KEY" ]; then
   export PERPLEXITY_API_KEY
 fi
 
-for ((i=1; i<=$1; i++)); do
-  echo "=== Iteration $i/$1 ==="
+for ((i=1; i<=$MAX_ITERATIONS; i++)); do
+  echo "=== Iteration $i/$MAX_ITERATIONS ==="
 
-  result=$(docker sandbox run claude --permission-mode acceptEdits -p "@PRD.md @progress.txt \
+  result=$(docker sandbox run claude --permission-mode acceptEdits -p "@$PRD_FILE @progress.txt \
 1. Read the PRD and progress file. \
 2. Find the next incomplete task and implement it. \
 3. Commit your changes. \
@@ -31,4 +39,4 @@ When ALL tasks are complete, output: <promise>COMPLETE</promise>")
   fi
 done
 
-echo "=== Reached max iterations ($1) ==="
+echo "=== Reached max iterations ($MAX_ITERATIONS) ==="
