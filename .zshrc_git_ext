@@ -1,5 +1,5 @@
 # Git aliases
-alias glog="git log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --branches"
+alias glg="git log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --branches"
 alias gaac="git add . && git commit -a --interactive"
 alias gac="git add --patch && git commit --interactive"
 alias gam="git commit --amend"
@@ -14,6 +14,8 @@ alias gd="git diff"
 alias gc="git commit"
 alias ga="git add"
 alias gp="git push"
+alias gl="git pull"
+
 
 function git_delete_branch_prompt() {
   branch=$1

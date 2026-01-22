@@ -61,11 +61,6 @@ alias ...="cd ../.."
 # Add ~/bin to PATH
 export PATH="$HOME/bin:$PATH"
 
-# Add workon alias if it exists
-if [ -f "$HOME/bin/workon" ]; then
-  alias wo="workon"
-fi
-
 # Source external configuration
 source ~/dotfile/.zshrc_git_ext
 [ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
@@ -95,3 +90,7 @@ tmuxai() {
 # Source zsh-syntax-highlighting
 source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 
+
+# Added by CodeRabbit CLI installer
+export PATH="/Users/rstagi/.local/bin:$PATH"
+export PATH="/opt/homebrew/opt/libpq/bin:$PATH"

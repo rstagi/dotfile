@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tmuxai" "claude-code" "workon")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tmuxai" "claude-code" "ralph")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -10,11 +10,11 @@ gcloud_installed=false
 # Dependency mapping
 get_dependencies() {
   case $1 in
-    "workon") echo "tmux tmuxai claude-code" ;;
     "kubectl") echo "gcloud" ;;
     "docker") echo "gcloud" ;;
     "zsh") echo "" ;;
     "python") echo "pyenv pipx" ;;
+    "ralph") echo "node" ;;
     *) echo "" ;;
   esac
 }
@@ -209,7 +209,7 @@ install_package() {
     "ripgrep") install_pkg_if_needed "ripgrep" ;;
     "tmuxai") install_pkg_if_needed "tmuxai" ;;
     "claude-code") install_claude_code ;;
-    "workon") install_workon ;;
+    "ralph") install_ralph ;;
     *) echo "Unknown package: $package" ;;
   esac
 }
@@ -452,31 +452,31 @@ install_claude_code() {
   if ! command -v claude &> /dev/null; then
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "claude-code is not installed. Do you want to install it?"; then
-        npm install -g @anthropic-ai/claude-code
+        curl -fsSL https://claude.ai/install.sh | bash
       fi
     else
       echo "Installing claude-code..."
-      npm install -g @anthropic-ai/claude-code
+      curl -fsSL https://claude.ai/install.sh | bash
     fi
   else
     echo "claude-code is already installed"
   fi
 }
 
-install_workon() {
-  # Dependencies are handled by resolve_dependencies
-  configure_workon() {
-    mkdir -p $HOME/bin
-    ln -s $HOME/dotfile/workon.sh $HOME/bin/workon
-    chmod +x $HOME/dotfile/workon.sh
-  }
-  if [ "$INTERACTIVE_MODE" = true ]; then
-    if read_yes "Do you want to install workon.sh?"; then
-      configure_workon
+install_ralph() {
+  if ! command -v ralph &> /dev/null; then
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "ralph is not installed. Do you want to install it?"; then
+        npm install -g @anthropic-ai/ralph
+        echo "source $HOME/dotfile/.zshrc_ralph_ext" >> "$HOME/.zshrc_ext"
+      fi
+    else
+      echo "Installing ralph..."
+      npm install -g @anthropic-ai/ralph
+      echo "source $HOME/dotfile/.zshrc_ralph_ext" >> "$HOME/.zshrc_ext"
     fi
   else
-    echo "Installing workon..."
-    configure_workon
+    echo "ralph is already installed"
   fi
 }
 
@@ -528,7 +528,7 @@ main() {
     install_pkg_if_needed "ripgrep"
     install_pkg_if_needed "tmuxai"
     install_claude_code
-    install_workon
+    install_ralph
   else
     # Selective installation mode
     if [ "$DRY_RUN" = true ]; then
