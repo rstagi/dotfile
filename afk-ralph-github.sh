@@ -38,6 +38,10 @@ load_secrets() {
     CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
     export CONTEXT7_API_KEY
   fi
+  if [ -z "$BROWSER_USE_API_KEY" ]; then
+    BROWSER_USE_API_KEY=$(op read "op://Private/Browser Use API Key/credential")
+    export BROWSER_USE_API_KEY
+  fi
 }
 
 # Fetch PRD from issue body
@@ -125,15 +129,18 @@ main() {
     echo "=== Iteration $i/$MAX_ITERATIONS ==="
 
     # Run Claude directly (no Docker sandbox for native gh/MCP access)
-    result=$(claude --permission-mode acceptEdits -p "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
+    # Use tee to stream output while capturing for later checks
+    RESULT_FILE=$(mktemp)
+    claude --allow-dangerously-skip-permissions --permission-mode bypassPermissions -p "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
 
 @PRD.md @progress.txt
 
 Find next incomplete task and execute it. ONLY DO ONE TASK PER ITERATION.
 When ALL tasks complete: <promise>COMPLETE</promise>
-On blocking error: <error>DESCRIPTION</error>" 2>&1) || true
+On blocking error: <error>DESCRIPTION</error>" 2>&1 | tee "$RESULT_FILE" || true
 
-    echo "$result"
+    result=$(cat "$RESULT_FILE")
+    rm -f "$RESULT_FILE"
 
     # Check for completion
     if echo "$result" | grep -q "<promise>COMPLETE</promise>"; then
