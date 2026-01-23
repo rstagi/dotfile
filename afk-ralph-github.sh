@@ -39,7 +39,7 @@ load_secrets() {
     export CONTEXT7_API_KEY
   fi
   if [ -z "$BROWSER_USE_API_KEY" ]; then
-    BROWSER_USE_API_KEY=$(op read "op://Private/Browser Use API Key/credential")
+    BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
     export BROWSER_USE_API_KEY
   fi
 }
