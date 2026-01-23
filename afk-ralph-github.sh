@@ -125,13 +125,11 @@ main() {
     echo "=== Iteration $i/$MAX_ITERATIONS ==="
 
     # Run Claude directly (no Docker sandbox for native gh/MCP access)
-    result=$(claude --permission-mode acceptEdits -p "@PRD.md @progress.txt
-1. Read PRD and progress. Find next incomplete task.
-2. For backend/logic: follow TDD (test first, run RED, implement, run GREEN).
-3. For frontend: validate with Playwright after changes.
-4. Commit changes with descriptive message.
-5. Update progress.txt.
-6. ONLY DO ONE TASK AT A TIME.
+    result=$(claude --permission-mode acceptEdits -p "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
+
+@PRD.md @progress.txt
+
+Find next incomplete task and execute it. ONLY DO ONE TASK PER ITERATION.
 When ALL tasks complete: <promise>COMPLETE</promise>
 On blocking error: <error>DESCRIPTION</error>" 2>&1) || true
 

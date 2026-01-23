@@ -488,6 +488,9 @@ install_claude_config() {
     ln -sfn ~/dotfile/.claude/agents ~/.claude/agents
     ln -sfn ~/dotfile/.claude/skills ~/.claude/skills
 
+    # Symlink global CLAUDE.md reference in dotfile repo
+    ln -sfn ~/.claude/CLAUDE.md ~/dotfile/CLAUDE_GLOBAL.md
+
     # Add MCP servers (idempotent)
     claude mcp list --scope user 2>/dev/null | grep -q context7 || \
       claude mcp add --scope user context7 -- npx -y @upstash/context7-mcp
