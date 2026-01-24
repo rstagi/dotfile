@@ -128,19 +128,51 @@ main() {
   for ((i=1; i<=MAX_ITERATIONS; i++)); do
     echo "=== Iteration $i/$MAX_ITERATIONS ==="
 
-    # Run Claude directly (no Docker sandbox for native gh/MCP access)
-    # Use tee to stream output while capturing for later checks
-    RESULT_FILE=$(mktemp)
-    claude --allow-dangerously-skip-permissions --permission-mode bypassPermissions -p "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
+    # Run Claude with retry on transient errors
+    MAX_RETRIES=3
+    RETRY_DELAY=5
+    result=""
+
+    for ((retry=1; retry<=MAX_RETRIES; retry++)); do
+      RESULT_FILE=$(mktemp)
+      # Use script to force pseudo-TTY (enables streaming through pipe)
+      script -q "$RESULT_FILE" claude --allow-dangerously-skip-permissions --permission-mode bypassPermissions -p "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
 
 @PRD.md @progress.txt
 
 Find next incomplete task and execute it. ONLY DO ONE TASK PER ITERATION.
 When ALL tasks complete: <promise>COMPLETE</promise>
-On blocking error: <error>DESCRIPTION</error>" 2>&1 | tee "$RESULT_FILE" || true
+On blocking error: <error>DESCRIPTION</error>"
+      exit_code=$?
+      # Strip control chars from script output
+      result=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$RESULT_FILE" | tr -d '\r')
+      rm -f "$RESULT_FILE"
 
-    result=$(cat "$RESULT_FILE")
-    rm -f "$RESULT_FILE"
+      # Check for transient errors (API issues, empty responses)
+      if echo "$result" | grep -qE "No messages returned|ECONNRESET|ETIMEDOUT|rate.limit|503|502"; then
+        echo "=== Transient error detected (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
+        sleep "$RETRY_DELAY"
+        RETRY_DELAY=$((RETRY_DELAY * 2))
+        continue
+      fi
+
+      # Non-zero exit without known transient error - still might be recoverable
+      if [ $exit_code -ne 0 ] && [ -z "$result" ]; then
+        echo "=== Claude exited $exit_code with no output (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
+        sleep "$RETRY_DELAY"
+        RETRY_DELAY=$((RETRY_DELAY * 2))
+        continue
+      fi
+
+      # Success or non-transient error - break retry loop
+      break
+    done
+
+    # If all retries exhausted with no result, skip iteration
+    if [ -z "$result" ]; then
+      echo "=== All retries exhausted, skipping iteration ==="
+      continue
+    fi
 
     # Check for completion
     if echo "$result" | grep -q "<promise>COMPLETE</promise>"; then
