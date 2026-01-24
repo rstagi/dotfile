@@ -11,6 +11,16 @@ claude() {
   command claude "$@"
 }
 
+# Non-interactive claude with real-time streaming output
+# Usage: claude_stream [extra-flags...] "prompt"
+# Alias: ccs
+claude_stream() {
+  claude --print --verbose --output-format stream-json "$@" \
+    | grep --line-buffered '^{' \
+    | jq --unbuffered -rj 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+alias ccs="claude_stream"
+
 # GitHub-integrated Ralph
 ralph_github() {
   [ -z "$PERPLEXITY_API_KEY" ] && export PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")

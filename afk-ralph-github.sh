@@ -125,8 +125,15 @@ main() {
 - Branch: \`$BRANCH_NAME\`
 - Max iterations: $MAX_ITERATIONS"
 
+  # jq filter to extract streaming text from assistant messages
+  stream_text='select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
+
+  # jq filter to extract final result
+  final_result='select(.type == "result").result // empty'
+
   for ((i=1; i<=MAX_ITERATIONS; i++)); do
-    echo "=== Iteration $i/$MAX_ITERATIONS ==="
+    iter_start=$(date +%s)
+    echo "=== Iteration $i/$MAX_ITERATIONS [$(date '+%H:%M:%S')] ==="
 
     # Run Claude with retry on transient errors
     MAX_RETRIES=3
@@ -134,19 +141,36 @@ main() {
     result=""
 
     for ((retry=1; retry<=MAX_RETRIES; retry++)); do
-      RESULT_FILE=$(mktemp)
-      # Use script to force pseudo-TTY (enables streaming through pipe)
-      script -q "$RESULT_FILE" claude --allow-dangerously-skip-permissions --permission-mode bypassPermissions -p "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
+      tmpfile=$(mktemp)
+      trap "rm -f $tmpfile" EXIT
+
+      # Background timestamp printer (every 5 min)
+      ( while true; do sleep 300; echo "[timestamp: $(date '+%H:%M:%S')]"; done ) &
+      timestamp_pid=$!
+      trap "rm -f $tmpfile; kill $timestamp_pid 2>/dev/null" EXIT
+
+      claude \
+        --verbose \
+        --print \
+        --output-format stream-json \
+        --allow-dangerously-skip-permissions \
+        --permission-mode bypassPermissions \
+        "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
 
 @PRD.md @progress.txt
 
 Find next incomplete task and execute it. ONLY DO ONE TASK PER ITERATION.
 When ALL tasks complete: <promise>COMPLETE</promise>
-On blocking error: <error>DESCRIPTION</error>"
-      exit_code=$?
-      # Strip control chars from script output
-      result=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$RESULT_FILE" | tr -d '\r')
-      rm -f "$RESULT_FILE"
+On blocking error: <error>DESCRIPTION</error>" \
+      | grep --line-buffered '^{' \
+      | tee "$tmpfile" \
+      | jq --unbuffered -rj "$stream_text"
+
+      # Stop timestamp printer
+      kill $timestamp_pid 2>/dev/null
+
+      result=$(jq -r "$final_result" "$tmpfile")
+      rm -f "$tmpfile"
 
       # Check for transient errors (API issues, empty responses)
       if echo "$result" | grep -qE "No messages returned|ECONNRESET|ETIMEDOUT|rate.limit|503|502"; then
@@ -156,15 +180,15 @@ On blocking error: <error>DESCRIPTION</error>"
         continue
       fi
 
-      # Non-zero exit without known transient error - still might be recoverable
-      if [ $exit_code -ne 0 ] && [ -z "$result" ]; then
-        echo "=== Claude exited $exit_code with no output (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
+      # Empty result might indicate failure
+      if [ -z "$result" ]; then
+        echo "=== Empty result (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
         sleep "$RETRY_DELAY"
         RETRY_DELAY=$((RETRY_DELAY * 2))
         continue
       fi
 
-      # Success or non-transient error - break retry loop
+      # Success - break retry loop
       break
     done
 
@@ -173,6 +197,13 @@ On blocking error: <error>DESCRIPTION</error>"
       echo "=== All retries exhausted, skipping iteration ==="
       continue
     fi
+
+    # Iteration timing
+    iter_end=$(date +%s)
+    iter_duration=$((iter_end - iter_start))
+    iter_mins=$((iter_duration / 60))
+    iter_secs=$((iter_duration % 60))
+    echo "=== Iteration $i done [$(date '+%H:%M:%S')] (${iter_mins}m ${iter_secs}s) ==="
 
     # Check for completion
     if echo "$result" | grep -q "<promise>COMPLETE</promise>"; then
