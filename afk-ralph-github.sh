@@ -32,22 +32,22 @@ WORKTREE_BASE="$HOME/.ralph-worktrees"
 
 # Map model param to models (primary + fallback chain)
 case "$MODEL_PARAM" in
-  [Oo])  # Opus → Sonnet → GLM
-    MODELS=("claude-opus-4-5" "claude-sonnet-4.5" "glm")
-    ;;
-  [Ss])  # Sonnet → GLM
-    MODELS=("claude-sonnet-4.5" "glm")
-    ;;
-  [Hh])  # Haiku → Sonnet → GLM
-    MODELS=("claude-haiku-4-5" "claude-sonnet-4.5" "glm")
-    ;;
-  [Gg])  # GLM → Sonnet
-    MODELS=("glm" "claude-sonnet-4.5")
-    ;;
-  *)
-    echo "Error: invalid model '$MODEL_PARAM'. Use O/o, S/s, H/h, or G/g."
-    usage
-    ;;
+[Oo]) # Opus → Sonnet → GLM
+  MODELS=("opus" "sonnet" "glm")
+  ;;
+[Ss]) # Sonnet → GLM
+  MODELS=("sonnet" "glm")
+  ;;
+[Hh]) # Haiku → Sonnet → GLM
+  MODELS=("haiku" "sonnet" "glm")
+  ;;
+[Gg]) # GLM → Sonnet
+  MODELS=("glm" "sonnet")
+  ;;
+*)
+  echo "Error: invalid model '$MODEL_PARAM'. Use O/o, S/s, H/h, or G/g."
+  usage
+  ;;
 esac
 
 CURRENT_MODEL="${MODELS[0]}"
@@ -87,19 +87,16 @@ claude_model() {
   shift
 
   case "$model" in
-    glm)
-      ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
-      ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
-      ANTHROPIC_MODEL="glm-4.6" \
-      claude "$@"
-      ;;
-    claude-*)
-      # For Anthropic models, pass -m flag
-      claude -m "$model" "$@"
-      ;;
-    *)
-      claude "$@"
-      ;;
+  glm)
+    claudeg "$@"
+    ;;
+  claude-*)
+    # For Anthropic models, pass --model flag
+    claude --model "$model" "$@"
+    ;;
+  *)
+    claude "$@"
+    ;;
   esac
 }
 
@@ -142,7 +139,7 @@ setup_worktree() {
     echo ""
     echo "Started: $(date)"
     echo ""
-  } > progress.txt
+  } >progress.txt
 }
 
 # Post comment to issue
@@ -170,7 +167,7 @@ main() {
 
   # Write PRD to temp file
   PRD_FILE=$(mktemp)
-  echo "$PRD" > "$PRD_FILE"
+  echo "$PRD" >"$PRD_FILE"
 
   setup_worktree
 
@@ -191,7 +188,7 @@ main() {
   # jq filter to extract final result
   final_result='select(.type == "result").result // empty'
 
-  for ((i=1; i<=MAX_ITERATIONS; i++)); do
+  for ((i = 1; i <= MAX_ITERATIONS; i++)); do
     iter_start=$(date +%s)
     echo "=== Iteration $i/$MAX_ITERATIONS [$(date '+%H:%M:%S')] ==="
 
@@ -201,12 +198,15 @@ main() {
     result=""
     rate_limit_detected=false
 
-    for ((retry=1; retry<=MAX_RETRIES; retry++)); do
+    for ((retry = 1; retry <= MAX_RETRIES; retry++)); do
       tmpfile=$(mktemp)
       trap "rm -f $tmpfile" EXIT
 
       # Background timestamp printer (every 5 min)
-      ( while true; do sleep 300; echo "[timestamp: $(date '+%H:%M:%S')]"; done ) &
+      (while true; do
+        sleep 300
+        echo "[timestamp: $(date '+%H:%M:%S')]"
+      done) &
       timestamp_pid=$!
       trap "rm -f $tmpfile; kill $timestamp_pid 2>/dev/null" EXIT
 
@@ -222,10 +222,10 @@ main() {
 
 Find next incomplete task and execute it. ONLY DO ONE TASK PER ITERATION.
 When ALL tasks complete: <promise>COMPLETE</promise>
-On blocking error: <error>DESCRIPTION</error>" \
-      | grep --line-buffered '^{' \
-      | tee "$tmpfile" \
-      | jq --unbuffered -rj "$stream_text"
+On blocking error: <error>DESCRIPTION</error>" |
+        grep --line-buffered '^{' |
+        tee "$tmpfile" |
+        jq --unbuffered -rj "$stream_text"
 
       # Stop timestamp printer
       kill $timestamp_pid 2>/dev/null
@@ -237,7 +237,7 @@ On blocking error: <error>DESCRIPTION</error>" \
       if echo "$result" | grep -qE "rate.limit|429|too.many.requests"; then
         echo "=== Rate limit detected on $CURRENT_MODEL ==="
         rate_limit_detected=true
-        break  # Exit retry loop to trigger fallback
+        break # Exit retry loop to trigger fallback
       fi
 
       # Check for other transient errors (API issues, empty responses)
@@ -267,7 +267,7 @@ On blocking error: <error>DESCRIPTION</error>" \
         CURRENT_MODEL="${MODELS[$MODEL_INDEX]}"
         echo "=== Falling back to $CURRENT_MODEL ==="
         # Retry entire loop with new model
-        ((i--))  # Redo this iteration
+        ((i--)) # Redo this iteration
         continue
       else
         echo "=== All models exhausted, skipping iteration ==="
