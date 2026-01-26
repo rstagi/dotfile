@@ -4,6 +4,9 @@ set -e
 # Ralph GitHub Integration
 # Runs autonomous Claude iterations on a GitHub issue PRD
 
+# Source shared setup from Claude tools
+source "$HOME/dotfile/.zshrc_claude_ext"
+
 usage() {
   echo "Usage: $0 <issue-number> [max-iterations] [model]"
   echo ""
@@ -61,20 +64,10 @@ if [ -z "$REPO" ]; then
 fi
 REPO_NAME=$(basename "$REPO")
 
-# Load secrets from 1password
-load_secrets() {
-  if [ -z "$PERPLEXITY_API_KEY" ]; then
-    PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
-    export PERPLEXITY_API_KEY
-  fi
-  if [ -z "$CONTEXT7_API_KEY" ]; then
-    CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
-    export CONTEXT7_API_KEY
-  fi
-  if [ -z "$BROWSER_USE_API_KEY" ]; then
-    BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
-    export BROWSER_USE_API_KEY
-  fi
+# Ralph-specific setup
+setup_ralph_tools() {
+  setup_claude_tools
+
   if [ -z "$ZAI_API_KEY" ]; then
     ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
     export ZAI_API_KEY
@@ -161,7 +154,7 @@ Manual intervention required."
 
 # Main execution
 main() {
-  load_secrets
+  setup_ralph_tools
 
   PRD=$(fetch_prd)
 

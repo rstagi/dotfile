@@ -209,7 +209,7 @@ install_package() {
     "google-chrome") install_pkg_if_needed "google-chrome" ;;
     "ripgrep") install_pkg_if_needed "ripgrep" ;;
     "claude-code") install_claude_code ;;
-    "ralph") install_ralph ;;
+    "ralph") install_claude_tools ;;
     "claude-config") install_claude_config ;;
     *) echo "Unknown package: $package" ;;
   esac
@@ -464,20 +464,27 @@ install_claude_code() {
   fi
 }
 
-install_ralph() {
+install_claude_tools() {
   if ! command -v ralph &> /dev/null; then
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "ralph is not installed. Do you want to install it?"; then
         npm install -g @anthropic-ai/ralph
-        echo "source $HOME/dotfile/.zshrc_ralph_ext" >> "$HOME/.zshrc_ext"
       fi
     else
       echo "Installing ralph..."
       npm install -g @anthropic-ai/ralph
-      echo "source $HOME/dotfile/.zshrc_ralph_ext" >> "$HOME/.zshrc_ext"
     fi
   else
     echo "ralph is already installed"
+  fi
+
+  # Ensure Claude tools are sourced in .zshrc_ext
+  if ! grep -q "source.*\.zshrc_claude_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
+    echo "source $HOME/dotfile/.zshrc_claude_ext" >> "$HOME/.zshrc_ext"
+  fi
+
+  if ! grep -q "source.*\.zshrc_ralph_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
+    echo "source $HOME/dotfile/.zshrc_ralph_ext" >> "$HOME/.zshrc_ext"
   fi
 }
 
@@ -557,7 +564,7 @@ main() {
     install_pkg_if_needed "google-chrome"
     install_pkg_if_needed "ripgrep"
     install_claude_code
-    install_ralph
+    install_claude_tools
   else
     # Selective installation mode
     if [ "$DRY_RUN" = true ]; then

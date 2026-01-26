@@ -1,53 +1,23 @@
-# Ralph/Claude aliases
-alias ralphx="$HOME/dotfile/afk-ralph.sh"
+# Ralph-specific tools
+source "$HOME/dotfile/.zshrc_claude_ext"
 
-claude() {
-  if [ -z "$PERPLEXITY_API_KEY" ]; then
-    export PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
-  fi
-  if [ -z "$CONTEXT7_API_KEY" ]; then
-    export CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
-  fi
-  command claude "$@"
-}
+# Ralph API keys (general + Z.AI)
+setup_ralph_tools() {
+  setup_claude_tools
 
-# Non-interactive claude with real-time streaming output
-# Usage: claude_stream [extra-flags...] "prompt"
-# Alias: ccs
-claude_stream() {
-  claude --print --verbose --output-format stream-json "$@" \
-    | grep --line-buffered '^{' \
-    | jq --unbuffered -rj 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
+  if [ -z "$ZAI_API_KEY" ]; then
+    export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
+  fi
 }
-alias ccs="claude_stream"
 
 # GitHub-integrated Ralph
 # Usage: ralphg <issue-number> [max-iterations] [model]
 # Models: O=Opus(default), S=Sonnet, H=Haiku, G=GLM
 ralph_github() {
-  [ -z "$PERPLEXITY_API_KEY" ] && export PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
-  [ -z "$CONTEXT7_API_KEY" ] && export CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
-  [ -z "$BROWSER_USE_API_KEY" ] && export BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
-  [ -z "$ZAI_API_KEY" ] && export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
+  setup_ralph_tools
   "$HOME/dotfile/afk-ralph-github.sh" "$@"
 }
 alias ralphg="ralph_github"
 
-# Browser-use wrapper with lazy API key loading
-browser-use() {
-  if [ -z "$BROWSER_USE_API_KEY" ]; then
-    export BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
-  fi
-  command browser-use "$@"
-}
-
-# Claude Code with GLM-4.6 via Z.AI
-claudeg() {
-  if [ -z "$ZAI_API_KEY" ]; then
-    export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
-  fi
-  ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
-  ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
-  ANTHROPIC_MODEL="glm-4.6" \
-  command claude "$@"
-}
+# Ralph standalone
+alias ralphx="$HOME/dotfile/afk-ralph.sh"

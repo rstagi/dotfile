@@ -1,0 +1,55 @@
+# General Claude Code tools
+
+# Shared API key setup (used by both Claude tools and Ralph scripts)
+setup_claude_tools() {
+  if [ -z "$PERPLEXITY_API_KEY" ]; then
+    PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
+    export PERPLEXITY_API_KEY
+  fi
+
+  if [ -z "$CONTEXT7_API_KEY" ]; then
+    CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
+    export CONTEXT7_API_KEY
+  fi
+
+  if [ -z "$BROWSER_USE_API_KEY" ]; then
+    BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
+    export BROWSER_USE_API_KEY
+  fi
+}
+
+# Claude Code with lazy API key loading
+claude() {
+  setup_claude_tools
+  command claude "$@"
+}
+
+# Non-interactive claude with real-time streaming output
+# Usage: claude_stream [extra-flags...] "prompt"
+# Alias: ccs
+claude_stream() {
+  claude --print --verbose --output-format stream-json "$@" \
+    | grep --line-buffered '^{' \
+    | jq --unbuffered -rj 'select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
+}
+alias ccs="claude_stream"
+
+# Claude Code with GLM-4.6 via Z.AI
+claudeg() {
+  setup_claude_tools
+
+  if [ -z "$ZAI_API_KEY" ]; then
+    export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
+  fi
+
+  ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
+  ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
+  ANTHROPIC_MODEL="glm-4.6" \
+  command claude "$@"
+}
+
+# Browser-use wrapper with lazy API key loading
+browser-use() {
+  setup_claude_tools
+  command browser-use "$@"
+}

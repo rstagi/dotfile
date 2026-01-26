@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+source "$HOME/dotfile/.zshrc_claude_ext"
+
 if [ -z "$1" ]; then
   echo "Usage: $0 <prd-file> [max-iterations]"
   exit 1
@@ -14,11 +16,8 @@ if [ ! -f "$PRD_FILE" ]; then
   exit 1
 fi
 
-# Retrieve Perplexity API key from 1password if not set
-if [ -z "$PERPLEXITY_API_KEY" ]; then
-  PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
-  export PERPLEXITY_API_KEY
-fi
+# Setup Claude tools API keys
+setup_claude_tools
 
 for ((i=1; i<=$MAX_ITERATIONS; i++)); do
   echo "=== Iteration $i/$MAX_ITERATIONS ==="
