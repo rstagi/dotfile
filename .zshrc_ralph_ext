@@ -22,9 +22,13 @@ claude_stream() {
 alias ccs="claude_stream"
 
 # GitHub-integrated Ralph
+# Usage: ralphg <issue-number> [max-iterations] [model]
+# Models: O=Opus(default), S=Sonnet, H=Haiku, G=GLM
 ralph_github() {
   [ -z "$PERPLEXITY_API_KEY" ] && export PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
   [ -z "$CONTEXT7_API_KEY" ] && export CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
+  [ -z "$BROWSER_USE_API_KEY" ] && export BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
+  [ -z "$ZAI_API_KEY" ] && export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
   "$HOME/dotfile/afk-ralph-github.sh" "$@"
 }
 alias ralphg="ralph_github"
@@ -35,4 +39,15 @@ browser-use() {
     export BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
   fi
   command browser-use "$@"
+}
+
+# Claude Code with GLM-4.6 via Z.AI
+claudeg() {
+  if [ -z "$ZAI_API_KEY" ]; then
+    export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
+  fi
+  ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
+  ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
+  ANTHROPIC_MODEL="glm-4.6" \
+  command claude "$@"
 }

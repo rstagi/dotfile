@@ -5,10 +5,19 @@ set -e
 # Runs autonomous Claude iterations on a GitHub issue PRD
 
 usage() {
-  echo "Usage: $0 <issue-number> [max-iterations]"
+  echo "Usage: $0 <issue-number> [max-iterations] [model]"
   echo ""
-  echo "Runs autonomous Claude on a GitHub issue PRD."
-  echo "Creates worktree, logs progress as comments, opens draft PR."
+  echo "Models:"
+  echo "  O/o - Opus (default)"
+  echo "  S/s - Sonnet"
+  echo "  H/h - Haiku"
+  echo "  G/g - GLM (via Z.AI)"
+  echo ""
+  echo "Fallback chains on rate limit:"
+  echo "  Opus → Sonnet → GLM"
+  echo "  Sonnet → GLM"
+  echo "  Haiku → Sonnet → GLM"
+  echo "  GLM → Sonnet"
   exit 1
 }
 
@@ -18,7 +27,31 @@ fi
 
 ISSUE_NUMBER="$1"
 MAX_ITERATIONS="${2:-20}"
+MODEL_PARAM="${3:-O}"
 WORKTREE_BASE="$HOME/.ralph-worktrees"
+
+# Map model param to models (primary + fallback chain)
+case "$MODEL_PARAM" in
+  [Oo])  # Opus → Sonnet → GLM
+    MODELS=("claude-opus-4-5" "claude-sonnet-4.5" "glm")
+    ;;
+  [Ss])  # Sonnet → GLM
+    MODELS=("claude-sonnet-4.5" "glm")
+    ;;
+  [Hh])  # Haiku → Sonnet → GLM
+    MODELS=("claude-haiku-4-5" "claude-sonnet-4.5" "glm")
+    ;;
+  [Gg])  # GLM → Sonnet
+    MODELS=("glm" "claude-sonnet-4.5")
+    ;;
+  *)
+    echo "Error: invalid model '$MODEL_PARAM'. Use O/o, S/s, H/h, or G/g."
+    usage
+    ;;
+esac
+
+CURRENT_MODEL="${MODELS[0]}"
+MODEL_INDEX=0
 
 # Get repo info
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
@@ -42,6 +75,32 @@ load_secrets() {
     BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
     export BROWSER_USE_API_KEY
   fi
+  if [ -z "$ZAI_API_KEY" ]; then
+    ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
+    export ZAI_API_KEY
+  fi
+}
+
+# Model command wrapper
+claude_model() {
+  local model="$1"
+  shift
+
+  case "$model" in
+    glm)
+      ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
+      ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
+      ANTHROPIC_MODEL="glm-4.6" \
+      claude "$@"
+      ;;
+    claude-*)
+      # For Anthropic models, pass -m flag
+      claude -m "$model" "$@"
+      ;;
+    *)
+      claude "$@"
+      ;;
+  esac
 }
 
 # Fetch PRD from issue body
@@ -123,6 +182,7 @@ main() {
 
 - Worktree: \`$WORKTREE_PATH\`
 - Branch: \`$BRANCH_NAME\`
+- Model: $CURRENT_MODEL
 - Max iterations: $MAX_ITERATIONS"
 
   # jq filter to extract streaming text from assistant messages
@@ -135,10 +195,11 @@ main() {
     iter_start=$(date +%s)
     echo "=== Iteration $i/$MAX_ITERATIONS [$(date '+%H:%M:%S')] ==="
 
-    # Run Claude with retry on transient errors
+    # Run Claude with retry on transient errors and model fallback
     MAX_RETRIES=3
     RETRY_DELAY=5
     result=""
+    rate_limit_detected=false
 
     for ((retry=1; retry<=MAX_RETRIES; retry++)); do
       tmpfile=$(mktemp)
@@ -149,7 +210,7 @@ main() {
       timestamp_pid=$!
       trap "rm -f $tmpfile; kill $timestamp_pid 2>/dev/null" EXIT
 
-      claude \
+      claude_model "$CURRENT_MODEL" \
         --verbose \
         --print \
         --output-format stream-json \
@@ -172,8 +233,15 @@ On blocking error: <error>DESCRIPTION</error>" \
       result=$(jq -r "$final_result" "$tmpfile")
       rm -f "$tmpfile"
 
-      # Check for transient errors (API issues, empty responses)
-      if echo "$result" | grep -qE "No messages returned|ECONNRESET|ETIMEDOUT|rate.limit|503|502"; then
+      # Check for rate limit - trigger model fallback
+      if echo "$result" | grep -qE "rate.limit|429|too.many.requests"; then
+        echo "=== Rate limit detected on $CURRENT_MODEL ==="
+        rate_limit_detected=true
+        break  # Exit retry loop to trigger fallback
+      fi
+
+      # Check for other transient errors (API issues, empty responses)
+      if echo "$result" | grep -qE "No messages returned|ECONNRESET|ETIMEDOUT|503|502"; then
         echo "=== Transient error detected (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
         sleep "$RETRY_DELAY"
         RETRY_DELAY=$((RETRY_DELAY * 2))
@@ -192,8 +260,23 @@ On blocking error: <error>DESCRIPTION</error>" \
       break
     done
 
-    # If all retries exhausted with no result, skip iteration
-    if [ -z "$result" ]; then
+    # Model fallback on rate limit
+    if [ "$rate_limit_detected" = true ]; then
+      MODEL_INDEX=$((MODEL_INDEX + 1))
+      if [ $MODEL_INDEX -lt ${#MODELS[@]} ]; then
+        CURRENT_MODEL="${MODELS[$MODEL_INDEX]}"
+        echo "=== Falling back to $CURRENT_MODEL ==="
+        # Retry entire loop with new model
+        ((i--))  # Redo this iteration
+        continue
+      else
+        echo "=== All models exhausted, skipping iteration ==="
+        continue
+      fi
+    fi
+
+    # If all retries exhausted with no result (and not rate limited), skip iteration
+    if [ -z "$result" ] && [ "$rate_limit_detected" = false ]; then
       echo "=== All retries exhausted, skipping iteration ==="
       continue
     fi
