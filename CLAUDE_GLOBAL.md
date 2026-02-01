@@ -68,7 +68,7 @@ Use Perplexity for up-to-date info beyond knowledge cutoff. Pick the right tool:
 
 ## Browser Automation
 
-Use `/browser-use` skill for browser automation. Prefer `--browser real --session main` to preserve logins/cookies unless isolation needed.
+Use `/agent-browser` skill for browser automation. Use `--session <name>` to preserve sessions.
 
 ## Documentation
 
@@ -106,7 +106,7 @@ When you see "You are running inside a ralphg session", follow these rules:
 - Read PRD.md for requirements, progress.txt for completed work
 - **ONE TASK PER ITERATION** - complete one task, commit, update progress, then stop
 - **Backend/logic**: strict TDD (write test → RED → implement → GREEN → refactor)
-- **Frontend**: validate with `browser-use --browser real --session main --headed` after changes
+- **Frontend**: validate with `/agent-browser` after changes
 - Commit after each completed task with descriptive message
 - Update progress.txt after each task (mark complete, add notes)
 - Output `<promise>COMPLETE</promise>` only when ALL PRD tasks done

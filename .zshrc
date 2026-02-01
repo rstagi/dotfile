@@ -86,3 +86,14 @@ source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zs
 
 export PATH="/Users/rstagi/.local/bin:$PATH"
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
+
+# OpenClaw Completion
+source <(openclaw completion --shell zsh)
+
+# pnpm
+export PNPM_HOME="/Users/rstagi/Library/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
+# pnpm end
