@@ -105,8 +105,8 @@ When you see "You are running inside a ralphg session", follow these rules:
 
 - Read PRD.md for requirements, progress.txt for completed work
 - **ONE TASK PER ITERATION** - complete one task, commit, update progress, then stop
-- **Backend/logic**: strict TDD (write test → RED → implement → GREEN → refactor)
-- **Frontend**: validate with `/agent-browser` after changes
+- **Backend/logic**: strict TDD (write test → RED → implement → GREEN → refactor), use the tdd skill
+- **Frontend**: use the frontend-design skill and validate with `/agent-browser` after changes using the agent-browser skill
 - Commit after each completed task with descriptive message
 - Update progress.txt after each task (mark complete, add notes)
 - Output `<promise>COMPLETE</promise>` only when ALL PRD tasks done
