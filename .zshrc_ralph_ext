@@ -4,10 +4,7 @@ source "$HOME/dotfile/.zshrc_claude_ext"
 # Ralph API keys (general + Z.AI)
 setup_ralph_tools() {
   setup_claude_tools
-
-  if [ -z "$ZAI_API_KEY" ]; then
-    export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
-  fi
+  load_secret ZAI_API_KEY "op://Private/Z.AI API Key/credential"
 }
 
 # GitHub-integrated Ralph

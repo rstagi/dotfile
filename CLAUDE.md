@@ -57,14 +57,11 @@ afk-ralph.sh            Autonomous Claude iterations in Docker sandbox
 
 ## Secrets Management
 
-Store API keys in 1password, retrieve lazily via `op read`. Pattern:
+Store API keys in 1Password, retrieve lazily via `load_secret` (defined in `.zshrc_claude_ext`):
 
 ```bash
-if [ -z "$SECRET_KEY" ]; then
-  SECRET_KEY=$(op read "op://Private/Item Name/credential")
-  export SECRET_KEY
-fi
+load_secret VAR_NAME "op://Private/Item Name/credential"
 ```
 
-Use wrapper functions to auto-fetch on first use (see `claude()` in `.zshrc_ralph_ext`).
+Skips if var already set. Set `DISABLE_SECRETS=1` to skip all 1Password calls.
 

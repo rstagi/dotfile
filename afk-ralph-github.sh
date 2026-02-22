@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/zsh
 set -e
 
 # Ralph GitHub Integration
@@ -67,11 +67,7 @@ REPO_NAME=$(basename "$REPO")
 # Ralph-specific setup
 setup_ralph_tools() {
   setup_claude_tools
-
-  if [ -z "$ZAI_API_KEY" ]; then
-    ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
-    export ZAI_API_KEY
-  fi
+  load_secret ZAI_API_KEY "op://Private/Z.AI API Key/credential"
 }
 
 # Model command wrapper

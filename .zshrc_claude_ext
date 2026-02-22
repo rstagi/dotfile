@@ -1,21 +1,23 @@
 # General Claude Code tools
 
+# Load a secret from 1Password if not already set.
+# Skip silently when DISABLE_SECRETS is set.
+# Usage: load_secret VAR_NAME "op://vault/item/field"
+load_secret() {
+  local var_name="$1"
+  local op_path="$2"
+
+  [ -n "${(P)var_name}" ] && return
+  [ -n "$DISABLE_SECRETS" ] && return
+
+  export "$var_name"="$(op read "$op_path")"
+}
+
 # Shared API key setup (used by both Claude tools and Ralph scripts)
 setup_claude_tools() {
-  if [ -z "$PERPLEXITY_API_KEY" ]; then
-    PERPLEXITY_API_KEY=$(op read "op://Private/Perplexity API Key/credential")
-    export PERPLEXITY_API_KEY
-  fi
-
-  if [ -z "$CONTEXT7_API_KEY" ]; then
-    CONTEXT7_API_KEY=$(op read "op://Private/Context7 API Key/credential")
-    export CONTEXT7_API_KEY
-  fi
-
-  if [ -z "$BROWSER_USE_API_KEY" ]; then
-    BROWSER_USE_API_KEY=$(op read "op://Private/Browser-use API Key/credential")
-    export BROWSER_USE_API_KEY
-  fi
+  load_secret PERPLEXITY_API_KEY "op://Private/Perplexity API Key/credential"
+  load_secret CONTEXT7_API_KEY "op://Private/Context7 API Key/credential"
+  load_secret BROWSER_USE_API_KEY "op://Private/Browser-use API Key/credential"
 }
 
 # Claude Code with lazy API key loading
@@ -37,10 +39,7 @@ alias ccs="claude_stream"
 # Claude Code with GLM-4.6 via Z.AI
 claudeg() {
   setup_claude_tools
-
-  if [ -z "$ZAI_API_KEY" ]; then
-    export ZAI_API_KEY=$(op read "op://Private/Z.AI API Key/credential")
-  fi
+  load_secret ZAI_API_KEY "op://Private/Z.AI API Key/credential"
 
   ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
   ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
