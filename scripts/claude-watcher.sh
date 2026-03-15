@@ -8,24 +8,17 @@ source "$(cd "$(dirname "$0")" && pwd)/claude-hooks-lib.sh"
 SID=$(hook_field "session_id")
 [ -z "$SID" ] && exit 0
 
-PIDFILE="/tmp/claude-watcher-${SID}.pid"
 DONEFILE="/tmp/claude-watcher-${SID}.done"
-
-# Kill previous watcher if still running
-if [ -f "$PIDFILE" ]; then
-  kill "$(cat "$PIDFILE")" 2>/dev/null || true
-  rm -f "$PIDFILE"
-fi
 rm -f "$DONEFILE"
 
-# Background: sleep then notify
+# Background: poll every 1s, notify after 60s if not done
 (
-  echo $$ > "$PIDFILE"
-  trap 'rm -f "$PIDFILE"' EXIT
-
-  sleep 30
-
-  [ -f "$DONEFILE" ] && exit 0
+  elapsed=0
+  while [ $elapsed -lt 60 ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+    [ -f "$DONEFILE" ] && exit 0
+  done
 
   tasks=""
   if [ -f "$WAITING_TASKS_FILE" ]; then

@@ -11,20 +11,12 @@ hook_field() {
 
 kill_watcher() {
   local sid="$1"
-  local pidfile="/tmp/claude-watcher-${sid}.pid"
-  local donefile="/tmp/claude-watcher-${sid}.done"
-  touch "$donefile"
-  if [ -f "$pidfile" ]; then
-    local pid
-    pid=$(cat "$pidfile")
-    kill "$pid" 2>/dev/null || true
-    rm -f "$pidfile"
-  fi
+  touch "/tmp/claude-watcher-${sid}.done"
 }
 
 cleanup_watcher() {
   local sid="$1"
-  rm -f "/tmp/claude-watcher-${sid}.pid" "/tmp/claude-watcher-${sid}.done"
+  rm -f "/tmp/claude-watcher-${sid}.done"
 }
 
 notify() {
