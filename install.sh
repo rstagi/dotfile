@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "claude-code" "ralph" "claude-config")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "claude-code" "ralph" "claude-config" "claude-hooks")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -16,6 +16,7 @@ get_dependencies() {
     "python") echo "pyenv pipx" ;;
     "ralph") echo "node" ;;
     "claude-config") echo "claude-code" ;;
+    "claude-hooks") echo "claude-code" ;;
     *) echo "" ;;
   esac
 }
@@ -211,6 +212,7 @@ install_package() {
     "claude-code") install_claude_code ;;
     "ralph") install_claude_tools ;;
     "claude-config") install_claude_config ;;
+    "claude-hooks") install_claude_hooks ;;
     *) echo "Unknown package: $package" ;;
   esac
 }
@@ -514,6 +516,36 @@ install_claude_config() {
   else
     echo "Configuring Claude..."
     configure_claude
+  fi
+}
+
+install_claude_hooks() {
+  configure_hooks() {
+    # Symlink hooks directory
+    rm -rf ~/.claude/hooks
+    ln -sfn ~/dotfile/.claude/hooks ~/.claude/hooks
+
+    # Merge hook config into settings.json
+    local settings="$HOME/.claude/settings.json"
+    local hook_config="$HOME/dotfile/.claude/hooks/settings-hooks.json"
+    if [ -f "$settings" ] && [ -f "$hook_config" ]; then
+      local merged
+      merged=$(jq -s '.[0] * .[1]' "$settings" "$hook_config")
+      echo "$merged" > "$settings"
+    elif [ -f "$hook_config" ]; then
+      cp "$hook_config" "$settings"
+    fi
+
+    echo "Claude hooks installed (watcher, done, blocked channels)"
+  }
+
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    if read_yes "Do you want to install Claude hook notifications?"; then
+      configure_hooks
+    fi
+  else
+    echo "Installing Claude hooks..."
+    configure_hooks
   fi
 }
 

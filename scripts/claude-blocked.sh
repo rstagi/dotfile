@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Notification hook: kill watcher, notify "needs input"
+# Notification hook: kill watcher, notify "needs input" with sound alert
 set -euo pipefail
 
 HOOK_INPUT=$(cat)
@@ -17,6 +17,7 @@ case "$ntype" in
   *)                 msg="Needs your attention" ;;
 esac
 
+alert_sound
 notify "Claude blocked" "$msg"
 
 cleanup_watcher "$SID"
