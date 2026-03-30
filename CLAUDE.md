@@ -22,14 +22,20 @@ macOS dotfile repo w/ automated dev environment setup. Installs shell config, CL
 ./install.sh --dry-run <packages>
 
 # Lint shell scripts
-shellcheck install.sh afk-ralph.sh afk-ralph-github.sh
+shellcheck install.sh afk-ralph.sh
+
+# Syntax-check zsh scripts
+zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
 ```
 
 ## Architecture
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-afk-ralph.sh            Autonomous Claude iterations in Docker sandbox
+ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
+ralph-source-github.sh  GitHub source adapter for Ralph
+ralph-source-linear.sh  Linear source adapter for Ralph
+afk-ralph.sh            Legacy Docker sandbox mode
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)

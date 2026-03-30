@@ -1,14 +1,18 @@
 #!/bin/zsh
 set -e
 
-# Ralph GitHub Integration
-# Runs autonomous Claude iterations on a GitHub issue PRD
+# Ralph Agent — autonomous Claude iterations on issue PRDs
+# Supports GitHub and Linear as sources
 
-# Source shared setup from Claude tools
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOME/dotfile/.zshrc_claude_ext"
 
+# --- Argument parsing & interactive prompt ---
+
 usage() {
-  echo "Usage: $0 <issue-number> [max-iterations] [model]"
+  echo "Usage: $0 [--github <issue-number>|--linear <id>] [max-iterations] [model]"
+  echo ""
+  echo "Interactive mode (no args): prompts for source and ID"
   echo ""
   echo "Models:"
   echo "  O/o - Opus (default)"
@@ -24,86 +28,119 @@ usage() {
   exit 1
 }
 
-if [ -z "$1" ]; then
-  usage
+SOURCE=""
+MAX_ITERATIONS=20
+MODEL_PARAM="O"
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --github | -g)
+    SOURCE="github"
+    shift
+    # Next arg is the issue number (if present and not a flag)
+    if [[ $# -gt 0 && "$1" != --* && "$1" != -* ]]; then
+      ISSUE_NUMBER="$1"
+      shift
+    fi
+    ;;
+  --linear | -l)
+    SOURCE="linear"
+    shift
+    if [[ $# -gt 0 && "$1" != --* && "$1" != -* ]]; then
+      LINEAR_ID="$1"
+      shift
+    fi
+    ;;
+  --help | -h)
+    usage
+    ;;
+  *)
+    # Positional args: max-iterations, model
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+      MAX_ITERATIONS="$1"
+    elif [[ "$1" =~ ^[OoSsHhGg]$ ]]; then
+      MODEL_PARAM="$1"
+    else
+      echo "Error: unknown argument '$1'"
+      usage
+    fi
+    shift
+    ;;
+  esac
+done
+
+# Interactive source selection if not specified
+if [ -z "$SOURCE" ]; then
+  echo "Source?"
+  echo "  1) GitHub"
+  echo "  2) Linear"
+  read -r "source_choice?> "
+  case "$source_choice" in
+  1 | g | G | github) SOURCE="github" ;;
+  2 | l | L | linear) SOURCE="linear" ;;
+  *)
+    echo "Invalid choice"
+    exit 1
+    ;;
+  esac
 fi
 
-ISSUE_NUMBER="$1"
-MAX_ITERATIONS="${2:-20}"
-MODEL_PARAM="${3:-O}"
-WORKTREE_BASE="$HOME/.ralph-worktrees"
+# Load source adapter
+source "$SCRIPT_DIR/ralph-source-$SOURCE.sh"
 
-# Map model param to models (primary + fallback chain)
+# --- Model setup ---
+
 case "$MODEL_PARAM" in
-[Oo]) # Opus → Sonnet → GLM
-  MODELS=("opus" "sonnet" "glm")
-  ;;
-[Ss]) # Sonnet → GLM
-  MODELS=("sonnet" "glm")
-  ;;
-[Hh]) # Haiku → Sonnet → GLM
-  MODELS=("haiku" "sonnet" "glm")
-  ;;
-[Gg]) # GLM → Sonnet
-  MODELS=("glm" "sonnet")
-  ;;
+[Oo]) MODELS=("opus" "sonnet" "glm") ;;
+[Ss]) MODELS=("sonnet" "glm") ;;
+[Hh]) MODELS=("haiku" "sonnet" "glm") ;;
+[Gg]) MODELS=("glm" "sonnet") ;;
 *)
   echo "Error: invalid model '$MODEL_PARAM'. Use O/o, S/s, H/h, or G/g."
   usage
   ;;
 esac
 
-CURRENT_MODEL="${MODELS[0]}"
-MODEL_INDEX=0
+CURRENT_MODEL="${MODELS[1]}"
+MODEL_INDEX=1
 
-# Get repo info
+# --- Repo info ---
+
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
 if [ -z "$REPO" ]; then
   echo "Error: not in a git repo or gh not configured"
   exit 1
 fi
 REPO_NAME=$(basename "$REPO")
+WORKTREE_BASE="$HOME/.ralph-worktrees"
 
-# Ralph-specific setup
+# --- Ralph tools ---
+
 setup_ralph_tools() {
   setup_claude_tools
   load_secret ZAI_API_KEY "op://Private/Z.AI API Key/credential"
 }
 
-# Model command wrapper
+# --- Model command wrapper ---
+
 claude_model() {
   local model="$1"
   shift
-
   case "$model" in
-  glm)
-    claudeg "$@"
-    ;;
-  claude-*)
-    # For Anthropic models, pass --model flag
-    claude --model "$model" "$@"
-    ;;
-  *)
-    claude "$@"
-    ;;
+  glm) claudeg "$@" ;;
+  claude-*) claude --model "$model" "$@" ;;
+  *) claude "$@" ;;
   esac
 }
 
-# Fetch PRD from issue body
-fetch_prd() {
-  echo "Fetching PRD from issue #$ISSUE_NUMBER..."
-  PRD=$(gh issue view "$ISSUE_NUMBER" --json body -q .body)
-  if [ -z "$PRD" ]; then
-    echo "Error: could not fetch issue body"
-    exit 1
-  fi
-  echo "$PRD"
-}
+# --- Worktree setup ---
 
-# Setup git worktree for isolation
 setup_worktree() {
-  WORKTREE_PATH="$WORKTREE_BASE/$REPO_NAME-issue-$ISSUE_NUMBER"
-  BRANCH_NAME="ralph/issue-$ISSUE_NUMBER"
+  local suffix
+  suffix=$(source_worktree_suffix)
+  WORKTREE_PATH="$WORKTREE_BASE/$REPO_NAME-$suffix"
+  BRANCH_NAME=$(source_branch_name)
 
   if [ -d "$WORKTREE_PATH" ]; then
     echo "Worktree already exists at $WORKTREE_PATH"
@@ -114,7 +151,6 @@ setup_worktree() {
   echo "Creating worktree at $WORKTREE_PATH..."
   mkdir -p "$WORKTREE_BASE"
 
-  # Create branch from current HEAD if doesn't exist
   if ! git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
     git branch "$BRANCH_NAME"
   fi
@@ -122,24 +158,19 @@ setup_worktree() {
   git worktree add "$WORKTREE_PATH" "$BRANCH_NAME"
   cd "$WORKTREE_PATH"
 
-  # Initialize progress file
   {
-    echo "# Progress for Issue #$ISSUE_NUMBER"
+    echo "# Progress for $SOURCE_LABEL"
     echo ""
     echo "Started: $(date)"
     echo ""
   } >progress.txt
 }
 
-# Post comment to issue
-comment() {
-  gh issue comment "$ISSUE_NUMBER" --body "$1"
-}
+# --- Cleanup on error ---
 
-# Cleanup on error
 cleanup_on_error() {
   local msg="$1"
-  comment "Ralph encountered an error: $msg
+  source_comment "Ralph encountered an error: $msg
 
 Worktree: \`$WORKTREE_PATH\`
 Branch: \`$BRANCH_NAME\`
@@ -148,46 +179,54 @@ Manual intervention required."
   exit 1
 }
 
-# Main execution
+# --- Main execution ---
+
 main() {
   setup_ralph_tools
 
-  PRD=$(fetch_prd)
+  # Initialize source (prompts for ID if needed)
+  source_init
+
+  # Fetch PRD
+  source_fetch_prd
 
   # Write PRD to temp file
-  PRD_FILE=$(mktemp)
-  echo "$PRD" >"$PRD_FILE"
+  local prd_file
+  prd_file=$(mktemp)
+  echo "$PRD" >"$prd_file"
 
   setup_worktree
 
   # Copy PRD to worktree
-  cp "$PRD_FILE" PRD.md
-  rm "$PRD_FILE"
+  cp "$prd_file" PRD.md
+  rm "$prd_file"
 
-  comment "Ralph starting on issue #$ISSUE_NUMBER
+  # Notify source we're starting
+  source_on_start
+
+  source_comment "Ralph starting on $SOURCE_LABEL
 
 - Worktree: \`$WORKTREE_PATH\`
 - Branch: \`$BRANCH_NAME\`
 - Model: $CURRENT_MODEL
 - Max iterations: $MAX_ITERATIONS"
 
-  # jq filter to extract streaming text from assistant messages
-  stream_text='select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
-
-  # jq filter to extract final result
-  final_result='select(.type == "result").result // empty'
+  # jq filters
+  local stream_text='select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
+  local final_result='select(.type == "result").result // empty'
 
   for ((i = 1; i <= MAX_ITERATIONS; i++)); do
+    local iter_start
     iter_start=$(date +%s)
     echo "=== Iteration $i/$MAX_ITERATIONS [$(date '+%H:%M:%S')] ==="
 
-    # Run Claude with retry on transient errors and model fallback
-    MAX_RETRIES=3
-    RETRY_DELAY=5
-    result=""
-    rate_limit_detected=false
+    local MAX_RETRIES=3
+    local RETRY_DELAY=5
+    local result=""
+    local rate_limit_detected=false
 
     for ((retry = 1; retry <= MAX_RETRIES; retry++)); do
+      local tmpfile
       tmpfile=$(mktemp)
       trap "rm -f $tmpfile" EXIT
 
@@ -196,7 +235,7 @@ main() {
         sleep 300
         echo "[timestamp: $(date '+%H:%M:%S')]"
       done) &
-      timestamp_pid=$!
+      local timestamp_pid=$!
       trap "rm -f $tmpfile; kill $timestamp_pid 2>/dev/null" EXIT
 
       claude_model "$CURRENT_MODEL" \
@@ -205,7 +244,7 @@ main() {
         --output-format stream-json \
         --allow-dangerously-skip-permissions \
         --permission-mode bypassPermissions \
-        "You are running inside a ralphg session (autonomous GitHub issue worker). See global CLAUDE.md for ralphg-specific instructions.
+        "You are running inside a ralph session (autonomous issue worker). See global CLAUDE.md for ralph-specific instructions.
 
 @PRD.md @progress.txt
 
@@ -216,28 +255,27 @@ On blocking error: <error>DESCRIPTION</error>" |
         tee "$tmpfile" |
         jq --unbuffered -rj "$stream_text"
 
-      # Stop timestamp printer
       kill $timestamp_pid 2>/dev/null
 
       result=$(jq -r "$final_result" "$tmpfile")
       rm -f "$tmpfile"
 
-      # Check for rate limit - trigger model fallback
+      # Rate limit → model fallback
       if echo "$result" | grep -qE "rate.limit|429|too.many.requests"; then
         echo "=== Rate limit detected on $CURRENT_MODEL ==="
         rate_limit_detected=true
-        break # Exit retry loop to trigger fallback
+        break
       fi
 
-      # Check for other transient errors (API issues, empty responses)
+      # Transient errors → retry
       if echo "$result" | grep -qE "No messages returned|ECONNRESET|ETIMEDOUT|503|502"; then
-        echo "=== Transient error detected (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
+        echo "=== Transient error (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
         sleep "$RETRY_DELAY"
         RETRY_DELAY=$((RETRY_DELAY * 2))
         continue
       fi
 
-      # Empty result might indicate failure
+      # Empty result → retry
       if [ -z "$result" ]; then
         echo "=== Empty result (attempt $retry/$MAX_RETRIES), retrying in ${RETRY_DELAY}s ==="
         sleep "$RETRY_DELAY"
@@ -245,18 +283,16 @@ On blocking error: <error>DESCRIPTION</error>" |
         continue
       fi
 
-      # Success - break retry loop
       break
     done
 
     # Model fallback on rate limit
     if [ "$rate_limit_detected" = true ]; then
       MODEL_INDEX=$((MODEL_INDEX + 1))
-      if [ $MODEL_INDEX -lt ${#MODELS[@]} ]; then
+      if [ $MODEL_INDEX -le ${#MODELS[@]} ]; then
         CURRENT_MODEL="${MODELS[$MODEL_INDEX]}"
         echo "=== Falling back to $CURRENT_MODEL ==="
-        # Retry entire loop with new model
-        ((i--)) # Redo this iteration
+        ((i--))
         continue
       else
         echo "=== All models exhausted, skipping iteration ==="
@@ -264,54 +300,38 @@ On blocking error: <error>DESCRIPTION</error>" |
       fi
     fi
 
-    # If all retries exhausted with no result (and not rate limited), skip iteration
+    # All retries exhausted
     if [ -z "$result" ] && [ "$rate_limit_detected" = false ]; then
       echo "=== All retries exhausted, skipping iteration ==="
       continue
     fi
 
     # Iteration timing
+    local iter_end
     iter_end=$(date +%s)
-    iter_duration=$((iter_end - iter_start))
-    iter_mins=$((iter_duration / 60))
-    iter_secs=$((iter_duration % 60))
+    local iter_duration=$((iter_end - iter_start))
+    local iter_mins=$((iter_duration / 60))
+    local iter_secs=$((iter_duration % 60))
     echo "=== Iteration $i done [$(date '+%H:%M:%S')] (${iter_mins}m ${iter_secs}s) ==="
 
-    # Check for completion
+    # Completion
     if echo "$result" | grep -q "<promise>COMPLETE</promise>"; then
       echo "=== All tasks complete! ==="
-
-      # Push and create PR
-      git push -u origin "$BRANCH_NAME"
-
-      PR_URL=$(gh pr create --draft \
-        --title "feat: resolve issue #$ISSUE_NUMBER" \
-        --body "Resolves #$ISSUE_NUMBER
-
-## Summary
-Automated implementation by Ralph.
-
-## Progress Log
-\`\`\`
-$(cat progress.txt)
-\`\`\`")
-
-      comment "Ralph completed all tasks!
-
-PR: $PR_URL"
-
+      source_on_complete
+      source_create_pr "$BRANCH_NAME"
       exit 0
     fi
 
-    # Check for errors
+    # Error
     if echo "$result" | grep -q "<error>"; then
+      local error_msg
       error_msg=$(echo "$result" | grep -o "<error>.*</error>" | sed 's/<[^>]*>//g')
       cleanup_on_error "$error_msg"
     fi
 
     # Progress update every 5 iterations
     if [ $((i % 5)) -eq 0 ]; then
-      comment "Ralph progress update (iteration $i/$MAX_ITERATIONS):
+      source_comment "Ralph progress update (iteration $i/$MAX_ITERATIONS):
 
 \`\`\`
 $(tail -20 progress.txt)
@@ -320,7 +340,7 @@ $(tail -20 progress.txt)
   done
 
   echo "=== Reached max iterations ($MAX_ITERATIONS) ==="
-  comment "Ralph reached max iterations ($MAX_ITERATIONS) without completing.
+  source_comment "Ralph reached max iterations ($MAX_ITERATIONS) without completing.
 
 Last progress:
 \`\`\`

@@ -30,14 +30,7 @@ At the end of each plan give me a list of unresolved questions, if any. Make the
 ## TDD
 
 - When working on the frontend, TDD is not mandatory unless we're working on a piece of business logic.
-- For EVERYTHING ELSE (backend, business logics in general, libraries, etc), you ALWAYS need to start with the tests first.
-- The TDD cycle MUST ALWAYS go through the following phases:
-  - implement the test
-  - run the test (RED)
-  - implement the minimum amount of code to make the test pass
-  - run the test (GREEN)
-  - refactor if needed (REFACTOR)
-  - end
+- For EVERYTHING ELSE (backend, business logics in general, libraries, etc), use the /tdd skill.
 
 ## Backend vs Frontend in monorepos
 
@@ -74,34 +67,38 @@ Use `/agent-browser` skill for browser automation. Use `--session <name>` to pre
 
 - Don't create new docs proactively, but DO update existing READMEs when changes affect them (bundle with same commit)
 
-## Ralph GitHub Integration
+## Ralph Integration
 
-`ralphg <issue-number>` - autonomous Claude on GitHub issue PRD
+`ralph` - autonomous Claude on GitHub/Linear issue PRDs
 
 **Flow:**
-1. Fetches PRD from issue body
-2. Creates worktree at `~/.ralph-worktrees/<repo>-issue-<N>`
-3. Runs Claude iterations (TDD for backend, Playwright for frontend)
-4. Commits per task, logs progress as issue comments
-5. Opens draft PR when complete
+1. Prompts for source (GitHub or Linear)
+2. Fetches PRD from issue/project
+3. Creates worktree at `~/.ralph-worktrees/<repo>-<suffix>`
+4. Runs Claude iterations (TDD for backend, Playwright for frontend)
+5. Commits per task, logs progress as source comments
+6. Opens draft PR when complete
 
 **Commands:**
 ```bash
-ralphg 123           # Run Ralph on issue #123
-ralphg 123 30        # Max 30 iterations
+ralph                        # Interactive mode
+ralph --github 123           # GitHub issue #123
+ralph --github 123 30        # Max 30 iterations
+ralph --linear ENG-456       # Linear issue
+ralph --linear <project-uuid> # All issues in Linear project
 ```
 
 **Cleanup:**
 ```bash
-git worktree remove ~/.ralph-worktrees/<repo>-issue-<N>
-git branch -d ralph/issue-<N>
+git worktree remove ~/.ralph-worktrees/<repo>-<suffix>
+git branch -d ralph/<branch>
 ```
 
 **Issue template:** `~/dotfile/templates/issue-prd-template.md`
 
-## When inside ralphg session
+## When inside ralph session
 
-When you see "You are running inside a ralphg session", follow these rules:
+When you see "You are running inside a ralph session", follow these rules:
 
 - Read PRD.md for requirements, progress.txt for completed work
 - **ONE TASK PER ITERATION** - complete one task, commit, update progress, then stop

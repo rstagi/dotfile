@@ -7,14 +7,12 @@ setup_ralph_tools() {
   load_secret ZAI_API_KEY "op://Private/Z.AI API Key/credential"
 }
 
-# GitHub-integrated Ralph
-# Usage: ralphg <issue-number> [max-iterations] [model]
-# Models: O=Opus(default), S=Sonnet, H=Haiku, G=GLM
-ralph_github() {
+# Ralph agent (GitHub + Linear)
+# Usage: ralph [--github <issue>|--linear <id>] [max-iterations] [model]
+ralph() {
   setup_ralph_tools
-  "$HOME/dotfile/afk-ralph-github.sh" "$@"
+  "$HOME/dotfile/ralph-agent.sh" "$@"
 }
-alias ralphg="ralph_github"
 
-# Ralph standalone
+# Ralph standalone (Docker)
 alias ralphx="$HOME/dotfile/afk-ralph.sh"
