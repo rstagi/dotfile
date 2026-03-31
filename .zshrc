@@ -35,12 +35,6 @@ else
   source <(fzf --zsh)
 fi
 
-# Set up zoxide to move between folders efficiently
-eval "$(zoxide init zsh)"
-
-# Set up the Starship prompt
-eval "$(starship init zsh)"
-
 # Key bindings
 bindkey "[D" backward-word
 bindkey "[C" forward-word
@@ -65,6 +59,10 @@ export PATH="$HOME/bin:$PATH"
 source ~/dotfile/.zshrc_git_ext
 [ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
 
+# Starship prompt
+export STARSHIP_CONFIG=~/dotfile/starship.toml
+eval "$(starship init zsh)"
+
 # --- Completion System ---
 # Enable autocompletion for brew installed software
 if type brew &>/dev/null
@@ -86,9 +84,6 @@ source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zs
 
 export PATH="/Users/rstagi/.local/bin:$PATH"
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
-
-# OpenClaw Completion
-source <(openclaw completion --shell zsh)
 
 # pnpm
 export PNPM_HOME="/Users/rstagi/Library/pnpm"

@@ -235,6 +235,9 @@ install_zsh() {
     
     # Install zsh-syntax-highlighting via brew
     install_pkg_if_needed "zsh-syntax-highlighting"
+
+    # Install starship prompt
+    install_pkg_if_needed "starship"
     
     # Link .zshrc
     link_zshrc() {
@@ -423,13 +426,22 @@ install_neovim() {
   if install_pkg_if_needed "neovim"; then
     configure_neovim() {
       echo "source $HOME/dotfile/.zshrc_vim_ext" >> $HOME/.zshrc_ext
+
+      # Setup LazyVim config by symlinking from dotfile repo
+      mkdir -p $HOME/.config
+      if [ -d "$HOME/.config/nvim" ] || [ -L "$HOME/.config/nvim" ]; then
+        echo "Backing up existing nvim config..."
+        mv $HOME/.config/nvim $HOME/.config/nvim.bak
+      fi
+      ln -s $HOME/dotfile/nvim $HOME/.config/nvim
+      echo "LazyVim config linked. Plugins will install on first nvim launch."
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
-      if read_yes "Do you want to configure neovim?"; then
+      if read_yes "Do you want to configure neovim with LazyVim?"; then
         configure_neovim
       fi
     else
-      echo "Configuring neovim..."
+      echo "Configuring neovim with LazyVim..."
       configure_neovim
     fi
   fi
