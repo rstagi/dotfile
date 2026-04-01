@@ -15,9 +15,9 @@ load_secret() {
 
 # Shared API key setup (used by both Claude tools and Ralph scripts)
 setup_claude_tools() {
-  load_secret PERPLEXITY_API_KEY "op://Private/Perplexity API Key/credential"
-  load_secret CONTEXT7_API_KEY "op://Private/Context7 API Key/credential"
-  load_secret BROWSER_USE_API_KEY "op://Private/Browser-use API Key/credential"
+  load_secret PERPLEXITY_API_KEY "op://Remote Agents/Perplexity API Key/credential"
+  load_secret CONTEXT7_API_KEY "op://Remote Agents/Context7 API Key/credential"
+  load_secret BROWSER_USE_API_KEY "op://Remote Agents/Browser-use API Key/credential"
 }
 
 # Claude Code with lazy API key loading
@@ -39,7 +39,7 @@ alias ccs="claude_stream"
 # Claude Code with GLM-4.6 via Z.AI
 claudeg() {
   setup_claude_tools
-  load_secret ZAI_API_KEY "op://Private/Z.AI API Key/credential"
+  load_secret ZAI_API_KEY "op://Remote Agents/Z.AI API Key/credential"
 
   ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
   ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \

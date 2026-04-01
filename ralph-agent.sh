@@ -119,7 +119,7 @@ WORKTREE_BASE="$HOME/.ralph-worktrees"
 
 setup_ralph_tools() {
   setup_claude_tools
-  load_secret ZAI_API_KEY "op://Private/Z.AI API Key/credential"
+  load_secret ZAI_API_KEY "op://Remote Agents/Z.AI API Key/credential"
 }
 
 # --- Model command wrapper ---

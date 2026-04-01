@@ -66,7 +66,7 @@ afk-ralph.sh            Legacy Docker sandbox mode
 Store API keys in 1Password, retrieve lazily via `load_secret` (defined in `.zshrc_claude_ext`):
 
 ```bash
-load_secret VAR_NAME "op://Private/Item Name/credential"
+load_secret VAR_NAME "op://Remote Agents/Item Name/credential"
 ```
 
 Skips if var already set. Set `DISABLE_SECRETS=1` to skip all 1Password calls.
