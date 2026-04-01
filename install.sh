@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "claude-code" "ralph" "claude-config" "claude-hooks")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "claude-hooks")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -209,6 +209,7 @@ install_package() {
     "appcleaner") install_pkg_if_needed "appcleaner" ;;
     "google-chrome") install_pkg_if_needed "google-chrome" ;;
     "ripgrep") install_pkg_if_needed "ripgrep" ;;
+    "tailscale") install_tailscale ;;
     "claude-code") install_claude_code ;;
     "ralph") install_claude_tools ;;
     "claude-config") install_claude_config ;;
@@ -463,6 +464,23 @@ install_1password() {
   fi
 }
 
+install_tailscale() {
+  if install_pkg_if_needed "tailscale" "--cask"; then
+    configure_tailscale() {
+      # Disable MagicDNS to avoid iPhone hotspot DNS64 conflicts
+      tailscale set --accept-dns=false
+    }
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      if read_yes "Do you want to configure Tailscale (disable MagicDNS for hotspot compatibility)?"; then
+        configure_tailscale
+      fi
+    else
+      echo "Configuring Tailscale..."
+      configure_tailscale
+    fi
+  fi
+}
+
 install_claude_code() {
   if ! command -v claude &> /dev/null; then
     if [ "$INTERACTIVE_MODE" = true ]; then
@@ -607,6 +625,7 @@ main() {
     install_pkg_if_needed "appcleaner"
     install_pkg_if_needed "google-chrome"
     install_pkg_if_needed "ripgrep"
+    install_tailscale
     install_claude_code
     install_claude_tools
   else
