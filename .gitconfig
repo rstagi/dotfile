@@ -1,7 +1,7 @@
 [user]
 	name = rstagi
 	email = r.stagi96@gmail.com
-	signingkey = ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN+GpddNUeYHhW16Ye3Y9SBFZmJsA2xifBIR3cf4oDmI
+	signingkey = /Users/rstagi/.ssh/id_ed25519.pub
 [credential]
 	helper = osxkeychain
 [filter "lfs"]
@@ -12,7 +12,7 @@
 [gpg]
 	format = ssh
 [gpg "ssh"]
-	program = /Applications/1Password.app/Contents/MacOS/op-ssh-sign
+	program = ssh-keygen
 [commit]
 	gpgsign = true
 [url "ssh://git@github.com"]
