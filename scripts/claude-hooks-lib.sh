@@ -12,11 +12,36 @@ hook_field() {
 kill_watcher() {
   local sid="$1"
   touch "/tmp/claude-watcher-${sid}.done"
+  # Also kill by PID in case done-file polling hasn't caught up
+  local pidfile="/tmp/claude-watcher-${sid}.pid"
+  if [ -f "$pidfile" ]; then
+    local pid
+    pid=$(cat "$pidfile")
+    kill "$pid" 2>/dev/null || true
+    rm -f "$pidfile"
+  fi
+}
+
+kill_all_watchers() {
+  for pidfile in /tmp/claude-watcher-*.pid; do
+    [ -f "$pidfile" ] || continue
+    local pid
+    pid=$(cat "$pidfile")
+    kill "$pid" 2>/dev/null || true
+    rm -f "$pidfile"
+  done
+  # Also create done files for any stragglers
+  for startfile in /tmp/claude-watcher-*.start; do
+    [ -f "$startfile" ] || continue
+    local sid
+    sid=$(basename "$startfile" | sed 's/claude-watcher-//;s/\.start//')
+    touch "/tmp/claude-watcher-${sid}.done"
+  done
 }
 
 cleanup_watcher() {
   local sid="$1"
-  rm -f "/tmp/claude-watcher-${sid}.done" "/tmp/claude-watcher-${sid}.start"
+  rm -f "/tmp/claude-watcher-${sid}.done" "/tmp/claude-watcher-${sid}.start" "/tmp/claude-watcher-${sid}.pid"
 }
 
 alert_sound() {

@@ -1,4 +1,13 @@
-# Python
+# Lazy-load pyenv (deferred ~100ms init to first use)
 export PYENV_ROOT="$HOME/.pyenv"
 command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init -)"
+
+_load_pyenv() {
+  unfunction pyenv python python3 pip 2>/dev/null
+  eval "$(pyenv init -)"
+}
+
+pyenv()   { _load_pyenv; pyenv "$@" }
+python()  { _load_pyenv; python "$@" }
+python3() { _load_pyenv; python3 "$@" }
+pip()     { _load_pyenv; pip "$@" }

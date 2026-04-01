@@ -10,6 +10,10 @@ SID=$(hook_field "session_id")
 
 DONEFILE="/tmp/claude-watcher-${SID}.done"
 STARTFILE="/tmp/claude-watcher-${SID}.start"
+PIDFILE="/tmp/claude-watcher-${SID}.pid"
+
+# Kill any previous watcher for this session before starting a new one
+kill_watcher "$SID"
 rm -f "$DONEFILE"
 date +%s > "$STARTFILE"
 
@@ -52,5 +56,6 @@ get_tasks() {
     done
   done
 ) &
+echo $! > "$PIDFILE"
 
 exit 0

@@ -35,6 +35,12 @@ else
   source <(fzf --zsh)
 fi
 
+# Set up zoxide to move between folders efficiently
+eval "$(zoxide init zsh)"
+
+# Set up the Starship prompt
+eval "$(starship init zsh)"
+
 # Key bindings
 bindkey "[D" backward-word
 bindkey "[C" forward-word
@@ -55,15 +61,10 @@ alias ...="cd ../.."
 # Add ~/bin to PATH
 export PATH="$HOME/bin:$PATH"
 
-# Source external configuration
-source ~/dotfile/.zshrc_git_ext
-[ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
-
-# Starship prompt
-export STARSHIP_CONFIG=~/dotfile/starship.toml
-eval "$(starship init zsh)"
-
 # --- Completion System ---
+# Include cached completions (populated in background below)
+FPATH="$HOME/.zsh_completions:${FPATH}"
+
 # Enable autocompletion for brew installed software
 if type brew &>/dev/null
 then
@@ -76,6 +77,10 @@ autoload -U +X bashcompinit && bashcompinit
 # Initialize zsh completion system
 autoload -U compinit; compinit
 
+# Source external configuration (after compinit so completions work)
+source ~/dotfile/.zshrc_git_ext
+[ -f ~/.zshrc_ext ] && source ~/.zshrc_ext
+
 ### Custom configs
 export GOOGLE_CLOUD_PROJECT="rstagi"
 
@@ -84,6 +89,10 @@ source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zs
 
 export PATH="/Users/rstagi/.local/bin:$PATH"
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
+
+# OpenClaw Completion (cached, refreshed in background)
+[ -f ~/.zsh_completions/_openclaw ] && source ~/.zsh_completions/_openclaw
+{ openclaw completion --shell zsh > ~/.zsh_completions/_openclaw &! } 2>/dev/null
 
 # pnpm
 export PNPM_HOME="/Users/rstagi/Library/pnpm"
@@ -94,18 +103,18 @@ esac
 # pnpm end
 export WHISPER_CPP_MODEL=~/.cache/whisper/ggml-base.bin
 
-# >>> conda initialize >>>
-# !! Contents within this block are managed by 'conda init' !!
-__conda_setup="$('/Users/rstagi/miniconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
+# Lazy-load conda (deferred ~800ms init to first use)
+conda() {
+  unfunction conda
+  __conda_setup="$('/Users/rstagi/miniconda3/bin/conda' 'shell.zsh' 'hook' 2>/dev/null)"
+  if [ $? -eq 0 ]; then eval "$__conda_setup"; else
     if [ -f "/Users/rstagi/miniconda3/etc/profile.d/conda.sh" ]; then
-        . "/Users/rstagi/miniconda3/etc/profile.d/conda.sh"
+      . "/Users/rstagi/miniconda3/etc/profile.d/conda.sh"
     else
-        export PATH="/Users/rstagi/miniconda3/bin:$PATH"
+      export PATH="/Users/rstagi/miniconda3/bin:$PATH"
     fi
-fi
-unset __conda_setup
-# <<< conda initialize <<<
+  fi
+  unset __conda_setup
+  conda "$@"
+}
 

@@ -47,6 +47,9 @@ claudeg() {
   command claude "$@"
 }
 
+# Kill all Claude watcher notifications
+alias claude-shh="source ~/dotfile/scripts/claude-hooks-lib.sh && kill_all_watchers"
+
 # Browser-use wrapper with lazy API key loading
 browser-use() {
   setup_claude_tools
