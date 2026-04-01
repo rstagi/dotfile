@@ -1,16 +1,28 @@
 # Lazy-load nvm (deferred ~265ms init to first use)
 export NVM_DIR="$HOME/.nvm"
 
-_load_nvm() {
+# Each wrapper unsets all stubs first (prevents recursion), then sources nvm
+nvm() {
   unfunction nvm node npm npx 2>/dev/null
   [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
   [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && . "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
+  nvm "$@"
 }
-
-nvm()  { _load_nvm; nvm "$@" }
-node() { _load_nvm; node "$@" }
-npm()  { _load_nvm; npm "$@" }
-npx()  { _load_nvm; npx "$@" }
+node() {
+  unfunction nvm node npm npx 2>/dev/null
+  [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
+  node "$@"
+}
+npm() {
+  unfunction nvm node npm npx 2>/dev/null
+  [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
+  npm "$@"
+}
+npx() {
+  unfunction nvm node npm npx 2>/dev/null
+  [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
+  npx "$@"
+}
 
 # Npm
 alias ni="npm i"
