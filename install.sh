@@ -467,8 +467,15 @@ install_1password() {
 install_tailscale() {
   if install_pkg_if_needed "tailscale" "--cask"; then
     configure_tailscale() {
-      # Disable MagicDNS to avoid iPhone hotspot DNS64 conflicts
-      tailscale set --accept-dns=false
+      if tailscale status &>/dev/null; then
+        # Disable MagicDNS to avoid iPhone hotspot DNS64 conflicts
+        tailscale set --accept-dns=false
+        echo "Tailscale configured: MagicDNS disabled"
+      else
+        echo "Tailscale installed but not logged in yet."
+        echo "Run: open -a Tailscale && tailscale login"
+        echo "Then: tailscale set --accept-dns=false"
+      fi
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure Tailscale (disable MagicDNS for hotspot compatibility)?"; then
