@@ -537,11 +537,24 @@ install_claude_config() {
     # Symlink global CLAUDE.md reference in dotfile repo
     ln -sfn ~/.claude/CLAUDE.md ~/dotfile/CLAUDE_GLOBAL.md
 
-    # Add MCP servers (idempotent)
-    claude mcp list --scope user 2>/dev/null | grep -q context7 || \
+    # Add MCP servers (idempotent — auth handled manually per device)
+    local mcp_list
+    mcp_list=$(claude mcp list --scope user 2>/dev/null)
+    grep -q context7 <<< "$mcp_list" || \
       claude mcp add --scope user context7 -- npx -y @upstash/context7-mcp
-    claude mcp list --scope user 2>/dev/null | grep -q playwright || \
-      claude mcp add --scope user playwright -- npx @playwright/mcp@latest
+    grep -q linear <<< "$mcp_list" || \
+      claude mcp add --scope user --transport sse linear https://mcp.linear.app/sse
+    grep -q scrapegraph <<< "$mcp_list" || \
+      claude mcp add --scope user scrapegraph-mcp -- \
+        npx mcp-remote https://mcp.scrapegraphai.com/mcp --header "X-API-Key:\${SCRAPEGRAPH_API_KEY}"
+
+    # Enable Perplexity plugin in settings
+    local settings="$HOME/.claude/settings.json"
+    if [ -f "$settings" ]; then
+      local updated
+      updated=$(jq '.enabledPlugins["perplexity@perplexity-mcp-server"] = true' "$settings")
+      echo "$updated" > "$settings"
+    fi
 
     echo "Claude config installed (agents, skills, MCP servers)"
   }

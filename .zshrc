@@ -13,6 +13,16 @@ setopt PUSHD_SILENT
 
 # Emacs keybindings
 bindkey -e
+
+# Put terminal in application mode when ZLE is active so escape
+# sequences (arrow keys, etc.) are interpreted correctly on first prompt
+if (( ${+terminfo[smkx]} && ${+terminfo[rmkx]} )); then
+  function zle-line-init() { echoti smkx }
+  function zle-line-finish() { echoti rmkx }
+  zle -N zle-line-init
+  zle -N zle-line-finish
+fi
+
 # Use the up and down keys to navigate the history
 bindkey "\e[A" history-beginning-search-backward
 bindkey "\e[B" history-beginning-search-forward

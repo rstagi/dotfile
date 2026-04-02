@@ -18,6 +18,7 @@ setup_claude_tools() {
   load_secret PERPLEXITY_API_KEY "op://Remote Agents/Perplexity API Key/credential"
   load_secret CONTEXT7_API_KEY "op://Remote Agents/Context7 API Key/credential"
   load_secret BROWSER_USE_API_KEY "op://Remote Agents/Browser-use API Key/credential"
+  load_secret SCRAPEGRAPH_API_KEY "op://Remote Agents/ScrapegraphAI API Key/credential"
 }
 
 # Claude Code with lazy API key loading
