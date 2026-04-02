@@ -12,11 +12,11 @@ LINEAR_PROJECT_NAME=""
 # GraphQL helper
 linear_gql() {
   local query="$1"
-  local variables="${2:-\{\}}"
+  local variables="${2:-{}}"
   curl -s -X POST \
     -H "Content-Type: application/json" \
     -H "Authorization: $LINEAR_API_KEY" \
-    --data "{\"query\": $(echo "$query" | jq -Rs .), \"variables\": $variables}" \
+    --data "{\"query\": $(printf '%s' "$query" | jq -Rs .), \"variables\": $variables}" \
     https://api.linear.app/graphql
 }
 
@@ -24,7 +24,7 @@ linear_gql() {
 linear_check_error() {
   local response="$1"
   local errors
-  errors=$(echo "$response" | jq -r '.errors[0].message // empty')
+  errors=$(printf '%s' "$response" | jq -r '.errors[0].message // empty')
   if [ -n "$errors" ]; then
     echo "Error: Linear API: $errors"
     exit 1
@@ -48,7 +48,7 @@ linear_find_state() {
   local response
   response=$(linear_gql "query { team(id: \"$team_id\") { states { nodes { id name } } } }")
   linear_check_error "$response"
-  echo "$response" | jq -r ".data.team.states.nodes[] | select(.name == \"$state_name\") | .id"
+  printf '%s' "$response" | jq -r ".data.team.states.nodes[] | select(.name == \"$state_name\") | .id"
 }
 
 # Update issue state
@@ -99,14 +99,14 @@ _fetch_issue_prd() {
   response=$(linear_gql "query { issue(id: \"$LINEAR_ID\") { id title description team { id key } } }")
   linear_check_error "$response"
 
-  LINEAR_ISSUE_UUID=$(echo "$response" | jq -r '.data.issue.id')
-  LINEAR_TEAM_KEY=$(echo "$response" | jq -r '.data.issue.team.key')
+  LINEAR_ISSUE_UUID=$(printf '%s' "$response" | jq -r '.data.issue.id')
+  LINEAR_TEAM_KEY=$(printf '%s' "$response" | jq -r '.data.issue.team.key')
   local team_id
-  team_id=$(echo "$response" | jq -r '.data.issue.team.id')
+  team_id=$(printf '%s' "$response" | jq -r '.data.issue.team.id')
   local title
-  title=$(echo "$response" | jq -r '.data.issue.title')
+  title=$(printf '%s' "$response" | jq -r '.data.issue.title')
   local description
-  description=$(echo "$response" | jq -r '.data.issue.description // empty')
+  description=$(printf '%s' "$response" | jq -r '.data.issue.description // empty')
 
   if [ -z "$LINEAR_ISSUE_UUID" ] || [ "$LINEAR_ISSUE_UUID" = "null" ]; then
     echo "Error: could not fetch Linear issue $LINEAR_ID"
@@ -130,9 +130,9 @@ _fetch_project_prd() {
   response=$(linear_gql "query { project(id: \"$LINEAR_ID\") { id name description issues(orderBy: { field: SORT_ORDER }) { nodes { id identifier title description } } } }")
   linear_check_error "$response"
 
-  LINEAR_PROJECT_NAME=$(echo "$response" | jq -r '.data.project.name')
+  LINEAR_PROJECT_NAME=$(printf '%s' "$response" | jq -r '.data.project.name')
   local project_desc
-  project_desc=$(echo "$response" | jq -r '.data.project.description // empty')
+  project_desc=$(printf '%s' "$response" | jq -r '.data.project.description // empty')
 
   if [ -z "$LINEAR_PROJECT_NAME" ] || [ "$LINEAR_PROJECT_NAME" = "null" ]; then
     echo "Error: could not fetch Linear project $LINEAR_ID"
@@ -140,19 +140,19 @@ _fetch_project_prd() {
   fi
 
   # Collect issue UUIDs for status updates
-  LINEAR_ISSUE_IDS=($(echo "$response" | jq -r '.data.project.issues.nodes[].id'))
+  LINEAR_ISSUE_IDS=($(printf '%s' "$response" | jq -r '.data.project.issues.nodes[].id'))
 
   # Get team info from first issue
   local first_issue_id="${LINEAR_ISSUE_IDS[1]}"
   if [ -n "$first_issue_id" ]; then
     local issue_resp
     issue_resp=$(linear_gql "query { issue(id: \"$first_issue_id\") { team { id key } } }")
-    LINEAR_TEAM_ID=$(echo "$issue_resp" | jq -r '.data.issue.team.id')
-    LINEAR_TEAM_KEY=$(echo "$issue_resp" | jq -r '.data.issue.team.key')
+    LINEAR_TEAM_ID=$(printf '%s' "$issue_resp" | jq -r '.data.issue.team.id')
+    LINEAR_TEAM_KEY=$(printf '%s' "$issue_resp" | jq -r '.data.issue.team.key')
   fi
 
   local issue_count
-  issue_count=$(echo "$response" | jq '.data.project.issues.nodes | length')
+  issue_count=$(printf '%s' "$response" | jq '.data.project.issues.nodes | length')
 
   if [ "$issue_count" -eq 0 ]; then
     echo "Error: project has no issues"
@@ -175,12 +175,12 @@ $project_desc"
 ## Tasks"
 
   local issues_json
-  issues_json=$(echo "$response" | jq -c '.data.project.issues.nodes[]')
+  issues_json=$(printf '%s' "$response" | jq -c '.data.project.issues.nodes[]')
   while IFS= read -r issue; do
     local ident title desc
-    ident=$(echo "$issue" | jq -r '.identifier')
-    title=$(echo "$issue" | jq -r '.title')
-    desc=$(echo "$issue" | jq -r '.description // empty')
+    ident=$(printf '%s' "$issue" | jq -r '.identifier')
+    title=$(printf '%s' "$issue" | jq -r '.title')
+    desc=$(printf '%s' "$issue" | jq -r '.description // empty')
 
     PRD="$PRD
 
@@ -197,11 +197,11 @@ $desc"
 source_comment() {
   local msg="$1"
   if [ "$LINEAR_MODE" = "issue" ]; then
-    linear_gql "mutation { issueCommentCreate(input: { issueId: \"$LINEAR_ISSUE_UUID\", body: $(echo "$msg" | jq -Rs .) }) { success } }" >/dev/null
+    linear_gql "mutation { issueCommentCreate(input: { issueId: \"$LINEAR_ISSUE_UUID\", body: $(printf '%s' "$msg" | jq -Rs .) }) { success } }" >/dev/null
   else
     # Project mode: comment on all issues
     for uuid in "${LINEAR_ISSUE_IDS[@]}"; do
-      linear_gql "mutation { issueCommentCreate(input: { issueId: \"$uuid\", body: $(echo "$msg" | jq -Rs .) }) { success } }" >/dev/null
+      linear_gql "mutation { issueCommentCreate(input: { issueId: \"$uuid\", body: $(printf '%s' "$msg" | jq -Rs .) }) { success } }" >/dev/null
     done
   fi
 }
