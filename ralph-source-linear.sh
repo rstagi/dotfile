@@ -15,7 +15,7 @@ linear_gql() {
   local variables="${2:-\{\}}"
   curl -s -X POST \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $LINEAR_API_KEY" \
+    -H "Authorization: $LINEAR_API_KEY" \
     --data "{\"query\": $(echo "$query" | jq -Rs .), \"variables\": $variables}" \
     https://api.linear.app/graphql
 }
