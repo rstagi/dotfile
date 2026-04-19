@@ -37,9 +37,13 @@
       }
     ]
   },
-  "skipDangerousModePermissionPrompt": true,
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline-command.sh"
-  }
+  },
+  "enabledPlugins": {
+    "perplexity@perplexity-mcp-server": true
+  },
+  "autoDreamEnabled": true,
+  "skipDangerousModePermissionPrompt": true
 }
