@@ -1,24 +1,143 @@
 # General Claude Code tools
 
+# Logging helpers (stderr so they don't pollute command output)
+_claude_log() { printf '[%s] [claude-ext] %s\n' "$(date '+%H:%M:%S')" "$1" >&2; }
+_claude_log_error() { printf '[%s] [claude-ext] ERROR: %s\n' "$(date '+%H:%M:%S')" "$1" >&2; }
+
+# Core: fetch one secret from 1Password and write its value to $3.
+# Features: configurable timeout, HOME isolation (prevents op desktop app hang),
+#           logging, and error handling.
+# Safe to run in background — export must happen in the parent shell.
+_load_secret_to_file() {
+  local var_name="$1" op_path="$2" out_file="$3"
+  local timeout="${LOAD_SECRET_TIMEOUT:-10}"
+
+  local _tmpfile _op_home _pid _waited _val
+  _tmpfile=$(mktemp) || { _claude_log_error "load_secret: mktemp failed for $var_name"; return 1; }
+  _op_home=$(mktemp -d) || { rm -f "$_tmpfile"; _claude_log_error "load_secret: mktemp -d failed for $var_name"; return 1; }
+  chmod 700 "$_op_home"
+
+  # Override HOME to prevent op from discovering the 1Password desktop app,
+  # which hangs in non-interactive/launchd contexts even with a service account token.
+  HOME="$_op_home" op read "$op_path" > "$_tmpfile" 2>&1 &
+  _pid=$!
+  _waited=0
+
+  while kill -0 "$_pid" 2>/dev/null && [ "$_waited" -lt "$timeout" ]; do
+    sleep 1
+    _waited=$((_waited + 1))
+  done
+
+  if kill -0 "$_pid" 2>/dev/null; then
+    kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+    local _err; _err=$(cat "$_tmpfile" 2>/dev/null)
+    rm -f "$_tmpfile"; rm -rf "$_op_home"
+    _claude_log_error "load_secret: $var_name timed out after ${timeout}s${_err:+ — op output: $_err}"
+    return 1
+  fi
+
+  if ! wait "$_pid"; then
+    local _err; _err=$(cat "$_tmpfile" 2>/dev/null)
+    rm -f "$_tmpfile"; rm -rf "$_op_home"
+    _claude_log_error "load_secret: failed to read $var_name${_err:+ — op output: $_err}"
+    return 1
+  fi
+
+  _val=$(cat "$_tmpfile")
+  rm -f "$_tmpfile"; rm -rf "$_op_home"
+
+  if [ -z "$_val" ]; then
+    _claude_log_error "load_secret: $var_name returned empty"
+    return 1
+  fi
+
+  printf '%s' "$_val" > "$out_file"
+  return 0
+}
+
 # Load a secret from 1Password if not already set.
 # Skip silently when DISABLE_SECRETS is set.
 # Usage: load_secret VAR_NAME "op://vault/item/field"
 load_secret() {
-  local var_name="$1"
-  local op_path="$2"
+  local var_name="$1" op_path="$2"
 
-  [ -n "${(P)var_name}" ] && return
-  [ -n "$DISABLE_SECRETS" ] && return
+  [ -n "${(P)var_name}" ] && return 0
+  if [ -n "$DISABLE_SECRETS" ]; then
+    _claude_log "load_secret: skipping $var_name (DISABLE_SECRETS is set)"
+    return 0
+  fi
 
-  export "$var_name"="$(op read "$op_path")"
+  _claude_log "loading secret: $var_name"
+  local _out; _out=$(mktemp) || { _claude_log_error "load_secret: mktemp failed for $var_name"; return 1; }
+
+  if ! _load_secret_to_file "$var_name" "$op_path" "$_out"; then
+    rm -f "$_out"
+    return 1
+  fi
+
+  export "$var_name"="$(cat "$_out")"
+  rm -f "$_out"
+  _claude_log "loaded secret: $var_name"
+  return 0
+}
+
+# Load multiple secrets concurrently.
+# Usage: load_secrets_parallel VAR1 op://path1 VAR2 op://path2 ...
+# Returns number of failed secrets (0 on full success).
+load_secrets_parallel() {
+  if [ -n "$DISABLE_SECRETS" ]; then
+    _claude_log "load_secrets_parallel: skipping (DISABLE_SECRETS is set)"
+    return 0
+  fi
+
+  local -a _pids _names _files
+  local _dir; _dir=$(mktemp -d) || { _claude_log_error "load_secrets_parallel: mktemp -d failed"; return 1; }
+
+  while [ $# -ge 2 ]; do
+    local _name="$1" _path="$2"
+    shift 2
+    [ -n "${(P)_name}" ] && continue
+    _claude_log "loading secret: $_name"
+    local _f="$_dir/$_name"
+    _load_secret_to_file "$_name" "$_path" "$_f" &
+    _pids+=($!)
+    _names+=("$_name")
+    _files+=("$_f")
+  done
+
+  local _n=${#_pids[@]} _failed=0 _i
+  for ((_i=1; _i<=_n; _i++)); do
+    if wait "${_pids[$_i]}" && [ -s "${_files[$_i]}" ]; then
+      export "${_names[$_i]}"="$(cat "${_files[$_i]}")"
+      _claude_log "loaded secret: ${_names[$_i]}"
+    else
+      _failed=$((_failed + 1))
+    fi
+  done
+
+  rm -rf "$_dir"
+  return $_failed
 }
 
 # Shared API key setup (used by both Claude tools and Ralph scripts)
+# Loads all secrets concurrently.
 setup_claude_tools() {
-  load_secret PERPLEXITY_API_KEY "op://Remote Agents/Perplexity API Key/credential"
-  load_secret CONTEXT7_API_KEY "op://Remote Agents/Context7 API Key/credential"
-  load_secret BROWSER_USE_API_KEY "op://Remote Agents/Browser-use API Key/credential"
-  load_secret SCRAPEGRAPH_API_KEY "op://Remote Agents/ScrapegraphAI API Key/credential"
+  _claude_log "setup_claude_tools: starting"
+  local _failed=0
+
+  load_secrets_parallel \
+    PERPLEXITY_API_KEY "op://Remote Agents/Perplexity API Key/credential" \
+    CONTEXT7_API_KEY "op://Remote Agents/Context7 API Key/credential" \
+    BROWSER_USE_API_KEY "op://Remote Agents/Browser-use API Key/credential" \
+    SCRAPEGRAPH_API_KEY "op://Remote Agents/ScrapegraphAI API Key/credential"
+  _failed=$?
+
+  if [ "$_failed" -gt 0 ]; then
+    _claude_log_error "setup_claude_tools: $_failed secret(s) failed to load"
+  else
+    _claude_log "setup_claude_tools: all secrets loaded"
+  fi
+  return 0  # don't block claude from starting even if secrets fail
 }
 
 # Claude Code with lazy API key loading
