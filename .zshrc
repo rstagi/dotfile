@@ -100,10 +100,6 @@ source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zs
 export PATH="/Users/rstagi/.local/bin:$PATH"
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
 
-# OpenClaw Completion (cached, refreshed in background)
-[ -f ~/.zsh_completions/_openclaw ] && source ~/.zsh_completions/_openclaw
-{ openclaw completion --shell zsh > ~/.zsh_completions/_openclaw &! } 2>/dev/null
-
 # pnpm
 export PNPM_HOME="/Users/rstagi/Library/pnpm"
 case ":$PATH:" in
