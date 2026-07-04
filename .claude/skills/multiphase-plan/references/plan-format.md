@@ -16,6 +16,10 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 
 ## Document template
 
+> The template below shows four phases across two lanes purely to illustrate every marker.
+> It is **not** a target shape — most real plans are a single lane (`[lane: A]` on every
+> phase) with no "Parallel execution guide" section. Do not add lanes to match this example.
+
 ```markdown
 # <Effort name> — Multi-Phase Plan
 
@@ -96,9 +100,13 @@ downloading.
 
 ## Rules
 
-- **No fake parallelism.** Two phases go in different lanes only if they can truly proceed
-  without waiting on each other and without heavy contention over the same files. When work
-  is inherently sequential, produce a single-lane plan.
+- **No fake parallelism — default to one lane.** Decompose the work into the phases it
+  naturally has first; only then look for independence. Split phases into separate lanes
+  only when they pass all three independence checks (no dependency, low file contention, no
+  coordination tax — see `multiphase-plan` step 2 → Independence test). Never reshape,
+  split, or reorder phases, and never add stubs/mocks/frozen interfaces/flags, just to
+  enable parallel work. A fully sequential, single-lane plan is the expected outcome for
+  most efforts; more lanes is not better. When in doubt, keep it sequential.
 - **Every phase has a testable *Done when*.** A phase without acceptance criteria can't be
   claimed or handed off cleanly.
 - **Plan doc and Kestral tasks cross-reference.** Each phase's **Task:** line links its

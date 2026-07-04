@@ -1,21 +1,28 @@
 ---
 name: multiphase-plan
 description: >-
-  Turn a goal into a multi-phase implementation plan with explicit parallelization
-  hints (independent lanes you can run in separate Conductor worktrees), then publish
-  it to Kestral as a plan document + phase tasks on a new or existing project. Use when
-  asked to "plan this out", "make a multi-phase plan", "break this into parallel phases",
-  "put a plan on Kestral", or before spinning up parallel worktrees for a larger effort.
+  Turn a goal into a multi-phase implementation plan, marking any genuinely independent
+  lanes that could run in separate Conductor worktrees (and staying fully sequential when
+  the work doesn't parallelize), then publish it to Kestral as a plan document + phase
+  tasks on a new or existing project. Use when asked to "plan this out", "make a
+  multi-phase plan", "break this into parallel phases", "put a plan on Kestral", or before
+  spinning up parallel worktrees for a larger effort.
 argument-hint: "<goal, or existing Kestral project name> (optional)"
 ---
 
 # Multi-Phase Plan → Kestral
 
-Produce a phased plan whose phases are grouped into **lanes** that can be worked
-concurrently in separate worktrees (Conductor), and store it on Kestral as the shared
-source of truth so any coding agent — **Claude Code or Codex** — can pick up a lane and
-continue. Pairs with `kestral-pickup` (start a lane in a fresh worktree) and
+Produce a correct phased plan, and store it on Kestral as the shared source of truth so any
+coding agent — **Claude Code or Codex** — can pick it up and continue. *Where the work
+genuinely allows it*, mark phases into **lanes** that can be worked concurrently in separate
+worktrees (Conductor). Pairs with `kestral-pickup` (start a lane in a fresh worktree) and
 `kestral-handoff` (reconcile progress and repush the plan).
+
+**Correctness before parallelism.** The job is a plan that reflects the real shape of the
+work. Parallelism is an *observation* about that plan (some phases happen to be
+independent), never a *goal* you bend the plan toward. A fully sequential, single-lane plan
+is a normal, expected, good outcome — most plans are mostly sequential. More lanes is not
+better.
 
 ## Prerequisites
 
@@ -49,21 +56,39 @@ Author the plan in the **canonical plan format** (see
 `kestral-pickup` parse the same markers). The plan must decide:
 
 - **Phases** — each a coherent, independently-reviewable unit of work with a clear
-  *Done when* (acceptance criteria). Order them; record `Depends on` edges.
-- **Lanes** — group phases into lanes that can run **in parallel in separate worktrees**.
-  A lane is a chain of phases one agent/worktree owns start-to-finish. Two phases belong
-  in different lanes only when they are genuinely independent — verify against the shared
-  files you found in step 1.
-- **Parallelization guide** — for each lane, which worktree runs it and what it can start
-  on immediately; the **integration points** (where lanes merge and who owns the merge);
-  and a **conflict watch** listing files/areas that multiple lanes touch (so owners rebase
-  before merging).
+  *Done when* (acceptance criteria). Decompose the work into the phases it *naturally* has
+  — the phases you'd write with no parallelism in mind at all. Order them; record
+  `Depends on` edges.
+- **Lanes** — **default: one lane, fully sequential.** A lane is a chain of phases one
+  worktree owns start-to-finish. Only after the phases exist, look for independence and
+  split into separate lanes — and only when they pass the **Independence test** below.
+- **Parallelization guide** — *only if there are 2+ lanes.* For each lane, which worktree
+  runs it and what it can start on immediately; the **integration points** (where lanes
+  merge and who owns the merge); and a **conflict watch** listing files/areas that multiple
+  lanes touch. If there's one lane, omit this section.
 - **Suggested branch** per phase (e.g. `phase-2-oauth-tokens`) so `kestral-pickup` and
   `kestral-sync` can claim a branch deterministically.
 
-Be honest about parallelism: if the work is inherently sequential, say so and produce a
-single-lane plan rather than inventing fake independence. Silent over-parallelization
-causes merge pain.
+#### Independence test (the safety gate of this skill)
+
+Two phases may go in **different lanes** only when **all three** hold. If any fails, keep
+them in the **same** lane:
+
+1. **No dependency** — neither needs the other's output; both can start from current `main`.
+2. **Low file contention** — they don't edit the same files/modules. Incidental overlap
+   (a shared type, a config line) is tolerable only if a tiny, one-time interface is
+   settled up front and listed in the conflict watch — not if they'd fight over the same
+   core files.
+3. **No coordination tax** — parallelizing them does **not** require stubs, mocks, frozen
+   interfaces, feature flags, duplicated scaffolding, or any seam you wouldn't otherwise
+   write. If parallelism only works by adding artificial structure or making "something
+   weird" happen, it isn't worth it — sequence them instead.
+
+**Never reshape, split, or reorder the natural phases to manufacture parallelism.** When in
+doubt, keep phases sequential — that is always the safe answer. If the work is inherently
+sequential, produce a single-lane plan and say so plainly; that is a success, not a
+shortfall. Silent over-parallelization causes merge pain and is the exact failure this gate
+exists to prevent.
 
 ### 3. Resolve the target project
 
@@ -108,11 +133,23 @@ block so the other skills can find the Kestral source (see `references/plan-form
 `kestral-handoff` repush from here. Mention the user can add `.kestral/` to `.gitignore` if
 they don't want the plan committed.
 
-### 6. Report + hand off to parallel work
+### 6. Report
 
-Summarize so the user can fan out into Conductor worktrees:
+State the shape honestly — do not imply parallelism that isn't there.
 
-> **Plan published:** [<Effort> — Multi-Phase Plan](doc-url) on [project](project-url) · N phases in M lanes.
+**Single-lane (sequential) plan — the common case:**
+
+> **Plan published:** [<Effort> — Multi-Phase Plan](doc-url) on [project](project-url) ·
+> N phases, sequential.
+>
+> This work is sequential — each phase builds on the last, so it runs in one worktree in
+> order. Start with **Phase 1**: run **`/kestral-pickup <project>`** (Codex:
+> **`$kestral-pickup`**). When a phase advances, run **`/kestral-handoff`** to repush the plan.
+
+**Multi-lane plan — only when phases passed the Independence test:**
+
+> **Plan published:** [<Effort> — Multi-Phase Plan](doc-url) on [project](project-url) ·
+> N phases in M lanes.
 >
 > **Parallel lanes:**
 > - **Lane A** (worktree 1): Phase 1 → Phase 3 — start now.
@@ -123,6 +160,10 @@ Summarize so the user can fan out into Conductor worktrees:
 > In each new Conductor worktree, run **`/kestral-pickup <project>`** (Codex:
 > **`$kestral-pickup`**) and claim its lane. When a lane advances, run **`/kestral-handoff`**
 > to reconcile and repush the plan.
+
+If you split into lanes, be ready to justify each split against the Independence test if the
+user asks. If it was a close call, prefer reporting it as sequential and note the *optional*
+parallelism rather than presenting it as the required structure.
 
 ## Cross-agent notes
 
