@@ -58,7 +58,9 @@ Author the plan in the **canonical plan format** (see
 - **Phases** — each a coherent, independently-reviewable unit of work with a clear
   *Done when* (acceptance criteria). Decompose the work into the phases it *naturally* has
   — the phases you'd write with no parallelism in mind at all. Order them; record
-  `Depends on` edges.
+  `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
+  refresh endpoint"), never "Phase 1" or a vague label — the title seeds the Kestral task
+  title and usually the PR title.
 - **Lanes** — **default: one lane, fully sequential.** A lane is a chain of phases one
   worktree owns start-to-finish. Only after the phases exist, look for independence and
   split into separate lanes — and only when they pass the **Independence test** below.
@@ -66,8 +68,12 @@ Author the plan in the **canonical plan format** (see
   runs it and what it can start on immediately; the **integration points** (where lanes
   merge and who owns the merge); and a **conflict watch** listing files/areas that multiple
   lanes touch. If there's one lane, omit this section.
-- **Suggested branch** per phase (e.g. `phase-2-oauth-tokens`) so `kestral-pickup` and
-  `kestral-sync` can claim a branch deterministically.
+- **Suggested branch** per phase — a **descriptive** `<type>/<imperative-outcome-slug>`
+  (e.g. `feat/oauth-token-refresh`, `refactor/invoice-retry-state`), so `kestral-pickup` and
+  `kestral-sync` claim it deterministically and the worktree/commits/PR all read clearly.
+  **Name the work, not the index:** never `phase-4`, `<effort>-phase-N`, or a bare number —
+  the phase↔branch link is carried by the `phase:<N>` task tag and this plan doc, so it must
+  not clutter the branch name. See "Naming" in `references/plan-format.md`.
 
 #### Independence test (the safety gate of this skill)
 

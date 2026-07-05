@@ -77,9 +77,16 @@ Apply `kestral-sync`'s **Conflict Check** so two worktrees don't collide:
 Confirm with the user, then claim the task + branch. Prefer invoking **`kestral-sync`**
 (it owns branch derivation, `claim_task_and_branch`, status discovery, and the 409
 already-linked conflict signal). Use the phase's **Suggested branch** from the plan as the
-branch name. Create/switch to that git branch in the worktree.
+branch name. Create/switch to that git branch in the worktree — the Conductor worktree,
+commits, and PR all inherit this name, so it must describe the work.
 
-> Claiming **[slug] - <phase title>** on branch `phase-3-...`, set to In Progress. Proceed?
+**If the suggested branch is missing or non-descriptive** (a bare `phase-N`, an
+`<effort>-phase-N`, or just a number), do not use it — derive a descriptive
+`<type>/<imperative-outcome-slug>` from the phase title instead (e.g. phase "Add OAuth token
+refresh endpoint" → `feat/oauth-token-refresh`) and offer to fix the plan's `Suggested
+branch` line on the next `kestral-handoff`.
+
+> Claiming **[slug] - <phase title>** on branch `feat/oauth-token-refresh`, set to In Progress. Proceed?
 
 ### 5. Load focused context and start
 

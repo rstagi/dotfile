@@ -36,36 +36,40 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 
 ## Phases
 
-### Phase 1 — <title> `[lane: A]` `[status: todo]`
+> Phase headings and branch names below are **descriptive** — they name what the phase
+> *does*, not its position. The `Phase N` label lives only in the marker/tags, never in the
+> branch, worktree, commit, or PR name. (See "Naming" in the Rules section.)
+
+### Phase 1 — Add OAuth token refresh endpoint `[lane: A]` `[status: todo]`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** none
 - **Parallelizable with:** Phase 2 (independent)
-- **Suggested branch:** `phase-1-<slug>`
+- **Suggested branch:** `feat/oauth-token-refresh`
 - **Touches:** <files / modules / areas — for conflict awareness>
 - **Done when:** <acceptance criteria, testable>
 - **Notes:** <optional>
 
-### Phase 2 — <title> `[lane: B]` `[status: todo]`
+### Phase 2 — Migrate invoice retry to a state machine `[lane: B]` `[status: todo]`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** none
 - **Parallelizable with:** Phase 1 (independent)
-- **Suggested branch:** `phase-2-<slug>`
+- **Suggested branch:** `refactor/invoice-retry-state`
 - **Touches:** <...>
 - **Done when:** <...>
 
-### Phase 3 — <title> `[lane: A]` `[status: todo]`
+### Phase 3 — Use refreshed tokens in the API client `[lane: A]` `[status: todo]`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 1
 - **Parallelizable with:** Phase 2 (independent)
-- **Suggested branch:** `phase-3-<slug>`
+- **Suggested branch:** `feat/api-client-token-refresh`
 - **Touches:** <...>
 - **Done when:** <...>
 
-### Phase 4 — <title> `[lane: integration]` `[status: todo]`
+### Phase 4 — Integrate auth + billing paths and run e2e `[lane: integration]` `[status: todo]`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 3, Phase 2
 - **Parallelizable with:** none — integration point
-- **Suggested branch:** `phase-4-<slug>`
+- **Suggested branch:** `chore/integrate-auth-billing`
 - **Touches:** <...>
 - **Done when:** <both lanes merged and green>
 
@@ -113,3 +117,16 @@ downloading.
   task; each task carries `tags: ["phase:<N>", "lane:<X>"]`.
 - **Status lives in two places, kept in lockstep:** the `[status: …]` marker in the doc and
   the linked task's Kestral status. `kestral-handoff` updates both.
+- **Naming: describe the work, never the index.** Phase titles, `Suggested branch`,
+  worktrees, commits, and PRs must say *what the change does* — never `phase-4`,
+  `product-split-phase-4`, `<effort>-phase-N`, or a bare number. The phase↔branch link is
+  already carried by the `phase:<N>` task tag and the plan doc, so it does not belong in the
+  branch name.
+  - **Phase title** — an imperative outcome: "Add OAuth token refresh endpoint", not
+    "Phase 1" or "Auth stuff". This title seeds the task title and usually the PR title.
+  - **Suggested branch** — `<type>/<imperative-outcome-slug>`, kebab-case, where `<type>` is
+    a conventional prefix (`feat`, `fix`, `refactor`, `chore`, `docs`, `test`). E.g.
+    `feat/oauth-token-refresh`, `refactor/invoice-retry-state`. Keep it under ~50 chars, no
+    phase number, no effort prefix.
+  - Bad → good: `product-split-phase-4` → `chore/integrate-auth-billing`;
+    `phase-2-oauth` → `feat/oauth-token-refresh`.
