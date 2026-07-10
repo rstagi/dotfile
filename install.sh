@@ -532,8 +532,24 @@ install_claude_config() {
     ln -sfn ~/dotfile/.claude/agents ~/.claude/agents
     ln -sfn ~/dotfile/.claude/skills ~/.claude/skills
 
-    # Symlink global CLAUDE.md reference in dotfile repo
-    ln -sfn ~/.claude/CLAUDE.md ~/dotfile/CLAUDE_GLOBAL.md
+    # Symlink global instruction files from dotfile repo
+    ln -sfn ~/dotfile/CLAUDE_GLOBAL.md ~/.claude/CLAUDE.md
+    mkdir -p ~/.codex
+    ln -sfn ~/dotfile/AGENTS_GLOBAL.md ~/.codex/AGENTS.md
+
+    # Let Codex reuse repository-level CLAUDE.md files when AGENTS.md is absent
+    local codex_config="$HOME/.codex/config.toml"
+    touch "$codex_config"
+    if ! grep -q "^project_doc_fallback_filenames" "$codex_config"; then
+      local tmp_config
+      tmp_config=$(mktemp)
+      {
+        echo 'project_doc_fallback_filenames = ["CLAUDE.md"]'
+        echo
+        cat "$codex_config"
+      } > "$tmp_config"
+      mv "$tmp_config" "$codex_config"
+    fi
 
     # Add MCP servers (idempotent — auth handled manually per device)
     local mcp_list
