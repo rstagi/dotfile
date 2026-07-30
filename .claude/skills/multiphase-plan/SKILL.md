@@ -61,6 +61,15 @@ Author the plan in the **canonical plan format** (see
   `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
   refresh endpoint"), never "Phase 1" or a vague label — the title seeds the Kestral task
   title and usually the PR title.
+- **Slices, not layers** — for full-stack work, each phase is a **vertical slice**: the
+  backend *and* the frontend of one user-visible capability ship in the same phase, never
+  "all the backend phases, then all the frontend phases". (Within a slice the backend is
+  still built first, the frontend taps in after — but as one phase, one branch, one PR.)
+  If a slice is genuinely too big for one phase, split it into adjacent backend and
+  frontend phases — but they stay in the **same lane**, share the **same `Suggested
+  branch`**, and land in the **same PR**; mark each with "same PR as Phase N" in its
+  Notes. A layer-only phase is legitimate only when the work itself is single-layer
+  (pure API change, pure UI polish) or a shared foundation several slices build on.
 - **Lanes** — **default: one lane, fully sequential.** A lane is a chain of phases one
   worktree owns start-to-finish. Only after the phases exist, look for independence and
   split into separate lanes — and only when they pass the **Independence test** below.
@@ -73,7 +82,9 @@ Author the plan in the **canonical plan format** (see
   `kestral-sync` claim it deterministically and the worktree/commits/PR all read clearly.
   **Name the work, not the index:** never `phase-4`, `<effort>-phase-N`, or a bare number —
   the phase↔branch link is carried by the `phase:<N>` task tag and this plan doc, so it must
-  not clutter the branch name. See "Naming" in `references/plan-format.md`.
+  not clutter the branch name. See "Naming" in `references/plan-format.md`. Exception:
+  phases that split one vertical slice (see **Slices, not layers**) share a single branch —
+  name it after the capability, not the layer.
 
 #### Independence test (the safety gate of this skill)
 
@@ -117,17 +128,25 @@ After approval:
 
 1. **Plan document:** `execute_operation("create_document", { title: "<Effort> — Multi-Phase Plan", content: "<canonical markdown>", projectId })`.
    Capture the returned document id (`workContextId`) and `url`.
-2. **Phase tasks:** `execute_operation("create_tasks_batch", { projectId, tasks })` — one
-   task per phase. For each task set `title` = phase title, `description` = the phase's
-   *Depends on* / *Parallelizable with* / *Touches* / *Done when* / *Suggested branch*,
-   `priority`, and `tags: ["phase:<N>", "lane:<X>"]` (Kestral has no native phase/dependency
-   fields — tags + the plan doc carry that structure). Use `list_statuses` if you need a
-   non-default starting status. Capture each returned `slug` + `url`.
-   - Use `create_task` with a `subtasks` array instead when a phase has meaningful
-     sub-steps worth tracking individually.
+2. **One parent effort task + phase subtasks** (1 plan = 1 task with N subtasks — never N
+   top-level tasks):
+   1. Parent: `execute_operation("create_task", { projectId, title, description, priority,
+      tags: ["multiphase-plan"] })` — `title` = the imperative effort outcome, `description`
+      = goal summary + lane overview + link to the plan doc. Capture its `id`/`slug`/`url`.
+   2. One subtask per phase: `create_task` with `parentTaskId` = the parent's id, `title` =
+      phase title, `description` = the phase's *Depends on* / *Parallelizable with* /
+      *Touches* / *Done when* / *Suggested branch* + plan-doc link, `priority`, and
+      `tags: ["phase:<N>", "lane:<X>"]` (Kestral has no native phase/dependency fields —
+      tags + the plan doc carry that structure). Create subtasks individually: the
+      `subtasks` param on `create_task` accepts bare title strings only, and
+      `create_tasks_batch` can't attach to a parent. If the dedupe gate blocks a legitimate
+      phase (near-title of existing work), retry with `duplicatePolicy: "create_anyway"` +
+      `overrideReason`. Use `list_statuses` if you need a non-default starting status.
+      Capture each returned `slug` + `url`.
 3. **Back-link tasks into the plan:** `execute_operation("update_document", { workContextId, content })`
-   — fill each phase's **Task:** line with `[<slug> - <title>](task-url)` now that the
-   tasks exist. The plan doc and the tasks must cross-reference.
+   — add an `**Effort task:**` line to the doc header linking the parent, and fill each
+   phase's **Task:** line with `[<slug> - <title>](task-url)` now that the subtasks exist.
+   The plan doc and the tasks must cross-reference.
 4. **Trigger brain:** `execute_operation("trigger_brain_build", { projectId })` so the
    Project Brain absorbs the new plan + tasks.
 

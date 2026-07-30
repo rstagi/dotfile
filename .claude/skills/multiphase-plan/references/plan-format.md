@@ -27,6 +27,7 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 **Last updated:** <YYYY-MM-DD> by <host: Claude Code | Codex> (<worktree/branch>)
 **Kestral project:** [<project name>](project-url)
 **Plan doc:** [<title>](doc-url)  ·  workContextId: `<id>`
+**Effort task:** [<slug> - <title>](task-url) — phases are its subtasks
 
 ## Goal
 <What we're building and why. 2–4 sentences.>
@@ -111,10 +112,19 @@ downloading.
   split, or reorder phases, and never add stubs/mocks/frozen interfaces/flags, just to
   enable parallel work. A fully sequential, single-lane plan is the expected outcome for
   most efforts; more lanes is not better. When in doubt, keep it sequential.
+- **Vertical slices, not layers.** For full-stack work a phase delivers the backend *and*
+  frontend of one capability together — never a backend-only phase followed later by its
+  frontend-only phase. If a slice is too big for one phase, its backend and frontend phases
+  must sit in the same lane, share one `Suggested branch`, and land in the same PR — record
+  "same PR as Phase N" in both phases' **Notes:**. Layer-only phases are fine only for
+  genuinely single-layer work or a shared foundation several slices build on.
 - **Every phase has a testable *Done when*.** A phase without acceptance criteria can't be
   claimed or handed off cleanly.
+- **One parent effort task per plan; phases are its subtasks.** The plan maps to a single
+  Kestral parent task (tag `multiphase-plan`, linked from the doc's `**Effort task:**`
+  line); each phase is a subtask of it (`parentTaskId`), never a sibling top-level task.
 - **Plan doc and Kestral tasks cross-reference.** Each phase's **Task:** line links its
-  task; each task carries `tags: ["phase:<N>", "lane:<X>"]`.
+  subtask; each subtask carries `tags: ["phase:<N>", "lane:<X>"]`.
 - **Status lives in two places, kept in lockstep:** the `[status: …]` marker in the doc and
   the linked task's Kestral status. `kestral-handoff` updates both.
 - **Naming: describe the work, never the index.** Phase titles, `Suggested branch`,
