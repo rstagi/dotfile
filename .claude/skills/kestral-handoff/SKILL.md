@@ -44,7 +44,8 @@ Resolve the Kestral plan document and its project, in this order — stop at the
 
 If there is genuinely no plan document (ad-hoc work, not a `multiphase-plan` effort), fall
 back to a lighter handoff: sync the task via `kestral-sync` and, if the user wants a
-narrative handoff, invoke the generic `handoff` skill. Don't fabricate a plan doc.
+narrative handoff, invoke the generic `handoff` skill. Don't fabricate a plan doc. (In auto
+mode there is no fallback — see **Auto mode**.)
 
 ### 2. Reconcile current state against the plan
 
@@ -73,7 +74,8 @@ Redact secrets (API keys, tokens, PII) — never write them into the plan or com
 
 ### 4. Repush to Kestral (the "handoff")
 
-Show the user the before/after of the changed plan sections and confirm, then:
+Show the user the before/after of the changed plan sections and confirm (skipped entirely
+in auto mode), then:
 
 1. **Plan document:** `execute_operation("update_document", { workContextId, content })`
    with the full updated markdown. (If the plan only ever existed locally — never
@@ -106,6 +108,38 @@ End with a crisp resume instruction — the next chat is fresh (no memory of thi
 
 If the user passed an argument, treat it as what the next session should focus on and steer
 the "Next up" line accordingly.
+
+## Auto mode
+
+`kestral-handoff --auto phase:<N> status:<done|blocked|in-progress> [lane:<X>
+engine:<codex|claude>]` — used only inside the `kestral-loop` flow (contract:
+`../kestral-loop/references/loop-protocol.md`), in two contexts distinguished by the
+status value:
+
+- **`status:in-progress` — the runner**, at the end of its headless session:
+  implementation complete, awaiting merge. **Task-scoped ops only**: update the local
+  `.kestral/plan.md` copy, `post_progress_comment`, keep/confirm the task's in-progress
+  status. **Never `update_document`** — the orchestrator is the sole plan-doc writer.
+- **`status:done|blocked` — the orchestrator**, post-merge (or on HIL pause): the full
+  handoff including the plan-doc repush. It has already run the verify gate and the
+  merge — apply the verdict, don't re-decide.
+
+Differences from the interactive flow (both contexts):
+
+- **No confirmation gate:** skip step 4's before/after confirmation — repush without
+  asking.
+- **No fallback, no questions:** never fall back to the generic `handoff` skill. If the
+  plan doc can't be located (step 1 exhausted), return `REFUSED: <reason>` to the caller
+  instead of asking.
+- **Loop-mode status semantics:** `[status: done]` = merged into the integration branch
+  (the plan's Loop config names it). The human PR-merge gate applies to the single effort
+  PR, so do NOT call `complete_task_with_review` per phase — use `update_task_status` +
+  `post_progress_comment` only. PR linking happens once at effort completion (the caller
+  does it via `link_pr_to_task`).
+- **Progress log:** entries carry the lane + engine that did the work (the caller passes
+  them), e.g. "via loop lane A (codex)".
+- **Redaction is on you:** in auto mode nobody reviews the content before repush — step 3's
+  redact-secrets rule is non-negotiable.
 
 ## Cross-agent notes
 

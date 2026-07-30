@@ -68,6 +68,10 @@ Author the plan in the **canonical plan format** (see
   runs it and what it can start on immediately; the **integration points** (where lanes
   merge and who owns the merge); and a **conflict watch** listing files/areas that multiple
   lanes touch. If there's one lane, omit this section.
+- **Verify** per phase — where one exists, a runnable **Verify:** command (exit 0 = pass)
+  that checks the phase's *Done when*. Ask the user for the effort-wide verify command, and
+  whether this effort will run under `kestral-loop` — if yes, emit the **Loop config**
+  section per `references/plan-format.md`.
 - **Suggested branch** per phase — a **descriptive** `<type>/<imperative-outcome-slug>`
   (e.g. `feat/oauth-token-refresh`, `refactor/invoice-retry-state`), so `kestral-pickup` and
   `kestral-sync` claim it deterministically and the worktree/commits/PR all read clearly.
@@ -151,6 +155,7 @@ State the shape honestly — do not imply parallelism that isn't there.
 > This work is sequential — each phase builds on the last, so it runs in one worktree in
 > order. Start with **Phase 1**: run **`/kestral-pickup <project>`** (Codex:
 > **`$kestral-pickup`**). When a phase advances, run **`/kestral-handoff`** to repush the plan.
+> Automated path: **`/kestral-loop <project>`** once the plan is published.
 
 **Multi-lane plan — only when phases passed the Independence test:**
 
@@ -166,6 +171,7 @@ State the shape honestly — do not imply parallelism that isn't there.
 > In each new Conductor worktree, run **`/kestral-pickup <project>`** (Codex:
 > **`$kestral-pickup`**) and claim its lane. When a lane advances, run **`/kestral-handoff`**
 > to reconcile and repush the plan.
+> Automated path: **`/kestral-loop <project>`** once the plan is published.
 
 If you split into lanes, be ready to justify each split against the Independence test if the
 user asks. If it was a close call, prefer reporting it as sequential and note the *optional*
