@@ -26,6 +26,7 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
+zsh -n loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh
 ```
 
 ## Architecture
@@ -36,6 +37,11 @@ ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
 ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
 afk-ralph.sh            Legacy Docker sandbox mode
+loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
+loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
+loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-in Telegram)
+loop-state.sh           Loop engineering: state.json ops, run lock, event journal
+loop-models.conf        Loop engineering: model chains, budgets, timeouts
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
@@ -44,6 +50,8 @@ afk-ralph.sh            Legacy Docker sandbox mode
 **Extension system:** install.sh appends `source ~/dotfile/.zshrc_<tool>_ext` lines to `~/.zshrc_ext`. Main `.zshrc` sources that file if it exists.
 
 **Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx).
+
+**Loop engineering:** `.claude/skills/kestral-loop` orchestrates a published multiphase-plan end-to-end (headless runners per phase, single integration branch + PR, escalation → HIL, auto pr-review). Contract: `.claude/skills/kestral-loop/references/loop-protocol.md`; mechanism: the `loop-*.sh` scripts above.
 
 ## Git Aliases (from .zshrc_git_ext)
 

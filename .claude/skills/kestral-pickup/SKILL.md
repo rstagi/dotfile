@@ -6,7 +6,7 @@ description: >-
   sibling worktrees, claim the phase task + branch, and load just enough context to start.
   Use at the start of a new Conductor worktree or clean chat, or when asked to "pick up the
   plan", "resume the Kestral effort", "start a lane", or "continue where the handoff left off".
-argument-hint: "<project name> [lane/phase] (optional)"
+argument-hint: "<project name> [lane/phase] (optional) | --auto <project> phase:<N>"
 ---
 
 # Kestral Pickup
@@ -93,11 +93,36 @@ branch` line on the next `kestral-handoff`.
 Pull only what this phase needs — its task description (*Depends on* / *Touches* /
 *Done when*), the relevant plan sections, and any linked docs/brain bullets. Summarize in a
 few lines, then explore the code paths the phase *Touches* and outline the first concrete
-steps. Hand control back to the user to begin implementation.
+steps. Hand control back to the user to begin implementation (in auto mode, return the
+digest to the caller instead — see **Auto mode**).
 
 > Ready on **Phase 3 — <title>**. Done when: <criteria>. Touches: <areas>. First steps: …
 > When this lane advances or you switch worktrees, run **`/kestral-handoff`**
 > (Codex: **`$kestral-handoff`**) to repush the plan.
+
+## Auto mode
+
+`kestral-pickup --auto <project> phase:<N>` — executed by a `kestral-loop` **runner** at
+the start of its headless session, inside the lane worktree the orchestrator created (see
+`../kestral-loop/references/loop-protocol.md`); never in a human-facing session unasked.
+Every "ask the user" gate becomes deterministic:
+
+- **Step 1 still re-fetches** the plan from Kestral — freshness matters even more with
+  parallel lanes.
+- **No lane menu (step 2):** the given phase *is* the choice.
+- **No claim confirmation (step 4), no git action:** you are already in the lane worktree
+  on the pre-created branch — verify `git branch --show-current` matches the phase's
+  **Suggested branch** (mismatch → `REFUSED`), then claim via `claim_task_and_branch` with
+  that branch. Re-claiming a branch already linked to your own task is a no-op; never
+  create or switch branches.
+- **Refuse instead of asking:** any condition that would normally ask — task already
+  claimed by someone else / 409, plan missing, phase blocked (unmet *Depends on*),
+  ambiguous project — emit a one-line structured refusal: `REFUSED: <reason>`, then (per
+  the loop protocol) write the runner's `status.json` with outcome `blocked` and stop.
+  Never ask, never work around, never steal a claim.
+- **Step 5 flows into implementation:** build the focused context digest (*Done when* /
+  *Touches* / first steps) and continue straight into the work — there is no user to hand
+  control back to.
 
 ## Cross-agent notes
 

@@ -29,6 +29,15 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 **Plan doc:** [<title>](doc-url)  ·  workContextId: `<id>`
 **Effort task:** [<slug> - <title>](task-url) — phases are its subtasks
 
+## Loop config
+
+> Optional — present only when the effort will run under `kestral-loop`. Omit otherwise.
+
+- **Integration branch:** `<type>/<effort-slug>`
+- **Verify:** `<command>`   (effort-wide gate; per-phase **Verify:** lines override it)
+- **PR:** _none yet_   (filled by kestral-loop)
+- **Concurrency:** 3
+
 ## Goal
 <What we're building and why. 2–4 sentences.>
 
@@ -48,6 +57,7 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 - **Suggested branch:** `feat/oauth-token-refresh`
 - **Touches:** <files / modules / areas — for conflict awareness>
 - **Done when:** <acceptance criteria, testable>
+- **Verify:** <optional — runnable acceptance check, exit 0 = pass>
 - **Notes:** <optional>
 
 ### Phase 2 — Migrate invoice retry to a state machine `[lane: B]` `[status: todo]`
@@ -57,6 +67,7 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 - **Suggested branch:** `refactor/invoice-retry-state`
 - **Touches:** <...>
 - **Done when:** <...>
+- **Verify:** <optional — runnable acceptance check, exit 0 = pass>
 
 ### Phase 3 — Use refreshed tokens in the API client `[lane: A]` `[status: todo]`
 - **Task:** [<slug> - <title>](task-url)
@@ -119,10 +130,14 @@ downloading.
   "same PR as Phase N" in both phases' **Notes:**. Layer-only phases are fine only for
   genuinely single-layer work or a shared foundation several slices build on.
 - **Every phase has a testable *Done when*.** A phase without acceptance criteria can't be
-  claimed or handed off cleanly.
+  claimed or handed off cleanly. A runnable **Verify:** line (a command, exit 0 = pass) is
+  what lets `kestral-loop` enforce the *Done when* mechanically.
 - **One parent effort task per plan; phases are its subtasks.** The plan maps to a single
   Kestral parent task (tag `multiphase-plan`, linked from the doc's `**Effort task:**`
   line); each phase is a subtask of it (`parentTaskId`), never a sibling top-level task.
+- **Loop mode ships as ONE PR.** When a Loop config section exists, per-phase Suggested
+  branches are short-lived lane branches cut from the integration branch tip and merged
+  back; no per-phase PRs; `[status: done]` = merged into the integration branch.
 - **Plan doc and Kestral tasks cross-reference.** Each phase's **Task:** line links its
   subtask; each subtask carries `tags: ["phase:<N>", "lane:<X>"]`.
 - **Status lives in two places, kept in lockstep:** the `[status: …]` marker in the doc and
