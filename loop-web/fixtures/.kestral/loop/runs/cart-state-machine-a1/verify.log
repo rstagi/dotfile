@@ -1,0 +1,5 @@
+> npm run test:cart
+FAIL  src/cart/state.test.ts
+  ● deterministic transitions
+    Expected: "settled"  Received: "pending"
+Tests: 1 failed, 11 passed

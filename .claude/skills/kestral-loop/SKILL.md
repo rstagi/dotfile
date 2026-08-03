@@ -69,6 +69,19 @@ worktree (`~/.kestral-loop-worktrees/<repo>-integration`), and push it (the one 
 push — everything after goes through loop-merge). Write the branch back into the Loop
 config only if it was missing, set plan **Status: in progress**, repush the doc once.
 
+**Launch the observer (on by default).** Once `.kestral/loop/` exists, start the read-only
+**Loop Observatory** so the human can watch the graph live — it is detached, non-blocking,
+and only *reads* `.kestral/loop/`, so it can never affect the run:
+
+```sh
+[ -x ~/dotfile/loop-web.sh ] && { nohup ~/dotfile/loop-web.sh --dir "$PWD/.kestral/loop" \
+  --plan "$PWD/.kestral/plan.md" >~/.kestral-loop-web.log 2>&1 & disown; }
+```
+
+Print `http://localhost:7717` once so the human can open it. It's an optional dashboard —
+if `loop-web` isn't installed, skip silently; the loop never depends on it, and printing a
+URL is not a "contact" that breaks the confirm gate's promise.
+
 ### 4. Schedule
 
 A phase is READY when `[status: todo]`, all its `Depends on` phases are done, its lane has
@@ -161,7 +174,8 @@ journal, unlock, and stop — the human merges.
 
 - **resume** — re-lock with the state's run id, then reconcile per protocol (git > Kestral
   > state): finish/abort any in-progress merge first; re-attach or fail dead attempts;
-  repair status drift. Never double-spawn a phase with a live pid.
+  repair status drift. Never double-spawn a phase with a live pid. Relaunch the observer
+  (step 3) if nothing is already listening on the port.
 - **status** — print the lane table from state + live pids + last events; read-only.
 - **abort** — kill live runners, `--abort` any merge, flip in-progress phases back to
   todo, repush plan, notify, unlock. Leave worktrees for autopsy; tell the user the

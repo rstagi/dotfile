@@ -1,0 +1,4 @@
+{
+  "outcome": "done",
+  "summary": "Added the payments gateway client with contract tests. 24 tests green."
+}

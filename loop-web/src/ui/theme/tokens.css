@@ -1,0 +1,187 @@
+/*
+ * Phosphor Bench — the Loop Observatory look.
+ * An oscilloscope bench in a dark room: a phosphor-green graticule, an electric-aqua live
+ * trace, and a single hazard-amber alarm that is the loudest thing on screen by construction.
+ * Type: Chakra Petch (display / labels) + IBM Plex Mono (all data).
+ */
+
+:root {
+  /* --- surfaces (near-black, cold blue-green) --- */
+  --bg: #060a0d;
+  --bg-deep: #04070a;
+  --panel: #0b1116;
+  --panel-2: #0f171d;
+  --elevated: #131e25;
+  --graticule: #16242b; /* the oscilloscope grid */
+  --graticule-strong: #1e343d;
+  --hairline: #223038;
+
+  /* --- text (phosphor whites) --- */
+  --ink: #d9ebe6;
+  --ink-soft: #a7bcb6;
+  --ink-muted: #6f847e;
+  --ink-dim: #475853;
+
+  /* --- status: the load-bearing semantic palette --- */
+  --steel: #6b7f8c; /* todo */
+  --steel-bright: #93a8b5;
+  --aqua: #2ff3d0; /* running — the live trace */
+  --aqua-deep: #12b7a0;
+  --green: #55e08a; /* done / merged — settled phosphor */
+  --green-deep: #2fae66;
+  --red: #ff5568; /* problem / blocked — fault */
+  --red-deep: #d62f45;
+  --amber: #ffb300; /* HIL — hazard, loudest */
+  --amber-deep: #d98a00;
+  --violet: #9b8cff; /* awaiting-question accent */
+
+  /* --- glows (drop-shadows for the beam look) --- */
+  --glow-aqua: 0 0 12px rgba(47, 243, 208, 0.55), 0 0 2px rgba(47, 243, 208, 0.9);
+  --glow-green: 0 0 10px rgba(85, 224, 138, 0.45);
+  --glow-red: 0 0 14px rgba(255, 85, 104, 0.55);
+  --glow-amber: 0 0 22px rgba(255, 179, 0, 0.7), 0 0 4px rgba(255, 179, 0, 0.9);
+
+  /* --- type --- */
+  --font-display: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Menlo", monospace;
+
+  /* --- geometry --- */
+  --radius: 3px;
+  --radius-lg: 6px;
+  --rail-w: 300px;
+  --header-h: 58px;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-feature-settings: "ss01", "zero";
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* The bench backdrop: a faint graticule + a slow radial vignette for depth. */
+#root {
+  background-image:
+    radial-gradient(circle at 50% 0%, rgba(47, 243, 208, 0.05), transparent 55%),
+    linear-gradient(var(--graticule) 1px, transparent 1px),
+    linear-gradient(90deg, var(--graticule) 1px, transparent 1px);
+  background-size: 100% 100%, 34px 34px, 34px 34px;
+  background-position: 0 0, 0 0, 0 0;
+}
+
+::selection {
+  background: rgba(47, 243, 208, 0.28);
+  color: #fff;
+}
+
+/* Scrollbars — thin, on-brand. */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--graticule-strong);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2a4650;
+}
+
+/* Shared micro-type helpers. */
+.mono {
+  font-family: var(--font-mono);
+}
+.display {
+  font-family: var(--font-display);
+}
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/* --- the three load-bearing motions --- */
+
+/* 1. HEARTBEAT — the live trace glows and breathes. */
+@keyframes hb-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 2px rgba(47, 243, 208, 0.5));
+    opacity: 0.85;
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(47, 243, 208, 0.95));
+    opacity: 1;
+  }
+}
+/* the oscilloscope beam sweeping left→right across the trace */
+@keyframes hb-sweep {
+  from {
+    transform: translateX(-8%);
+  }
+  to {
+    transform: translateX(108%);
+  }
+}
+
+/* 2. FLATLINE — the trace has died: a dim, still line with a faint red warning breath. */
+@keyframes flat-warn {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+/* 3. HIL ALARM — 1Hz hazard pulse, edge-lit, unmissable. */
+@keyframes hil-alarm {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px var(--amber),
+      0 0 18px rgba(255, 179, 0, 0.35),
+      inset 0 0 12px rgba(255, 179, 0, 0.12);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px var(--amber),
+      0 0 34px rgba(255, 179, 0, 0.85),
+      inset 0 0 20px rgba(255, 179, 0, 0.28);
+  }
+}
+@keyframes hil-badge {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

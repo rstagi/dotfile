@@ -1,0 +1,9 @@
+{
+  "engine": "claude",
+  "model": "opus",
+  "sessionId": "sess-cart-1",
+  "headBefore": "c3c3c3c",
+  "headAfter": "d4d4d4d",
+  "engineExit": 0,
+  "timedOut": false
+}

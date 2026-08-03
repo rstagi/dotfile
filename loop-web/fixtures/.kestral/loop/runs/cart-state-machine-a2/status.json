@@ -1,0 +1,4 @@
+{
+  "outcome": "blocked",
+  "details": "The upstream cart API contract (src/cart/contract.ts) is missing; transitions cannot be made deterministic without it."
+}

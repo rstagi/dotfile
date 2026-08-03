@@ -1,0 +1,2 @@
+loop-runner: leg codex:gpt-5.6-sol
+loop-runner: done, verify passed

@@ -1,0 +1,61 @@
+{
+  "runId": "loop-checkout-revamp-2026-08-03",
+  "effort": "Checkout revamp",
+  "projectId": "proj_shop",
+  "workContextId": "doc_checkout",
+  "integrationBranch": "feat/checkout-revamp",
+  "integrationWorktree": "/Users/dev/.kestral-loop-worktrees/shop-integration",
+  "prUrl": "https://github.com/acme/shop/pull/128",
+  "phases": {
+    "1": {
+      "slug": "payments-gateway",
+      "taskId": "t1",
+      "lane": "A",
+      "branch": "feat/payments-gateway",
+      "worktree": null,
+      "status": "merged",
+      "attempt": 1,
+      "runDir": ".kestral/loop/runs/payments-gateway-a1",
+      "pid": 0,
+      "sessionId": "sess-pg-1",
+      "questionRounds": 0
+    },
+    "2": {
+      "slug": "cart-state-machine",
+      "taskId": "t2",
+      "lane": "B",
+      "branch": "refactor/cart-state",
+      "worktree": "/Users/dev/.kestral-loop-worktrees/shop-refactor-cart-state",
+      "status": "blocked",
+      "attempt": 2,
+      "runDir": ".kestral/loop/runs/cart-state-machine-a2",
+      "pid": 0,
+      "sessionId": "sess-cart-2",
+      "questionRounds": 1
+    },
+    "3": {
+      "slug": "wire-checkout",
+      "taskId": "t3",
+      "lane": "A",
+      "branch": "feat/wire-checkout",
+      "worktree": "/Users/dev/.kestral-loop-worktrees/shop-feat-wire-checkout",
+      "status": "running",
+      "attempt": 1,
+      "runDir": ".kestral/loop/runs/wire-checkout-a1",
+      "pid": 4242,
+      "sessionId": "",
+      "questionRounds": 0
+    },
+    "4": {
+      "slug": "integrate-checkout",
+      "taskId": "t4",
+      "lane": "integration",
+      "branch": "chore/integrate-checkout",
+      "worktree": null,
+      "status": "todo",
+      "attempt": 0,
+      "questionRounds": 0
+    }
+  },
+  "linkedPrTasks": []
+}

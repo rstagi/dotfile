@@ -1,3 +1,5 @@
 .claude/plans
 nvim/.claude/
+loop-web/node_modules/
+loop-web/dist/
 

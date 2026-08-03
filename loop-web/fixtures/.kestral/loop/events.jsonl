@@ -1,0 +1,11 @@
+{"ts":"2026-08-03T09:00:00Z","event":"scheduled","phase":"","detail":"loop start: 4 phases, 2 lanes"}
+{"ts":"2026-08-03T09:00:05Z","event":"spawned","phase":"1","detail":"codex:gpt-5.6-sol"}
+{"ts":"2026-08-03T09:22:00Z","event":"merged","phase":"1","detail":"feat/payments-gateway -> feat/checkout-revamp"}
+{"ts":"2026-08-03T09:22:10Z","event":"pr-created","phase":"","detail":"https://github.com/acme/shop/pull/128 (draft)"}
+{"ts":"2026-08-03T09:23:00Z","event":"spawned","phase":"2","detail":"claude:opus"}
+{"ts":"2026-08-03T09:41:00Z","event":"verify-failed","phase":"2","detail":"npm run test:cart failed"}
+{"ts":"2026-08-03T09:42:00Z","event":"escalated","phase":"2","detail":"L3 takeover: claude:fable"}
+{"ts":"2026-08-03T09:58:00Z","event":"blocked","phase":"2","detail":"upstream cart contract missing"}
+{"ts":"2026-08-03T09:58:30Z","event":"hil-pause","phase":"2","detail":"awaiting human decision"}
+{"ts":"2026-08-03T09:59:00Z","event":"spawned","phase":"3","detail":"codex:gpt-5.6-sol"}
+{"ts":"2026-08-03T10:05:00Z","event":"quantum-flux","phase":"3","detail":"an unknown orchestrator event name"}

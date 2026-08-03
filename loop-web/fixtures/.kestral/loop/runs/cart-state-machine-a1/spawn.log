@@ -1,0 +1,2 @@
+loop-runner: leg claude:opus
+loop-runner: claimed done but verify failed (see verify.log)

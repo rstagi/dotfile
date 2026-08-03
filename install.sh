@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -15,6 +15,7 @@ get_dependencies() {
     "zsh") echo "" ;;
     "python") echo "pyenv pipx" ;;
     "ralph") echo "node" ;;
+    "loop-web") echo "node" ;;
     "claude-config") echo "claude-code" ;;
     *) echo "" ;;
   esac
@@ -211,6 +212,7 @@ install_package() {
     "tailscale") install_tailscale ;;
     "claude-code") install_claude_code ;;
     "ralph") install_claude_tools ;;
+    "loop-web") install_loop_web ;;
     "claude-config") install_claude_config ;;
     *) echo "Unknown package: $package" ;;
   esac
@@ -336,6 +338,28 @@ install_terraform() {
       echo "Configuring terraform..."
       configure_terraform
     fi
+  fi
+}
+
+install_loop_web() {
+  configure_loop_web() {
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "loop-web: npm not found — install the 'node' package first" >&2
+      return 1
+    fi
+    ( cd "$HOME/dotfile/loop-web" && npm install && npm run build )
+    if ! grep -q "source.*\.zshrc_loop_web_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
+      echo "source $HOME/dotfile/.zshrc_loop_web_ext" >> "$HOME/.zshrc_ext"
+    fi
+    echo "loop-web installed — run 'loop-web' from a repo with a .kestral/ loop"
+  }
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    if read_yes "Do you want to configure loop-web (Loop Observatory)?"; then
+      configure_loop_web
+    fi
+  else
+    echo "Configuring loop-web..."
+    configure_loop_web
   fi
 }
 

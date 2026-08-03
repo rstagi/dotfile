@@ -1,0 +1,4 @@
+{
+  "outcome": "done",
+  "summary": "Rewrote cart transitions as a reducer."
+}

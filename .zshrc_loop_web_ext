@@ -1,0 +1,2 @@
+# Loop Observatory — live read-only graph for the Kestral loop-engineering flow.
+alias loop-web="$HOME/dotfile/loop-web.sh"

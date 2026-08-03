@@ -1,0 +1,9 @@
+{
+  "engine": "codex",
+  "model": "gpt-5.6-sol",
+  "sessionId": "sess-pg-1",
+  "headBefore": "a1a1a1a",
+  "headAfter": "b2b2b2b",
+  "engineExit": 0,
+  "timedOut": false
+}

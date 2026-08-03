@@ -1,0 +1,233 @@
+/* Graph canvas, lane bands, phase nodes, edges, and the heartbeat trace. */
+
+.canvas {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+/* React Flow surface tweaks — keep the graticule from #root showing through. */
+.react-flow__renderer,
+.react-flow__pane {
+  background: transparent;
+}
+.react-flow__attribution {
+  display: none;
+}
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+  border: none;
+  min-width: 1px;
+  min-height: 1px;
+}
+
+/* --- lane bands ------------------------------------------------------------------ */
+.band {
+  border-top: 1px dashed var(--hairline);
+  border-bottom: 1px dashed var(--hairline);
+  background: linear-gradient(90deg, rgba(20, 32, 38, 0.55), rgba(12, 18, 22, 0.14));
+  pointer-events: none;
+}
+.band__label {
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  padding: 2px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  background: rgba(6, 10, 13, 0.7);
+}
+.band--integration .band__label {
+  color: var(--green-deep);
+  border-color: rgba(85, 224, 138, 0.25);
+}
+
+/* --- phase / plan / review node -------------------------------------------------- */
+.node {
+  position: relative;
+  width: 216px;
+  height: 108px;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--hairline);
+  border-left-width: 3px;
+  color: var(--ink);
+  overflow: hidden;
+  transition:
+    border-color 0.35s ease,
+    box-shadow 0.35s ease,
+    transform 0.2s ease;
+  cursor: pointer;
+}
+.node:hover {
+  transform: translateY(-1px);
+  border-color: var(--graticule-strong);
+}
+.node--selected {
+  border-color: var(--aqua);
+  box-shadow: 0 0 0 1px var(--aqua-deep);
+}
+.node__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.node__chip {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  padding: 1px 7px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--hairline);
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.node__status {
+  margin-left: auto;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent, var(--steel));
+}
+.node__title {
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.18;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 2.4em;
+}
+.node__meta {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 10px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.node__badge {
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid var(--hairline);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.node__badge--model {
+  color: var(--aqua);
+  border-color: rgba(47, 243, 208, 0.22);
+}
+
+/* accent driven by --accent set inline per ui state */
+.node[data-ui] {
+  border-left-color: var(--accent);
+}
+.node--running {
+  box-shadow: 0 0 0 1px rgba(47, 243, 208, 0.14), 0 6px 22px rgba(0, 0, 0, 0.5);
+}
+.node--done {
+  box-shadow: 0 0 0 1px rgba(85, 224, 138, 0.12), 0 6px 22px rgba(0, 0, 0, 0.5);
+}
+.node--problem,
+.node--blocked {
+  border-color: rgba(255, 85, 104, 0.4);
+  box-shadow: var(--glow-red), 0 6px 22px rgba(0, 0, 0, 0.5);
+}
+.node--awaiting {
+  border-color: var(--amber);
+  animation: hil-alarm 1s ease-in-out infinite;
+}
+
+/* --- the heartbeat trace --------------------------------------------------------- */
+.trace {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 26px;
+  height: 22px;
+  overflow: hidden;
+  opacity: 0.9;
+}
+.trace__svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.trace__line {
+  fill: none;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.trace--live .trace__line {
+  stroke: var(--aqua);
+  animation: hb-pulse 1.1s ease-in-out infinite;
+}
+.trace--live .trace__beam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgba(47, 243, 208, 0.28), transparent);
+  animation: hb-sweep 1.9s linear infinite;
+}
+.trace--flat .trace__line {
+  stroke: var(--red);
+  stroke-width: 1.5;
+  animation: flat-warn 1.4s ease-in-out infinite;
+}
+.trace--idle .trace__line {
+  stroke: var(--ink-dim);
+  opacity: 0.5;
+}
+
+/* HIL badge on the node */
+.node__hil {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: #1a1206;
+  background: var(--amber);
+  padding: 1px 6px;
+  border-radius: 2px;
+  animation: hil-badge 1s ease-in-out infinite;
+}
+
+/* --- edges ----------------------------------------------------------------------- */
+.react-flow__edge-path {
+  stroke: var(--graticule-strong);
+  stroke-width: 1.4;
+}
+.react-flow__edge.satisfied .react-flow__edge-path {
+  stroke: #2c4a52;
+}
+.react-flow__edge.blocking .react-flow__edge-path {
+  stroke: var(--amber);
+  stroke-dasharray: 5 4;
+  filter: drop-shadow(0 0 3px rgba(255, 179, 0, 0.4));
+}
+.react-flow__edge.to-review .react-flow__edge-path {
+  stroke: #2c4a52;
+}
