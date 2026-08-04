@@ -18,7 +18,16 @@ set -u -o pipefail
 #   4  merge committed but verify failed (semantic conflict) — caller decides revert
 #   1  usage / unexpected git failure
 
+# Capture SCRIPT_DIR before any cd (loop-merge cd's into the worktree below).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -r "$SCRIPT_DIR/loop-emit.sh" ]]; then
+  source "$SCRIPT_DIR/loop-emit.sh"
+else
+  loop_emit() { :; }
+fi
+
 WT="" LANE="" VERIFY="" MODE="merge" PUSH=1 NOVERIFY=0
+RUN_ID="" PHASE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,9 +38,26 @@ while [[ $# -gt 0 ]]; do
   --abort) MODE="abort"; shift ;;
   --no-push) PUSH=0; shift ;;
   --no-verify) NOVERIFY=1; shift ;;
+  --run-id) RUN_ID="$2"; shift 2 ;;
+  --phase) PHASE="$2"; shift 2 ;;
   *) echo "loop-merge: unknown arg $1" >&2; exit 1 ;;
   esac
 done
+
+# A clean merge/finish (rc 0, not abort) is a phase.merged; conflicts emit merge.conflict.
+loop_merge_finish() {
+  local rc="$1"
+  [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" && "$MODE" != "abort" && "$rc" -eq 0 ]] || return 0
+  jq -cn --arg event phase.merged --arg phase "$PHASE" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{event:$event, phase:$phase, ts:$ts}' | loop_emit "$RUN_ID" event
+}
+emit_conflict() { # $1 = conflicting files (newline-separated)
+  [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" ]] || return 0
+  jq -cn --arg event merge.conflict --arg phase "$PHASE" --arg detail "$1" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{event:$event, phase:$phase, detail:$detail, ts:$ts}' | loop_emit "$RUN_ID" event
+}
+trap 'loop_merge_finish $?' EXIT
 
 [[ -d "$WT" ]] || { echo "loop-merge: worktree '$WT' not found" >&2; exit 1; }
 cd "$WT" || exit 1
@@ -59,9 +85,11 @@ abort)
   ;;
 finish)
   [[ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]] || { echo "loop-merge: no merge in progress" >&2; exit 1; }
-  if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+  unresolved="$(git diff --name-only --diff-filter=U)"
+  if [[ -n "$unresolved" ]]; then
     echo "loop-merge: unresolved conflicts remain" >&2
-    git diff --name-only --diff-filter=U >&2
+    printf '%s\n' "$unresolved" >&2
+    emit_conflict "$unresolved"
     exit 2
   fi
   git add -u   # tracked files only — never sweep verify artifacts into the merge commit
@@ -85,7 +113,9 @@ merge)
     exit 1
   fi
   # conflict: leave in progress, report the files
-  git diff --name-only --diff-filter=U | jq -Rn '{"conflicts": [inputs]}'
+  conflicts="$(git diff --name-only --diff-filter=U)"
+  printf '%s\n' "$conflicts" | jq -Rn '{"conflicts": [inputs]}'
+  emit_conflict "$conflicts"
   exit 2
   ;;
 esac

@@ -342,6 +342,48 @@ install_terraform() {
 }
 
 install_loop_web() {
+  # Render + (re)bootstrap the central daemon LaunchAgent (auto-start on login + KeepAlive).
+  # Node's abs path is hardcoded (deterministic); re-run 'install.sh loop-web' after a node
+  # upgrade. See .claude/skills/kestral-loop/references/loop-protocol.md → Daemon & events.
+  configure_loop_web_daemon() {
+    local node_bin label plist uid
+    node_bin="$(command -v node)" || { echo "loop-web: node not found — skipping daemon setup" >&2; return 0; }
+    label="com.rstagi.loop-web"
+    plist="$HOME/Library/LaunchAgents/$label.plist"
+    uid="$(id -u)"
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.kestral/loops"
+    cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$node_bin</string>
+    <string>$HOME/dotfile/loop-web/server/index.mjs</string>
+    <string>--daemon</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>$HOME</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$PATH</string>
+    <key>LOOP_WEB_PORT</key><string>7717</string>
+    <key>LOOP_STORE_DIR</key><string>$HOME/.kestral/loops</string>
+  </dict>
+  <key>StandardOutPath</key><string>$HOME/.kestral-loop-web.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.kestral-loop-web.log</string>
+</dict>
+</plist>
+PLIST
+    launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+    launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
+    launchctl enable "gui/$uid/$label" 2>/dev/null || true
+    launchctl kickstart -k "gui/$uid/$label" 2>/dev/null || true
+    echo "loop-web: central daemon LaunchAgent installed → http://localhost:7717 ($plist)"
+  }
   configure_loop_web() {
     if ! command -v npm >/dev/null 2>&1; then
       echo "loop-web: npm not found — install the 'node' package first" >&2
@@ -351,7 +393,8 @@ install_loop_web() {
     if ! grep -q "source.*\.zshrc_loop_web_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
       echo "source $HOME/dotfile/.zshrc_loop_web_ext" >> "$HOME/.zshrc_ext"
     fi
-    echo "loop-web installed — run 'loop-web' from a repo with a .kestral/ loop"
+    configure_loop_web_daemon
+    echo "loop-web installed — the central daemon runs on login; open http://localhost:7717"
   }
   if [ "$INTERACTIVE_MODE" = true ]; then
     if read_yes "Do you want to configure loop-web (Loop Observatory)?"; then

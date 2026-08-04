@@ -16,8 +16,16 @@ set -u -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Best-effort daemon emission (sourced; no-op if loop-emit.sh is missing).
+if [[ -r "$SCRIPT_DIR/loop-emit.sh" ]]; then
+  source "$SCRIPT_DIR/loop-emit.sh"
+else
+  loop_emit() { :; }
+fi
+
 WT="" RUN_DIR="" PROMPT_FILE="" CHAIN_NAME="task" TIMEOUT="" VERIFY=""
 RESUME_SID="" RESUME_ENGINE="" MODELS_CONF="$SCRIPT_DIR/loop-models.conf" BUDGET=""
+RUN_ID="" PHASE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,9 +39,34 @@ while [[ $# -gt 0 ]]; do
   --engine) RESUME_ENGINE="$2"; shift 2 ;;
   --models-conf) MODELS_CONF="$2"; shift 2 ;;
   --budget) BUDGET="$2"; shift 2 ;;
+  --run-id) RUN_ID="$2"; shift 2 ;;
+  --phase) PHASE="$2"; shift 2 ;;
   *) echo "loop-runner: unknown arg $1" >&2; exit 1 ;;
   esac
 done
+
+# Emit phase.attempt.finish on ANY exit path (map the runner exit code → outcome). The
+# daemon's lattice promotes the phase to done on {done,exit0} even if state.json lags.
+loop_runner_finish() {
+  local rc="$1" outcome
+  [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" ]] || return 0
+  case "$rc" in
+  0) outcome=done ;;
+  10) outcome=question ;;
+  12) outcome=verify-fail ;;
+  20) outcome=blocked ;;
+  40) outcome=chain-exhausted ;;
+  50) outcome=crash ;;
+  124) outcome=timeout ;;
+  *) outcome=error ;;
+  esac
+  jq -cn --arg event phase.attempt.finish --arg phase "$PHASE" --arg outcome "$outcome" \
+    --argjson exitCode "$rc" --arg engine "${CUR_ENGINE:-}" --arg model "${CUR_MODEL:-}" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{event:$event, phase:$phase, outcome:$outcome, exitCode:$exitCode, engine:$engine, model:$model, ts:$ts}' |
+    loop_emit "$RUN_ID" event
+}
+trap 'loop_runner_finish $?' EXIT
 
 [[ -d "$WT" && -n "$RUN_DIR" && -f "$PROMPT_FILE" ]] || {
   echo "loop-runner: --worktree, --run-dir, --prompt-file are required" >&2; exit 1
@@ -50,6 +83,9 @@ esac
 [[ "$TIMEOUT" == <-> ]] || { echo "loop-runner: --timeout must be integer seconds" >&2; exit 1; }
 
 mkdir -p "$RUN_DIR"
+[[ -n "${RUN_ID:-}" && -n "${PHASE:-}" ]] && jq -cn --arg event phase.attempt.start \
+  --arg phase "$PHASE" --arg detail "$CHAIN_NAME" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{event:$event, phase:$phase, detail:$detail, ts:$ts}' | loop_emit "$RUN_ID" event
 [[ "$PROMPT_FILE" -ef "$RUN_DIR/prompt.md" ]] || cp "$PROMPT_FILE" "$RUN_DIR/prompt.md"
 TRANSCRIPT="$RUN_DIR/transcript.jsonl" STDERR="$RUN_DIR/stderr.log"
 STATUS="$RUN_DIR/status.json" LAST="$RUN_DIR/last.md"

@@ -32,6 +32,38 @@ STATE="$DIR/state.json"
 
 die() { echo "loop-state: $1" >&2; exit "${2:-1}"; }
 
+# Best-effort daemon emission (sourced; no-op if loop-emit.sh is missing).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -r "$SCRIPT_DIR/loop-emit.sh" ]]; then
+  source "$SCRIPT_DIR/loop-emit.sh"
+else
+  loop_emit() { :; }
+  loop_ensure_daemon() { :; }
+fi
+
+state_run_id() { jq -r '.runId // empty' "$STATE" 2>/dev/null || true; }
+
+# Ensure the daemon is up, register this loop (identity + plan path), and seed its state.
+emit_register() {
+  [[ -f "$STATE" ]] || return 0
+  local run_id loop_abs plan_file
+  run_id="$(state_run_id)"; [[ -n "$run_id" ]] || return 0
+  loop_abs="$(cd "$DIR" 2>/dev/null && pwd)" || return 0
+  plan_file="$(cd "$DIR/.." 2>/dev/null && pwd)/plan.md"
+  loop_ensure_daemon
+  jq -c --arg loopDir "$loop_abs" --arg planFile "$plan_file" --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{loopDir:$loopDir, planFile:$planFile, effort:(.effort//null),
+      projectId:(.projectId//null), integrationBranch:(.integrationBranch//null),
+      startedAt:$started}' "$STATE" | loop_emit "$run_id" register
+  loop_emit "$run_id" state < "$STATE"
+}
+
+# Push the current state.json to the daemon (authoritative status folds it monotonically).
+emit_state() {
+  local run_id; run_id="$(state_run_id)"; [[ -n "$run_id" ]] || return 0
+  loop_emit "$run_id" state < "$STATE"
+}
+
 case "$CMD" in
 init)
   [[ -n "$JSON" ]] || die "init requires --json"
@@ -42,6 +74,7 @@ init)
     die "state.json already exists (use resume, or remove $DIR)" 2
   fi
   printf '%s\n' "$JSON" | jq . > "$STATE"
+  emit_register
   ;;
 lock)
   [[ -n "$OWNER" ]] || die "lock requires --owner <run-id>"
@@ -83,14 +116,33 @@ set)
     rm -f "$tmp"
     die "jq expression failed"
   fi
+  emit_state
   ;;
 log)
   mkdir -p "$DIR"
-  jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg event "${ARGS[1]:-}" --arg phase "${ARGS[2]:-}" --arg detail "${ARGS[3]:-}" \
-    '{ts: $ts, event: $event, phase: $phase, detail: $detail}' >> "$DIR/events.jsonl"
+    '{ts: $ts, event: $event, phase: $phase, detail: $detail}')"
+  printf '%s\n' "$line" >> "$DIR/events.jsonl"
+  run_id="$(state_run_id)"
+  [[ -n "$run_id" ]] && printf '%s' "$line" | loop_emit "$run_id" event
+  ;;
+register)
+  # Idempotent ensure-daemon + register + seed state (used by resume).
+  [[ -f "$STATE" ]] || die "no state.json in $DIR"
+  emit_register
+  ;;
+finish)
+  # POST the loop's terminal payload ({status?, prUrl?, review?}) to the daemon.
+  [[ -f "$STATE" ]] || die "no state.json in $DIR"
+  body="$JSON"; [[ -n "$body" ]] || body='{}'
+  printf '%s' "$body" | jq -e . >/dev/null 2>&1 || die "finish: --json is not valid JSON"
+  run_id="$(state_run_id)"
+  [[ -n "$run_id" ]] || die "finish: state.json has no runId"
+  printf '%s' "$body" | jq -c --arg fa "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '. + {finishedAt: (.finishedAt // $fa)}' | loop_emit "$run_id" finish
   ;;
 *)
-  die "unknown command '${CMD}' (init|lock|unlock|get|set|log)"
+  die "unknown command '${CMD}' (init|lock|unlock|get|set|log|register|finish)"
   ;;
 esac
