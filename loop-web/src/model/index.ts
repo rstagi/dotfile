@@ -6,6 +6,9 @@ export { parseLoop } from "./parse-loop.ts";
 export type { LoopInput, RawRunDir, RawHil } from "./parse-loop.ts";
 export { buildGraph, PLAN_ID, REVIEW_ID } from "./build-graph.ts";
 export { buildSnapshot } from "./snapshot.ts";
+export * from "./store-types.ts";
+export { reduceLoop, emptyRecord, effectivePhaseStatus } from "./reduce-loop.ts";
+export { materialize, summarize } from "./materialize.ts";
 export {
   classifyAttempt,
   attemptEnded,

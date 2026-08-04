@@ -71,6 +71,14 @@ export interface StateJson {
   prUrl?: string | null;
   phases?: Record<string, StatePhase>;
   linkedPrTasks?: string[];
+  /** PR-review verdict promoted by the orchestrator (`loop-state.sh set`). Structural (no
+   * cross-import) so the daemon reducer can fold it; the drawer renders the full report. */
+  review?: {
+    outcome?: string;
+    summary?: string;
+    reportPath?: string;
+    commentUrl?: string;
+  } | null;
 }
 
 /** One row of events.jsonl (loop-state.sh log). */

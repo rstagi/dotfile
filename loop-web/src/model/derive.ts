@@ -29,7 +29,9 @@ const SEVERITY: Record<ProblemClass | "hil", number> = {
 
 // Ordered keyword rules for the open-string `event` field (loop-state.sh log <event>).
 // The orchestrator, not any script, picks these names, so match by keyword, most-specific first.
-const EVENT_RULES: { kw: RegExp; glyph: string; label: string; tone: EventTone }[] = [
+// Exported so `reduce-loop.ts` can reuse the SAME vocabulary for its legacy keyword fallback
+// (a free-form `events.jsonl` "merged"/"verify-failed" line still drives the overlay).
+export const EVENT_RULES: { kw: RegExp; glyph: string; label: string; tone: EventTone }[] = [
   { kw: /hil/, glyph: "⚠", label: "HIL pause", tone: "hil" },
   { kw: /verif/, glyph: "✗", label: "Verify failed", tone: "verify" },
   { kw: /crash/, glyph: "✕", label: "Crash", tone: "crash" },
