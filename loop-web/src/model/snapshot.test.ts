@@ -60,6 +60,61 @@ describe("buildSnapshot — effort info", () => {
   });
 });
 
+describe("buildSnapshot — PR info & review preference", () => {
+  it("prefers state.review over the review run's status.json, and surfaces report/comment", () => {
+    const state = JSON.stringify({
+      prUrl: "https://github.com/acme/widgets/pull/9",
+      phases: { "1": { slug: "widget-core", status: "merged" } },
+      review: {
+        outcome: "blocked",
+        summary: "Please address the two findings.",
+        reportPath: "runs/review-a1/report.md",
+        commentUrl: "https://github.com/acme/widgets/pull/9#issuecomment-1",
+      },
+    });
+    const snap = buildSnapshot(
+      parsePlan(PLAN),
+      parseLoop(
+        loop({
+          state,
+          runs: [run({ name: "review-a1", status: JSON.stringify({ outcome: "done", summary: "LGTM" }) })],
+        }),
+      ),
+      { now: NOW, nowIso: ISO },
+    );
+    const pr = snap.effort.pr!;
+    expect(pr.outcome).toBe("blocked"); // state.review wins over the run's "done"
+    expect(pr.verdict).toBe("Please address the two findings.");
+    expect(pr.reportPath).toBe("runs/review-a1/report.md");
+    expect(pr.commentUrl).toBe("https://github.com/acme/widgets/pull/9#issuecomment-1");
+    expect(pr.reviewSlug).toBe("review");
+    expect(pr.reviewAttempt).toBe(1);
+  });
+
+  it("falls back to the latest review run when state has no review block", () => {
+    const state = JSON.stringify({ phases: { "1": { slug: "widget-core", status: "merged" } } });
+    const snap = buildSnapshot(
+      parsePlan(PLAN),
+      parseLoop(loop({ state, runs: [run({ name: "review-a2", status: JSON.stringify({ outcome: "done", summary: "Approved." }) })] })),
+      { now: NOW, nowIso: ISO },
+    );
+    expect(snap.effort.pr?.outcome).toBe("done");
+    expect(snap.effort.pr?.reportPath).toBeNull();
+    expect(snap.effort.pr?.reviewAttempt).toBe(2);
+  });
+});
+
+describe("buildSnapshot — plan overview", () => {
+  it("composes a plan digest (name, phase summary, lane count, prose)", () => {
+    const snap = buildSnapshot(parsePlan(PLAN), null, { now: NOW });
+    expect(snap.plan.name).toBe("Widget revamp");
+    expect(snap.plan.laneCount).toBe(1);
+    expect(snap.plan.phaseSummary.map((p) => p.phase)).toEqual(["1", "2"]);
+    expect(snap.plan.phaseSummary[1].dependsOn).toEqual(["1"]);
+    expect(snap.plan.prose.goal).toBeNull();
+  });
+});
+
 describe("buildSnapshot — problems rail", () => {
   it("lists HIL loudest, then other problems, ranked by severity", () => {
     const state = JSON.stringify({

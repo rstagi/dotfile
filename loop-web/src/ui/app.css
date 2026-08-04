@@ -481,3 +481,212 @@
   border-radius: 3px;
   padding: 5px 12px;
 }
+
+/* --- loop selector (header popover) ---------------------------------------------- */
+.loopsel {
+  position: relative;
+}
+.loopsel__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 12px;
+  max-width: 240px;
+}
+.loopsel__btn:hover {
+  border-color: var(--graticule-strong);
+}
+.loopsel__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.loopsel__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loopsel__caret {
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+.loopsel__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.loopsel__pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 41;
+  width: 340px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--elevated);
+  border: 1px solid var(--graticule-strong);
+  border-radius: 6px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.loopsel__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 8px 9px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.loopsel__row:hover {
+  background: var(--panel);
+}
+.loopsel__row--active {
+  border-color: var(--aqua-deep);
+  background: rgba(47, 243, 208, 0.06);
+}
+.loopsel__row .loopsel__dot {
+  margin-top: 4px;
+}
+.loopsel__rowmain {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.loopsel__rowtop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.loopsel__rowtop .loopsel__name {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+}
+.loopsel__rowsub {
+  display: flex;
+  gap: 10px;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+}
+.loopsel__time {
+  margin-left: auto;
+}
+.loopsel__hint {
+  font-size: 10px;
+  color: var(--amber-deep);
+}
+
+/* --- markdown (drawer prose + PR report) ----------------------------------------- */
+.md {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.md__p {
+  margin: 0 0 8px;
+}
+.md__ul {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+.md__ul li {
+  margin-bottom: 3px;
+}
+.md__code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-deep);
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  padding: 0 4px;
+  color: var(--ink);
+}
+.md a {
+  color: var(--aqua);
+}
+.md--report {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--panel);
+}
+
+/* --- pr review verdict ----------------------------------------------------------- */
+.review__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.review__head a {
+  color: var(--aqua);
+  font-size: 11px;
+}
+.review__pill {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+
+/* --- plan drawer phase list ------------------------------------------------------ */
+.plan-phases {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-phase {
+  display: grid;
+  grid-template-columns: 32px 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  padding: 5px 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  background: var(--panel);
+}
+.plan-phase__id {
+  font-family: var(--font-display);
+  color: var(--ink-soft);
+}
+.plan-phase__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-phase__lane {
+  font-size: 10px;
+  color: var(--ink-muted);
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  padding: 0 5px;
+}
+.plan-phase__status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}

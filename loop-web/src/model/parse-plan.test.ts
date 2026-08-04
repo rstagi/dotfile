@@ -125,6 +125,57 @@ describe("parsePlan — phases", () => {
   });
 });
 
+describe("parsePlan — prose sections", () => {
+  const WITH_PROSE = `# Prosy — Multi-Phase Plan
+
+## Goal
+Ship the thing.
+It matters.
+
+## Approach & key decisions
+Use a state machine.
+
+## Parallelization guide
+Lane A and B are independent.
+
+## Phases
+
+### Phase 1 — Do it \`[lane: A]\` \`[status: todo]\`
+- **Depends on:** none
+
+## Progress log
+- 2026-08-01 kicked off
+`;
+
+  it("extracts the Goal prose (multi-line, joined and trimmed)", () => {
+    expect(parsePlan(WITH_PROSE).prose.goal).toBe("Ship the thing.\nIt matters.");
+  });
+  it("extracts the Approach prose from the '& key decisions' heading", () => {
+    expect(parsePlan(WITH_PROSE).prose.approach).toBe("Use a state machine.");
+  });
+  it("accepts a bare '## Approach' heading", () => {
+    const md = "# X — Multi-Phase Plan\n\n## Approach\nKeep it simple.\n";
+    expect(parsePlan(md).prose.approach).toBe("Keep it simple.");
+  });
+  it("extracts the Parallelization guide from any '## Parallel…' heading", () => {
+    expect(parsePlan(WITH_PROSE).prose.parallelGuide).toBe("Lane A and B are independent.");
+    const md = "# X — Multi-Phase Plan\n\n## Parallel work\nSplit by lane.\n";
+    expect(parsePlan(md).prose.parallelGuide).toBe("Split by lane.");
+  });
+  it("extracts the Progress log", () => {
+    expect(parsePlan(WITH_PROSE).prose.progressLog).toBe("- 2026-08-01 kicked off");
+  });
+  it("leaves every prose field null when no prose section is present", () => {
+    const md = "# X — Multi-Phase Plan\n\n## Phases\n\n### Phase 1 — T \`[lane: A]\` \`[status: todo]\`\n- **Depends on:** none\n";
+    expect(parsePlan(md).prose).toEqual({
+      goal: null,
+      approach: null,
+      parallelGuide: null,
+      progressLog: null,
+    });
+  });
+});
+
 describe("parsePlan — tolerance & warnings", () => {
   it("tolerates extra whitespace inside the markers", () => {
     const md = `# X — Multi-Phase Plan\n\n## Phases\n\n###   Phase 7   —   Loose spacing   \`[lane:  C ]\`  \`[status:  blocked ]\`\n- **Depends on:** none\n`;

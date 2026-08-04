@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { GraphNode, PrInfo, AttemptSummary } from "../../model/types.ts";
-import { problemStyle, uiColor } from "../theme/glyphs.ts";
+import type { GraphNode, PrInfo, PlanOverview, AttemptSummary } from "../../model/types.ts";
+import { problemStyle, uiColor, reviewPill } from "../theme/glyphs.ts";
+import { useReview } from "../hooks/useReview.ts";
+import { Markdown } from "./Markdown.tsx";
 
 interface AttemptDetail {
   slug: string;
@@ -16,10 +18,14 @@ interface AttemptDetail {
 export function Drawer({
   node,
   pr,
+  plan,
+  runId,
   onClose,
 }: {
   node: GraphNode;
   pr: PrInfo | null;
+  plan: PlanOverview | null;
+  runId: string | null;
   onClose: () => void;
 }) {
   const rt = node.runtime;
@@ -28,7 +34,7 @@ export function Drawer({
   const [activeK, setActiveK] = useState<number | null>(defaultK);
   useEffect(() => setActiveK(defaultK), [defaultK, node.id]);
 
-  const detail = useAttemptDetail(rt?.slug ?? null, activeK);
+  const detail = useAttemptDetail(runId, rt?.slug ?? null, activeK);
 
   return (
     <div className="drawer">
@@ -76,15 +82,10 @@ export function Drawer({
               <dd>{fmtAge(rt.lastHeartbeatAgeSec)} ago</dd>
             </>
           )}
-          {node.kind === "pr-review" && (
-            <>
-              <dt>pull request</dt>
-              <dd>{pr?.url ? <a href={pr.url} target="_blank" rel="noreferrer">{pr.url}</a> : "none yet"}</dd>
-              <dt>verdict</dt>
-              <dd>{pr?.verdict ?? "—"}</dd>
-            </>
-          )}
         </dl>
+
+        {node.kind === "plan" && plan && <PlanSection plan={plan} />}
+        {node.kind === "pr-review" && <ReviewSection runId={runId} pr={pr} />}
 
         {rt?.hilOpen && rt.hilMarkdown && (
           <section>
@@ -131,6 +132,129 @@ export function Drawer({
   );
 }
 
+// --- plan (effort root) --------------------------------------------------------------
+
+function PlanSection({ plan }: { plan: PlanOverview }) {
+  const cfg = plan.loopConfig;
+  return (
+    <>
+      {cfg && (
+        <section>
+          <p className="section__title">Loop config</p>
+          <dl className="kv">
+            {cfg.integrationBranch && (
+              <>
+                <dt>integration</dt>
+                <dd>{cfg.integrationBranch}</dd>
+              </>
+            )}
+            {cfg.verify && (
+              <>
+                <dt>verify</dt>
+                <dd>{cfg.verify}</dd>
+              </>
+            )}
+            {cfg.concurrency != null && (
+              <>
+                <dt>concurrency</dt>
+                <dd>{cfg.concurrency}</dd>
+              </>
+            )}
+            <dt>lanes</dt>
+            <dd>{plan.laneCount}</dd>
+          </dl>
+        </section>
+      )}
+
+      <ProseSection title="Goal" text={plan.prose.goal} />
+      <ProseSection title="Approach & key decisions" text={plan.prose.approach} />
+      <ProseSection title="Parallelization guide" text={plan.prose.parallelGuide} />
+      <ProseSection title="Progress log" text={plan.prose.progressLog} />
+
+      {plan.phaseSummary.length > 0 && (
+        <section>
+          <p className="section__title">Phases</p>
+          <div className="plan-phases">
+            {plan.phaseSummary.map((p) => (
+              <div key={p.phase} className="plan-phase">
+                <span className="plan-phase__id">P{p.phase}</span>
+                <span className="plan-phase__title">{p.title}</span>
+                <span className="plan-phase__lane">{p.lane}</span>
+                <span className="plan-phase__status" style={{ color: uiColor(p.status) }}>
+                  {p.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
+function ProseSection({ title, text }: { title: string; text: string | null }) {
+  if (!text) return null;
+  return (
+    <section>
+      <p className="section__title">{title}</p>
+      <Markdown text={text} />
+    </section>
+  );
+}
+
+// --- pr review -----------------------------------------------------------------------
+
+function ReviewSection({ runId, pr }: { runId: string | null; pr: PrInfo | null }) {
+  const review = useReview(runId, true);
+  const outcome = review?.outcome ?? pr?.outcome ?? null;
+  const summary = review?.summary ?? pr?.verdict ?? null;
+  const commentUrl = review?.commentUrl ?? pr?.commentUrl ?? null;
+  const prUrl = review?.prUrl ?? pr?.url ?? null;
+  const report = review?.reportMarkdown ?? null;
+  const pill = reviewPill(outcome);
+
+  return (
+    <section>
+      <p className="section__title">PR review</p>
+      <div className="review__head">
+        {pill ? (
+          <span className="review__pill" style={{ color: pill.color, borderColor: pill.color }}>
+            {pill.label}
+          </span>
+        ) : (
+          <span className="review__pill" style={{ color: "var(--ink-muted)" }}>
+            {prUrl ? "awaiting review" : "no PR yet"}
+          </span>
+        )}
+        {prUrl && (
+          <a href={prUrl} target="_blank" rel="noreferrer">
+            {prLabel(prUrl)}
+          </a>
+        )}
+        {commentUrl && (
+          <a href={commentUrl} target="_blank" rel="noreferrer">
+            review comment
+          </a>
+        )}
+      </div>
+
+      {summary && <Markdown text={summary} />}
+
+      {review === undefined ? (
+        <div className="rail__empty" style={{ padding: 12 }}>Loading review…</div>
+      ) : report ? (
+        <div className="md--report">
+          <Markdown text={report} />
+        </div>
+      ) : (
+        <div className="rail__empty" style={{ padding: 12 }}>No full report stored.</div>
+      )}
+    </section>
+  );
+}
+
+// --- attempts ------------------------------------------------------------------------
+
 function AttemptRow({ a, active, onClick }: { a: AttemptSummary; active: boolean; onClick: () => void }) {
   const label = a.problem ?? a.outcome ?? (a.ended ? "done" : "running");
   const s = a.problem ? problemStyle(a.problem) : { color: a.ended ? "var(--green)" : "var(--aqua)" };
@@ -175,7 +299,7 @@ function Field({ label, body, cls = "" }: { label: string; body: string; cls?: s
 
 // --- data & helpers ------------------------------------------------------------------
 
-function useAttemptDetail(slug: string | null, k: number | null): AttemptDetail | null | undefined {
+function useAttemptDetail(runId: string | null, slug: string | null, k: number | null): AttemptDetail | null | undefined {
   const [state, setState] = useState<AttemptDetail | null | undefined>(undefined);
   useEffect(() => {
     if (!slug || k == null) {
@@ -184,14 +308,15 @@ function useAttemptDetail(slug: string | null, k: number | null): AttemptDetail 
     }
     let cancelled = false;
     setState(undefined);
-    fetch(`/api/attempt/${encodeURIComponent(slug)}/${k}`)
+    const base = runId ? `/api/loops/${encodeURIComponent(runId)}/attempt` : "/api/attempt";
+    fetch(`${base}/${encodeURIComponent(slug)}/${k}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => !cancelled && setState(d))
       .catch(() => !cancelled && setState(null));
     return () => {
       cancelled = true;
     };
-  }, [slug, k]);
+  }, [runId, slug, k]);
   return state;
 }
 
@@ -209,6 +334,11 @@ function chip(n: GraphNode): string {
   if (n.kind === "plan") return "EFFORT ROOT";
   if (n.kind === "pr-review") return "TERMINAL · PR REVIEW";
   return `PHASE ${n.phase}${n.lane ? ` · LANE ${n.lane}` : ""}`;
+}
+
+function prLabel(url: string): string {
+  const m = url.match(/\/pull\/(\d+)/) ?? url.match(/\/(\d+)(?:#.*)?$/);
+  return m ? `#${m[1]}` : "open PR";
 }
 
 function fmtAge(sec: number): string {

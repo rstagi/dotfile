@@ -7,6 +7,7 @@ import type {
   GraphNode,
   TimelineEvent,
   EffortInfo,
+  PlanOverview,
 } from "./types.ts";
 import { buildGraph } from "./build-graph.ts";
 import { normalizeEvent, problemSeverity } from "./derive.ts";
@@ -27,6 +28,7 @@ export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: Snapsho
 
   return {
     effort: buildEffort(plan, runtime, pr),
+    plan: buildPlanOverview(plan),
     graph,
     problems: buildProblems(graph.nodes),
     events: buildTimeline(runtime),
@@ -50,16 +52,55 @@ function buildEffort(plan: Plan, runtime: Runtime | null, pr: PrInfo | null): Ef
   };
 }
 
+/** Prefer the orchestrator-promoted `state.review` verdict; fall back to the latest review run's
+ * status.json. reportPath/commentUrl only exist on state.review; slug/attempt on the run. */
 function buildPrInfo(plan: Plan, runtime: Runtime | null): PrInfo | null {
   const url = runtime?.state?.prUrl ?? plan.loopConfig?.pr ?? null;
   const reviews = runtime?.reviewRuns ?? [];
   const latest = reviews.length ? reviews[reviews.length - 1] : null;
-  if (!url && reviews.length === 0) return null;
+  const stateReview = runtime?.state?.review ?? null;
+  if (!url && reviews.length === 0 && !stateReview) return null;
   return {
     url,
-    outcome: latest?.status?.outcome ?? null,
-    verdict: latest?.status?.summary ?? latest?.status?.outcome ?? null,
-    reviewPresent: reviews.length > 0,
+    outcome: stateReview?.outcome ?? latest?.status?.outcome ?? null,
+    verdict:
+      stateReview?.summary ??
+      latest?.status?.summary ??
+      stateReview?.outcome ??
+      latest?.status?.outcome ??
+      null,
+    reviewPresent: reviews.length > 0 || stateReview != null,
+    reportPath: stateReview?.reportPath ?? null,
+    commentUrl: stateReview?.commentUrl ?? null,
+    reviewSlug: latest ? slugFromRunDir(latest.runDir) : null,
+    reviewAttempt: latest?.k ?? null,
+  };
+}
+
+function slugFromRunDir(runDir: string | null): string | null {
+  if (!runDir) return null;
+  const m = runDir.match(/runs\/(.+?)-a\d+\/?$/);
+  return m ? m[1] : null;
+}
+
+// --- plan overview -------------------------------------------------------------------
+
+function buildPlanOverview(plan: Plan): PlanOverview {
+  const lanes = new Set(plan.phases.map((p) => p.lane));
+  return {
+    name: plan.name,
+    status: plan.status,
+    updatedAt: plan.updatedAt,
+    loopConfig: plan.loopConfig,
+    phaseSummary: plan.phases.map((p) => ({
+      phase: p.phase,
+      title: p.title,
+      lane: p.lane,
+      status: p.status,
+      dependsOn: p.dependsOn,
+    })),
+    laneCount: lanes.size,
+    prose: plan.prose,
   };
 }
 

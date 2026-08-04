@@ -1,7 +1,22 @@
 import { describe, it, expect } from "vitest";
 import { buildGraph } from "./build-graph.ts";
 import { parsePlan } from "./parse-plan.ts";
-import type { Runtime, PhaseRuntime, Attempt, Graph } from "./types.ts";
+import type { Runtime, PhaseRuntime, Attempt, Graph, PrInfo } from "./types.ts";
+
+/** Minimal PrInfo for the review-node tests — fills the review-detail fields with nulls. */
+function pr(over: Partial<PrInfo>): PrInfo {
+  return {
+    url: null,
+    outcome: null,
+    verdict: null,
+    reviewPresent: false,
+    reportPath: null,
+    commentUrl: null,
+    reviewSlug: null,
+    reviewAttempt: null,
+    ...over,
+  };
+}
 
 const SINGLE_LANE = `# Ship it — Multi-Phase Plan
 
@@ -192,31 +207,31 @@ describe("buildGraph — runtime overlay", () => {
 describe("buildGraph — PR Review node", () => {
   it("shows PR Review as done when the review OUTCOME is done", () => {
     const g = buildGraph(parsePlan(SINGLE_LANE), null, {
-      pr: { url: "https://gh/pr/1", outcome: "done", verdict: "approved", reviewPresent: true },
+      pr: pr({ url: "https://gh/pr/1", outcome: "done", verdict: "approved", reviewPresent: true }),
     });
     expect(node(g, "pr-review").ui).toBe("done");
   });
   it("does NOT flag a passing review whose prose contains 'changes'/'blocking'", () => {
     // The verdict is display-only prose; the terminal must key off the structured outcome.
     const g = buildGraph(parsePlan(SINGLE_LANE), null, {
-      pr: {
+      pr: pr({
         url: "https://gh/pr/1",
         outcome: "done",
         verdict: "Reviewed the changes; no blocking issues. Approving.",
         reviewPresent: true,
-      },
+      }),
     });
     expect(node(g, "pr-review").ui).toBe("done");
   });
   it("flags PR Review as a problem when the review outcome is blocked/question", () => {
     const g = buildGraph(parsePlan(SINGLE_LANE), null, {
-      pr: { url: "https://gh/pr/1", outcome: "blocked", verdict: "needs work", reviewPresent: true },
+      pr: pr({ url: "https://gh/pr/1", outcome: "blocked", verdict: "needs work", reviewPresent: true }),
     });
     expect(node(g, "pr-review").ui).toBe("problem");
   });
   it("shows PR Review as running when a PR exists but no review yet", () => {
     const g = buildGraph(parsePlan(SINGLE_LANE), null, {
-      pr: { url: "https://gh/pr/1", outcome: null, verdict: null, reviewPresent: false },
+      pr: pr({ url: "https://gh/pr/1", outcome: null, verdict: null, reviewPresent: false }),
     });
     expect(node(g, "pr-review").ui).toBe("running");
   });

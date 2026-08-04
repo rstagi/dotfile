@@ -1,10 +1,12 @@
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import type { GraphNode, NodeUiState, PrInfo } from "../../model/types.ts";
+import type { GraphNode, NodeUiState, PrInfo, PlanOverview } from "../../model/types.ts";
+import { reviewPill } from "../theme/glyphs.ts";
 
 export interface PhaseNodeData {
   node: GraphNode;
   pr?: PrInfo | null;
+  plan?: PlanOverview | null;
   [key: string]: unknown;
 }
 
@@ -18,7 +20,7 @@ const ACCENT: Record<NodeUiState, string> = {
 };
 
 export function PhaseNode({ data, selected }: NodeProps) {
-  const { node, pr } = data as PhaseNodeData;
+  const { node, pr, plan } = data as PhaseNodeData;
   const rt = node.runtime;
   const accent = ACCENT[node.ui];
 
@@ -44,7 +46,7 @@ export function PhaseNode({ data, selected }: NodeProps) {
 
       {showTrace(node) && <Trace mode={traceMode(node)} />}
 
-      <div className="node__meta">{metaBadges(node, pr)}</div>
+      <div className="node__meta">{metaBadges(node, pr, plan)}</div>
     </div>
   );
 }
@@ -91,13 +93,25 @@ function statusLabel(n: GraphNode): string {
   return n.status.toUpperCase();
 }
 
-function metaBadges(n: GraphNode, pr?: PrInfo | null) {
+function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null) {
   if (n.kind === "pr-review") {
-    if (pr?.verdict) return <span className="node__badge">{truncate(pr.verdict, 26)}</span>;
+    const pill = reviewPill(pr?.outcome);
+    if (pill)
+      return (
+        <span className="node__badge" style={{ color: pill.color, borderColor: pill.color }}>
+          {pill.label}
+        </span>
+      );
     if (pr?.url) return <span className="node__badge">PR open · awaiting review</span>;
     return <span className="node__badge">no PR yet</span>;
   }
-  if (n.kind === "plan") return <span className="node__badge">effort</span>;
+  if (n.kind === "plan") {
+    if (!plan) return <span className="node__badge">effort</span>;
+    return [
+      <span key="p" className="node__badge">{plan.phaseSummary.length} phases</span>,
+      <span key="l" className="node__badge">{plan.laneCount} lanes</span>,
+    ];
+  }
 
   const rt = n.runtime;
   if (!rt) return null;

@@ -20,9 +20,10 @@ export default defineConfig({
     emptyOutDir: true,
   },
   test: {
-    // The model layer is pure — no DOM needed. Fast node environment.
+    // The model layer + the UI's pure helpers (markdown parse, default-loop pick) are pure —
+    // no DOM needed. Fast node environment; UI component tests exercise only pure exports.
     environment: "node",
-    include: ["src/model/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     globals: true,
   },
 });

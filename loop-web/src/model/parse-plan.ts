@@ -1,4 +1,4 @@
-import type { Plan, PlanPhase, PlanPhaseStatus, LoopConfig } from "./types.ts";
+import type { Plan, PlanPhase, PlanPhaseStatus, LoopConfig, PlanProse } from "./types.ts";
 
 const PLAN_STATUSES: readonly PlanPhaseStatus[] = [
   "todo",
@@ -26,6 +26,7 @@ export function parsePlan(md: string): Plan {
     updatedAt: parseHeaderValue(lines, "Last updated"),
     loopConfig: parseLoopConfig(sectionLines(lines, "Loop config")),
     phases: parsePhases(sectionLines(lines, "Phases"), warnings),
+    prose: parseProse(lines),
     warnings,
   };
 }
@@ -162,13 +163,36 @@ function parseDependsOn(raw: string | null): string[] {
   return Array.from(raw.matchAll(/Phase\s+(\d+)/gi)).map((m) => m[1]);
 }
 
+// --- prose ---------------------------------------------------------------------------
+
+/** The free-form narrative sections, tolerant of the two common heading variants. */
+function parseProse(lines: string[]): PlanProse {
+  return {
+    goal: sectionText(lines, "Goal"),
+    approach: sectionText(lines, "Approach & key decisions") ?? sectionText(lines, "Approach"),
+    parallelGuide: joinSection(sectionLinesBy(lines, /^Parallel/i)),
+    progressLog: sectionText(lines, "Progress log"),
+  };
+}
+
 // --- section splitting & small helpers -----------------------------------------------
+
+/** Raw prose under the `## <title>` heading (joined), or null if absent/empty. */
+export function sectionText(lines: string[], title: string): string | null {
+  return joinSection(sectionLines(lines, title));
+}
 
 /** Lines under the `## <title>` heading, up to (not including) the next `## ` heading. */
 function sectionLines(lines: string[], title: string): string[] | null {
-  const start = lines.findIndex((l) =>
-    new RegExp(`^##\\s+${escapeRegExp(title)}\\s*$`).test(l),
-  );
+  return sectionLinesBy(lines, new RegExp(`^${escapeRegExp(title)}$`));
+}
+
+/** As `sectionLines`, but the `## ` heading text is matched against a regex (prefix variants). */
+function sectionLinesBy(lines: string[], titleRe: RegExp): string[] | null {
+  const start = lines.findIndex((l) => {
+    const m = l.match(/^##\s+(.+?)\s*$/);
+    return m ? titleRe.test(m[1]) : false;
+  });
   if (start === -1) return null;
   const out: string[] = [];
   for (let i = start + 1; i < lines.length; i++) {
@@ -176,6 +200,12 @@ function sectionLines(lines: string[], title: string): string[] | null {
     out.push(lines[i]);
   }
   return out;
+}
+
+function joinSection(section: string[] | null): string | null {
+  if (!section) return null;
+  const text = section.join("\n").trim();
+  return text || null;
 }
 
 function stripBackticks(v: string | null): string | null {

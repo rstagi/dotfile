@@ -1,7 +1,21 @@
 import type { Snapshot } from "../../model/types.ts";
+import type { LoopListEntry } from "../../model/store-types.ts";
 import type { ConnState } from "../hooks/useSnapshot.ts";
+import { LoopSelector } from "./LoopSelector.tsx";
 
-export function Header({ snapshot, conn }: { snapshot: Snapshot | null; conn: ConnState }) {
+export function Header({
+  snapshot,
+  conn,
+  loops = [],
+  currentRunId = null,
+  onSelectRun,
+}: {
+  snapshot: Snapshot | null;
+  conn: ConnState;
+  loops?: LoopListEntry[];
+  currentRunId?: string | null;
+  onSelectRun?: (runId: string) => void;
+}) {
   const e = snapshot?.effort;
   const connLabel = conn === "live" ? "streaming" : conn === "connecting" ? "connecting" : "reconnecting";
   return (
@@ -10,6 +24,7 @@ export function Header({ snapshot, conn }: { snapshot: Snapshot | null; conn: Co
         <span className="hdr__logo">◉ LOOP OBSERVATORY</span>
       </div>
       <div className="hdr__sep" />
+      {onSelectRun && <LoopSelector loops={loops} currentRunId={currentRunId} onSelect={onSelectRun} />}
       <div className="hdr__field">
         <span className="eyebrow">effort</span>
         <b className="display">{e?.name ?? "—"}</b>

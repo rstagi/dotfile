@@ -15,6 +15,26 @@ export function problemStyle(cls: Problem["class"]): { glyph: string; color: str
   }
 }
 
+/** The review verdict pill shared by the PR-review node face and the drawer. Keys off the
+ * STRUCTURED outcome only (never the free-form summary prose). Null ⇒ no verdict yet. */
+export function reviewPill(outcome: string | null | undefined): { label: string; color: string } | null {
+  if (outcome === "done") return { label: "APPROVED", color: "var(--green)" };
+  if (outcome === "blocked" || outcome === "question")
+    return { label: "CHANGES REQUESTED", color: "var(--red)" };
+  return null;
+}
+
+/** Lifecycle-dot colour for a loop's status in the selector. */
+export function loopStatusColor(status: string): string {
+  switch (status) {
+    case "active": return "var(--aqua)";
+    case "finished": return "var(--green)";
+    case "paused": return "var(--amber)";
+    case "archived": return "var(--ink-dim)";
+    default: return "var(--steel)";
+  }
+}
+
 /** Colour token for a node's resolved UI state (used by the drawer's state line). */
 export function uiColor(ui: string): string {
   switch (ui) {

@@ -119,13 +119,42 @@ export interface PlanPhase {
   notes: string | null;
 }
 
+/** Free-form prose sections of the plan markdown (each nullable). Rendered in the drawer. */
+export interface PlanProse {
+  goal: string | null;
+  approach: string | null;
+  parallelGuide: string | null;
+  progressLog: string | null;
+}
+
 export interface Plan {
   name: string;
   status: string | null;
   updatedAt: string | null;
   loopConfig: LoopConfig | null;
   phases: PlanPhase[];
+  prose: PlanProse;
   warnings: string[];
+}
+
+/** One phase row of the whole-plan drawer summary. */
+export interface PlanPhaseSummary {
+  phase: string;
+  title: string;
+  lane: string;
+  status: PlanPhaseStatus;
+  dependsOn: string[];
+}
+
+/** The plan digest carried on every Snapshot — feeds the plan node badges + the plan drawer. */
+export interface PlanOverview {
+  name: string;
+  status: string | null;
+  updatedAt: string | null;
+  loopConfig: LoopConfig | null;
+  phaseSummary: PlanPhaseSummary[];
+  laneCount: number;
+  prose: PlanProse;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -291,11 +320,18 @@ export interface Problem {
 
 export interface PrInfo {
   url: string | null;
-  /** Structured review outcome (done|question|blocked) from the review run's status.json. */
+  /** Structured review outcome (done|question|blocked) — prefers state.review, else the run. */
   outcome: string | null;
   /** Human-readable review summary for display — never used to derive pass/fail. */
   verdict: string | null;
   reviewPresent: boolean;
+  /** `runs/review-a<K>/report.md` (from state.review) — the full report the drawer fetches. */
+  reportPath: string | null;
+  /** URL of the GitHub PR comment the review was posted to (from state.review). */
+  commentUrl: string | null;
+  /** Slug + attempt of the latest review run (for the per-attempt detail fetch), if any. */
+  reviewSlug: string | null;
+  reviewAttempt: number | null;
 }
 
 export interface EffortInfo {
@@ -309,6 +345,7 @@ export interface EffortInfo {
 
 export interface Snapshot {
   effort: EffortInfo;
+  plan: PlanOverview;
   graph: Graph;
   problems: Problem[];
   events: TimelineEvent[];

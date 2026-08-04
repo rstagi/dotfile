@@ -108,13 +108,14 @@ function buildNodes(snapshot: Snapshot, layout: ReturnType<typeof computeLayout>
   }));
 
   const pr = snapshot.effort.pr;
+  const plan = snapshot.plan;
   const phaseNodes: Node[] = snapshot.graph.nodes.map((node) => {
     const pos = layout.positions.get(node.id) ?? { x: 0, y: 0 };
     return {
       id: node.id,
       type: "phase",
       position: pos,
-      data: { node, pr, selected: node.id === selectedId },
+      data: { node, pr, plan, selected: node.id === selectedId },
       selected: node.id === selectedId,
       draggable: false,
       zIndex: 1,
