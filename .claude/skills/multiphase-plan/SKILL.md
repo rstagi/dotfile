@@ -164,21 +164,25 @@ they don't want the plan committed.
 
 ### 6. Report
 
-State the shape honestly — do not imply parallelism that isn't there.
+State the shape honestly — do not imply parallelism that isn't there. Fill every `<…>` in
+the templates below with the real captured value (project name, doc / project / effort-task
+URLs, phase & lane counts from Steps 3–4) — never print a literal placeholder.
 
 **Single-lane (sequential) plan — the common case:**
 
-> **Plan published:** [<Effort> — Multi-Phase Plan](doc-url) on [project](project-url) ·
+> **Plan published:** [<Effort> — Multi-Phase Plan](doc-url) on [<project name>](project-url) ·
 > N phases, sequential.
 >
 > This work is sequential — each phase builds on the last, so it runs in one worktree in
-> order. Start with **Phase 1**: run **`/kestral-pickup <project>`** (Codex:
+> order. Start with **Phase 1**: run **`/kestral-pickup <project name>`** (Codex:
 > **`$kestral-pickup`**). When a phase advances, run **`/kestral-handoff`** to repush the plan.
-> Automated path: **`/kestral-loop <project>`** once the plan is published.
+>
+> **Run the loop on this task:** [<parent-slug> - <effort title>](effort-task-url) —
+> **`/kestral-loop <project name>`** (Codex: **`$kestral-loop`**), hands-off once published.
 
 **Multi-lane plan — only when phases passed the Independence test:**
 
-> **Plan published:** [<Effort> — Multi-Phase Plan](doc-url) on [project](project-url) ·
+> **Plan published:** [<Effort> — Multi-Phase Plan](doc-url) on [<project name>](project-url) ·
 > N phases in M lanes.
 >
 > **Parallel lanes:**
@@ -187,10 +191,12 @@ State the shape honestly — do not imply parallelism that isn't there.
 > - **Integration:** Phase 4 merges A + B (single worktree, after both).
 > - **Conflict watch:** Phases 2 & 3 both touch `src/api/*` — rebase before merge.
 >
-> In each new Conductor worktree, run **`/kestral-pickup <project>`** (Codex:
+> In each new Conductor worktree, run **`/kestral-pickup <project name>`** (Codex:
 > **`$kestral-pickup`**) and claim its lane. When a lane advances, run **`/kestral-handoff`**
 > to reconcile and repush the plan.
-> Automated path: **`/kestral-loop <project>`** once the plan is published.
+>
+> **Run the loop on this task:** [<parent-slug> - <effort title>](effort-task-url) —
+> **`/kestral-loop <project name>`** (Codex: **`$kestral-loop`**) runs all lanes hands-off.
 
 If you split into lanes, be ready to justify each split against the Independence test if the
 user asks. If it was a close call, prefer reporting it as sequential and note the *optional*

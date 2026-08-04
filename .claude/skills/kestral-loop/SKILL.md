@@ -48,10 +48,11 @@ Resolve the plan like `kestral-pickup` step 1 (argument → `.kestral/plan.md` h
 ask). Re-fetch from Kestral; parse phases, lanes, `Depends on` edges, statuses, per-phase
 `Verify`; reconcile against live task statuses. Validate: DAG acyclic; every phase has
 *Done when*; Loop config present; working tree clean. Ensure `.kestral/` is gitignored.
-Generate the run id (`loop-<effort-slug>-<date>`) and take the lock now —
-`loop-state.sh lock --owner <run-id>`: a foreign owner means a live orchestrator already
-runs this effort; surface it and stop (never `--force` silently). This happens before the
-confirm gate so the gate's no-further-contact promise holds.
+Generate the run id (`loop-<effort-slug>-<date>-<HHMMSS|rand>` — opaque; the trailing
+segment prevents same-effort-same-day store-key collisions across parallel checkouts) and
+take the lock now — `loop-state.sh lock --owner <run-id>`: a foreign owner means a live
+orchestrator already runs this effort; surface it and stop (never `--force` silently). This
+happens before the confirm gate so the gate's no-further-contact promise holds.
 
 ### 2. One confirm gate, then autonomy
 
@@ -69,18 +70,13 @@ worktree (`~/.kestral-loop-worktrees/<repo>-integration`), and push it (the one 
 push — everything after goes through loop-merge). Write the branch back into the Loop
 config only if it was missing, set plan **Status: in progress**, repush the doc once.
 
-**Launch the observer (on by default).** Once `.kestral/loop/` exists, start the read-only
-**Loop Observatory** so the human can watch the graph live — it is detached, non-blocking,
-and only *reads* `.kestral/loop/`, so it can never affect the run:
-
-```sh
-[ -x ~/dotfile/loop-web.sh ] && { nohup ~/dotfile/loop-web.sh --dir "$PWD/.kestral/loop" \
-  --plan "$PWD/.kestral/plan.md" >~/.kestral-loop-web.log 2>&1 & disown; }
-```
-
-Print `http://localhost:7717` once so the human can open it. It's an optional dashboard —
-if `loop-web` isn't installed, skip silently; the loop never depends on it, and printing a
-URL is not a "contact" that breaks the confirm gate's promise.
+**The observer runs itself (on by default).** `loop-state.sh init` sources `loop-emit.sh`,
+which runs `loop_ensure_daemon` (starts the central Loop daemon if it isn't already up) then
+POSTs `/api/loops/<runId>/register` — so this loop appears in the daemon's authoritative,
+never-stale status the moment `.kestral/loop/` exists. Print `http://localhost:7717` once so
+the human can open the **Loop Observatory** and pick this loop from the selector. It's an
+optional read-only dashboard that never blocks the run; printing a URL is not a "contact"
+that breaks the confirm gate's promise.
 
 ### 4. Schedule
 
@@ -97,10 +93,11 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
    status.json. Include the verbatim phase block + plan Goal/decisions + prior-attempt
    context (`answers/`, verify.log tails, HIL answers).
 3. Spawn detached per the protocol's Runner-spawn section (nohup + pid file):
-   `~/dotfile/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --chain
-   task --verify-cmd '<phase-or-effort verify>'`. Record pid + run dir in state; journal
-   the event. A pickup `REFUSED` surfaces as the runner's `blocked` status → ladder, keep
-   scheduling other lanes.
+   `~/dotfile/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --run-id
+   <runId> --phase <N> --chain task --verify-cmd '<phase-or-effort verify>'` (it inherits
+   `LOOP_DAEMON_URL` via env, so its EXIT-trap `phase.attempt.*` events reach the daemon).
+   Record pid + run dir in state; journal the event. A pickup `REFUSED` surfaces as the
+   runner's `blocked` status → ladder, keep scheduling other lanes.
 
 There are no completion notifications from detached runners — monitor by polling per the
 protocol: `meta.json` appearing means the attempt ended; a `transcript.jsonl` staler than
@@ -127,7 +124,8 @@ Switch on the exit code (protocol table). The extra checks only you can do:
 ### 6. Merge and sync
 
 Serialize merges (one at a time). `loop-merge.sh --worktree <int-wt> --lane-branch <b>
---verify-cmd '<effort verify>'`:
+--run-id <runId> --phase <N> --verify-cmd '<effort verify>'` (inherits `LOOP_DAEMON_URL`;
+its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
 
 - **0** → run `kestral-handoff --auto phase:<N> status:done lane:<X> engine:<engine>`
   inline — the orchestrator context of that skill: flips markers, repushes the plan doc
@@ -151,9 +149,9 @@ Ladder per protocol: L0/L1 live inside loop-runner. Yours: **L2** answer-and-res
 5); **L3** Fable takeover — fresh attempt, `--chain escalate`, prompt carries a distilled
 post-mortem of prior attempts (last.md + verify tails, never raw transcripts), one shot;
 **L4** HIL — write `hil/<phase-slug>.md` per protocol, post it as a task comment, flip
-`[status: blocked]` + repush, `loop-notify.sh --level question`, then ask the user
-in-session. **Only that lane pauses.** On answer, requeue the phase with the answer in
-context.
+`[status: blocked]` + repush, `loop-notify.sh --level question --run-id <runId> --event
+hil.raise`, then ask the user in-session. **Only that lane pauses.** On answer, requeue the
+phase with the answer in context.
 
 ### 8. Complete
 
@@ -164,18 +162,22 @@ Progress log digest — never a raw log dump). `link_pr_to_task` for every phase
 free). Then spawn the reviewer with a FULL runner prompt (the protocol skeleton, not a
 one-liner — it must end with the RUN_DIR/status.json instructions or the run is
 misclassified as a crash): task = "run the pr-review skill on <PR URL> with --headless
-(includes the stacked-PR-split lens); post the report as a PR comment; then write
-status.json with outcome done and the verdict as summary". Spawn:
-`loop-runner.sh --chain review --worktree <int-wt> --run-dir <runs/review-a1> ...`.
-Finally `loop-notify.sh --level info` with PR + review verdict + split recommendation,
-journal, unlock, and stop — the human merges.
+(includes the stacked-PR-split lens); write the full report to `RUN_DIR/report.md` and post
+it as a PR comment; then write status.json with outcome done and the verdict as summary".
+Spawn: `loop-runner.sh --chain review --worktree <int-wt> --run-dir <runs/review-a1> ...`.
+When it returns, promote the review onto state — `loop-state.sh set '.review =
+{outcome, summary, reportPath: "runs/review-a<K>/report.md", commentUrl}'` — log
+`review.finish`, then `loop-state.sh finish --json '{...prUrl, review}'` (emits `loop.finish`
+to the daemon). Finally `loop-notify.sh --level info` with PR + review verdict + split
+recommendation, journal, unlock, and stop — the human merges.
 
 ### 9. `resume` / `status` / `abort`
 
 - **resume** — re-lock with the state's run id, then reconcile per protocol (git > Kestral
   > state): finish/abort any in-progress merge first; re-attach or fail dead attempts;
-  repair status drift. Never double-spawn a phase with a live pid. Relaunch the observer
-  (step 3) if nothing is already listening on the port.
+  repair status drift. Never double-spawn a phase with a live pid. Call `loop-state.sh
+  register` (idempotent ensure-daemon + re-register) so the loop reappears in the observer —
+  no per-loop observer to relaunch.
 - **status** — print the lane table from state + live pids + last events; read-only.
 - **abort** — kill live runners, `--abort` any merge, flip in-progress phases back to
   todo, repush plan, notify, unlock. Leave worktrees for autopsy; tell the user the

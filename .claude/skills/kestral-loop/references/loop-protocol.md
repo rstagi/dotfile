@@ -40,6 +40,7 @@ State lives in the orchestrator's checkout of the target repo (add `.kestral/` t
     status.json              # runner-written result (schema below)
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
+  runs/review-a<K>/report.md # full pr-review report (also posted as the PR comment)
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
 ```
@@ -51,16 +52,55 @@ Worktrees live outside the repo (ralph convention):
 - Integration: `~/.kestral-loop-worktrees/<repo>-integration` on the integration branch.
   All merges and pushes happen only here.
 
+## Daemon & events
+
+A perpetual **central daemon** (`LOOP_DAEMON_URL`, default `http://localhost:7717`) is the
+authoritative, never-stale source for **UI status**; the `.kestral/loop/` files stay the
+crash-resume **source of truth** for code + bookkeeping. A launchd LaunchAgent auto-starts it
+on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
+`loop_ensure_daemon` as the fallback. Loops **register**, then push clean lifecycle events.
+Emission is **best-effort** — a `curl` failure never fails the caller.
+
+Endpoints (POST bodies are JSON built injection-safely with `jq`):
+
+- `POST /api/loops/:runId/register` `{ loopDir, planFile?, effort?, projectId?, integrationBranch?, startedAt?, planText? }` — server reads plan.md from `planFile` if `planText` omitted.
+- `POST /api/loops/:runId/state` — the full state.json contents.
+- `POST /api/loops/:runId/event` `{ event, phase?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl? }`.
+- `POST /api/loops/:runId/finish` `{ status?, finishedAt?, prUrl?, review?:{outcome,summary,reportPath,commentUrl} }`.
+- `GET /api/loops` (selector) · `GET /events?runId=` (per-loop SSE) · `/api/loops/:runId/{snapshot,review,attempt/:slug/:k}` · `/api/health`.
+
+**Typed event vocabulary** (who emits what):
+
+| event | emitted by | fields |
+|-------|-----------|--------|
+| `phase.attempt.start` | loop-runner.sh (after mkdir RUN_DIR) | phase, engine, model |
+| `phase.attempt.finish` | loop-runner.sh (EXIT trap) | phase, outcome, exitCode, engine, model |
+| `phase.merged` | loop-merge.sh (EXIT trap, rc==0) | phase |
+| `merge.conflict` | loop-merge.sh (conflict branch) | phase, detail |
+| `hil.raise` / `hil.resolve` | orchestrator (loop-state.sh log) | phase |
+| `review.finish` | orchestrator | outcome, summary |
+| `loop.finish` | orchestrator (loop-state.sh finish) | prUrl |
+
+Unknown/legacy event names fall back to keyword matching, so today's free-form
+`events.jsonl` still works.
+
+**Monotone promotion lattice.** The daemon materializes each loop through a monotone rank
+`todo < claimed < running < done < merged`; a `phase.attempt.finish{outcome:done, exit 0}`
+promotes a phase to **done even if state.json bookkeeping lags** (fixes "done phases stuck at
+running/todo"). Ranks never regress — a phase never un-completes in the UI (v1).
+
 ## state.json schema
 
 Crash-resume reads exactly these fields — keep the shape:
 
 ```json
 {
-  "runId": "loop-<effort-slug>-<date>",
+  "runId": "loop-<effort-slug>-<date>-<HHMMSS|rand>",
   "effort": "...", "projectId": "...", "workContextId": "...",
   "integrationBranch": "feat/<effort-slug>", "integrationWorktree": "<abs path>",
   "prUrl": null,
+  "review": { "outcome": "...", "summary": "...",
+              "reportPath": "runs/review-a<K>/report.md", "commentUrl": "..." },
   "phases": {
     "3": { "slug": "<task-slug>", "taskId": "...", "lane": "A",
            "branch": "feat/api-client-token-refresh", "worktree": "<abs path or null>",
@@ -253,7 +293,7 @@ tip; already-running lanes pick up siblings' work at their own merge time.
    `hil/<phase-slug>.answer.md`".
 2. Post the same content as a comment on the phase's Kestral task; flip the phase to
    `[status: blocked]` and repush the plan doc.
-3. `loop-notify.sh --level question --title "HIL: <phase>" --body "<question>"`.
+3. `loop-notify.sh --level question --run-id <runId> --event hil.raise --title "HIL: <phase>" --body "<question>"`.
 4. Ask in-session (AskUserQuestion / plain question). Other lanes keep running. On answer:
    phase back to ready with the answer injected; status back to `in-progress`.
 
