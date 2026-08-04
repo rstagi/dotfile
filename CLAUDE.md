@@ -26,7 +26,10 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh
+
+# Loop Observatory (loop-web) tests + build
+cd loop-web && npm test && npm run build && cd ..
 ```
 
 ## Architecture
@@ -40,8 +43,11 @@ afk-ralph.sh            Legacy Docker sandbox mode
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
 loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-in Telegram)
-loop-state.sh           Loop engineering: state.json ops, run lock, event journal
+loop-state.sh           Loop engineering: state.json ops, run lock, event journal, daemon emit
+loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)
 loop-models.conf        Loop engineering: model chains, budgets, timeouts
+loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
+loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
@@ -52,6 +58,8 @@ loop-models.conf        Loop engineering: model chains, budgets, timeouts
 **Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx).
 
 **Loop engineering:** `.claude/skills/kestral-loop` orchestrates a published multiphase-plan end-to-end (headless runners per phase, single integration branch + PR, escalation → HIL, auto pr-review). Contract: `.claude/skills/kestral-loop/references/loop-protocol.md`; mechanism: the `loop-*.sh` scripts above.
+
+**Loop Observatory (`loop-web`):** a perpetual central daemon (launchd LaunchAgent, `127.0.0.1:7717`) that renders every loop as a live L→R graph. Loops register + push lifecycle events to it (`loop-emit.sh`, sourced by the `loop-*.sh` scripts) so status is authoritative via a monotone promotion lattice — never stale. Each loop is kept forever in `~/.kestral/loops/<runId>.json`; a header selector switches between loops. Daemon/event contract lives in `loop-protocol.md` → Daemon & events.
 
 ## Git Aliases (from .zshrc_git_ext)
 

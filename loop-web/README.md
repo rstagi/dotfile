@@ -1,25 +1,34 @@
 # Loop Observatory (`loop-web`)
 
-A **live, read-only** web graph for the Kestral loop-engineering flow. When `kestral-loop`
-runs a plan autonomously, all of its state is written to local files under `.kestral/loop/`.
-This app watches those files, normalizes them, and renders the plan as a left-to-right graph
+A **live** web graph for the Kestral loop-engineering flow, rendered as a left-to-right graph
 that live-updates to show what each node is working on — model, branch, attempt, problems
 (verify-fail / crash / timeout / blocked / chain-exhausted), and HIL escalations.
 
-It **never writes** to `.kestral/loop/` or the plan. HIL is answered in chat to the
-orchestrator, exactly as today.
+It runs as a **perpetual central daemon** (a launchd LaunchAgent on `127.0.0.1:7717`). Every
+`kestral-loop` run **registers** with it and **pushes clean lifecycle events** (via
+`loop-emit.sh`, sourced by the `loop-*.sh` scripts) *in addition to* the daemon watching
+`.kestral/loop/` on disk. Status is therefore **authoritative, never stale**: a
+`phase.attempt.finish{done,exit0}` event promotes a phase to `done` even when the
+orchestrator's `state.json` bookkeeping lags (a monotone `todo<claimed<running<done<merged`
+lattice — ranks never regress). Every loop is kept **forever** in a per-loop JSON store
+(`~/.kestral/loops/<runId>.json`), reviewable after its worktree is gone; a header **selector**
+switches between loops.
+
+It **never writes** to `.kestral/loop/` or the plan — it only reads those files and folds the
+events pushed to it. HIL is answered in chat to the orchestrator, exactly as today.
 
 ## Run
 
 ```bash
-../loop-web.sh                       # discover .kestral/ from the cwd (walk up)
+../loop-web.sh --daemon              # the central daemon (what the LaunchAgent runs)
+../loop-web.sh                       # legacy single-loop: discover .kestral/ from cwd (walk up)
 ../loop-web.sh --plan fixtures/plan.md          # static: preview a plan, no loop running
-../loop-web.sh --dir fixtures/.kestral/loop     # observe a specific loop dir
-../loop-web.sh --port 7717
+../loop-web.sh --dir fixtures/.kestral/loop     # observe one specific loop dir
 ```
 
-The launcher runs `node server/index.mjs`, which serves the built `dist/` plus the data
-endpoints. Open `http://localhost:7717`.
+`install.sh loop-web` renders + bootstraps the `com.rstagi.loop-web` LaunchAgent (auto-start on
+login + KeepAlive); `loop-emit.sh` also ensure-starts it when a loop begins. Open
+`http://localhost:7717` and pick a loop from the selector.
 
 ## Develop
 
@@ -40,11 +49,18 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
   (strings/objects), never touches the filesystem, so it is fully unit-testable with fixtures.
   It is **isomorphic**: the Node server imports it via native TS type-stripping (no build step
   for the backend), and Vite bundles it for the browser's "paste plan" preview.
-- **`server/index.mjs`** — zero-dep Node HTTP server. Does all I/O, then calls the model.
-  `fs.watch` (2s debounce) **plus a mandatory 15s reconcile timer** — a hung runner emits no fs
-  event, yet its stale heartbeat must still flip a node to flatline. Endpoints: `GET /events`
-  (SSE — a full snapshot on connect and per change; state is tiny, no deltas), `GET /api/model`
-  (snapshot for first paint), `GET /api/attempt/:slug/:k` (lazy log tails for the drawer).
+- **`server/index.mjs`** — zero-dep Node HTTP server, a `Map<runId, entry>` registry bound to
+  `127.0.0.1`. Does all I/O, then folds each ingest through the pure model (`reduce-loop.ts`) and
+  renders it (`materialize.ts`). Per live loop: `fs.watch` (2s debounce) **plus a 15s reconcile**
+  that self-heals missed POSTs — a hung runner emits no fs event, yet its stale heartbeat must
+  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish}`,
+  `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{snapshot,
+  review,attempt/:slug/:k}` (410 when the worktree is gone), `/api/health`; back-compat
+  `/api/model` · `/api/snapshot` · bare `/events` resolve to the default loop.
+- **`server/store.mjs`** — per-loop persistence (`~/.kestral/loops/<runId>.json`), atomic
+  mktemp+rename, per-loop debounce, sync flush on finish + SIGTERM/SIGINT, `loadAll` on startup
+  (corrupt file → skip + warn). Pure serialize/parse (with the event cap) live in
+  `src/model/store-serde.ts`; the reducer + materialize are `src/model/{reduce-loop,materialize}.ts`.
 - **`src/ui/`** — Vite + React + TypeScript. React Flow for the DAG, Framer-Motion CSS for the
   three load-bearing motions (heartbeat, flatline, HIL alarm). "Phosphor Bench" oscilloscope theme.
 
