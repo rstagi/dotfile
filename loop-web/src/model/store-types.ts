@@ -101,6 +101,9 @@ export type Ingest =
 
 export const STORE_SCHEMA_VERSION = 1;
 
+/** Per-loop event cap — drop oldest to bound disk (Resolved decision #2). */
+export const EVENT_CAP = 5000;
+
 export interface LoopRecord {
   schemaVersion: number;
   runId: string;

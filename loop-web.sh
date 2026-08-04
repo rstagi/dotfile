@@ -24,9 +24,10 @@ EOF
 }
 need_arg() { [ "$#" -ge 2 ] || { echo "loop-web: $1 requires a value" >&2; exit 1; }; }
 
-DIR="" PLAN="" PORT="${LOOP_WEB_PORT:-7717}"
+DIR="" PLAN="" PORT="${LOOP_WEB_PORT:-7717}" DAEMON=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --daemon) DAEMON=1; shift ;;
     --dir) need_arg "$@"; DIR="$2"; shift 2 ;;
     --plan) need_arg "$@"; PLAN="$2"; shift 2 ;;
     --port) need_arg "$@"; PORT="$2"; shift 2 ;;
@@ -43,6 +44,16 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(
   echo "loop-web: Node >= 22.18 required (have $(node -v)) for the .ts server — upgrade node" >&2; exit 1
 }
 [ -f "$SERVER" ] || { echo "loop-web: server not found at $SERVER" >&2; exit 1; }
+
+# Daemon mode: the perpetual central observer. Loops register + push lifecycle to it; no
+# single-loop discovery, and every loop is kept in the store forever.
+if [ "$DAEMON" -eq 1 ]; then
+  export LOOP_WEB_PORT="$PORT"
+  export LOOP_DAEMON_MODE=1
+  export LOOP_STORE_DIR="${LOOP_STORE_DIR:-$HOME/.kestral/loops}"
+  echo "loop-web: starting central Loop Observatory daemon on http://localhost:$PORT (store: $LOOP_STORE_DIR)"
+  exec node "$SERVER" --daemon
+fi
 
 # Discover the loop dir if not given: nearest ancestor with a .kestral/ directory.
 if [ -z "$DIR" ] && [ -z "$PLAN" ]; then

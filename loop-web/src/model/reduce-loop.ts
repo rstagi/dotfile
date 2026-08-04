@@ -16,15 +16,12 @@ import type {
   FinishInfo,
   ReviewInfo,
 } from "./store-types.ts";
-import { STORE_SCHEMA_VERSION } from "./store-types.ts";
+import { STORE_SCHEMA_VERSION, EVENT_CAP } from "./store-types.ts";
 import type { StateJson, RawEvent, PhaseStateStatus } from "./types.ts";
 import { EVENT_RULES } from "./derive.ts";
 
 const RANK_INDEX: Record<PhaseRank, number> = { todo: 0, claimed: 1, running: 2, done: 3, merged: 4 };
 const STATE_STATUSES: readonly PhaseStateStatus[] = ["todo", "claimed", "running", "merged", "blocked", "done"];
-
-/** Per-loop event cap — drop oldest to bound disk (Resolved decision #2). */
-const EVENT_CAP = 5000;
 
 /** Event names the reducer folds structurally. Anything else falls to the keyword fallback
  * (EVENT_RULES) so a legacy free-form events.jsonl still drives the overlay. */

@@ -1,27 +1,63 @@
-// Loop Observatory server — a pure read-only observer.
+// Loop Observatory server.
 //
-// Zero external deps. Does ALL filesystem I/O, then hands file *contents* to the tested
-// pure model in ../src/model (Node strips the TS types at runtime). Watches the loop dir
-// with a 2s debounce AND a mandatory 15s reconcile (a hung runner emits no fs event, yet
-// its heartbeat must still flip live→flatline on a timer). Streams full snapshots over SSE.
+// Two modes, one machinery:
+//   • daemon  (LOOP_DAEMON_MODE=1) — the perpetual central observer on 127.0.0.1:7717.
+//     Loops POST lifecycle to it (`/api/loops/:runId/{register,state,event,finish}`); each is
+//     kept forever in `~/.kestral/loops/<runId>.json`. A selector lists them; per-loop SSE
+//     streams the graph.
+//   • legacy  (loop-web --dir X) — discovers one `.kestral/loop/`, synthesizes a single
+//     registration into the same registry. No store; ephemeral.
 //
-// It NEVER writes to .kestral/loop or the plan — observation only.
+// Authoritative status is materialized through the tested pure model (../src/model): script
+// events promote a phase's lifecycle even when the orchestrator's state.json bookkeeping
+// lags — the fix for stuck running/todo nodes. The server does ALL I/O; the model stays pure.
 
 import http from "node:http";
 import fs from "node:fs";
-import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSnapshot, parsePlan, parseLoop } from "../src/model/index.ts";
+import { reduceLoop, emptyRecord, materialize, summarize } from "../src/model/index.ts";
+import { createStore } from "./store.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "..", "dist");
 
-const DEBOUNCE_MS = 2000;
+const WATCH_DEBOUNCE_MS = 2000;
 const RECONCILE_MS = 15000;
 const TAIL_BYTES = 64 * 1024;
+const BODY_LIMIT = 4 * 1024 * 1024; // cap an ingest body (plan md + state) — reject beyond
+const HOST = "127.0.0.1";
 
-// --- configuration & path resolution -------------------------------------------------
+// --- configuration -------------------------------------------------------------------
+
+function resolveConfig() {
+  const args = parseArgs(process.argv);
+  const env = process.env;
+  const port = Number(args.port ?? env.LOOP_WEB_PORT ?? 7717);
+  const daemon = args.daemon || env.LOOP_DAEMON_MODE === "1";
+  const storeDir = env.LOOP_STORE_DIR
+    ? path.resolve(env.LOOP_STORE_DIR)
+    : path.join(os.homedir(), ".kestral", "loops");
+
+  let loopDir = args.dir ?? env.LOOP_WEB_DIR ?? null;
+  let planFile = args.plan ?? env.LOOP_WEB_PLAN ?? null;
+  if (!daemon && !loopDir && !planFile) {
+    const kestral = discoverKestral(process.cwd());
+    if (kestral) {
+      loopDir = path.join(kestral, "loop");
+      planFile = path.join(kestral, "plan.md");
+    }
+  }
+  if (loopDir && !planFile) planFile = path.join(path.dirname(loopDir), "plan.md");
+  return {
+    port,
+    daemon,
+    storeDir,
+    loopDir: loopDir ? path.resolve(loopDir) : null,
+    planFile: planFile ? path.resolve(planFile) : null,
+  };
+}
 
 function parseArgs(argv) {
   const out = {};
@@ -30,11 +66,12 @@ function parseArgs(argv) {
     if (a === "--dir") out.dir = argv[++i];
     else if (a === "--plan") out.plan = argv[++i];
     else if (a === "--port") out.port = argv[++i];
+    else if (a === "--daemon") out.daemon = true;
   }
   return out;
 }
 
-/** Walk up from `start` looking for a `.kestral/` directory; return its path or null. */
+/** Walk up from `start` for a `.kestral/` directory; return its path or null (legacy mode). */
 function discoverKestral(start) {
   let dir = path.resolve(start);
   for (;;) {
@@ -46,70 +83,314 @@ function discoverKestral(start) {
   }
 }
 
-function resolveConfig() {
-  const args = parseArgs(process.argv);
-  const env = process.env;
-  const port = Number(args.port ?? env.LOOP_WEB_PORT ?? 7717);
-  let loopDir = args.dir ?? env.LOOP_WEB_DIR ?? null;
-  let planFile = args.plan ?? env.LOOP_WEB_PLAN ?? null;
+// --- registry ------------------------------------------------------------------------
 
-  if (!loopDir && !planFile) {
-    const kestral = discoverKestral(process.cwd());
-    if (kestral) {
-      loopDir = path.join(kestral, "loop");
-      planFile = path.join(kestral, "plan.md");
+/** runId → { record, subscribers:Set<res>, lastSnapshotJson, stopWatch, live, seq } */
+const loops = new Map();
+/** clients that subscribed to a runId before it existed (drained on register). */
+const pendingSubscribers = new Map();
+/** bare /events (no runId) — a back-compat stream that always mirrors the default loop. */
+const legacySubscribers = new Set();
+let seqCounter = 0;
+let STORE = null;
+
+function getEntry(runId) {
+  let entry = loops.get(runId);
+  if (!entry) {
+    entry = { record: emptyRecord(runId), subscribers: new Set(), lastSnapshotJson: "null", stopWatch: null, live: false, seq: 0 };
+    loops.set(runId, entry);
+    const waiting = pendingSubscribers.get(runId);
+    if (waiting) {
+      for (const res of waiting) entry.subscribers.add(res);
+      pendingSubscribers.delete(runId);
     }
   }
-  // The plan sits beside the loop dir at .kestral/plan.md unless overridden.
-  if (loopDir && !planFile) planFile = path.join(path.dirname(loopDir), "plan.md");
+  return entry;
+}
 
-  loopDir = loopDir ? path.resolve(loopDir) : null;
-  planFile = planFile ? path.resolve(planFile) : null;
-  return { port, loopDir, planFile };
+/** Fold one ingest into a loop, re-materialize, broadcast, and persist. */
+function ingest(runId, msg, { flush = false } = {}) {
+  const entry = getEntry(runId);
+  entry.record = reduceLoop(entry.record, msg);
+  entry.seq = ++seqCounter;
+  maybeStartWatcher(entry);
+  rematerialize(entry);
+  broadcast(entry);
+  if (STORE) flush ? STORE.flush(entry.record) : STORE.save(entry.record);
+}
+
+function rematerialize(entry) {
+  const live = readLive(entry.record);
+  const now = Date.now();
+  const snap = materialize(entry.record, live, { now, nowIso: new Date(now).toISOString() });
+  entry.record.lastSnapshot = snap;
+  entry.lastSnapshotJson = JSON.stringify(snap);
+  entry.live = live != null;
+}
+
+/** LoopInput read fresh from the loop dir, or null when the worktree is gone (archived). */
+function readLive(record) {
+  return record.loopDir && isDir(record.loopDir) ? readLoopInput(record.loopDir) : null;
+}
+
+// --- watching (per live loop) --------------------------------------------------------
+
+function maybeStartWatcher(entry) {
+  if (entry.stopWatch || !entry.record.loopDir || !isDir(entry.record.loopDir)) return;
+  const dir = entry.record.loopDir;
+  const planFile = entry.record.planFile;
+  let debounce = null;
+  const schedule = () => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(() => reconcile(entry), WATCH_DEBOUNCE_MS);
+  };
+  const watchers = [];
+  const watch = (p, opts) => {
+    try {
+      watchers.push(fs.watch(p, opts, schedule));
+    } catch {
+      /* path may not exist yet — the reconcile timer still covers it */
+    }
+  };
+  watch(dir, { recursive: true });
+  if (planFile) watch(planFile, {});
+  // A hung runner emits no fs event, but its stale heartbeat must still flip live→flatline.
+  const timer = setInterval(() => reconcile(entry), RECONCILE_MS);
+  timer.unref?.();
+  entry.stopWatch = () => {
+    for (const w of watchers) {
+      try {
+        w.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    clearInterval(timer);
+    if (debounce) clearTimeout(debounce);
+    entry.stopWatch = null;
+  };
+}
+
+/** Self-heal a live loop from disk (missed POSTs) + refresh the heartbeat, then broadcast. */
+function reconcile(entry) {
+  const dir = entry.record.loopDir;
+  if (!dir || !isDir(dir)) {
+    // worktree removed → archived: stop watching, freeze on the last snapshot.
+    if (entry.stopWatch) entry.stopWatch();
+    rematerialize(entry);
+    broadcast(entry);
+    return;
+  }
+  const stateText = readText(path.join(dir, "state.json"));
+  const eventsText = readText(path.join(dir, "events.jsonl"));
+  const planText = entry.record.planFile ? readText(entry.record.planFile) : null;
+  const state = safeParse(stateText);
+  if (state) entry.record = reduceLoop(entry.record, { kind: "state", state, planText });
+  if (eventsText) entry.record = reduceLoop(entry.record, { kind: "eventsFile", text: eventsText });
+  rematerialize(entry);
+  broadcast(entry);
+  if (STORE) STORE.save(entry.record);
+}
+
+// --- SSE broadcast -------------------------------------------------------------------
+
+function snapshotFrame(json) {
+  return `event: snapshot\ndata: ${json}\n\n`;
+}
+
+function broadcast(entry) {
+  const frame = snapshotFrame(entry.lastSnapshotJson);
+  for (const res of entry.subscribers) res.write(frame);
+  pushLegacy();
+}
+
+/** Re-point the bare-/events stream at whatever loop is currently the default. */
+function pushLegacy() {
+  if (legacySubscribers.size === 0) return;
+  const d = defaultEntry();
+  const frame = snapshotFrame(d ? d.lastSnapshotJson : "null");
+  for (const res of legacySubscribers) res.write(frame);
+}
+
+/** The loop the back-compat endpoints resolve to: the most-recent active loop, else newest. */
+function defaultEntry() {
+  let best = null;
+  for (const e of loops.values()) {
+    if (!best) {
+      best = e;
+      continue;
+    }
+    const ea = isActiveish(e);
+    const ba = isActiveish(best);
+    if (ea !== ba) {
+      if (ea) best = e;
+      continue;
+    }
+    if (e.seq > best.seq) best = e;
+  }
+  return best;
+}
+
+function isActiveish(e) {
+  return isDir(e.record.loopDir) && e.record.status !== "finished";
+}
+
+// --- HTTP ----------------------------------------------------------------------------
+
+function handle(req, res) {
+  const u = new URL(req.url, "http://localhost");
+  const p = u.pathname;
+
+  if (req.method === "POST") {
+    const m = p.match(/^\/api\/loops\/([^/]+)\/(register|state|event|finish)$/);
+    if (m) return handleIngest(decodeURIComponent(m[1]), m[2], req, res);
+    return json(res, 404, { error: "unknown endpoint" });
+  }
+
+  if (p === "/events") return handleSse(req, res, u.searchParams.get("runId"));
+  if (p === "/api/health") return json(res, 200, { ok: true, mode: MODE, loops: loops.size });
+  if (p === "/api/loops") return json(res, 200, listLoops());
+
+  let m;
+  if ((m = p.match(/^\/api\/loops\/([^/]+)\/snapshot$/))) return handleLoopSnapshot(decodeURIComponent(m[1]), res);
+  if ((m = p.match(/^\/api\/loops\/([^/]+)\/review$/))) return handleReview(decodeURIComponent(m[1]), res);
+  if ((m = p.match(/^\/api\/loops\/([^/]+)\/attempt\/(.+)\/(\d+)\/?$/)))
+    return handleAttempt(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], res);
+
+  // back-compat (pre-selector UI): resolve to the default loop.
+  if (p === "/api/model" || p === "/api/snapshot") {
+    const d = defaultEntry();
+    return sendJsonText(res, d ? d.lastSnapshotJson : "null");
+  }
+  if ((m = p.match(/^\/api\/attempt\/(.+)\/(\d+)\/?$/))) {
+    const d = defaultEntry();
+    if (!d) return json(res, 404, { error: "no loop" });
+    return handleAttempt(d.record.runId, decodeURIComponent(m[1]), m[2], res);
+  }
+
+  if (p.startsWith("/api/")) return json(res, 404, { error: "unknown endpoint" });
+  return serveStatic(req, res);
+}
+
+function handleIngest(runId, kind, req, res) {
+  readBody(req, BODY_LIMIT, (err, body) => {
+    if (err) return json(res, 413, { error: "body too large" });
+    const parsed = safeParse(body) ?? {};
+    let msg;
+    if (kind === "register") {
+      const info = { ...parsed, runId };
+      if (info.loopDir && !info.planFile) info.planFile = path.join(path.dirname(info.loopDir), "plan.md");
+      if (!info.planText && info.planFile) info.planText = readText(info.planFile);
+      msg = { kind: "register", info };
+    } else if (kind === "state") {
+      msg = { kind: "state", state: parsed };
+    } else if (kind === "event") {
+      msg = { kind: "event", event: parsed };
+    } else {
+      msg = { kind: "finish", info: parsed };
+    }
+    try {
+      ingest(runId, msg, { flush: kind === "finish" });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+    json(res, 200, { ok: true, runId });
+  });
+}
+
+function listLoops() {
+  const out = [];
+  for (const entry of loops.values()) {
+    const sum = summarize(entry.record);
+    // A worktree that's gone can't serve live logs — surface it as archived in the selector.
+    if (!isDir(entry.record.loopDir)) sum.status = "archived";
+    out.push({ ...sum, seq: entry.seq });
+  }
+  return out.sort((a, b) => b.seq - a.seq).map(({ seq, ...rest }) => rest);
+}
+
+function handleLoopSnapshot(runId, res) {
+  const entry = loops.get(runId);
+  if (!entry) return json(res, 404, { error: "no such loop", runId });
+  sendJsonText(res, entry.lastSnapshotJson);
+}
+
+function handleReview(runId, res) {
+  const entry = loops.get(runId);
+  if (!entry) return json(res, 404, { error: "no such loop", runId });
+  const rec = entry.record;
+  const review = rec.review;
+  let reportMarkdown = null;
+  if (review?.reportPath && rec.loopDir) {
+    const abs = path.isAbsolute(review.reportPath) ? path.resolve(review.reportPath) : path.resolve(rec.loopDir, review.reportPath);
+    if (isContained(abs, path.resolve(rec.loopDir))) reportMarkdown = readText(abs);
+  }
+  json(res, 200, {
+    outcome: review?.outcome ?? null,
+    summary: review?.summary ?? null,
+    reportMarkdown,
+    commentUrl: review?.commentUrl ?? null,
+    prUrl: rec.prUrl ?? null,
+  });
+}
+
+function handleAttempt(runId, slug, k, res) {
+  const entry = loops.get(runId);
+  if (!entry) return json(res, 404, { error: "no such loop", runId });
+  const loopDir = entry.record.loopDir;
+  if (!loopDir || !isDir(loopDir)) return json(res, 410, { error: "worktree gone — logs unavailable", runId });
+  const runsRoot = path.resolve(path.join(loopDir, "runs"));
+  const runDir = path.resolve(path.join(loopDir, "runs", `${slug}-a${k}`));
+  if (!isContained(runDir, runsRoot)) return json(res, 400, { error: "bad path" });
+  if (!isDir(runDir)) return json(res, 404, { error: "no such attempt", slug, k });
+  return json(res, 200, {
+    slug,
+    attempt: Number(k),
+    runDir: path.join("runs", `${slug}-a${k}`),
+    meta: safeParse(readText(path.join(runDir, "meta.json"))),
+    status: safeParse(readText(path.join(runDir, "status.json"))),
+    verifyLog: tail(path.join(runDir, "verify.log")),
+    lastMessage: tail(path.join(runDir, "last.md")),
+    stderr: tail(path.join(runDir, "stderr.log"), 16384),
+    spawnLog: tail(path.join(runDir, "spawn.log"), 16384),
+    transcriptPath: path.join(runDir, "transcript.jsonl"),
+    transcriptMtime: mtimeMs(path.join(runDir, "transcript.jsonl")),
+  });
+}
+
+function handleSse(req, res, runId) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write("retry: 3000\n\n");
+  if (runId) {
+    const entry = loops.get(runId);
+    if (entry) {
+      res.write(snapshotFrame(entry.lastSnapshotJson));
+      entry.subscribers.add(res);
+      req.on("close", () => entry.subscribers.delete(res));
+    } else {
+      // subscribe optimistically — attach when the loop first registers.
+      res.write(snapshotFrame("null"));
+      const set = pendingSubscribers.get(runId) ?? new Set();
+      set.add(res);
+      pendingSubscribers.set(runId, set);
+      req.on("close", () => pendingSubscribers.get(runId)?.delete(res));
+    }
+    return;
+  }
+  // bare /events — back-compat stream mirroring the default loop.
+  const d = defaultEntry();
+  res.write(snapshotFrame(d ? d.lastSnapshotJson : "null"));
+  legacySubscribers.add(res);
+  req.on("close", () => legacySubscribers.delete(res));
 }
 
 // --- filesystem readers (I/O lives here; the model layer stays pure) -----------------
 
-function isDir(p) {
-  try {
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-function readText(p) {
-  try {
-    return fs.readFileSync(p, "utf8");
-  } catch {
-    return null;
-  }
-}
-function mtimeMs(p) {
-  try {
-    return fs.statSync(p).mtimeMs;
-  } catch {
-    return null;
-  }
-}
-/** Read only the last TAIL_BYTES of a file (logs/transcripts can be large). */
-function tail(p, bytes = TAIL_BYTES) {
-  try {
-    const fd = fs.openSync(p, "r");
-    try {
-      const size = fs.fstatSync(fd).size;
-      const start = Math.max(0, size - bytes);
-      const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
-      return buf.toString("utf8");
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return null;
-  }
-}
-
-/** Build the model's LoopInput by reading the loop dir. Every read is defensive. */
 function readLoopInput(loopDir) {
   if (!loopDir || !isDir(loopDir)) return { present: false, state: null, events: null, runs: [], hil: [] };
 
@@ -153,6 +434,43 @@ function readLoopInput(loopDir) {
   };
 }
 
+function isDir(p) {
+  try {
+    return !!p && fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function readText(p) {
+  try {
+    return fs.readFileSync(p, "utf8");
+  } catch {
+    return null;
+  }
+}
+function mtimeMs(p) {
+  try {
+    return fs.statSync(p).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+function tail(p, bytes = TAIL_BYTES) {
+  try {
+    const fd = fs.openSync(p, "r");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const start = Math.max(0, size - bytes);
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      return buf.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
 function safeReaddir(p) {
   try {
     return fs.readdirSync(p);
@@ -161,109 +479,7 @@ function safeReaddir(p) {
   }
 }
 
-// --- snapshot computation ------------------------------------------------------------
-
-function computeSnapshot(cfg) {
-  const planText = cfg.planFile ? readText(cfg.planFile) : null;
-  const plan = parsePlan(planText ?? "# No plan found — Multi-Phase Plan\n");
-  if (planText == null && cfg.planFile) {
-    plan.warnings.push(`Plan file not found: ${cfg.planFile}`);
-  }
-  const runtime = cfg.loopDir ? parseLoop(readLoopInput(cfg.loopDir)) : null;
-  const now = Date.now();
-  return buildSnapshot(plan, runtime, { now, nowIso: new Date(now).toISOString() });
-}
-
-// --- SSE hub -------------------------------------------------------------------------
-
-const clients = new Set();
-let lastSnapshotJson = "null";
-
-function broadcast(cfg) {
-  let snap;
-  try {
-    snap = computeSnapshot(cfg);
-    lastSnapshotJson = JSON.stringify(snap);
-  } catch (err) {
-    // A transient parse error must never take the server down; keep the last good snapshot.
-    console.error("[loop-web] snapshot error:", err?.message ?? err);
-    return;
-  }
-  const frame = `event: snapshot\ndata: ${lastSnapshotJson}\n\n`;
-  for (const res of clients) res.write(frame);
-}
-
-// --- watching ------------------------------------------------------------------------
-
-function startWatching(cfg, onChange) {
-  const watchers = [];
-  let debounce = null;
-  const schedule = () => {
-    if (debounce) clearTimeout(debounce);
-    debounce = setTimeout(onChange, DEBOUNCE_MS);
-  };
-
-  const watchPath = (p, opts) => {
-    try {
-      watchers.push(fs.watch(p, opts, schedule));
-    } catch {
-      /* the path may not exist yet — the reconcile timer still covers it */
-    }
-  };
-  if (cfg.loopDir) watchPath(cfg.loopDir, { recursive: true });
-  if (cfg.planFile) watchPath(cfg.planFile, {});
-
-  // Mandatory reconcile: a hung runner emits no fs event, but its stale heartbeat must
-  // still surface as a flatline. This tick recomputes and rebroadcasts unconditionally.
-  const timer = setInterval(onChange, RECONCILE_MS);
-  timer.unref?.();
-  return () => {
-    for (const w of watchers) w.close();
-    clearInterval(timer);
-    if (debounce) clearTimeout(debounce);
-  };
-}
-
-// --- HTTP ----------------------------------------------------------------------------
-
-function handleAttempt(cfg, req, res) {
-  const m = req.url.match(/^\/api\/attempt\/(.+)\/(\d+)\/?$/);
-  if (!m || !cfg.loopDir) return json(res, 404, { error: "not found" });
-  const slug = decodeURIComponent(m[1]);
-  const k = m[2];
-  const runDir = path.join(cfg.loopDir, "runs", `${slug}-a${k}`);
-  // Guard against path traversal in the slug segment (require containment under runs/).
-  if (!isContained(path.resolve(runDir), path.resolve(path.join(cfg.loopDir, "runs")))) {
-    return json(res, 400, { error: "bad path" });
-  }
-  if (!isDir(runDir)) return json(res, 404, { error: "no such attempt", slug, k });
-  return json(res, 200, {
-    slug,
-    attempt: Number(k),
-    runDir: path.join("runs", `${slug}-a${k}`),
-    meta: safeParse(readText(path.join(runDir, "meta.json"))),
-    status: safeParse(readText(path.join(runDir, "status.json"))),
-    verifyLog: tail(path.join(runDir, "verify.log")),
-    lastMessage: tail(path.join(runDir, "last.md")),
-    stderr: tail(path.join(runDir, "stderr.log"), 16384),
-    spawnLog: tail(path.join(runDir, "spawn.log"), 16384),
-    transcriptPath: path.join(runDir, "transcript.jsonl"),
-    transcriptMtime: mtimeMs(path.join(runDir, "transcript.jsonl")),
-  });
-}
-
-function handleSse(cfg, req, res) {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-  res.write("retry: 3000\n\n");
-  res.write(`event: snapshot\ndata: ${lastSnapshotJson}\n\n`);
-  clients.add(res);
-  req.on("close", () => clients.delete(res));
-}
+// --- static SPA ----------------------------------------------------------------------
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -277,7 +493,7 @@ const MIME = {
 
 function serveStatic(req, res) {
   const urlPath = req.url.split("?")[0];
-  let rel = urlPath === "/" ? "index.html" : decodeURIComponent(urlPath.replace(/^\/+/, ""));
+  const rel = urlPath === "/" ? "index.html" : decodeURIComponent(urlPath.replace(/^\/+/, ""));
   const filePath = path.join(DIST_DIR, rel);
   if (!isContained(path.resolve(filePath), path.resolve(DIST_DIR))) {
     res.writeHead(403).end("forbidden");
@@ -285,7 +501,6 @@ function serveStatic(req, res) {
   }
   fs.readFile(filePath, (err, buf) => {
     if (err) {
-      // SPA fallback → index.html (or a build hint if dist is missing).
       fs.readFile(path.join(DIST_DIR, "index.html"), (e2, idx) => {
         if (e2) {
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -306,12 +521,44 @@ const BUILD_HINT = `<!doctype html><meta charset="utf-8"><title>Loop Observatory
 <body style="font-family:ui-monospace,monospace;background:#0a0e12;color:#cfe;padding:3rem">
 <h1>Loop Observatory</h1><p>UI not built yet. Run <code>npm run build</code> in <code>loop-web/</code>,
 or use <code>npm run dev</code> for the dev server. The data endpoints
-(<code>/events</code>, <code>/api/model</code>) are live.</p></body>`;
+(<code>/events</code>, <code>/api/loops</code>) are live.</p></body>`;
+
+// --- small http helpers --------------------------------------------------------------
+
+function readBody(req, limit, cb) {
+  let size = 0;
+  const chunks = [];
+  let done = false;
+  req.on("data", (c) => {
+    if (done) return;
+    size += c.length;
+    if (size > limit) {
+      done = true;
+      cb(new Error("body too large"));
+      req.destroy();
+      return;
+    }
+    chunks.push(c);
+  });
+  req.on("end", () => {
+    if (!done) cb(null, Buffer.concat(chunks).toString("utf8"));
+  });
+  req.on("error", (e) => {
+    if (!done) {
+      done = true;
+      cb(e);
+    }
+  });
+}
 
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
   res.end(body);
+}
+function sendJsonText(res, text) {
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(text);
 }
 function safeParse(s) {
   if (s == null) return null;
@@ -321,40 +568,58 @@ function safeParse(s) {
     return null;
   }
 }
-/** True iff `abs` is `base` itself or lives under it — the trailing sep stops a sibling
- * like `<base>-backup` from passing a naive startsWith check. */
 function isContained(abs, base) {
   return abs === base || abs.startsWith(base + path.sep);
 }
 
 // --- main ----------------------------------------------------------------------------
 
+let MODE = "static";
+
 function main() {
   const cfg = resolveConfig();
-  broadcast(cfg); // prime lastSnapshotJson before the first client connects
-  const onChange = () => broadcast(cfg);
-  startWatching(cfg, onChange);
+  MODE = cfg.daemon ? "daemon" : "legacy";
 
-  const server = http.createServer(async (req, res) => {
-    try {
-      if (req.url === "/events") return handleSse(cfg, req, res);
-      if (req.url === "/api/model" || req.url === "/api/snapshot") {
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        return res.end(lastSnapshotJson);
+  if (cfg.daemon) {
+    STORE = createStore(cfg.storeDir);
+    for (const [runId, record] of STORE.loadAll()) {
+      const entry = getEntry(runId);
+      entry.record = record;
+      entry.seq = ++seqCounter;
+      maybeStartWatcher(entry); // reattach a still-live loop; archived loops just carry lastSnapshot
+      rematerialize(entry);
+    }
+    const shutdown = () => {
+      try {
+        STORE.flushAll();
+      } finally {
+        process.exit(0);
       }
-      if (req.url.startsWith("/api/attempt/")) return handleAttempt(cfg, req, res);
-      if (req.url.startsWith("/api/")) return json(res, 404, { error: "unknown endpoint" });
-      return serveStatic(req, res);
+    };
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
+  } else if (cfg.loopDir || cfg.planFile) {
+    // Legacy single-loop: synthesize one registration from the discovered dir.
+    const stateText = cfg.loopDir ? readText(path.join(cfg.loopDir, "state.json")) : null;
+    const runId = safeParse(stateText)?.runId || "local";
+    ingest(runId, {
+      kind: "register",
+      info: { runId, loopDir: cfg.loopDir, planFile: cfg.planFile, planText: cfg.planFile ? readText(cfg.planFile) : null },
+    });
+  }
+
+  const server = http.createServer((req, res) => {
+    try {
+      handle(req, res);
     } catch (err) {
       json(res, 500, { error: String(err?.message ?? err) });
     }
   });
 
-  server.listen(cfg.port, () => {
-    const mode = cfg.loopDir && isDir(cfg.loopDir) ? "live" : "static";
-    console.log(`[loop-web] Loop Observatory (${mode}) on http://localhost:${cfg.port}`);
-    if (cfg.planFile) console.log(`[loop-web] plan: ${cfg.planFile}`);
-    if (cfg.loopDir) console.log(`[loop-web] loop: ${cfg.loopDir}`);
+  server.listen(cfg.port, HOST, () => {
+    console.log(`[loop-web] Loop Observatory (${MODE}) on http://localhost:${cfg.port}`);
+    if (cfg.daemon) console.log(`[loop-web] store: ${cfg.storeDir} (${loops.size} loop(s) loaded)`);
+    else if (cfg.loopDir) console.log(`[loop-web] loop: ${cfg.loopDir}`);
   });
 }
 
