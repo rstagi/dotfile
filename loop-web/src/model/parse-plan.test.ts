@@ -113,6 +113,17 @@ describe("parsePlan — phases", () => {
     expect(phases[2].dependsOn).toEqual(["1"]);
     expect(phases[3].dependsOn).toEqual(["3", "2"]);
   });
+  it("expands plural 'Phases N–M' ranges (en-dash, em-dash, hyphen)", () => {
+    const dep = (line: string) =>
+      parsePlan(
+        `# X — Multi-Phase Plan\n\n## Phases\n\n### Phase 9 — T \`[lane: A]\` \`[status: todo]\`\n- **Depends on:** ${line}\n`,
+      ).phases[0].dependsOn;
+    expect(dep("Phases 1–4")).toEqual(["1", "2", "3", "4"]); // en-dash
+    expect(dep("Phases 1—4")).toEqual(["1", "2", "3", "4"]); // em-dash
+    expect(dep("Phase 1-3")).toEqual(["1", "2", "3"]); // hyphen, singular
+    expect(dep("Phases 2, 3")).toEqual(["2", "3"]); // plural, enumerated
+    expect(dep("Phase 1 (prose), Phase 2")).toEqual(["1", "2"]); // trailing prose, deduped in order
+  });
   it("captures per-phase fields (branch, verify, doneWhen, task, notes)", () => {
     const p1 = parsePlan(MULTI_LANE).phases[0];
     expect(p1.suggestedBranch).toBe("feat/widget-core");

@@ -160,7 +160,27 @@ function normalizeStatus(
 
 function parseDependsOn(raw: string | null): string[] {
   if (!raw || /^\s*none\b/i.test(raw)) return [];
-  return Array.from(raw.matchAll(/Phase\s+(\d+)/gi)).map((m) => m[1]);
+  // Anchor on the "Phase(s)" keyword (so prose numbers like a project id are
+  // ignored), then read the run of phase numbers after it: singletons ("1"),
+  // enumerations ("2, 3"), and ranges ("1–4" / "1—4" / "1-3"). Dedup in order.
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (n: string) => {
+    if (!seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+  };
+  for (const kw of raw.matchAll(/Phases?\s+([\d\s,–—-]+)/gi)) {
+    for (const tok of kw[1].matchAll(/(\d+)\s*[–—-]\s*(\d+)|\d+/g)) {
+      if (tok[1] && tok[2]) {
+        for (let n = Number(tok[1]); n <= Number(tok[2]); n++) push(String(n));
+      } else {
+        push(tok[0]);
+      }
+    }
+  }
+  return out;
 }
 
 // --- prose ---------------------------------------------------------------------------
