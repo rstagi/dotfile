@@ -1,9 +1,13 @@
 # Canonical Multi-Phase Plan Format
 
-This is the shared contract between `multiphase-plan` (authors it), `kestral-pickup`
-(reads it to claim a lane), and `kestral-handoff` (reconciles + repushes it). All three
+This is the shared contract between `multiphase-plan` (authors it), `loop-pickup`
+(reads it to claim a lane), and `loop-handoff` (reconciles + repushes it). All three
 skills — run by Claude Code **or** Codex, in any worktree — read and write this exact
 shape. Keep the inline markers stable; they are parsed, not just displayed.
+
+The plan lives on disk in a flattened `.loop/` dir (this `plan.md` sits beside `state.json`).
+Every plan is backed by the central Loop Observatory daemon (`http://localhost:7717`) — the
+base backend; Kestral is an **opt-in linked** backend (plans are local-only by default).
 
 ## Markers (must stay machine-parseable)
 
@@ -11,8 +15,8 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
   `` `[status: todo|in-progress|blocked|done]` ``.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.
-- `status:` is the source of truth for progress in the document; it mirrors the linked
-  Kestral task's status. `kestral-handoff` updates both together.
+- `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
+  the daemon always, and to the linked Kestral task when the plan is linked.
 
 ## Document template
 
@@ -20,22 +24,26 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 > It is **not** a target shape — most real plans are a single lane (`[lane: A]` on every
 > phase) with no "Parallel execution guide" section. Do not add lanes to match this example.
 
+> **Linked-only header lines:** the `**Kestral project:**`, `**Plan doc:**`, and
+> `**Effort task:**` lines below appear in the rendered plan ONLY when it is linked to
+> Kestral; omit all three in local-only plans.
+
 ```markdown
 # <Effort name> — Multi-Phase Plan
 
 **Status:** planning | in progress | integrating | done
 **Last updated:** <YYYY-MM-DD> by <host: Claude Code | Codex> (<worktree/branch>)
-**Kestral project:** [<project name>](project-url)
-**Plan doc:** [<title>](doc-url)  ·  workContextId: `<id>`
-**Effort task:** [<slug> - <title>](task-url) — phases are its subtasks
+**Kestral project:** [<project name>](project-url) <!-- linked only -->
+**Plan doc:** [<title>](doc-url)  ·  workContextId: `<id>` <!-- linked only -->
+**Effort task:** [<slug> - <title>](task-url) — phases are its subtasks <!-- linked only -->
 
 ## Loop config
 
-> Optional — present only when the effort will run under `kestral-loop`. Omit otherwise.
+> Optional — present only when the effort will run under `loop-execute`. Omit otherwise.
 
 - **Integration branch:** `<type>/<effort-slug>`
 - **Verify:** `<command>`   (effort-wide gate; per-phase **Verify:** lines override it)
-- **PR:** _none yet_   (filled by kestral-loop)
+- **PR:** _none yet_   (filled by loop-execute)
 - **Concurrency:** 3
 
 ## Goal
@@ -93,26 +101,29 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 - **Merge order:** Lane B → Lane A → integration (or note the real order).
 
 ## Progress log
-- <YYYY-MM-DD> — <what moved, by which lane/worktree>. (appended by kestral-handoff)
+- <YYYY-MM-DD> — <what moved, by which lane/worktree>. (appended by loop-handoff)
 ```
 
-## Local copy header
+## `.loop/plan.md` header
 
-When a skill saves the plan to `.kestral/plan.md` in a worktree, the top of the file must
-carry the Kestral coordinates so the other skills can repush without re-searching:
+The first lines of `.loop/plan.md` are always a `loop-plan` HTML comment carrying the plan's
+coordinates so the other skills can act on it without re-searching:
 
 ```markdown
-<!-- kestral-plan
-project: <project name>
-projectId: <id>
-workContextId: <plan document id>
-docUrl: <doc-url>
+<!-- loop-plan
+planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
+daemon: http://localhost:7717
+kestralProject: <name>            # these four keys present ONLY when the plan is linked to Kestral
+kestralProjectId: <id>
+kestralWorkContextId: <doc id>
+kestralDocUrl: <url>
 -->
 ```
 
-Keep this HTML comment as the first lines of `.kestral/plan.md`. `kestral-handoff` reads
-`workContextId` from here to call `update_document`; `kestral-pickup` writes it after
-downloading.
+Keep this comment as the first lines of `.loop/plan.md`. `planId` and `daemon` are **always**
+present. The four `kestral*` keys appear **only** when the plan is linked to Kestral —
+LINKED ⇔ `kestralWorkContextId` present. `loop-handoff` reads this header to push (to the
+daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
 
 ## Rules
 
@@ -131,7 +142,7 @@ downloading.
   genuinely single-layer work or a shared foundation several slices build on.
 - **Every phase has a testable *Done when*.** A phase without acceptance criteria can't be
   claimed or handed off cleanly. A runnable **Verify:** line (a command, exit 0 = pass) is
-  what lets `kestral-loop` enforce the *Done when* mechanically.
+  what lets `loop-execute` enforce the *Done when* mechanically.
 - **One parent effort task per plan; phases are its subtasks.** The plan maps to a single
   Kestral parent task (tag `multiphase-plan`, linked from the doc's `**Effort task:**`
   line); each phase is a subtask of it (`parentTaskId`), never a sibling top-level task.
@@ -140,8 +151,9 @@ downloading.
   back; no per-phase PRs; `[status: done]` = merged into the integration branch.
 - **Plan doc and Kestral tasks cross-reference.** Each phase's **Task:** line links its
   subtask; each subtask carries `tags: ["phase:<N>", "lane:<X>"]`.
-- **Status lives in two places, kept in lockstep:** the `[status: …]` marker in the doc and
-  the linked task's Kestral status. `kestral-handoff` updates both.
+- **Status is kept in lockstep across its sinks:** the `[status: …]` marker in the doc and the
+  daemon (`loop-handoff` mirrors it there via `loop-plan.sh push` always), plus the linked
+  task's Kestral status when the plan is linked. `loop-handoff` updates all of them.
 - **Naming: describe the work, never the index.** Phase titles, `Suggested branch`,
   worktrees, commits, and PRs must say *what the change does* — never `phase-4`,
   `product-split-phase-4`, `<effort>-phase-N`, or a bare number. The phase↔branch link is

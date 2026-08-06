@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Loop Observatory — a live read-only graph for the Kestral loop-engineering flow",
+  "description": "Loop Observatory — a live read-only graph for the loop-engineering flow",
   "engines": {
     "node": ">=22.18"
   },

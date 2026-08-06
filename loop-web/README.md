@@ -1,20 +1,21 @@
 # Loop Observatory (`loop-web`)
 
-A **live** web graph for the Kestral loop-engineering flow, rendered as a left-to-right graph
+A **live** web graph for the loop-engineering flow, rendered as a left-to-right graph
 that live-updates to show what each node is working on — model, branch, attempt, problems
 (verify-fail / crash / timeout / blocked / chain-exhausted), and HIL escalations.
 
-It runs as a **perpetual central daemon** (a launchd LaunchAgent on `127.0.0.1:7717`). Every
-`kestral-loop` run **registers** with it and **pushes clean lifecycle events** (via
-`loop-emit.sh`, sourced by the `loop-*.sh` scripts) *in addition to* the daemon watching
-`.kestral/loop/` on disk. Status is therefore **authoritative, never stale**: a
+It runs as a **perpetual central daemon** (a launchd LaunchAgent on `127.0.0.1:7717`). It is the
+**base backend for every loop**: `multiphase-plan` registers a plan on it (status `planned`)
+before any run starts, and every `loop-execute` run **registers** with it and **pushes clean
+lifecycle events** (via `loop-emit.sh`, sourced by the `loop-*.sh` scripts) *in addition to* the
+daemon watching `.loop/` on disk. Status is therefore **authoritative, never stale**: a
 `phase.attempt.finish{done,exit0}` event promotes a phase to `done` even when the
 orchestrator's `state.json` bookkeeping lags (a monotone `todo<claimed<running<done<merged`
 lattice — ranks never regress). Every loop is kept **forever** in a per-loop JSON store
-(`~/.kestral/loops/<runId>.json`), reviewable after its worktree is gone; a header **selector**
-switches between loops.
+(`~/.loop/loops/<runId>.json`), reviewable after its worktree is gone; a header **selector**
+switches between loops. Kestral is an **opt-in linked backend**, not a requirement.
 
-It **never writes** to `.kestral/loop/` or the plan — it only reads those files and folds the
+It **never writes** to `.loop/` or the plan — it only reads those files and folds the
 events pushed to it. HIL is answered in chat to the orchestrator, exactly as today.
 
 For a **two-tier self-recycling** run, the header also surfaces the sub-orchestrator's live
@@ -25,9 +26,9 @@ occupancy + recycle count (a `sub-orch: N recycles · ~Xk tok` chip, fed by `sub
 
 ```bash
 ../loop-web.sh --daemon              # the central daemon (what the LaunchAgent runs)
-../loop-web.sh                       # legacy single-loop: discover .kestral/ from cwd (walk up)
-../loop-web.sh --plan fixtures/plan.md          # static: preview a plan, no loop running
-../loop-web.sh --dir fixtures/.kestral/loop     # observe one specific loop dir
+../loop-web.sh                       # legacy single-loop: discover .loop/ from cwd (walk up)
+../loop-web.sh --plan fixtures/plan.md   # static: preview a plan, no loop running
+../loop-web.sh --dir fixtures/.loop      # observe one specific flattened loop dir
 ```
 
 `install.sh loop-web` renders + bootstraps the `com.rstagi.loop-web` LaunchAgent (auto-start on
@@ -58,10 +59,14 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
   renders it (`materialize.ts`). Per live loop: `fs.watch` (2s debounce) **plus a 15s reconcile**
   that self-heals missed POSTs — a hung runner emits no fs event, yet its stale heartbeat must
   still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish}`,
-  `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{snapshot,
-  review,attempt/:slug/:k}` (410 when the worktree is gone), `/api/health`; back-compat
-  `/api/model` · `/api/snapshot` · bare `/events` resolve to the default loop.
-- **`server/store.mjs`** — per-loop persistence (`~/.kestral/loops/<runId>.json`), atomic
+  `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{plan,
+  snapshot,review,attempt/:slug/:k}` (`plan` returns `{runId,effort,status,integrationBranch,
+  planText}` with no worktree needed — how a fresh checkout fetches the plan; `snapshot`/`review`/
+  `attempt` 410 when the worktree is gone), `/api/health`; back-compat `/api/model` ·
+  `/api/snapshot` · bare `/events` resolve to the default loop. A register-only record surfaces
+  as status **`planned`** (plan on the daemon, not yet running); the first state/event flips it
+  to `active`.
+- **`server/store.mjs`** — per-loop persistence (`~/.loop/loops/<runId>.json`), atomic
   mktemp+rename, per-loop debounce, sync flush on finish + SIGTERM/SIGINT, `loadAll` on startup
   (corrupt file → skip + warn). Pure serialize/parse (with the event cap) live in
   `src/model/store-serde.ts`; the reducer + materialize are `src/model/{reduce-loop,materialize}.ts`.

@@ -9,7 +9,7 @@ import type {
   StatusJson,
 } from "./types.ts";
 
-/** One run dir under `.kestral/loop/runs/`, read by the server (contents, not paths). */
+/** One run dir under `.loop/runs/`, read by the server (contents, not paths). */
 export interface RawRunDir {
   /** basename, e.g. "build-feature-a2" or "review-a1". */
   name: string;
@@ -21,14 +21,14 @@ export interface RawRunDir {
   metaMtime: number | null;
 }
 
-/** One HIL request under `.kestral/loop/hil/`. */
+/** One HIL request under `.loop/hil/`. */
 export interface RawHil {
   slug: string;
   markdown: string;
   answered: boolean;
 }
 
-/** Everything the server reads out of `.kestral/loop/`, handed in as raw content. */
+/** Everything the server reads out of `.loop/`, handed in as raw content. */
 export interface LoopInput {
   present: boolean;
   state: string | null;
@@ -43,7 +43,7 @@ const REVIEW_NAME = /^review-a(\d+)$/;
 const EMPTY: Runtime = { present: false, state: null, phases: {}, events: [], reviewRuns: [] };
 
 /**
- * Normalize the raw `.kestral/loop/` contents into a `Runtime`. Pure — the server does
+ * Normalize the raw `.loop/` contents into a `Runtime`. Pure — the server does
  * all I/O and mtimes; this only parses and groups defensively (every field may be absent).
  * Phase↔attempt mapping is state.json-driven: state.phases[N].slug is the run-dir prefix.
  */

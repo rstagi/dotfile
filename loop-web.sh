@@ -1,11 +1,11 @@
 #!/bin/bash
-# Loop Observatory launcher — a read-only live graph for the Kestral loop-engineering flow.
+# Loop Observatory launcher — a read-only live graph for the loop-engineering flow.
 #
 # Usage:
-#   loop-web.sh [--dir <.kestral/loop path>] [--plan <plan.md>] [--port 7717]
+#   loop-web.sh [--dir <.loop path>] [--plan <plan.md>] [--port 7717]
 #
-# Discovery (when --dir is omitted): $PWD/.kestral, else walk up for the nearest .kestral/.
-# The observer only reads files — it never writes to .kestral/loop or the plan.
+# Discovery (when --dir is omitted): $PWD/.loop, else walk up for the nearest .loop/.
+# The observer only reads files — it never writes to .loop/ or the plan.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,13 +13,13 @@ SERVER="$SCRIPT_DIR/loop-web/server/index.mjs"
 
 usage() {
   cat <<'EOF'
-loop-web — Loop Observatory: a live read-only graph for the Kestral loop-engineering flow.
+loop-web — Loop Observatory: a live read-only graph for the loop-engineering flow.
 
 Usage:
-  loop-web [--dir <.kestral/loop path>] [--plan <plan.md>] [--port 7717]
+  loop-web [--dir <.loop path>] [--plan <plan.md>] [--port 7717]
 
-When --dir/--plan are omitted, the nearest ancestor with a .kestral/ directory is used.
-The observer only reads files — it never writes to .kestral/loop or the plan.
+When --dir/--plan are omitted, the nearest ancestor with a .loop/ directory is used.
+The observer only reads files — it never writes to .loop/ or the plan.
 EOF
 }
 need_arg() { [ "$#" -ge 2 ] || { echo "loop-web: $1 requires a value" >&2; exit 1; }; }
@@ -50,16 +50,21 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(
 if [ "$DAEMON" -eq 1 ]; then
   export LOOP_WEB_PORT="$PORT"
   export LOOP_DAEMON_MODE=1
-  export LOOP_STORE_DIR="${LOOP_STORE_DIR:-$HOME/.kestral/loops}"
+  # One-time best-effort migration of the legacy store dir (~/.kestral/loops → ~/.loop/loops).
+  if [ -d "$HOME/.kestral/loops" ] && [ ! -e "$HOME/.loop/loops" ]; then
+    mkdir -p "$HOME/.loop"
+    mv "$HOME/.kestral/loops" "$HOME/.loop/loops" 2>/dev/null || true
+  fi
+  export LOOP_STORE_DIR="${LOOP_STORE_DIR:-$HOME/.loop/loops}"
   echo "loop-web: starting central Loop Observatory daemon on http://localhost:$PORT (store: $LOOP_STORE_DIR)"
   exec node "$SERVER" --daemon
 fi
 
-# Discover the loop dir if not given: nearest ancestor with a .kestral/ directory.
+# Discover the loop dir if not given: nearest ancestor with a .loop/ directory (flattened).
 if [ -z "$DIR" ] && [ -z "$PLAN" ]; then
   d="$PWD"
   while :; do
-    if [ -d "$d/.kestral" ]; then DIR="$d/.kestral/loop"; break; fi
+    if [ -d "$d/.loop" ]; then DIR="$d/.loop"; break; fi
     [ "$d" = "/" ] && break
     d="$(dirname "$d")"
   done

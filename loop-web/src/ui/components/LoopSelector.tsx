@@ -54,6 +54,9 @@ export function LoopSelector({
                       {l.pendingHil > 0 && <span className="loopsel__hil">{l.pendingHil} HIL</span>}
                       <span className="loopsel__time">{fmtRelative(l.updatedAt)}</span>
                     </span>
+                    {l.status === "planned" && (
+                      <span className="loopsel__hint">plan registered, not started yet</span>
+                    )}
                     {l.status === "archived" && (
                       <span className="loopsel__hint">logs may be unavailable</span>
                     )}

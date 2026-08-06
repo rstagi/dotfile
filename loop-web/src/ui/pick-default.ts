@@ -2,13 +2,19 @@ import type { LoopListEntry } from "../model/store-types.ts";
 
 /**
  * Choose which loop the observatory should show by default: keep `current` if it is still in the
- * list, else the most-recent `active` loop, else the most-recent `finished` one, else the first.
- * Pure so it can be unit-tested; "most recent" is by updatedAt (falling back to finished/started).
+ * list, else the most-recent `active` loop, else the most-recent `planned` one, else the
+ * most-recent `finished` one, else the first. Pure so it can be unit-tested; "most recent" is by
+ * updatedAt (falling back to finished/started).
  */
 export function pickDefaultRunId(loops: LoopListEntry[], current: string | null): string | null {
   if (loops.length === 0) return null;
   if (current && loops.some((l) => l.runId === current)) return current;
-  return mostRecent(loops, "active") ?? mostRecent(loops, "finished") ?? loops[0].runId;
+  return (
+    mostRecent(loops, "active") ??
+    mostRecent(loops, "planned") ??
+    mostRecent(loops, "finished") ??
+    loops[0].runId
+  );
 }
 
 function mostRecent(loops: LoopListEntry[], status: LoopListEntry["status"]): string | null {

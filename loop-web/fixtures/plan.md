@@ -1,8 +1,10 @@
-<!-- kestral-plan
-project: Shop platform
-projectId: proj_shop
-workContextId: doc_checkout
-docUrl: https://kestral.example/doc_checkout
+<!-- loop-plan
+planId: loop-checkout-revamp-2026-08-03
+daemon: http://localhost:7717
+kestralProject: Shop platform
+kestralProjectId: proj_shop
+kestralWorkContextId: doc_checkout
+kestralDocUrl: https://kestral.example/doc_checkout
 -->
 
 # Checkout revamp — Multi-Phase Plan

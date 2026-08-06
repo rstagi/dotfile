@@ -1,7 +1,7 @@
 // The daemon's per-loop record contract — the state the central Loop Observatory daemon
 // keeps for EACH loop it observes, folded from `register` / `state` / `event` / `finish`
 // ingests by the pure reducer (`reduce-loop.ts`) and rendered to a `Snapshot` by
-// `materialize.ts`. Persisted verbatim to `~/.kestral/loops/<runId>.json` by the store.
+// `materialize.ts`. Persisted verbatim to `~/.loop/loops/<runId>.json` by the store.
 //
 // The load-bearing idea is the **promotion lattice**: a phase's rank can only ever advance
 // (`todo < claimed < running < done < merged`). Both state.json pushes AND script events
@@ -34,9 +34,10 @@ export interface PhaseOverlay {
 // Loop lifecycle
 // ---------------------------------------------------------------------------------------
 
-/** `active` = running · `paused` = a HIL request is open · `finished` = loop.finish seen ·
- * `archived` = finished AND its loop dir is gone (set by the server, not the reducer). */
-export type LoopStatus = "active" | "paused" | "finished" | "archived";
+/** `planned` = plan registered but no run started yet (a register-only record) · `active` =
+ * running · `paused` = a HIL request is open · `finished` = loop.finish seen · `archived` =
+ * finished AND its loop dir is gone (set by the server, not the reducer). */
+export type LoopStatus = "planned" | "active" | "paused" | "finished" | "archived";
 
 // ---------------------------------------------------------------------------------------
 // Ingests — the messages the reducer folds
@@ -46,7 +47,7 @@ export interface RegisterInfo {
   runId: string;
   effort?: string | null;
   projectId?: string | null;
-  /** Absolute path to `.kestral/loop` (may no longer exist once the worktree is gone). */
+  /** Absolute path to `.loop` (may no longer exist once the worktree is gone). */
   loopDir?: string | null;
   /** Absolute path to the plan markdown. */
   planFile?: string | null;

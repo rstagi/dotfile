@@ -3,7 +3,7 @@
 // Everything downstream — the Node server, the SSE stream, and the React UI — agrees on
 // `Snapshot`. It is derived by pure functions in this directory from two sources of truth:
 //   1. the plan markdown (grammar: multiphase-plan/references/plan-format.md)
-//   2. the runtime dir `.kestral/loop/` written by ~/dotfile/loop-*.sh
+//   2. the runtime dir `.loop/` written by ~/dotfile/loop-*.sh
 //
 // The runtime schemas are grounded in the real scripts, NOT the idealized docs:
 //   meta.json    — loop-runner.sh write_meta():  { engine, model, sessionId, headBefore,
@@ -158,7 +158,7 @@ export interface PlanOverview {
 }
 
 // ---------------------------------------------------------------------------------------
-// Parsed runtime (from .kestral/loop/)
+// Parsed runtime (from .loop/)
 // ---------------------------------------------------------------------------------------
 
 /** One attempt dir: runs/<slug>-a<K>. Files are read by the server and handed in as content. */

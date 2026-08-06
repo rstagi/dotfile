@@ -28,7 +28,8 @@ loop_ensure_daemon() {
   fi
   loop_ensure_wait && return 0
   if [ -x "${HOME}/dotfile/loop-web.sh" ]; then
-    nohup "${HOME}/dotfile/loop-web.sh" --daemon >"${HOME}/.kestral-loop-web.log" 2>&1 &
+    mkdir -p "${HOME}/.loop"
+    nohup "${HOME}/dotfile/loop-web.sh" --daemon >"${HOME}/.loop/daemon.log" 2>&1 &
     disown 2>/dev/null || true
   fi
   loop_ensure_wait

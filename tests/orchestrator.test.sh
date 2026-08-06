@@ -9,7 +9,7 @@ FAKE="$HERE/fake"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-DIR="$TMP/.kestral/loop"
+DIR="$TMP/.loop"
 SUB="$DIR/sub"
 mkdir -p "$SUB"
 

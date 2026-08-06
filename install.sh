@@ -344,14 +344,20 @@ install_terraform() {
 install_loop_web() {
   # Render + (re)bootstrap the central daemon LaunchAgent (auto-start on login + KeepAlive).
   # Node's abs path is hardcoded (deterministic); re-run 'install.sh loop-web' after a node
-  # upgrade. See .claude/skills/kestral-loop/references/loop-protocol.md → Daemon & events.
+  # upgrade. See .claude/skills/loop-execute/references/loop-protocol.md → Daemon & events.
   configure_loop_web_daemon() {
     local node_bin label plist uid
     node_bin="$(command -v node)" || { echo "loop-web: node not found — skipping daemon setup" >&2; return 0; }
     label="com.rstagi.loop-web"
     plist="$HOME/Library/LaunchAgents/$label.plist"
     uid="$(id -u)"
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.kestral/loops"
+    # One-time best-effort migration of the legacy store dir (~/.kestral/loops → ~/.loop/loops).
+    # The launchd plist runs the daemon directly (not via loop-web.sh), so migrate here too.
+    if [ -d "$HOME/.kestral/loops" ] && [ ! -e "$HOME/.loop/loops" ]; then
+      mkdir -p "$HOME/.loop"
+      mv "$HOME/.kestral/loops" "$HOME/.loop/loops" 2>/dev/null || true
+    fi
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.loop/loops"
     cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -371,10 +377,10 @@ install_loop_web() {
   <dict>
     <key>PATH</key><string>$PATH</string>
     <key>LOOP_WEB_PORT</key><string>7717</string>
-    <key>LOOP_STORE_DIR</key><string>$HOME/.kestral/loops</string>
+    <key>LOOP_STORE_DIR</key><string>$HOME/.loop/loops</string>
   </dict>
-  <key>StandardOutPath</key><string>$HOME/.kestral-loop-web.log</string>
-  <key>StandardErrorPath</key><string>$HOME/.kestral-loop-web.log</string>
+  <key>StandardOutPath</key><string>$HOME/.loop/daemon.log</string>
+  <key>StandardErrorPath</key><string>$HOME/.loop/daemon.log</string>
 </dict>
 </plist>
 PLIST

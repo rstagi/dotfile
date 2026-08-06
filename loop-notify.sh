@@ -11,7 +11,7 @@ else
   loop_emit() { :; }
 fi
 
-LEVEL="info" TITLE="kestral-loop" BODY="" URL="" RUN_ID="" EVENT="" PHASE=""
+LEVEL="info" TITLE="loop-execute" BODY="" URL="" RUN_ID="" EVENT="" PHASE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

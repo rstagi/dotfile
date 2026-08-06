@@ -43,7 +43,7 @@ Go through the change with each of these in mind. For every issue, point to the 
 - **Code & file structure** — is the overall shape clean? Are things in sensible places, named well, at the right altitude? Does it respect the project's conventions and general best practices, or fight them?
 - **Implementation** — is it formally correct, clean, and coherent? No needless complexity, no copy-paste divergence, consistent with how the rest of the codebase solves similar problems.
 - **Docs** — were they updated to match the change? Is the information complete and coherent, and are there any inconsistencies between what the docs say and what the implementation actually does?
-- **Stacked-PR split** — should this single PR ship as a stack? Signals: over ~800 changed LOC, 2+ independently reviewable and revertable units, mechanical churn mixed with behavioral change. If `.kestral/plan.md` exists in the repo, use its phases/lanes as candidate seams. If a split is warranted, propose it concretely: ordered list of PRs, each with title, base, and which commits/paths it takes (plain `gh` branch stack; no stacking tool assumed). Propose only, never execute the split.
+- **Stacked-PR split** — should this single PR ship as a stack? Signals: over ~800 changed LOC, 2+ independently reviewable and revertable units, mechanical churn mixed with behavioral change. If `.loop/plan.md` exists in the repo, use its phases/lanes as candidate seams. If a split is warranted, propose it concretely: ordered list of PRs, each with title, base, and which commits/paths it takes (plain `gh` branch stack; no stacking tool assumed). Propose only, never execute the split.
 
 ## Step 3 — Report
 
@@ -51,7 +51,7 @@ Lead with the verdict and whether it ran cleanly in Step 1. Then list findings g
 
 ## Headless mode
 
-When invoked with `--headless` (the kestral-loop orchestrator runs this after opening the effort PR): never pause to ask anything, and never mutate the checkout you were started in. Skip `gh pr checkout` entirely. Instead, from a clone of the repo:
+When invoked with `--headless` (the loop-execute orchestrator runs this after opening the effort PR): never pause to ask anything, and never mutate the checkout you were started in. Skip `gh pr checkout` entirely. Instead, from a clone of the repo:
 
 ```bash
 git fetch origin pull/<number>/head

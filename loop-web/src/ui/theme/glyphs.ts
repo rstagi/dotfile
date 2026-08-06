@@ -30,6 +30,7 @@ export function loopStatusColor(status: string): string {
     case "active": return "var(--aqua)";
     case "finished": return "var(--green)";
     case "paused": return "var(--amber)";
+    case "planned": return "var(--violet)"; // plan registered, not yet running
     case "archived": return "var(--ink-dim)";
     default: return "var(--steel)";
   }

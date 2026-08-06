@@ -1,4 +1,4 @@
-// Pure serialize/parse for the per-loop store file (`~/.kestral/loops/<runId>.json`). The
+// Pure serialize/parse for the per-loop store file (`~/.loop/loops/<runId>.json`). The
 // I/O (atomic write, debounce, loadAll) lives in `server/store.mjs`; this is the tested,
 // filesystem-free boundary so corrupt-file tolerance and the event cap are verifiable.
 

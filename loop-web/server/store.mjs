@@ -1,4 +1,4 @@
-// Per-loop persistent store: one JSON file per loop at `~/.kestral/loops/<runId>.json`,
+// Per-loop persistent store: one JSON file per loop at `~/.loop/loops/<runId>.json`,
 // kept FOREVER (no eviction — only the per-loop events[] is capped, in store-serde). Writes
 // are atomic (mktemp + renameSync in the same dir, mirroring loop-state.sh) and debounced
 // per loop; `finish`/SIGTERM/SIGINT flush synchronously so nothing is lost on shutdown.

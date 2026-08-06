@@ -1,8 +1,8 @@
 # Loop Protocol
 
-The shared contract between the `kestral-loop` orchestrator skill, the `loop-*.sh` scripts
+The shared contract between the `loop-execute` orchestrator skill, the `loop-*.sh` scripts
 (`~/dotfile/loop-runner.sh`, `loop-merge.sh`, `loop-notify.sh`, `loop-state.sh`,
-`loop-models.conf`), and the `--auto` modes of `kestral-pickup` / `kestral-handoff` /
+`loop-plan.sh`, `loop-models.conf`), and the `--auto` modes of `loop-pickup` / `loop-handoff` /
 `pr-review`. Everything machine-parsed lives here; change it in lockstep everywhere.
 
 ## Roles
@@ -16,7 +16,7 @@ The shared contract between the `kestral-loop` orchestrator skill, the `loop-*.s
   escalation and self-recycle. A single-tier run (`supervise` doing everything itself) is
   still valid for a short effort.
 - **Sub-orchestrator (SUB)** — a disposable headless orchestrator (`claude -p`,
-  `CHAIN_ORCHESTRATE`) spawned by `loop-orchestrator.sh`, entered via `kestral-loop resume`.
+  `CHAIN_ORCHESTRATE`) spawned by `loop-orchestrator.sh`, entered via `loop-execute resume`.
   Does the heavy orchestration under a self-measured token ceiling and recycles itself at a
   safe boundary (§ Two-tier orchestration). NEVER runs pr-review; NEVER `AskUserQuestion`
   (HIL → files only). Its final act is writing `sub/status.json`.
@@ -28,22 +28,26 @@ The shared contract between the `kestral-loop` orchestrator skill, the `loop-*.s
 - **Runner** — one headless agent process (`codex exec` or `claude -p`) working one phase
   attempt inside a lane worktree. Both hosts have the Kestral MCP (Claude: user plugin;
   Codex: `kestral@kestral-plugins` plugin) and the skills installed. A runner opens with
-  `kestral-pickup --auto` (claims its own task, loads context) and closes with
-  `kestral-handoff --auto` (task status + progress comment — **task-scoped ops only**).
-  Runners NEVER: push, open PRs, call `update_document` or any plan-doc/PR-link operation,
-  touch files outside their worktree, or ask the user. A runner's final act is writing
-  `status.json`.
-- **Scripts** — mechanism only (spawn/merge/notify/state). They never decide; the
-  orchestrator switches on their exit codes.
+  `loop-pickup --auto` (claims its own task, loads context) and closes with
+  `loop-handoff --auto` — **task-scoped ops only**: task status + progress comment via
+  Kestral when **linked**, or a local `.loop/plan.md` copy marker update + `loop-plan.sh
+  note` when **unlinked**. Runners NEVER: push, open PRs, call `update_document` or any
+  plan-doc/PR-link operation, touch files outside their worktree, or ask the user. A
+  runner's final act is writing `status.json`.
+- **Scripts** — mechanism only (spawn/merge/notify/state; `loop-plan.sh` registers/pushes/
+  notes the plan on the daemon — the local backend). They never decide; the orchestrator
+  switches on their exit codes.
 
 ## Directory layout
 
-State lives in the orchestrator's checkout of the target repo (add `.kestral/` to
+State lives in the orchestrator's checkout of the target repo (add `.loop/` to
 `.gitignore`):
 
 ```
-.kestral/loop/
+.loop/
   state.json                 # orchestrator bookkeeping (loop-state.sh, atomic writes)
+  plan.md                    # the plan document, beside state.json (register/push planText source)
+  progress.md                # unlinked-mode progress stream (loop-plan.sh note / handoff --auto append)
   events.jsonl               # append-only journal: {ts, event, phase, detail}
   lock/                      # mkdir-lock; owner = run id (sessions have no stable pid);
                              # same owner re-locks freely, another owner needs --force
@@ -69,15 +73,15 @@ State lives in the orchestrator's checkout of the target repo (add `.kestral/` t
 
 Worktrees live outside the repo (ralph convention):
 
-- Lane: `~/.kestral-loop-worktrees/<repo>-<lane-branch-slug>` on the phase's Suggested
+- Lane: `~/.loop/worktrees/<repo>-<lane-branch-slug>` on the phase's Suggested
   branch, cut from the **current integration-branch tip**.
-- Integration: `~/.kestral-loop-worktrees/<repo>-integration` on the integration branch.
+- Integration: `~/.loop/worktrees/<repo>-integration` on the integration branch.
   All merges and pushes happen only here.
 
 ## Daemon & events
 
 A perpetual **central daemon** (`LOOP_DAEMON_URL`, default `http://localhost:7717`) is the
-authoritative, never-stale source for **UI status**; the `.kestral/loop/` files stay the
+authoritative, never-stale source for **UI status**; the `.loop/` files stay the
 crash-resume **source of truth** for code + bookkeeping. A launchd LaunchAgent auto-starts it
 on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
 `loop_ensure_daemon` as the fallback. Loops **register**, then push clean lifecycle events.
@@ -89,7 +93,12 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 - `POST /api/loops/:runId/state` — the full state.json contents.
 - `POST /api/loops/:runId/event` `{ event, phase?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — the server folds the body **verbatim** (no field whitelist), so `sub.*` events carry their extra fields straight into the model.
 - `POST /api/loops/:runId/finish` `{ status?, finishedAt?, prUrl?, review?:{outcome,summary,reportPath,commentUrl} }`.
+- `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, planText }` — how a fresh checkout fetches the plan with **no worktree needed**.
 - `GET /api/loops` (selector) · `GET /events?runId=` (per-loop SSE) · `/api/loops/:runId/{snapshot,review,attempt/:slug/:k}` · `/api/health`.
+
+A register-only record shows status **`planned`** (a plan on the daemon with no run yet):
+`multiphase-plan` registers the plan (**`planned`**) before any run; the first state push or
+event flips it to **`active`**.
 
 **Typed event vocabulary** (who emits what):
 
@@ -104,6 +113,10 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 | `loop.finish` | orchestrator (loop-state.sh finish) | prUrl |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
+| `progress.note` | loop-plan.sh note / loop-handoff --auto (unlinked) | phase, detail |
+
+`progress.note` is the unlinked-mode progress narration — kept on the timeline, promotes
+nothing in the lattice.
 
 Unknown/legacy event names fall back to keyword matching, so today's free-form
 `events.jsonl` still works. The two `sub.*` events are **loop-level** (no `phase`); the daemon
@@ -119,7 +132,8 @@ running/todo"). Ranks never regress — a phase never un-completes in the UI (v1
 
 ## state.json schema
 
-Crash-resume reads exactly these fields — keep the shape:
+`runId` == the plan's `planId` (loop-execute adopts it). Crash-resume reads exactly these
+fields — keep the shape:
 
 ```json
 {
@@ -133,7 +147,7 @@ Crash-resume reads exactly these fields — keep the shape:
     "3": { "slug": "<task-slug>", "taskId": "...", "lane": "A",
            "branch": "feat/api-client-token-refresh", "worktree": "<abs path or null>",
            "status": "todo|claimed|running|merged|blocked|done",
-           "attempt": 2, "runDir": ".kestral/loop/runs/<phase-slug>-a2",
+           "attempt": 2, "runDir": ".loop/runs/<phase-slug>-a2",
            "pid": 4242, "sessionId": "<from meta.json>", "questionRounds": 0 }
   },
   "linkedPrTasks": []
@@ -157,7 +171,7 @@ treat as exit 124. The 25-minute threshold lives here only.
 ## Two-tier orchestration (self-recycling SUB)
 
 Heavy orchestration accumulates context (diff-skimming, conflict resolution, runner Q&A). To
-keep the *interactive* chat under a hard ~200k ceiling, `kestral-loop` runs in one of two
+keep the *interactive* chat under a hard ~200k ceiling, `loop-execute` runs in one of two
 **modes**, and the heavy work self-recycles:
 
 - **`supervise`** (new default for a hands-off run) — the interactive session. THIN:
@@ -168,7 +182,7 @@ keep the *interactive* chat under a hard ~200k ceiling, `kestral-loop` runs in o
   `loop-state.sh finish`, unlock). It spawns **only** the orchestrator and the review-runner;
   it is designed never to need recycling (if it ever did, `state.json` is its backstop — a
   main auto-summary cannot lose the loop).
-- **headless `sub`** — a disposable SUB instance entered via `kestral-loop resume`. Does the
+- **headless `sub`** — a disposable SUB instance entered via `loop-execute resume`. Does the
   heavy orchestration but NEVER runs pr-review and NEVER `AskUserQuestion`.
 
 `loop-orchestrator.sh` (detached, spawned once by `supervise`) is a **dead-simple sequential
@@ -198,7 +212,7 @@ stream-json --verbose` writes each turn's `assistant` event with `.message.usage
 redirected transcript (`sub/transcript-<k>.jsonl`). Each tick the SUB runs:
 
 ```sh
-loop-state.sh occupancy --transcript .kestral/loop/sub/transcript-<k>.jsonl [--window <n>]
+loop-state.sh occupancy --transcript .loop/sub/transcript-<k>.jsonl [--window <n>]
 ```
 
 which takes the **last** usage-bearing `assistant` event and sums (verbatim jq):
@@ -232,7 +246,7 @@ a persisted checkpoint. **No token hard-kill.**
 Kestral, git are already externalized), writes `sub/handoff.md`, and exits with `sub/status.json
 {outcome:"recycle"}`. The successor reads `sub/handoff.md` **exactly once** at startup, then it
 is archived to `sub/handoff.consumed-<k>.md`; `plan.md` + `state.json` stay freely re-readable.
-This is a purpose-built recycle handoff — **NOT** the `kestral-handoff` skill (that one is
+This is a purpose-built recycle handoff — **NOT** the `loop-handoff` skill (that one is
 plan-doc/task-status scoped and marks phases *done*: wrong semantics for a mid-run recycle).
 `handoff.md` carries: open exit-10 question rounds + their `sessionId`s; pending merge-runner
 promotions (runDir + lane-branch awaiting a `phase.merged`); per-lane notes; and why-stopped.
@@ -365,7 +379,7 @@ You are a loop-engineering task runner: fully non-interactive, nobody reads your
 live. You are in worktree <path> on branch <branch> (cut from <integration>). RUN_DIR is
 <abs path>.
 
-FIRST: run `$kestral-pickup --auto <project> phase:<N>` (Claude: `/kestral-pickup`) — it
+FIRST: run `$loop-pickup --auto <project> phase:<N>` (Claude: `/loop-pickup`) — it
 claims your task and loads context. If it returns `REFUSED: <reason>`, write
 RUN_DIR/status.json with outcome "blocked" and the reason as details, and stop.
 
@@ -381,7 +395,7 @@ CONTEXT: <goal + key decisions from plan header; prior-attempt failure summary;
 answers/<phase>.md content; hil answer — whichever exist>
 
 WHEN FINISHED (Done when holds and `<verify cmd>` passes locally): run
-`$kestral-handoff --auto phase:<N> status:in-progress lane:<X> engine:<engine>` (comment:
+`$loop-handoff --auto phase:<N> status:in-progress lane:<X> engine:<engine>` (comment:
 implementation complete, awaiting merge — "done" is the orchestrator's post-merge call),
 then write RUN_DIR/status.json exactly per this schema <schema> and end the session. If
 you must stop early, skip the handoff and write status.json with outcome question/blocked.
@@ -479,40 +493,36 @@ outcome "done" (merged+verified+pushed), "question" (not confident — needs HIL
 4. Ask in-session (AskUserQuestion / plain question). Other lanes keep running. On answer:
    phase back to ready with the answer injected; status back to `in-progress`.
 
-## Kestral mapping
+## Backend mapping
 
-Split: **runners** own task-scoped ops via the auto skills; the **orchestrator** owns the
-plan document and everything cross-task.
+Two backends. The **central daemon is always the base**; **Kestral is opt-in (linked mode)**
+— the default is local-only. Either way the split holds: **runners** own task-scoped ops via
+the auto skills; the **orchestrator** owns the plan document and everything cross-task. Each
+operation has an unlinked (local) and a linked (Kestral) form:
 
-- Claim (runner, via `kestral-pickup --auto`): `claim_task_and_branch { taskId,
-  branchName: <lane branch> }` on the branch the orchestrator pre-created — re-claiming
-  your own branch is a no-op; a 409 means someone else owns it → `REFUSED` →
-  status.json `blocked` → HIL, never steal. The claim performs no git action.
-- Runner handoff (via `kestral-handoff --auto ... status:in-progress`): task progress
-  comment + status kept task-scoped; **never** `update_document`, never PR links.
-- After merge (orchestrator): `update_task_status` (statusKey via `list_statuses`) +
-  `post_progress_comment` (2–4 conversational lines, noting lane + engine) + flip
-  `[status: done]` in the plan doc + append Progress log + `update_document`. "done" in
-  loop mode = merged into the integration branch (the human PR-merge gate applies to the
-  single effort PR).
-- At effort completion (orchestrator, not at PR creation): `link_pr_to_task { taskId,
-  prUrl }` once for **every** phase task (tasks carry plural prLinks; dedup via state.json
-  `linkedPrTasks`).
-- Completion (orchestrator): statuses → the workspace's awaiting-review status; plan
-  `Status: integrating`; `trigger_brain_build`.
+| Operation | Unlinked (local) | Linked (Kestral) |
+|-----------|------------------|-------------------|
+| Claim (runner, via `loop-pickup --auto`) | orchestrator pre-creates the lane branch; the phase flips to `claimed` in state.json (`loop-state.sh`) + a `[status: claimed]` marker in `.loop/plan.md`; lane collisions are caught by the branch/worktree conflict-check, not a task claim. | `claim_task_and_branch { taskId, branchName: <lane branch> }` on the pre-created branch — re-claiming your own branch is a no-op; a 409 means someone else owns it → `REFUSED` → status.json `blocked` → HIL, never steal. The claim performs no git action. |
+| Runner handoff (via `loop-handoff --auto ... status:in-progress`) | `loop-plan.sh note --plan-id <runId> --phase <N> --body <progress>` (a `progress.note` event) + update the `[status: ...]` marker in the local `.loop/plan.md` copy; **task-scoped only** — no plan-doc rewrite, no PR links. | task progress comment + status kept task-scoped; **never** `update_document`, never PR links. |
+| Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + `loop-plan.sh push` (re-register/overwrite the plan on the daemon) + a `progress.note`. | `update_task_status` (statusKey via `list_statuses`) + `post_progress_comment` (2–4 conversational lines, noting lane + engine) + flip `[status: done]` in the plan doc + append Progress log + `update_document`. |
+| PR link (orchestrator, at effort completion, not at PR creation) | record `prUrl` in state.json + push it to the daemon (state push / `loop-state.sh finish`) so it shows on the loop graph; no per-task link. | `link_pr_to_task { taskId, prUrl }` once for **every** phase task (tasks carry plural prLinks; dedup via state.json `linkedPrTasks`). |
+| Completion (orchestrator) | `loop-state.sh finish` (a `loop.finish` event, `prUrl`); plan `Status: integrating` marker in `.loop/plan.md` + `loop-plan.sh push`; the daemon promotes the loop. | statuses → the workspace's awaiting-review status; plan `Status: integrating`; `trigger_brain_build`. |
+
+"done" in loop mode = merged into the integration branch (the human PR-merge gate applies to
+the single effort PR).
 
 ## Crash-resume
 
-`kestral-loop resume`: re-acquire the lock with the run id from state.json (a different
+`loop-execute resume`: re-acquire the lock with the run id from state.json (a different
 owner means another orchestrator claims this effort — stop and ask before `--force`), then
-reconcile three sources — **git >
-Kestral > state.json** (git is truth for code, Kestral for claims, state for attempt
-bookkeeping):
+reconcile the sources — **git > plan/daemon > state.json (+ Kestral when linked)** (git is
+truth for code, the plan/daemon for claims + phase status, state for attempt bookkeeping):
 
 - attempt marked running: pid alive → re-attach (watch transcript mtime; stale >25m → kill,
   treat as 124); pid dead + status.json present → process it normally; pid dead + none →
   failed attempt.
 - `MERGE_HEAD` in integration worktree → finish or abort the merge before anything else.
-- Phase `done` in Kestral but lane branch not merged (or vice versa) → repair from git.
+- Phase `done` in the plan/daemon (or Kestral when linked) but lane branch not merged (or
+  vice versa) → repair from git.
 - Runners are spawned detached, so they survive orchestrator death; never double-spawn a
   phase whose run dir has a live pid.

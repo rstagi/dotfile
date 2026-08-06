@@ -34,7 +34,21 @@ describe("pickDefaultRunId", () => {
     ];
     expect(pickDefaultRunId(loops, "gone")).toBe("new");
   });
-  it("falls back to the most-recent finished loop when none are active", () => {
+  it("prefers a planned loop over a finished one when none are active", () => {
+    const loops = [
+      entry({ runId: "fin", status: "finished", updatedAt: "2026-08-05T00:00:00Z" }),
+      entry({ runId: "plan", status: "planned", updatedAt: "2026-08-02T00:00:00Z" }),
+    ];
+    expect(pickDefaultRunId(loops, null)).toBe("plan");
+  });
+  it("still prefers an active loop over a planned one", () => {
+    const loops = [
+      entry({ runId: "plan", status: "planned", updatedAt: "2026-08-09T00:00:00Z" }),
+      entry({ runId: "act", status: "active", updatedAt: "2026-08-01T00:00:00Z" }),
+    ];
+    expect(pickDefaultRunId(loops, null)).toBe("act");
+  });
+  it("falls back to the most-recent finished loop when none are active or planned", () => {
     const loops = [
       entry({ runId: "f1", status: "finished", updatedAt: "2026-08-01T00:00:00Z" }),
       entry({ runId: "f2", status: "finished", updatedAt: "2026-08-02T00:00:00Z" }),

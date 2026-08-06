@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { parsePlan } from "./parse-plan.ts";
 
-const MULTI_LANE = `<!-- kestral-plan
-project: Widgets
-projectId: proj_1
-workContextId: doc_9
-docUrl: https://kestral.example/doc_9
+const MULTI_LANE = `<!-- loop-plan
+planId: loop-widget-revamp-2026-08-01
+daemon: http://localhost:7717
+kestralProject: Widgets
+kestralProjectId: proj_1
+kestralWorkContextId: doc_9
+kestralDocUrl: https://kestral.example/doc_9
 -->
 
 # Widget revamp — Multi-Phase Plan

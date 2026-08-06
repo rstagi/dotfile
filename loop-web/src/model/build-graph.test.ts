@@ -60,7 +60,7 @@ function hasEdge(g: Graph, source: string, target: string) {
 }
 function attempt(over: Partial<Attempt> & { k: number }): Attempt {
   return {
-    runDir: `.kestral/loop/runs/slug-a${over.k}`,
+    runDir: `.loop/runs/slug-a${over.k}`,
     meta: null,
     status: null,
     spawnLog: null,

@@ -302,6 +302,9 @@ function rankToStatus(rank: PhaseRank): PhaseStateStatus {
 function deriveStatus(rec: LoopRecord): LoopStatus {
   if (rec.status === "finished" || rec.finishedAt) return "finished";
   if (Object.values(rec.phases).some((o) => o.hilOpen)) return "paused";
+  // A register-only record (no state push, no lifecycle event) is a plan registered but not
+  // yet running; the first state push or event flips it to active. No new ingest field needed.
+  if (rec.lastState === null && rec.events.length === 0) return "planned";
   return "active";
 }
 

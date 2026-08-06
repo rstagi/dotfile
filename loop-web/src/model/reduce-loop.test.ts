@@ -14,15 +14,15 @@ const stateWith = (phases: StateJson["phases"], extra: Partial<StateJson> = {}):
 });
 
 describe("reduceLoop — register", () => {
-  it("seeds identity + planText and marks the loop active", () => {
+  it("seeds identity + planText and marks a register-only loop planned", () => {
     const rec = fold("run-1", {
       kind: "register",
       info: {
         runId: "run-1",
         effort: "Checkout revamp",
         projectId: "proj_shop",
-        loopDir: "/repo/.kestral/loop",
-        planFile: "/repo/.kestral/plan.md",
+        loopDir: "/repo/.loop",
+        planFile: "/repo/.loop/plan.md",
         integrationBranch: "feat/checkout",
         startedAt: "2026-08-03T09:00:00Z",
         planText: "# Checkout revamp — Multi-Phase Plan\n",
@@ -32,8 +32,34 @@ describe("reduceLoop — register", () => {
     expect(rec.effort).toBe("Checkout revamp");
     expect(rec.integrationBranch).toBe("feat/checkout");
     expect(rec.planText).toMatch(/Checkout revamp/);
-    expect(rec.status).toBe("active");
+    // register-only ⇒ planned (plan on the daemon, no run yet)
+    expect(rec.status).toBe("planned");
     expect(rec.startedAt).toBe("2026-08-03T09:00:00Z");
+  });
+});
+
+describe("reduceLoop — planned → active", () => {
+  it("a register-only record with no state and no events is planned", () => {
+    const rec = fold("r", { kind: "register", info: { runId: "r", effort: "Demo" } });
+    expect(rec.status).toBe("planned");
+  });
+
+  it("the first state push flips planned → active", () => {
+    const rec = fold(
+      "r",
+      { kind: "register", info: { runId: "r", effort: "Demo" } },
+      stateWith({ "1": { slug: "pg", status: "todo" } }),
+    );
+    expect(rec.status).toBe("active");
+  });
+
+  it("the first lifecycle event flips planned → active", () => {
+    const rec = fold(
+      "r",
+      { kind: "register", info: { runId: "r" } },
+      { kind: "event", event: { event: "phase.attempt.start", phase: "1" } },
+    );
+    expect(rec.status).toBe("active");
   });
 });
 

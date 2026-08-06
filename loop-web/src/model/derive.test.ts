@@ -14,7 +14,7 @@ import type { Attempt, MetaJson, StatusJson } from "./types.ts";
 function attempt(over: Partial<Attempt> & { k?: number } = {}): Attempt {
   return {
     k: over.k ?? 1,
-    runDir: over.runDir ?? `.kestral/loop/runs/slug-a${over.k ?? 1}`,
+    runDir: over.runDir ?? `.loop/runs/slug-a${over.k ?? 1}`,
     meta: over.meta ?? null,
     status: over.status ?? null,
     spawnLog: over.spawnLog ?? null,

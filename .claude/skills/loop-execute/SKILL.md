@@ -1,28 +1,29 @@
 ---
-name: kestral-loop
+name: loop-execute
 description: >-
-  Loop engineering: autonomously execute a published Kestral multi-phase plan end-to-end —
-  spawn a fresh headless runner per phase (Codex or Claude, parallel lanes in separate
-  worktrees, cap 3), verify and merge each lane into ONE integration branch, escalate
-  stuck work (retry → stronger model → human-in-the-loop pause), open the single effort
-  PR, run pr-review on it, then stop for the human to review and merge. By default the heavy
-  orchestration runs in a detached, self-recycling sub-orchestrator so the interactive chat
-  stays thin. Use when asked to
-  "run the loop", "execute the Kestral plan", "run the published plan autonomously",
+  Loop engineering: autonomously execute a PUBLISHED multi-phase plan (registered on the Loop
+  daemon; Kestral link optional) end-to-end — spawn a fresh headless runner per phase (Codex
+  or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into ONE
+  integration branch, escalate stuck work (retry → stronger model → human-in-the-loop pause),
+  open the single effort PR, run pr-review on it, then stop for the human to review and merge.
+  By default the heavy orchestration runs in a detached, self-recycling sub-orchestrator so
+  the interactive chat stays thin. Use when asked to
+  "run the loop", "execute the multi-phase plan", "run the published plan autonomously",
   "loop-engineer this", or after multiphase-plan when the user wants the phases executed
-  hands-off. NOT for implementing an in-chat plan yourself — it needs a published Kestral
-  plan with a Loop config.
+  hands-off. NOT for implementing an in-chat plan yourself — it needs a published plan with a
+  Loop config.
 argument-hint: "<project / plan doc> | resume | status | abort"
 ---
 
-# Kestral Loop
+# Loop Execute
 
-The execution engine for `multiphase-plan`. The human plans (and answers questions) once;
+The execution engine for `multiphase-plan`. The plan backend is the **Loop daemon** (a
+Kestral link is optional; default local-only). The human plans (and answers questions) once;
 this skill runs every phase through pickup → implement → handoff automatically and comes
 back with one reviewed PR. Each headless runner runs the pickup/handoff auto modes itself
-(both engines carry the Kestral MCP); you — the orchestrator session — are the sole
-writer of the plan document and the integration branch, and the policy brain. Scripts do
-the mechanics. The full contract (dir layout,
+(both engines carry the Kestral MCP when the plan is linked); you — the orchestrator session
+— are the sole writer of the plan document and the integration branch, and the policy brain.
+Scripts do the mechanics. The full contract (dir layout,
 status.json, exit codes, chains, prompts) is `references/loop-protocol.md` — read it
 before starting and follow it exactly.
 
@@ -34,7 +35,7 @@ acceptable, how to answer a runner's question, when to escalate, when to wake th
 ## Modes
 
 Heavy orchestration accumulates context; on a long plan a single interactive session blows past
-its safe ceiling. So `kestral-loop` runs in one of three shapes (contract:
+its safe ceiling. So `loop-execute` runs in one of three shapes (contract:
 `references/loop-protocol.md` § Two-tier orchestration):
 
 - **`supervise`** (default for a hands-off run) — the interactive session you're in stays
@@ -44,7 +45,7 @@ its safe ceiling. So `kestral-loop` runs in one of three shapes (contract:
   orchestrator and the final review-runner — the heavy scheduling/merge/escalation runs in
   disposable **`sub`** instances that self-recycle, so this chat never fills up.
 - **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
-  spawned by `loop-orchestrator.sh`, entered via `kestral-loop resume` (signalled by env
+  spawned by `loop-orchestrator.sh`, entered via `loop-execute resume` (signalled by env
   `LOOP_SUB=1`). It runs steps 4-7 (schedule / handle exit / merge / escalate), self-measures
   its own context each tick, and recycles at a safe boundary (§ Sub recycle below). It NEVER
   runs pr-review and NEVER `AskUserQuestion`.
@@ -59,32 +60,38 @@ inline in single-tier)"; steps **1-3, 3b, 8** are supervise/single-tier.
 
 ## Prerequisites
 
-Kestral MCP in-session (`whoami` works); `gh auth status` OK; `jq`; the four loop scripts
-present; a plan published by `multiphase-plan` **with a Loop config section** (integration
+`gh auth status` OK; `jq`; the loop scripts present; a plan (registered on the Loop daemon or
+in `.loop/plan.md`) published by `multiphase-plan` **with a Loop config section** (integration
 branch + Verify command). Missing Loop config → offer to add it (ask the user for the
-verify command — never invent one). Probe headless Kestral once per engine before
-launching lanes (runners claim their own tasks): a one-shot `codex exec` / `claude -p`
-asking for Kestral `whoami` — an auth failure there means every lane dies silently, fix it
-first. Long runs: remind the user once to `caffeinate` the Mac; do not manage power
-yourself.
+verify command — never invent one). **Kestral only when the plan is LINKED:** if the plan
+carries a Kestral link, the Kestral MCP must work in-session (`whoami`) AND you must probe
+headless Kestral once per engine before launching lanes (runners claim their own Kestral
+tasks only in linked mode) — a one-shot `codex exec` / `claude -p` asking for Kestral
+`whoami`; an auth failure there means every lane dies silently, fix it first. For a
+local-only plan, skip the probe entirely. Long runs: remind the user once to `caffeinate`
+the Mac; do not manage power yourself.
 
 ## Workflow
 
 ### 1. Preflight
 
-Resolve the plan like `kestral-pickup` step 1 (argument → `.kestral/plan.md` header →
-ask). Re-fetch from Kestral; parse phases, lanes, `Depends on` edges, statuses, per-phase
-`Verify`; reconcile against live task statuses. Validate: DAG acyclic; every phase has
-*Done when*; Loop config present; working tree clean. Ensure `.kestral/` is gitignored.
-Generate the run id (`loop-<effort-slug>-<date>-<HHMMSS|rand>` — opaque; the trailing
-segment prevents same-effort-same-day store-key collisions across parallel checkouts) and
-take the lock now — `loop-state.sh lock --owner <run-id>`: a foreign owner means a live
-orchestrator already runs this effort; surface it and stop (never `--force` silently). This
-happens before the confirm gate so the gate's no-further-contact promise holds.
+Resolve the plan LOCAL → daemon → Kestral-if-linked: `.loop/plan.md` header → the daemon
+(`loop-plan.sh get --plan-id <id>`, else `loop-plan.sh list`) → Kestral **only when linked**
+(argument → `.loop/plan.md` header → ask, like `loop-pickup` step 1). Parse phases, lanes,
+`Depends on` edges, statuses, per-phase `Verify`; when linked, re-fetch from Kestral and
+reconcile against live task statuses. Validate: DAG acyclic; every phase has *Done when*;
+Loop config present; working tree clean. Ensure `.loop/` is gitignored. **Adopt the plan's
+`planId` as the run id** — the planId IS the runId, so loop-execute drives the same daemon
+record through planned → active → finished (one selector entry); if that record is already
+`finished` (a re-run), mint `<planId>-r<K>` and re-register. Take the lock now —
+`loop-state.sh lock --owner <run-id>`: a foreign owner means a live orchestrator already runs
+this effort; surface it and stop (never `--force` silently). This happens before the confirm
+gate so the gate's no-further-contact promise holds.
 
 ### 2. One confirm gate, then autonomy
 
-Show the user: integration branch, phase/lane table, verify command, chains +
+Show the user: the backend (local-only vs Kestral-linked), integration branch,
+phase/lane table, verify command, chains +
 budget/timeouts from `loop-models.conf`, concurrency (the plan's **Concurrency** line
 overrides `LOOP_MAX_PARALLEL`; default 3). After their go, do not contact them again
 except through the HIL path or completion. `AskUserQuestion` is reserved for those two
@@ -94,14 +101,14 @@ moments.
 
 `loop-state.sh init` with the state.json schema from the protocol. Create the integration
 branch **named in the plan's Loop config** from the repo's default branch tip, plus its
-worktree (`~/.kestral-loop-worktrees/<repo>-integration`), and push it (the one direct
+worktree (`~/.loop/worktrees/<repo>-integration`), and push it (the one direct
 push — everything after goes through loop-merge). Write the branch back into the Loop
 config only if it was missing, set plan **Status: in progress**, repush the doc once.
 
 **The observer runs itself (on by default).** `loop-state.sh init` sources `loop-emit.sh`,
 which runs `loop_ensure_daemon` (starts the central Loop daemon if it isn't already up) then
-POSTs `/api/loops/<runId>/register` — so this loop appears in the daemon's authoritative,
-never-stale status the moment `.kestral/loop/` exists. Print `http://localhost:7717` once so
+POSTs `/api/loops/<runId>/register` and seeds state — flipping this loop's daemon record
+from `planned` to `active` (authoritative, never-stale) the moment `.loop/` exists. Print `http://localhost:7717` once so
 the human can open the **Loop Observatory** and pick this loop from the selector. It's an
 optional read-only dashboard that never blocks the run; printing a URL is not a "contact"
 that breaks the confirm gate's promise.
@@ -111,13 +118,13 @@ that breaks the confirm gate's promise.
 **(supervise mode only — single-tier falls straight through to step 4 inline.)** The interactive
 session hands the heavy work to a detached orchestrator and stays thin:
 
-1. **Seed the SUB prompt.** Write `.kestral/loop/sub/prompt-seed.md`: the headless-`sub`
-   instructions (invoke this skill in `sub` mode → `kestral-loop resume`; run steps 4-7; recycle
+1. **Seed the SUB prompt.** Write `.loop/sub/prompt-seed.md`: the headless-`sub`
+   instructions (invoke this skill in `sub` mode → `loop-execute resume`; run steps 4-7; recycle
    per § Sub recycle; never pr-review; never `AskUserQuestion`) plus the plan Goal + key decisions.
 2. **Spawn once, detached** (mirror the protocol's detach idiom):
-   `nohup ~/dotfile/loop-orchestrator.sh --run-id <runId> --dir .kestral/loop --prompt-file
-   .kestral/loop/sub/prompt-seed.md > .kestral/loop/sub/orch.log 2>&1 & echo $! >
-   .kestral/loop/sub/orch.pid; disown`. It runs SUB instances sequentially, respawning on
+   `nohup ~/dotfile/loop-orchestrator.sh --run-id <runId> --dir .loop --prompt-file
+   .loop/sub/prompt-seed.md > .loop/sub/orch.log 2>&1 & echo $! >
+   .loop/sub/orch.pid; disown`. It runs SUB instances sequentially, respawning on
    recycle/crash (exports `LOOP_SUB=1` + `LOOP_SUB_DIR`).
 3. **Poll thin.** Every ~60-120s read **compact local** state only — `loop-state.sh get
    '.phases|map(.status)'` + a couple of `events.jsonl` tail lines — and summarize to 2-3 lines.
@@ -142,8 +149,8 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
    `git worktree add <path> -b <branch> <integration>`; lane continuing after a merged
    phase → reuse its worktree via `git -C <wt> switch -c <branch> <integration>`.
 2. Generate `runs/<phase-slug>-a<K>/prompt.md` from the protocol's skeleton — it opens
-   with `kestral-pickup --auto` (the runner claims its own task; both engines have the
-   Kestral MCP) and closes with `kestral-handoff --auto ... status:in-progress` +
+   with `loop-pickup --auto` (the runner claims its own task; both engines have the
+   Kestral MCP) and closes with `loop-handoff --auto ... status:in-progress` +
    status.json. Include the verbatim phase block + plan Goal/decisions + prior-attempt
    context (`answers/`, verify.log tails, HIL answers).
 3. Spawn detached per the protocol's Runner-spawn section (nohup + pid file):
@@ -181,13 +188,16 @@ Serialize merges (one at a time). `loop-merge.sh --worktree <int-wt> --lane-bran
 --run-id <runId> --phase <N> --verify-cmd '<effort verify>'` (inherits `LOOP_DAEMON_URL`;
 its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
 
-- **0** → run `kestral-handoff --auto phase:<N> status:done lane:<X> engine:<engine>`
-  inline — the orchestrator context of that skill: flips markers, repushes the plan doc
-  (you are its sole writer; runners already posted their task-scoped sync), updates the
-  task, progress comment noting lane + engine. Cleanup in protocol order: switch the worktree to the lane's next branch (or
-  remove it if the lane is finished), **then** `git branch -d` the merged branch. First
-  merge → `gh pr create --draft` from the integration branch, PR URL into state + Loop
-  config. Schedule the lane's next phase.
+- **0** → run `loop-handoff --auto phase:<N> status:done lane:<X> engine:<engine>`
+  inline — the orchestrator context of that skill (you are the plan's sole writer; runners
+  already posted their task-scoped sync). **Linked:** it flips markers, repushes the plan doc
+  (`update_document`), updates the task (`update_task_status`), and posts a progress comment
+  noting lane + engine. **Local-only:** it instead flips the plan's `[status: done]` marker +
+  `loop-plan.sh push`, appends `.loop/progress.md`, and `loop-plan.sh note` (no Kestral).
+  Cleanup is unchanged in both modes, in protocol order: switch the worktree to the lane's
+  next branch (or remove it if the lane is finished), **then** `git branch -d` the merged
+  branch. First merge → `gh pr create --draft` from the integration branch, PR URL into state
+  + Loop config. Schedule the lane's next phase.
 - **2** → conflict. **`sub` mode: spawn a detached merge-runner** (protocol's
   Merge-runner skeleton — `loop-runner.sh --chain escalate --worktree <int-wt>` with NO
   `--verify-cmd`), so the diff never enters your context; promote on the next tick when its
@@ -217,11 +227,19 @@ requeue the phase with it in context.
 
 In supervise mode the `sub` does NOT finalize: when every phase is merged it writes
 `status.json{outcome:"complete"}`, `loop-orchestrator.sh` touches `sub/PHASES_DONE`, and the
-supervise main (step 3b.5) runs this step. The `sub` never runs pr-review. All phases done →
-`gh pr ready`; PR body from the plan (Goal, phase list with task links,
-Progress log digest — never a raw log dump). `link_pr_to_task` for every phase task
-(dedup via state), statuses → awaiting-review, plan **Status: integrating**, repush,
-`trigger_brain_build`. Sweep any remaining lane worktrees (review needs the branches
+supervise main (step 3b.5) runs this step. The `sub` never runs pr-review.
+
+All phases done → `gh pr ready`; PR body from the plan (Goal, phase list with task links,
+Progress log digest — never a raw log dump). Then record completion on the backend:
+
+- **Linked:** `link_pr_to_task` for every phase task (dedup via state), statuses →
+  awaiting-review, plan **Status: integrating** via `update_document` (repush),
+  `trigger_brain_build`.
+- **Local-only:** flip plan **Status: integrating** + `loop-plan.sh push`, append
+  `.loop/progress.md` (no Kestral) — the daemon learns completion from `loop-state.sh finish`'s
+  `loop.finish` below.
+
+Sweep any remaining lane worktrees (review needs the branches
 free). Then spawn the reviewer with a FULL runner prompt (the protocol skeleton, not a
 one-liner — it must end with the RUN_DIR/status.json instructions or the run is
 misclassified as a crash): task = "run the pr-review skill on <PR URL> with --headless
@@ -236,8 +254,9 @@ recommendation, journal, unlock, and stop — the human merges.
 
 ### 9. `resume` / `status` / `abort`
 
-- **resume** — re-lock with the state's run id, then reconcile per protocol (git > Kestral
-  > state): finish/abort any in-progress merge first; re-attach or fail dead attempts;
+- **resume** — re-lock with the state's run id, then reconcile per protocol (git >
+  plan/daemon > state, + Kestral when linked): finish/abort any in-progress merge first;
+  re-attach or fail dead attempts;
   repair status drift. Never double-spawn a phase with a live pid. Call `loop-state.sh
   register` (idempotent ensure-daemon + re-register) so the loop reappears in the observer —
   no per-loop observer to relaunch. **If `LOOP_SUB=1` (you are a SUB instance):** FIRST, if
@@ -250,8 +269,8 @@ You are a disposable instance — recycle before you fill up so a fresh successo
 Each tick, after handling any runner exits / merges, self-measure:
 
 ```sh
-loop-state.sh occupancy --dir .kestral/loop \
-  --transcript .kestral/loop/sub/transcript-<k>.jsonl --window <LOOP_ORCH_CTX_WINDOW>
+loop-state.sh occupancy --dir .loop \
+  --transcript .loop/sub/transcript-<k>.jsonl --window <LOOP_ORCH_CTX_WINDOW>
 ```
 
 (the `<k>` and the exact command are in your spawn prompt). When it reports **≥
@@ -277,9 +296,11 @@ thing left and no lane can progress).
 - Never force-push anything; integration pushes are fast-forward via loop-merge only
   (sole exception: step 3's initial branch push).
 - Never steal a Kestral claim (409) or a foreign lock — both mean a colleague exists.
-- Single doc-writer: runners do task-scoped Kestral ops only (pickup/handoff auto); they
-  never push git or call `update_document` — only you repush the plan doc and link PRs.
-- Every prompt, transcript, and decision lands under `.kestral/loop/` — if it isn't in
+- Single plan-writer: only the orchestrator pushes the plan — to the daemon via
+  `loop-plan.sh push` and/or Kestral via `update_document` — and links PRs; runners emit
+  events/notes only (the task-scoped pickup/handoff auto ops) and never push git or call
+  `update_document`.
+- Every prompt, transcript, and decision lands under `.loop/` — if it isn't in
   state.json or events.jsonl, it didn't happen (crash-resume depends on this).
 - Budget: `--max-budget-usd` per attempt is the ceiling; on repeated 40s across lanes,
   pause scheduling and notify rather than burning the chain repeatedly.

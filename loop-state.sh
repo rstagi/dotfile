@@ -2,7 +2,7 @@
 set -u -o pipefail
 
 # Loop Engineering — state helper: atomic state.json ops, run lock, event journal.
-# State dir defaults to .kestral/loop under the cwd repo.
+# State dir defaults to .loop under the cwd repo (flattened — plan.md sits beside state.json).
 #
 # Usage:
 #   loop-state.sh init [--dir <d>] --json '<initial state json>'
@@ -17,7 +17,7 @@ set -u -o pipefail
 #     sum the LAST usage-bearing assistant event in a stream-json transcript; print the
 #     token total (+ percent with --window); exit 10 when >= LOOP_ORCH_RECYCLE_TOKENS.
 
-DIR=".kestral/loop"
+DIR=".loop"
 CMD="${1:-}"; [[ -n "$CMD" ]] && shift
 
 JSON="" OWNER="" FORCE=0 TRANSCRIPT="" WINDOW="" ARGS=()
@@ -54,7 +54,7 @@ emit_register() {
   local run_id loop_abs plan_file
   run_id="$(state_run_id)"; [[ -n "$run_id" ]] || return 0
   loop_abs="$(cd "$DIR" 2>/dev/null && pwd)" || return 0
-  plan_file="$(cd "$DIR/.." 2>/dev/null && pwd)/plan.md"
+  plan_file="$loop_abs/plan.md"   # flattened .loop: plan.md sits beside state.json
   loop_ensure_daemon
   jq -c --arg loopDir "$loop_abs" --arg planFile "$plan_file" --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{loopDir:$loopDir, planFile:$planFile, effort:(.effort//null),

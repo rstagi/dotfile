@@ -4,7 +4,7 @@ set -u -o pipefail
 # Loop Engineering — run ONE phase attempt headlessly with a model-fallback chain.
 # Mechanism only: spawn engine, watchdog, classify API failures, validate the
 # runner's status.json, run the verify command. The orchestrator switches on the
-# exit code (see .claude/skills/kestral-loop/references/loop-protocol.md).
+# exit code (see .claude/skills/loop-execute/references/loop-protocol.md).
 #
 # Usage:
 #   loop-runner.sh --worktree <path> --run-dir <abs path> --prompt-file <f>

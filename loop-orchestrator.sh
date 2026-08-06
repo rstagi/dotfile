@@ -2,7 +2,7 @@
 set -u -o pipefail
 
 # loop-orchestrator.sh — the sequential SUB respawner for the two-tier self-recycling loop.
-# Detached (nohup) by `kestral-loop` supervise. Runs disposable headless sub-orchestrator
+# Detached (nohup) by `loop-execute` supervise. Runs disposable headless sub-orchestrator
 # instances (claude -p, CHAIN_ORCHESTRATE) ONE AT A TIME; on each exit it reads sub/status.json
 # and recycles / completes / gives up. Sequential-by-construction: the predecessor has exited
 # before the successor starts, so two SUBs never share the run id (the reentrant lock gives no
@@ -11,7 +11,7 @@ set -u -o pipefail
 # Usage: loop-orchestrator.sh --run-id <id> [--dir <loopDir>] [--prompt-file <f>]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DIR=".kestral/loop"
+DIR=".loop"
 RUN_ID=""
 PROMPT_FILE=""
 
@@ -84,10 +84,10 @@ build_sub_prompt() {
   local handoff_note=""
   [[ -f "$SUB/handoff.md" ]] && handoff_note="A recycle handoff is waiting — read \`$SUB/handoff.md\` ONCE as your first act, then rename it to \`$SUB/handoff.consumed-$k.md\`."
   cat <<EOF
-You are a headless sub-orchestrator (instance $k) for a two-tier self-recycling Kestral loop,
-run id $RUN_ID. Invoke the \`kestral-loop\` skill in headless \`sub\` mode: start by running
-\`kestral-loop resume\` to reconcile git > Kestral > state and re-attach to any live phase
-runners (NEVER double-spawn a phase whose run dir has a live pid).
+You are a headless sub-orchestrator (instance $k) for a two-tier self-recycling loop,
+run id $RUN_ID. Invoke the \`loop-execute\` skill in headless \`sub\` mode: start by running
+\`loop-execute resume\` to reconcile git > plan/daemon > state (+ Kestral when linked) and
+re-attach to any live phase runners (NEVER double-spawn a phase whose run dir has a live pid).
 $handoff_note
 Each tick, self-measure occupancy:
   loop-state.sh occupancy --dir $DIR --transcript $SUB/transcript-$k.jsonl --window $CTX_WINDOW
@@ -114,7 +114,7 @@ if [[ -f "$PIDFILE" ]]; then
 fi
 
 # --- main loop -----------------------------------------------------------------------------
-# LOOP_SUB=1 tells `kestral-loop resume` it is a headless SUB instance (not a human re-attach).
+# LOOP_SUB=1 tells `loop-execute resume` it is a headless SUB instance (not a human re-attach).
 export LOOP_SUB=1
 export LOOP_SUB_DIR="$SUB"
 k=1

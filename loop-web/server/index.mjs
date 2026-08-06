@@ -3,9 +3,9 @@
 // Two modes, one machinery:
 //   • daemon  (LOOP_DAEMON_MODE=1) — the perpetual central observer on 127.0.0.1:7717.
 //     Loops POST lifecycle to it (`/api/loops/:runId/{register,state,event,finish}`); each is
-//     kept forever in `~/.kestral/loops/<runId>.json`. A selector lists them; per-loop SSE
+//     kept forever in `~/.loop/loops/<runId>.json`. A selector lists them; per-loop SSE
 //     streams the graph.
-//   • legacy  (loop-web --dir X) — discovers one `.kestral/loop/`, synthesizes a single
+//   • legacy  (loop-web --dir X) — discovers one flattened `.loop/`, synthesizes a single
 //     registration into the same registry. No store; ephemeral.
 //
 // Authoritative status is materialized through the tested pure model (../src/model): script
@@ -38,18 +38,18 @@ function resolveConfig() {
   const daemon = args.daemon || env.LOOP_DAEMON_MODE === "1";
   const storeDir = env.LOOP_STORE_DIR
     ? path.resolve(env.LOOP_STORE_DIR)
-    : path.join(os.homedir(), ".kestral", "loops");
+    : path.join(os.homedir(), ".loop", "loops");
 
   let loopDir = args.dir ?? env.LOOP_WEB_DIR ?? null;
   let planFile = args.plan ?? env.LOOP_WEB_PLAN ?? null;
   if (!daemon && !loopDir && !planFile) {
-    const kestral = discoverKestral(process.cwd());
-    if (kestral) {
-      loopDir = path.join(kestral, "loop");
-      planFile = path.join(kestral, "plan.md");
+    const found = discoverLoop(process.cwd());
+    if (found) {
+      loopDir = found; // flattened: the `.loop/` dir IS the loop dir; plan.md sits inside it
+      planFile = path.join(found, "plan.md");
     }
   }
-  if (loopDir && !planFile) planFile = path.join(path.dirname(loopDir), "plan.md");
+  if (loopDir && !planFile) planFile = path.join(loopDir, "plan.md");
   return {
     port,
     daemon,
@@ -71,11 +71,11 @@ function parseArgs(argv) {
   return out;
 }
 
-/** Walk up from `start` for a `.kestral/` directory; return its path or null (legacy mode). */
-function discoverKestral(start) {
+/** Walk up from `start` for a `.loop/` directory; return its path or null (legacy mode). */
+function discoverLoop(start) {
   let dir = path.resolve(start);
   for (;;) {
-    const candidate = path.join(dir, ".kestral");
+    const candidate = path.join(dir, ".loop");
     if (isDir(candidate)) return candidate;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
@@ -252,6 +252,7 @@ function handle(req, res) {
   if (p === "/api/loops") return json(res, 200, listLoops());
 
   let m;
+  if ((m = p.match(/^\/api\/loops\/([^/]+)\/plan$/))) return handleLoopPlan(decodeURIComponent(m[1]), res);
   if ((m = p.match(/^\/api\/loops\/([^/]+)\/snapshot$/))) return handleLoopSnapshot(decodeURIComponent(m[1]), res);
   if ((m = p.match(/^\/api\/loops\/([^/]+)\/review$/))) return handleReview(decodeURIComponent(m[1]), res);
   if ((m = p.match(/^\/api\/loops\/([^/]+)\/attempt\/(.+)\/(\d+)\/?$/)))
@@ -279,7 +280,7 @@ function handleIngest(runId, kind, req, res) {
     let msg;
     if (kind === "register") {
       const info = { ...parsed, runId };
-      if (info.loopDir && !info.planFile) info.planFile = path.join(path.dirname(info.loopDir), "plan.md");
+      if (info.loopDir && !info.planFile) info.planFile = path.join(info.loopDir, "plan.md");
       if (!info.planText && info.planFile) info.planText = readText(info.planFile);
       msg = { kind: "register", info };
     } else if (kind === "state") {
@@ -303,10 +304,27 @@ function listLoops() {
   for (const entry of loops.values()) {
     const sum = summarize(entry.record);
     // A worktree that's gone can't serve live logs — surface it as archived in the selector.
-    if (!isDir(entry.record.loopDir)) sum.status = "archived";
+    // A `planned` loop keeps its status: its origin worktree may be gone, but the plan still
+    // lives in the daemon (register-only records have no live logs to lose anyway).
+    if (!isDir(entry.record.loopDir) && sum.status !== "planned") sum.status = "archived";
     out.push({ ...sum, seq: entry.seq });
   }
   return out.sort((a, b) => b.seq - a.seq).map(({ seq, ...rest }) => rest);
+}
+
+/** The plan-fetch endpoint: a fresh worktree pulls `planText` straight from the in-memory
+ * record (no worktree/loop-dir needed — this is how a clean checkout gets the plan). */
+function handleLoopPlan(runId, res) {
+  const entry = loops.get(runId);
+  if (!entry) return json(res, 404, { error: "no such loop", runId });
+  const rec = entry.record;
+  json(res, 200, {
+    runId: rec.runId,
+    effort: rec.effort,
+    status: rec.status,
+    integrationBranch: rec.integrationBranch,
+    planText: rec.planText,
+  });
 }
 
 function handleLoopSnapshot(runId, res) {
@@ -599,13 +617,16 @@ function main() {
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
   } else if (cfg.loopDir || cfg.planFile) {
-    // Legacy single-loop: synthesize one registration from the discovered dir.
+    // Legacy single-loop: synthesize one registration from the discovered dir, then fold the
+    // on-disk state + events at once so `--dir` renders immediately (not only after the first
+    // 15s reconcile — otherwise a static dir would sit at `planned`/0-phases until then).
     const stateText = cfg.loopDir ? readText(path.join(cfg.loopDir, "state.json")) : null;
     const runId = safeParse(stateText)?.runId || "local";
     ingest(runId, {
       kind: "register",
       info: { runId, loopDir: cfg.loopDir, planFile: cfg.planFile, planText: cfg.planFile ? readText(cfg.planFile) : null },
     });
+    if (cfg.loopDir && isDir(cfg.loopDir)) reconcile(getEntry(runId));
   }
 
   const server = http.createServer((req, res) => {
