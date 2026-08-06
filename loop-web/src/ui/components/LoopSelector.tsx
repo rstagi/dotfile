@@ -51,6 +51,7 @@ export function LoopSelector({
                     </span>
                     <span className="loopsel__rowsub">
                       <span>{doneCount(l)}/{l.phaseCounts.total} done</span>
+                      {l.pendingHil > 0 && <span className="loopsel__hil">{l.pendingHil} HIL</span>}
                       <span className="loopsel__time">{fmtRelative(l.updatedAt)}</span>
                     </span>
                     {l.status === "archived" && (

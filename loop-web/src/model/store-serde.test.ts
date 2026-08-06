@@ -27,6 +27,17 @@ describe("store serde — round-trip", () => {
     expect(s2).toBe(s1);
   });
 
+  it("round-trips a NON-ZERO subRecycles / occupancy (cross-restart persistence)", () => {
+    const rec = reduceLoop(sampleRecord(), {
+      kind: "event",
+      event: { event: "sub.recycle", tokens: 151000, recycleIndex: 3, ts: "2026-08-03T11:00:00Z" },
+    } as never);
+    expect(rec.subRecycles).toBe(3);
+    const parsed = parseStoreFile(serializeRecord(rec))!;
+    expect(parsed.subRecycles).toBe(3);
+    expect(parsed.occupancy).toEqual({ tokens: 151000, percent: null });
+  });
+
   it("stamps the current schema version", () => {
     const parsed = parseStoreFile(serializeRecord(sampleRecord()))!;
     expect(parsed.schemaVersion).toBe(STORE_SCHEMA_VERSION);
@@ -48,6 +59,8 @@ describe("store serde — corrupt tolerance", () => {
     expect(parsed.phases).toEqual({});
     expect(parsed.events).toEqual([]);
     expect(parsed.status).toBe("active");
+    expect(parsed.subRecycles).toBe(0);
+    expect(parsed.occupancy).toBeNull();
   });
 });
 

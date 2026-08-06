@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"s2"}
+{"type":"assistant","message":{"usage":{"input_tokens":500,"cache_read_input_tokens":2000,"cache_creation_input_tokens":500,"output_tokens":10}},"session_id":"s2"}
+{"type":"user","message":{"role":"user","content":[]}}
+{"type":"assistant","message":{"usage":{"input_tokens":1000,"cache_read_input_tokens":6500,"cache_creation_input_tokens":500,"output_tokens":80}},"session_id":"s2"}
+{"type":"result","subtype":"success","usage":{"input_tokens":999999,"cache_read_input_tokens":999999,"cache_creation_input_tokens":999999}}

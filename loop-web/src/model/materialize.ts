@@ -5,7 +5,7 @@
 // archived loop (live === null) short-circuits to the frozen `record.lastSnapshot`.
 
 import type { LoopRecord, LoopSummary, PhaseCounts } from "./store-types.ts";
-import type { Snapshot, StateJson, StatePhase, RawEvent } from "./types.ts";
+import type { Snapshot, StateJson, StatePhase, RawEvent, SubOrchInfo } from "./types.ts";
 import type { LoopInput } from "./parse-loop.ts";
 import { parsePlan } from "./parse-plan.ts";
 import { parseLoop } from "./parse-loop.ts";
@@ -22,8 +22,15 @@ const EMPTY_LIVE: LoopInput = { present: true, state: null, events: null, runs: 
 
 export function materialize(record: LoopRecord, live: LoopInput | null, opts: MaterializeOpts = {}): Snapshot {
   // Archived: the worktree is gone (no runs/hil to read) — return the frozen last snapshot,
-  // or rebuild a runless one from the record when nothing was ever stored.
-  if (live == null) return record.lastSnapshot ?? render(record, EMPTY_LIVE, opts);
+  // or rebuild a runless one from the record when nothing was ever stored. Spread defaults so a
+  // snapshot frozen by a pre-subOrch build still satisfies the Snapshot shape (never undefined).
+  if (live == null) {
+    const frozen = record.lastSnapshot;
+    if (!frozen) return render(record, EMPTY_LIVE, opts);
+    // Backfill defaults ONLY for a snapshot frozen by a pre-subOrch build (keep the same
+    // reference otherwise, so a current snapshot short-circuits untouched).
+    return "subOrch" in frozen ? frozen : { subOrch: null, pendingHil: 0, ...frozen };
+  }
   return render(record, live, opts);
 }
 
@@ -39,6 +46,7 @@ export function summarize(record: LoopRecord): LoopSummary {
     prUrl: record.prUrl,
     reviewOutcome: record.review?.outcome ?? null,
     phaseCounts: countPhases(record),
+    pendingHil: countHilOpen(record),
   };
 }
 
@@ -57,7 +65,23 @@ function render(record: LoopRecord, live: LoopInput, opts: MaterializeOpts): Sna
   };
   const runtime = parseLoop(loopInput);
   const now = opts.now ?? Date.now();
-  return buildSnapshot(plan, runtime, { now, nowIso: opts.nowIso ?? null });
+  const snap = buildSnapshot(plan, runtime, { now, nowIso: opts.nowIso ?? null });
+  return { ...snap, subOrch: buildSubOrch(record), pendingHil: countHilOpen(record) };
+}
+
+/** Count phases with an open HIL — the single source for pendingHil (drift-free, idempotent). */
+function countHilOpen(record: LoopRecord): number {
+  return Object.values(record.phases).filter((o) => o.hilOpen).length;
+}
+
+/** Fold the sub-orchestrator overlay into the snapshot shape, or null when no sub activity. */
+function buildSubOrch(record: LoopRecord): SubOrchInfo | null {
+  if (record.subRecycles === 0 && record.occupancy == null) return null;
+  return {
+    recycles: record.subRecycles,
+    contextTokens: record.occupancy?.tokens ?? null,
+    contextPct: record.occupancy?.percent ?? null,
+  };
 }
 
 /** state.json with each phase's status replaced by the overlay-resolved effective status;

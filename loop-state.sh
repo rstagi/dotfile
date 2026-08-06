@@ -13,17 +13,22 @@ set -u -o pipefail
 #   loop-state.sh get [--dir <d>] '<jq filter>'
 #   loop-state.sh set [--dir <d>] '<jq expression>'   # state.json | jq expr, atomic mv
 #   loop-state.sh log [--dir <d>] <event> [<phase>] [<detail>]
+#   loop-state.sh occupancy --transcript <f> [--window <n>]
+#     sum the LAST usage-bearing assistant event in a stream-json transcript; print the
+#     token total (+ percent with --window); exit 10 when >= LOOP_ORCH_RECYCLE_TOKENS.
 
 DIR=".kestral/loop"
 CMD="${1:-}"; [[ -n "$CMD" ]] && shift
 
-JSON="" OWNER="" FORCE=0 ARGS=()
+JSON="" OWNER="" FORCE=0 TRANSCRIPT="" WINDOW="" ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --dir) DIR="$2"; shift 2 ;;
   --json) JSON="$2"; shift 2 ;;
   --owner) OWNER="$2"; shift 2 ;;
   --force) FORCE=1; shift ;;
+  --transcript) TRANSCRIPT="$2"; shift 2 ;;
+  --window) WINDOW="$2"; shift 2 ;;
   *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -142,7 +147,49 @@ finish)
   printf '%s' "$body" | jq -c --arg fa "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '. + {finishedAt: (.finishedAt // $fa)}' | loop_emit "$run_id" finish
   ;;
+occupancy)
+  # SUB self-measurement: the last usage-bearing `assistant` event's context size =
+  # input_tokens + cache_read_input_tokens + cache_creation_input_tokens. `fromjson?`
+  # tolerates a malformed/partial last line (a mid-write transcript). No state.json needed.
+  [[ -n "$TRANSCRIPT" ]] || die "occupancy requires --transcript <file>"
+  tokens=0
+  if [[ -f "$TRANSCRIPT" ]]; then
+    tokens="$(jq -R 'fromjson? | select(.type == "assistant" and .message.usage != null
+        and ((.message.usage.input_tokens // .message.usage.cache_read_input_tokens // .message.usage.cache_creation_input_tokens) != null))
+      | (.message.usage | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0))' \
+      "$TRANSCRIPT" 2>/dev/null | tail -n1)"
+    [[ -n "$tokens" ]] || tokens=0
+  fi
+  # Recycle threshold + UI window: explicit env > loop-models.conf > default. Snapshot env
+  # BEFORE sourcing the conf (the conf assigns both knobs unconditionally, and gating the
+  # source on one would clobber the env or suppress the other's default).
+  _e_recycle="${LOOP_ORCH_RECYCLE_TOKENS:-}"
+  _e_window="${LOOP_ORCH_CTX_WINDOW:-}"
+  [[ -r "$SCRIPT_DIR/loop-models.conf" ]] && source "$SCRIPT_DIR/loop-models.conf"
+  threshold="${_e_recycle:-${LOOP_ORCH_RECYCLE_TOKENS:-150000}}"
+  [[ "$threshold" == <-> ]] || threshold=150000  # non-integer override → default (keep exit 0/10 contract)
+  win="$WINDOW"; [[ -n "$win" ]] || win="${_e_window:-${LOOP_ORCH_CTX_WINDOW:-}}"
+  percent=""
+  [[ "$win" == <1-> ]] && percent=$(( tokens * 100 / win ))
+  # stdout: bare occupancy prints ONLY the token total; percent is appended only when --window
+  # was explicitly requested AND resolved to a valid integer (no dangling space on a bad window).
+  if [[ -n "$WINDOW" && -n "$percent" ]]; then
+    printf '%s %s\n' "$tokens" "$percent"
+  else
+    printf '%s\n' "$tokens"
+  fi
+  # Best-effort sub.saturation heartbeat (only when a run id is resolvable; never fails).
+  run_id="$(state_run_id)"
+  if [[ -n "$run_id" ]]; then
+    printf '%s' "$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --argjson tokens "$tokens" --argjson percent "${percent:-null}" \
+      '{ts: $ts, event: "sub.saturation", tokens: $tokens, percent: $percent}')" \
+      | loop_emit "$run_id" event
+  fi
+  if [[ "$tokens" -ge "$threshold" ]]; then exit 10; fi
+  exit 0
+  ;;
 *)
-  die "unknown command '${CMD}' (init|lock|unlock|get|set|log|register|finish)"
+  die "unknown command '${CMD}' (init|lock|unlock|get|set|log|register|finish|occupancy)"
   ;;
 esac

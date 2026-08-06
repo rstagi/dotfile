@@ -128,6 +128,31 @@ describe("materialize — timeline is deduped", () => {
   });
 });
 
+describe("materialize — sub-orchestrator health + pendingHil on the snapshot", () => {
+  it("has null subOrch and pendingHil 0 with no sub/HIL activity", () => {
+    const rec = fold("r", register, stateAll);
+    const snap = materialize(rec, emptyLive, { now: 1, nowIso: "2026-08-03T10:00:00Z" });
+    expect(snap.subOrch).toBeNull();
+    expect(snap.pendingHil).toBe(0);
+  });
+
+  it("populates subOrch after a sub.recycle fold", () => {
+    const rec = fold("r", register, stateAll, {
+      kind: "event",
+      event: { event: "sub.recycle", tokens: 151000, recycleIndex: 2, percent: 75 },
+    });
+    const snap = materialize(rec, emptyLive, { now: 1, nowIso: "2026-08-03T10:00:00Z" });
+    expect(snap.subOrch).toEqual({ recycles: 2, contextTokens: 151000, contextPct: 75 });
+  });
+
+  it("counts pendingHil from open phase HILs (snapshot + summarize agree)", () => {
+    const rec = fold("r", register, stateAll, { kind: "event", event: { event: "hil.raise", phase: "2" } });
+    const snap = materialize(rec, emptyLive, { now: 1, nowIso: "2026-08-03T10:00:00Z" });
+    expect(snap.pendingHil).toBe(1);
+    expect(summarize(rec).pendingHil).toBe(1);
+  });
+});
+
 describe("summarize — phase counts + lifecycle", () => {
   it("counts effective phase statuses (promotion included)", () => {
     const rec = fold("r", register, stateAll, {

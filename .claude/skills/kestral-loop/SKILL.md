@@ -5,7 +5,9 @@ description: >-
   spawn a fresh headless runner per phase (Codex or Claude, parallel lanes in separate
   worktrees, cap 3), verify and merge each lane into ONE integration branch, escalate
   stuck work (retry → stronger model → human-in-the-loop pause), open the single effort
-  PR, run pr-review on it, then stop for the human to review and merge. Use when asked to
+  PR, run pr-review on it, then stop for the human to review and merge. By default the heavy
+  orchestration runs in a detached, self-recycling sub-orchestrator so the interactive chat
+  stays thin. Use when asked to
   "run the loop", "execute the Kestral plan", "run the published plan autonomously",
   "loop-engineer this", or after multiphase-plan when the user wants the phases executed
   hands-off. NOT for implementing an in-chat plan yourself — it needs a published Kestral
@@ -24,10 +26,36 @@ the mechanics. The full contract (dir layout,
 status.json, exit codes, chains, prompts) is `references/loop-protocol.md` — read it
 before starting and follow it exactly.
 
-**Division of labor:** scripts (`~/dotfile/loop-runner.sh`, `loop-merge.sh`,
-`loop-notify.sh`, `loop-state.sh`) are mechanism; never shell raw `claude`/`codex`/`git
-merge` yourself. You are policy: what to schedule, whether a result is acceptable, how to
-answer a runner's question, when to escalate, when to wake the human.
+**Division of labor:** scripts (`~/dotfile/loop-runner.sh`, `loop-orchestrator.sh`,
+`loop-merge.sh`, `loop-notify.sh`, `loop-state.sh`) are mechanism; never shell raw
+`claude`/`codex`/`git merge` yourself. You are policy: what to schedule, whether a result is
+acceptable, how to answer a runner's question, when to escalate, when to wake the human.
+
+## Modes
+
+Heavy orchestration accumulates context; on a long plan a single interactive session blows past
+its safe ceiling. So `kestral-loop` runs in one of three shapes (contract:
+`references/loop-protocol.md` § Two-tier orchestration):
+
+- **`supervise`** (default for a hands-off run) — the interactive session you're in stays
+  **THIN**. It does preflight / init / lock / the confirm gate, spawns ONE detached
+  `loop-orchestrator.sh`, then only: polls **compact local** state for a 2-3 line progress read,
+  answers HIL from on-disk briefs, and finalizes on `sub/PHASES_DONE`. It spawns **only** the
+  orchestrator and the final review-runner — the heavy scheduling/merge/escalation runs in
+  disposable **`sub`** instances that self-recycle, so this chat never fills up.
+- **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
+  spawned by `loop-orchestrator.sh`, entered via `kestral-loop resume` (signalled by env
+  `LOOP_SUB=1`). It runs steps 4-7 (schedule / handle exit / merge / escalate), self-measures
+  its own context each tick, and recycles at a safe boundary (§ Sub recycle below). It NEVER
+  runs pr-review and NEVER `AskUserQuestion`.
+- **single-tier** (`<plan> --inline`, or when `loop-orchestrator.sh` is absent) — the
+  interactive session does everything itself (steps 1-9 inline, no orchestrator, no recycle).
+  Fine only for a plan small enough that the chat won't approach its ceiling.
+
+**Argument → mode:** `<plan>` → `supervise`. `<plan> --inline` → single-tier. `resume` → `sub`
+when `LOOP_SUB=1` (loop-orchestrator's child), else a human re-attach in `supervise`/single-tier.
+`status` / `abort` are mode-agnostic. Below, steps **4-7** are "run by the `sub` instance (or
+inline in single-tier)"; steps **1-3, 3b, 8** are supervise/single-tier.
 
 ## Prerequisites
 
@@ -78,7 +106,33 @@ the human can open the **Loop Observatory** and pick this loop from the selector
 optional read-only dashboard that never blocks the run; printing a URL is not a "contact"
 that breaks the confirm gate's promise.
 
-### 4. Schedule
+### 3b. Supervise: launch the orchestrator, then poll thin
+
+**(supervise mode only — single-tier falls straight through to step 4 inline.)** The interactive
+session hands the heavy work to a detached orchestrator and stays thin:
+
+1. **Seed the SUB prompt.** Write `.kestral/loop/sub/prompt-seed.md`: the headless-`sub`
+   instructions (invoke this skill in `sub` mode → `kestral-loop resume`; run steps 4-7; recycle
+   per § Sub recycle; never pr-review; never `AskUserQuestion`) plus the plan Goal + key decisions.
+2. **Spawn once, detached** (mirror the protocol's detach idiom):
+   `nohup ~/dotfile/loop-orchestrator.sh --run-id <runId> --dir .kestral/loop --prompt-file
+   .kestral/loop/sub/prompt-seed.md > .kestral/loop/sub/orch.log 2>&1 & echo $! >
+   .kestral/loop/sub/orch.pid; disown`. It runs SUB instances sequentially, respawning on
+   recycle/crash (exports `LOOP_SUB=1` + `LOOP_SUB_DIR`).
+3. **Poll thin.** Every ~60-120s read **compact local** state only — `loop-state.sh get
+   '.phases|map(.status)'` + a couple of `events.jsonl` tail lines — and summarize to 2-3 lines.
+   Do NOT skim diffs, resolve conflicts, or pull the fat daemon snapshot; that heavy work is the
+   SUB's, and reading it here defeats the purpose. If `sub/orch.pid` is dead and there's no
+   `sub/PHASES_DONE`, re-spawn the orchestrator (it `resume`s cleanly — the dead-orchestrator
+   backstop).
+4. **HIL asker.** Each poll, scan `hil/*.md` lacking a sibling `.answer.md`. For each: read the
+   brief, `AskUserQuestion` (the ONLY user contact besides completion), write the reply to
+   `hil/<slug>.answer.md`. The `sub` picks it up and requeues that lane — the human-facing HIL
+   lives HERE in supervise, never in the SUB.
+5. On `sub/PHASES_DONE` → go to **step 8** (finalize). On an orchestrator `fatal`/`blocked`
+   notification with no path forward, surface it and stop.
+
+### 4. Schedule *(run by the `sub` instance — or inline in single-tier)*
 
 A phase is READY when `[status: todo]`, all its `Depends on` phases are done, its lane has
 no phase running, and fewer runners are live than the concurrency cap (plan's
@@ -134,10 +188,12 @@ its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
   remove it if the lane is finished), **then** `git branch -d` the merged branch. First
   merge → `gh pr create --draft` from the integration branch, PR URL into state + Loop
   config. Schedule the lane's next phase.
-- **2** → resolve the conflict yourself in the integration worktree
-  (`resolving-merge-conflicts`, honoring both phases' *Done when*), then
-  `loop-merge.sh --worktree <int-wt> --finish --verify-cmd '<effort verify>'`. Not
-  confident it's semantically right → `--abort` + HIL.
+- **2** → conflict. **`sub` mode: spawn a detached merge-runner** (protocol's
+  Merge-runner skeleton — `loop-runner.sh --chain escalate --worktree <int-wt>` with NO
+  `--verify-cmd`), so the diff never enters your context; promote on the next tick when its
+  `phase.merged` fires. **single-tier:** resolve inline (`resolving-merge-conflicts`, honoring
+  both phases' *Done when*), then `loop-merge.sh --worktree <int-wt> --finish --verify-cmd
+  '<effort verify>'`. Either way, not confident it's semantically right → `--abort` + HIL.
 - **4** → semantic conflict: `git revert -m1 HEAD` in the integration worktree, then L3
   for this phase with the verify output.
 - **3 / 1** → reconcile from git per the protocol (already-merged → done; dirty
@@ -150,12 +206,19 @@ Ladder per protocol: L0/L1 live inside loop-runner. Yours: **L2** answer-and-res
 post-mortem of prior attempts (last.md + verify tails, never raw transcripts), one shot;
 **L4** HIL — write `hil/<phase-slug>.md` per protocol, post it as a task comment, flip
 `[status: blocked]` + repush, `loop-notify.sh --level question --run-id <runId> --event
-hil.raise`, then ask the user in-session. **Only that lane pauses.** On answer, requeue the
-phase with the answer in context.
+hil.raise`. **Only that lane pauses; other lanes keep running.** Then, to get the answer:
+**`sub` mode NEVER `AskUserQuestion`** — it poll-waits for `hil/<slug>.answer.md` (which the
+supervise main writes via its HIL asker, step 3b), staying on other lanes meanwhile; if HIL is
+the *only* thing left and no lane can progress, write `status.json{outcome:"blocked"}` and let
+supervise carry it. **single-tier:** ask the user in-session (`AskUserQuestion`). On answer,
+requeue the phase with it in context.
 
-### 8. Complete
+### 8. Complete *(supervise / single-tier — never the `sub`)*
 
-All phases done → `gh pr ready`; PR body from the plan (Goal, phase list with task links,
+In supervise mode the `sub` does NOT finalize: when every phase is merged it writes
+`status.json{outcome:"complete"}`, `loop-orchestrator.sh` touches `sub/PHASES_DONE`, and the
+supervise main (step 3b.5) runs this step. The `sub` never runs pr-review. All phases done →
+`gh pr ready`; PR body from the plan (Goal, phase list with task links,
 Progress log digest — never a raw log dump). `link_pr_to_task` for every phase task
 (dedup via state), statuses → awaiting-review, plan **Status: integrating**, repush,
 `trigger_brain_build`. Sweep any remaining lane worktrees (review needs the branches
@@ -177,7 +240,33 @@ recommendation, journal, unlock, and stop — the human merges.
   > state): finish/abort any in-progress merge first; re-attach or fail dead attempts;
   repair status drift. Never double-spawn a phase with a live pid. Call `loop-state.sh
   register` (idempotent ensure-daemon + re-register) so the loop reappears in the observer —
-  no per-loop observer to relaunch.
+  no per-loop observer to relaunch. **If `LOOP_SUB=1` (you are a SUB instance):** FIRST, if
+  `sub/handoff.md` exists, read it **once** and rename it to `sub/handoff.consumed-<k>.md`
+  (single-consumption); then reconcile as above and run steps 4-7 under the recycle loop below.
+
+### Sub recycle *(mode: `sub` only)*
+
+You are a disposable instance — recycle before you fill up so a fresh successor continues.
+Each tick, after handling any runner exits / merges, self-measure:
+
+```sh
+loop-state.sh occupancy --dir .kestral/loop \
+  --transcript .kestral/loop/sub/transcript-<k>.jsonl --window <LOOP_ORCH_CTX_WINDOW>
+```
+
+(the `<k>` and the exact command are in your spawn prompt). When it reports **≥
+`LOOP_ORCH_RECYCLE_TOKENS`** (exit 10) **AND you are at a safe phase boundary** — no runner
+mid-attempt without a written `status.json`, no merge in progress — then: flush durable state
+(state.json via `loop-state.sh set`, Kestral, git are already externalized), write
+`sub/handoff.md` (open exit-10 rounds + their `sessionId`s, pending merge-runner promotions =
+runDir + lane-branch awaiting a `phase.merged`, per-lane notes, why-stopped), then write
+`sub/status.json {outcome:"recycle", summary, tokens:<n>, recycleIndex:<k>}` and **exit**.
+`loop-orchestrator.sh` respawns your successor, which consumes the handoff once and picks up
+via `resume`. Gated on quiescence: if a phase op is mid-flight, keep going (even past the
+ceiling) and recycle asap once every lane is at a checkpoint — **never** hard-kill a runner to
+recycle. When every phase is merged instead, write `{outcome:"complete"}`; on an unrecoverable
+error `{outcome:"fatal"}` (bad config / lost lock) or `{outcome:"blocked"}` (HIL is the only
+thing left and no lane can progress).
 - **status** — print the lane table from state + live pids + last events; read-only.
 - **abort** — kill live runners, `--abort` any merge, flip in-progress phases back to
   todo, repush plan, notify, unlock. Leave worktrees for autopsy; tell the user the
@@ -194,3 +283,11 @@ recommendation, journal, unlock, and stop — the human merges.
   state.json or events.jsonl, it didn't happen (crash-resume depends on this).
 - Budget: `--max-budget-usd` per attempt is the ceiling; on repeated 40s across lanes,
   pause scheduling and notify rather than burning the chain repeatedly.
+- Two-tier: the `sub` NEVER runs pr-review and NEVER `AskUserQuestion` (HIL → files only);
+  those belong to the supervise main. Recycle is a **sequential respawn** owned by
+  `loop-orchestrator.sh` — a SUB never spawns its own successor (that would overlap two
+  orchestrators on one run id, which the reentrant lock does not prevent). Recycle only at a
+  persisted checkpoint; never hard-kill a live phase runner to hit the token ceiling.
+- Supervise stays THIN: spawn only the orchestrator + the review-runner, and read only
+  compact local state. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
+  the main chat defeats the two-tier design — that work is the `sub`'s.

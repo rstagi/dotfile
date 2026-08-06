@@ -1,5 +1,7 @@
 # Loop Observatory — live read-only graph for the Kestral loop-engineering flow.
 alias loop-web="$HOME/dotfile/loop-web.sh"
+# Two-tier self-recycling orchestrator: supervise spawns this detached; it respawns SUB instances.
+alias loop-orchestrator="$HOME/dotfile/loop-orchestrator.sh"
 
 # Central daemon: loops register + push lifecycle here; the emitter + skills read this.
 export LOOP_DAEMON_URL="${LOOP_DAEMON_URL:-http://localhost:7717}"

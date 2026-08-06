@@ -7,10 +7,24 @@ The shared contract between the `kestral-loop` orchestrator skill, the `loop-*.s
 
 ## Roles
 
-- **Orchestrator** — the interactive Claude Code session (Fable 5) running `kestral-loop`.
-  Owns the plan **document** (sole `update_document` writer — parallel repushes are
-  last-writer-wins), post-merge task status flips, PR creation/linking, all pushes to the
-  integration branch, scheduling, escalation, HIL.
+- **Orchestrator** — owns the plan **document** (sole `update_document` writer — parallel
+  repushes are last-writer-wins), post-merge task status flips, PR creation/linking, all
+  pushes to the integration branch, scheduling, escalation, HIL. In the two-tier model this
+  role is **split across two modes** (§ Two-tier orchestration): a THIN `supervise` main (the
+  interactive Claude Code session the user talks to — preflight/init/lock, HIL answering,
+  finalization) and disposable headless `sub` instances that do the heavy scheduling/merge/
+  escalation and self-recycle. A single-tier run (`supervise` doing everything itself) is
+  still valid for a short effort.
+- **Sub-orchestrator (SUB)** — a disposable headless orchestrator (`claude -p`,
+  `CHAIN_ORCHESTRATE`) spawned by `loop-orchestrator.sh`, entered via `kestral-loop resume`.
+  Does the heavy orchestration under a self-measured token ceiling and recycles itself at a
+  safe boundary (§ Two-tier orchestration). NEVER runs pr-review; NEVER `AskUserQuestion`
+  (HIL → files only). Its final act is writing `sub/status.json`.
+- **Merge-runner** — a detached runner (loop-runner.sh style) the SUB spawns on a
+  `loop-merge.sh` exit-2 conflict: it resolves in the integration worktree via
+  `resolving-merge-conflicts` honoring both phases' *Done when*, then `loop-merge.sh
+  --finish`, then writes `status.json`. Keeps the conflict diff out of the SUB's context
+  (§ Merge policy — skeleton there).
 - **Runner** — one headless agent process (`codex exec` or `claude -p`) working one phase
   attempt inside a lane worktree. Both hosts have the Kestral MCP (Claude: user plugin;
   Codex: `kestral@kestral-plugins` plugin) and the skills installed. A runner opens with
@@ -43,6 +57,14 @@ State lives in the orchestrator's checkout of the target repo (add `.kestral/` t
   runs/review-a<K>/report.md # full pr-review report (also posted as the PR comment)
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
+  sub/                       # two-tier self-recycling orchestrator runtime (§ Two-tier orchestration)
+    transcript-<k>.jsonl     # SUB instance k's stream-json (mtime = heartbeat; occupancy source)
+    status.json              # SUB → loop-orchestrator.sh: recycle|complete|fatal|blocked
+    handoff.md               # single-consumption recycle handoff → renamed handoff.consumed-<k>.md
+    current.pid              # live SUB pid (loop-orchestrator.sh writes; supervise polls it)
+    saturation.json          # optional sidecar-watcher occupancy fallback (if stream-json buffers)
+    PHASES_DONE              # touched on `complete` → supervise finalizes (PR ready, links, finish)
+    control/                 # reserved: out-of-band control files (e.g. pause/abort)
 ```
 
 Worktrees live outside the repo (ralph convention):
@@ -65,7 +87,7 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 
 - `POST /api/loops/:runId/register` `{ loopDir, planFile?, effort?, projectId?, integrationBranch?, startedAt?, planText? }` — server reads plan.md from `planFile` if `planText` omitted.
 - `POST /api/loops/:runId/state` — the full state.json contents.
-- `POST /api/loops/:runId/event` `{ event, phase?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl? }`.
+- `POST /api/loops/:runId/event` `{ event, phase?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — the server folds the body **verbatim** (no field whitelist), so `sub.*` events carry their extra fields straight into the model.
 - `POST /api/loops/:runId/finish` `{ status?, finishedAt?, prUrl?, review?:{outcome,summary,reportPath,commentUrl} }`.
 - `GET /api/loops` (selector) · `GET /events?runId=` (per-loop SSE) · `/api/loops/:runId/{snapshot,review,attempt/:slug/:k}` · `/api/health`.
 
@@ -80,9 +102,15 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 | `hil.raise` / `hil.resolve` | orchestrator (loop-state.sh log) | phase |
 | `review.finish` | orchestrator | outcome, summary |
 | `loop.finish` | orchestrator (loop-state.sh finish) | prUrl |
+| `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
+| `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 
 Unknown/legacy event names fall back to keyword matching, so today's free-form
-`events.jsonl` still works.
+`events.jsonl` still works. The two `sub.*` events are **loop-level** (no `phase`); the daemon
+folds them idempotently — `subRecycles = max(recycleIndex)`, `occupancy = last {tokens, percent}`
+— so re-folding `events.jsonl` on every reconcile never double-counts. They update loop state
+only; they are NOT appended to the on-disk `events.jsonl` (heartbeats would flood the timeline),
+so they ride the live daemon POST exclusively.
 
 **Monotone promotion lattice.** The daemon materializes each loop through a monotone rank
 `todo < claimed < running < done < merged`; a `phase.attempt.finish{outcome:done, exit 0}`
@@ -125,6 +153,115 @@ There is no completion notification — the orchestrator monitors by polling: `m
 exists → the attempt ended (read `status.json` + runner exit from spawn.log tail);
 otherwise `transcript.jsonl` mtime is the heartbeat, stale >25 min → kill the pid tree,
 treat as exit 124. The 25-minute threshold lives here only.
+
+## Two-tier orchestration (self-recycling SUB)
+
+Heavy orchestration accumulates context (diff-skimming, conflict resolution, runner Q&A). To
+keep the *interactive* chat under a hard ~200k ceiling, `kestral-loop` runs in one of two
+**modes**, and the heavy work self-recycles:
+
+- **`supervise`** (new default for a hands-off run) — the interactive session. THIN:
+  preflight/init/lock, then spawn ONE detached `loop-orchestrator.sh` and poll **compact
+  local** state (`loop-state.sh get '.phases|map(.status)'`, not the fat daemon snapshot) for
+  a 2-3 line progress read. It answers HIL from the on-disk brief and, on `sub/PHASES_DONE`,
+  finalizes (spawn the review-runner, promote its verdict, `gh pr ready`, link PRs,
+  `loop-state.sh finish`, unlock). It spawns **only** the orchestrator and the review-runner;
+  it is designed never to need recycling (if it ever did, `state.json` is its backstop — a
+  main auto-summary cannot lose the loop).
+- **headless `sub`** — a disposable SUB instance entered via `kestral-loop resume`. Does the
+  heavy orchestration but NEVER runs pr-review and NEVER `AskUserQuestion`.
+
+`loop-orchestrator.sh` (detached, spawned once by `supervise`) is a **dead-simple sequential
+while-loop**, not a concurrent daemon. It runs SUB instance *k*, waits for it to exit, reads
+`sub/status.json`, and:
+
+- `recycle` → emit `sub.recycle`, `k++`, respawn SUB *k+1* with a `resume` prompt.
+- `complete` → `touch sub/PHASES_DONE`, emit, break.
+- `fatal` / `blocked` → `loop-notify.sh`, break (supervise surfaces it).
+- no valid `sub/status.json` → crash → respawn (`resume`), capped at `LOOP_ORCH_MAX_RESPAWN`
+  consecutive crashes, then notify + exit.
+- SUB transcript mtime older than `LOOP_ORCH_STALL_SEC` → kill the SUB pid tree
+  (`descendants()`), treat as a crash-respawn.
+
+**Why a sequential respawner, not "the SUB spawns its own successor":** instances run
+sequentially, so the predecessor process has already exited before the successor starts. The
+reentrant lock (`owner = runId`) gives **zero** mutual exclusion for the same run id, so a
+predecessor↔successor overlap would be a silent double-orchestration; sequential respawn makes
+that overlap **impossible by construction**. The SUB decides *when* to recycle (self-paced);
+the loop only decides *that* it respawns. Phase runners (`loop-runner.sh`, detached) survive
+every recycle untouched — `resume` re-attaches to their live pids and never double-spawns.
+
+### Occupancy self-measurement
+
+A model cannot introspect its context %, but it can read a file. `claude -p --output-format
+stream-json --verbose` writes each turn's `assistant` event with `.message.usage` to the SUB's
+redirected transcript (`sub/transcript-<k>.jsonl`). Each tick the SUB runs:
+
+```sh
+loop-state.sh occupancy --transcript .kestral/loop/sub/transcript-<k>.jsonl [--window <n>]
+```
+
+which takes the **last** usage-bearing `assistant` event and sums (verbatim jq):
+
+```sh
+jq -R 'fromjson? | select((.type == "assistant") and (.message.usage != null))
+  | (.message.usage | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0))' \
+  "$TRANSCRIPT" | tail -n1
+```
+
+= current context occupancy (lag ≤ ~1 turn, absorbed by the 150k→200k margin). `fromjson?`
+skips a malformed/partial last line (a mid-write transcript); `tail -n1` is the ≥1-productive-
+tick guard (no assistant turn yet → empty → `0`). With `--window`
+it also prints a percent (`<tokens> <percent>`); it **exits 10** when the sum ≥
+`LOOP_ORCH_RECYCLE_TOKENS` (0 otherwise — the recycle signal is the exit code, NOT stdout), and
+best-effort emits a `sub.saturation` event to the daemon. It requires ≥1 productive tick (a
+usage-bearing event) — a fresh SUB with no assistant turn yet reports `0` and never fires. Spawn
+the SUB through `stdbuf`/a pty so stream-json flushes per line; a sidecar `tail` writing
+`sub/saturation.json` is the documented fallback if buffering proves too coarse (confirm the
+per-turn flush during the forced-recycle rollout test; enable the sidecar if it is too coarse).
+
+### Recycle trigger + handoff
+
+**Trigger (locked with the user):** absolute tokens. Soft handoff at `LOOP_ORCH_RECYCLE_TOKENS`
+(~150k); target ceiling `LOOP_ORCH_CEILING_TOKENS` (~200k, informational). **Gated on phase
+quiescence** — if a phase op is mid-flight (a runner mid-attempt with no written `status.json`,
+or a merge in progress), keep going, even past 200k, and recycle **asap** once every lane is at
+a persisted checkpoint. **No token hard-kill.**
+
+**Handoff = single-consumption.** At a safe boundary the SUB flushes durable state (state.json,
+Kestral, git are already externalized), writes `sub/handoff.md`, and exits with `sub/status.json
+{outcome:"recycle"}`. The successor reads `sub/handoff.md` **exactly once** at startup, then it
+is archived to `sub/handoff.consumed-<k>.md`; `plan.md` + `state.json` stay freely re-readable.
+This is a purpose-built recycle handoff — **NOT** the `kestral-handoff` skill (that one is
+plan-doc/task-status scoped and marks phases *done*: wrong semantics for a mid-run recycle).
+`handoff.md` carries: open exit-10 question rounds + their `sessionId`s; pending merge-runner
+promotions (runDir + lane-branch awaiting a `phase.merged`); per-lane notes; and why-stopped.
+Everything else the successor rebuilds by reconciling **git > Kestral > state**.
+
+### SUB `status.json` (sub-orchestrator → loop-orchestrator.sh)
+
+The SUB's final act (like a runner's) is writing `sub/status.json`. It **extends** the runner
+schema with orchestrator-role outcomes:
+
+```json
+{
+  "outcome": "recycle | complete | fatal | blocked",
+  "summary": "1-3 lines: why it stopped / what is done",
+  "tokens": 152341,
+  "recycleIndex": 2
+}
+```
+
+- `recycle` — occupancy hit the soft threshold at a safe boundary; `sub/handoff.md` written.
+  `tokens`/`recycleIndex` populate the `sub.recycle` event.
+- `complete` — every phase merged; the effort is ready for finalization. The loop touches
+  `sub/PHASES_DONE` and stops; `supervise` takes over.
+- `fatal` — unrecoverable orchestration error (bad config, the lock was taken by another owner).
+- `blocked` — a HIL is open that only the human can answer AND no other lane can progress. (An
+  open HIL with other lanes still running is NOT `blocked` — the SUB keeps going.)
+
+A SUB that exits without a valid `sub/status.json` is a crash → `loop-orchestrator.sh` respawns
+with `resume` (capped at `LOOP_ORCH_MAX_RESPAWN`).
 
 ## status.json (runner → orchestrator)
 
@@ -257,10 +394,12 @@ you must stop early, skip the handoff and write status.json with outcome questio
 
 - **0** — merged, verified, pushed (also idempotent `{"already":true}` for a re-merge).
 - **2** — textual conflict, merge left in progress, `{"conflicts":[files]}` on stdout.
-  The orchestrator resolves it itself in the integration worktree (use
-  `resolving-merge-conflicts`, honoring both phases' *Done when*), then
-  `loop-merge.sh --worktree <int-wt> --finish --verify-cmd '<effort verify>'`.
-  Not confident → `--abort` + HIL.
+  Resolution honors both phases' *Done when* with `resolving-merge-conflicts`, then
+  `loop-merge.sh --worktree <int-wt> --finish --verify-cmd '<effort verify>'`; not confident →
+  `--abort` + HIL. **Who resolves depends on the mode:** a single-tier `supervise` does it
+  inline; a **`sub`** spawns a **detached merge-runner** (skeleton below) so the conflict diff
+  never enters the SUB's context — the SUB promotes on the next tick when `loop-merge`'s EXIT
+  trap fires `phase.merged`.
 - **4** — merge committed but Verify failed (semantic conflict). Orchestrator reverts the
   merge commit (`git revert -m1 HEAD`) and escalates L3.
 - **3** — lane branch missing: reconcile from git (already merged + deleted → treat as
@@ -269,12 +408,55 @@ you must stop early, skip the handoff and write status.json with outcome questio
 
 **First successful merge → open the draft PR** (`gh pr create --draft` from the
 integration branch); later merges just push. Only the orchestrator pushes the integration
-branch; plain `git push` (fast-forward only — never force). Lane branches never get
-pushed. Cleanup order: switch or remove the lane worktree **first**, then
-`git branch -d <lane-branch>` (a branch checked out in a worktree can't be deleted); a
-lane continuing to its next phase reuses its worktree via
+branch (the **merge-runner** is the one exception — it is an orchestrator-delegate finishing a
+serialized merge on the orchestrator's behalf, never a phase runner); plain `git push`
+(fast-forward only — never force). Lane branches never get pushed. Cleanup order: switch or
+remove the lane worktree **first**, then `git branch -d <lane-branch>` (a branch checked out in
+a worktree can't be deleted); a lane continuing to its next phase reuses its worktree via
 `git -C <wt> switch -c <next-branch> <integration>`. Lanes launched later cut from the new
 tip; already-running lanes pick up siblings' work at their own merge time.
+
+### Merge-runner prompt skeleton (SUB generates on a `loop-merge` exit 2)
+
+Spawned like any runner — detached, via `loop-runner.sh`, so the conflict diff lives in the
+runner's context, never the SUB's. It runs on the **integration worktree** (not a lane), uses
+`--chain escalate` (Fable+Opus — coherent single-model resolution), and carries **no
+`--verify-cmd`** (loop-runner then gates only on the runner's `status.json`; the real verify is
+`loop-merge --finish`'s own `--verify-cmd`, so verify runs exactly once):
+
+```sh
+nohup ~/dotfile/loop-runner.sh --chain escalate \
+  --worktree <int-wt> --run-dir <runs/merge-<phase-slug>-a1> \
+  --prompt-file <runs/merge-<phase-slug>-a1/prompt.md> \
+  --run-id <runId> --phase <N> > <runDir>/spawn.log 2>&1 &
+echo $! > <runDir>/pid; disown
+```
+
+Prompt.md skeleton:
+
+```
+You are a loop-engineering MERGE runner: fully non-interactive. You are in the INTEGRATION
+worktree <int-wt> on branch <integration>, mid-merge of lane <lane-branch> (phase <N>) — a
+textual conflict is in progress (`git status` shows unmerged paths). RUN_DIR is <abs path>.
+
+TASK: resolve the conflict with the `resolving-merge-conflicts` skill, honoring BOTH phases'
+*Done when* (the merging phase <N> and whatever is already on the integration branch — do not
+regress either). Never widen scope beyond conflict resolution. Then finish + verify + push:
+
+  ~/dotfile/loop-merge.sh --worktree <int-wt> --finish \
+    --verify-cmd '<effort verify>' --run-id <runId> --phase <N>
+
+- exit 0 → the merge is committed, verified, pushed; `phase.merged` already fired.
+- exit 2 → conflicts remain unresolved: keep resolving, or if not confident, abort
+  (`git -C <int-wt> merge --abort`) and stop with a question.
+- exit 4 → committed but Verify failed (semantic conflict): stop with outcome "blocked".
+
+RULES: never touch files outside the integration worktree; never open PRs or update the plan
+doc; commit only via `loop-merge --finish`. Your final act is writing RUN_DIR/status.json:
+outcome "done" (merged+verified+pushed), "question" (not confident — needs HIL), or "blocked"
+(semantic conflict / verify failed). loop-runner spawned you with no --verify-cmd, so its exit
+0 rides on your status.json alone.
+```
 
 ## Escalation ladder (per phase)
 

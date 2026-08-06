@@ -588,6 +588,14 @@
 .loopsel__time {
   margin-left: auto;
 }
+.loopsel__hil {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--amber-deep);
+  border: 1px solid var(--amber-deep);
+  border-radius: 999px;
+  padding: 0 6px;
+}
 .loopsel__hint {
   font-size: 10px;
   color: var(--amber-deep);

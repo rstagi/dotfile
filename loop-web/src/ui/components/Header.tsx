@@ -17,6 +17,7 @@ export function Header({
   onSelectRun?: (runId: string) => void;
 }) {
   const e = snapshot?.effort;
+  const so = snapshot?.subOrch;
   const connLabel = conn === "live" ? "streaming" : conn === "connecting" ? "connecting" : "reconnecting";
   return (
     <header className="hdr">
@@ -48,6 +49,12 @@ export function Header({
 
       <div className="hdr__spacer" />
 
+      {so && (
+        <span className="pill">
+          sub-orch: {so.recycles} recycle{so.recycles === 1 ? "" : "s"}
+          {so.contextTokens != null ? ` · ~${formatOccupancy(so.contextTokens)} tok` : ""}
+        </span>
+      )}
       {e?.status && <span className="pill">{e.status}</span>}
       {snapshot?.loopActive && (
         <span className="pill" style={{ color: "var(--aqua)", borderColor: "var(--aqua-deep)" }}>
@@ -60,6 +67,10 @@ export function Header({
       </span>
     </header>
   );
+}
+
+export function formatOccupancy(tokens: number): string {
+  return tokens < 1000 ? String(tokens) : `${Math.round(tokens / 1000)}k`;
 }
 
 function prLabel(url: string): string {

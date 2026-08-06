@@ -17,6 +17,10 @@ switches between loops.
 It **never writes** to `.kestral/loop/` or the plan — it only reads those files and folds the
 events pushed to it. HIL is answered in chat to the orchestrator, exactly as today.
 
+For a **two-tier self-recycling** run, the header also surfaces the sub-orchestrator's live
+occupancy + recycle count (a `sub-orch: N recycles · ~Xk tok` chip, fed by `sub.recycle` /
+`sub.saturation` events) and the selector shows a per-loop pending-HIL count.
+
 ## Run
 
 ```bash
