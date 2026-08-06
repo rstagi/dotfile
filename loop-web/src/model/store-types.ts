@@ -86,6 +86,9 @@ export interface EventInfo {
   engine?: string | null;
   model?: string | null;
   prUrl?: string | null;
+  tokens?: number | null;
+  recycleIndex?: number | null;
+  percent?: number | null;
 }
 
 export type Ingest =
@@ -128,6 +131,10 @@ export interface LoopRecord {
   /** Last materialized snapshot — the archived short-circuit reads this. */
   lastSnapshot: Snapshot | null;
   updatedAt: string | null;
+  /** Monotone count of sub-orchestrator context recycles (max-folded — never regresses). */
+  subRecycles: number;
+  /** Latest sub-orchestrator context occupancy heartbeat (last-write-wins). */
+  occupancy: { tokens: number; percent: number | null } | null;
 }
 
 export interface PhaseCounts {
@@ -150,6 +157,8 @@ export interface LoopSummary {
   prUrl: string | null;
   reviewOutcome: string | null;
   phaseCounts: PhaseCounts;
+  /** Count of phases with an open, unanswered HIL request (derived from overlays). */
+  pendingHil: number;
 }
 
 /** The GET /api/loops row the selector renders. */

@@ -46,6 +46,7 @@ export const EVENT_RULES: { kw: RegExp; glyph: string; label: string; tone: Even
   { kw: /spawn|launch/, glyph: "▸", label: "Runner spawned", tone: null },
   { kw: /schedul/, glyph: "◷", label: "Scheduled", tone: null },
   { kw: /claim/, glyph: "⊙", label: "Claimed", tone: null },
+  { kw: /recycl/, glyph: "↻", label: "Recycled", tone: null },
   { kw: /resum/, glyph: "⏵", label: "Resumed", tone: null },
   { kw: /paus/, glyph: "⏸", label: "Paused", tone: null },
   { kw: /done|complet|finish/, glyph: "●", label: "Done", tone: null },

@@ -35,6 +35,10 @@ export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: Snapsho
     loopActive: isLoopActive(graph.nodes, runtime),
     generatedAt: opts.nowIso ?? null,
     warnings: plan.warnings,
+    // Defaults: buildSnapshot has no LoopRecord. render() (materialize.ts) overrides both
+    // with the real overlay-derived values; other callers/tests keep compiling.
+    subOrch: null,
+    pendingHil: 0,
   };
 }
 

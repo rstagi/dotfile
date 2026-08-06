@@ -343,6 +343,13 @@ export interface EffortInfo {
   runId: string | null;
 }
 
+/** Sub-orchestrator context health: recycle count + latest context-window occupancy. */
+export interface SubOrchInfo {
+  recycles: number;
+  contextTokens: number | null;
+  contextPct: number | null;
+}
+
 export interface Snapshot {
   effort: EffortInfo;
   plan: PlanOverview;
@@ -352,4 +359,8 @@ export interface Snapshot {
   loopActive: boolean;
   generatedAt: string | null;
   warnings: string[];
+  /** Sub-orchestrator context health, or null when no sub activity has been observed. */
+  subOrch: SubOrchInfo | null;
+  /** Count of phases awaiting a human decision (open HIL). */
+  pendingHil: number;
 }

@@ -32,6 +32,8 @@ const TYPED_EVENTS = new Set([
   "merge.conflict",
   "hil.raise",
   "hil.resolve",
+  "sub.recycle",
+  "sub.saturation",
   "review.finish",
   "loop.finish",
 ]);
@@ -43,6 +45,10 @@ interface EventEffect {
   prUrl?: string | null;
   review?: ReviewInfo | null;
   finish?: FinishInfo | null;
+  /** Loop-level context occupancy heartbeat (last-write-wins). */
+  occupancy?: { tokens: number; percent: number | null } | null;
+  /** Loop-level ABSOLUTE recycle count to max-fold (idempotent under re-fold), not a delta. */
+  subRecycles?: number;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -84,6 +90,8 @@ export function emptyRecord(runId: string): LoopRecord {
     prUrl: null,
     lastSnapshot: null,
     updatedAt: null,
+    subRecycles: 0,
+    occupancy: null,
   };
 }
 
@@ -159,7 +167,11 @@ function applyFinish(prev: LoopRecord, info: FinishInfo): LoopRecord {
 // ---------------------------------------------------------------------------------------
 
 function applyEvent(prev: LoopRecord, ev: EventInfo): LoopRecord {
-  const events = mergeEvents(prev.events, [toRawEvent(ev)]);
+  // sub.saturation is a high-frequency occupancy heartbeat — fold its effect but keep it OUT
+  // of the timeline/store, so it can't flood record.events or evict real lifecycle events at
+  // the EVENT_CAP. (sub.recycle IS a real milestone and stays in the timeline.)
+  const heartbeat = (ev.event ?? "").trim().toLowerCase() === "sub.saturation";
+  const events = heartbeat ? prev.events : mergeEvents(prev.events, [toRawEvent(ev)]);
   const eff = eventSemantics(ev);
   let next: LoopRecord = { ...prev, events, updatedAt: ev.ts ?? prev.updatedAt };
   if (eff.finish) return applyFinish(next, eff.finish);
@@ -168,6 +180,8 @@ function applyEvent(prev: LoopRecord, ev: EventInfo): LoopRecord {
   }
   if (eff.prUrl) next = { ...next, prUrl: eff.prUrl };
   if (eff.review) next = { ...next, review: eff.review };
+  if (eff.occupancy !== undefined) next = { ...next, occupancy: eff.occupancy };
+  if (eff.subRecycles !== undefined) next = { ...next, subRecycles: Math.max(next.subRecycles, eff.subRecycles) };
   return { ...next, status: deriveStatus(next) };
 }
 
@@ -204,6 +218,19 @@ function typedSemantics(name: string, ev: EventInfo, phase: string | null): Even
       return { phase, patch: phase ? { hilOpen: true } : null };
     case "hil.resolve":
       return { phase, patch: phase ? { hilOpen: false } : null };
+    case "sub.recycle":
+      return {
+        phase: null,
+        patch: null,
+        occupancy: ev.tokens != null ? { tokens: ev.tokens, percent: ev.percent ?? null } : undefined,
+        subRecycles: ev.recycleIndex ?? undefined,
+      };
+    case "sub.saturation":
+      return {
+        phase: null,
+        patch: null,
+        occupancy: ev.tokens != null ? { tokens: ev.tokens, percent: ev.percent ?? null } : undefined,
+      };
     case "loop.finish":
       return { phase: null, patch: null, finish: { finishedAt: ev.ts ?? null, prUrl: ev.prUrl ?? null } };
     default:

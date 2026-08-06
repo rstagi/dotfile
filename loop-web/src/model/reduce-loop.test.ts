@@ -147,6 +147,51 @@ describe("reduceLoop — HIL raise/resolve", () => {
   });
 });
 
+describe("reduceLoop — sub-orchestrator recycles & occupancy", () => {
+  it("folds sub.saturation then sub.recycle into occupancy + subRecycles", () => {
+    const rec = fold(
+      "r",
+      { kind: "event", event: { event: "sub.saturation", tokens: 120000, percent: 60 } },
+      { kind: "event", event: { event: "sub.recycle", tokens: 151000, recycleIndex: 1 } },
+    );
+    expect(rec.subRecycles).toBe(1);
+    expect(rec.occupancy).toEqual({ tokens: 151000, percent: null });
+  });
+
+  it("is idempotent under re-fold — subRecycles stays at the max, does not keep growing", () => {
+    const jsonl =
+      `{"ts":"2026-08-03T09:00:00Z","event":"sub.saturation","phase":"","detail":""}\n` +
+      `{"ts":"2026-08-03T09:10:00Z","event":"sub.recycle","phase":"","detail":""}\n`;
+    // Direct event fold with the full body first (the live daemon POST path).
+    const live = fold(
+      "r",
+      { kind: "event", event: { event: "sub.recycle", tokens: 151000, recycleIndex: 2, ts: "2026-08-03T09:10:00Z" } },
+    );
+    expect(live.subRecycles).toBe(2);
+    // Re-folding the same event twice never multiplies the count.
+    const twice = reduceLoop(live, { kind: "event", event: { event: "sub.recycle", tokens: 151000, recycleIndex: 2, ts: "2026-08-03T09:10:00Z" } });
+    expect(twice.subRecycles).toBe(2);
+    // A re-folded events.jsonl (tokens/recycleIndex dropped by rawToEventInfo) is a no-op:
+    // it PRESERVES occupancy/subRecycles rather than resetting them.
+    const refolded = reduceLoop(live, { kind: "eventsFile", text: jsonl });
+    expect(refolded.subRecycles).toBe(2);
+    expect(refolded.occupancy).toEqual({ tokens: 151000, percent: null });
+  });
+
+  it("last-write occupancy can drop, but subRecycles never decreases", () => {
+    const rec = fold(
+      "r",
+      { kind: "event", event: { event: "sub.recycle", tokens: 160000, recycleIndex: 3, percent: 80 } },
+      // a stale recycle with a lower index must NOT lower the count (max-fold)…
+      { kind: "event", event: { event: "sub.recycle", tokens: 40000, recycleIndex: 1 } },
+      // …and a later heartbeat with FEWER tokens still updates occupancy (last-write).
+      { kind: "event", event: { event: "sub.saturation", tokens: 40000, percent: 20 } },
+    );
+    expect(rec.occupancy).toEqual({ tokens: 40000, percent: 20 });
+    expect(rec.subRecycles).toBe(3);
+  });
+});
+
 describe("reduceLoop — loop.finish", () => {
   it("marks the loop finished and captures the review + prUrl", () => {
     const rec = fold(
