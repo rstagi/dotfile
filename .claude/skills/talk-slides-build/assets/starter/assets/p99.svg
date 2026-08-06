@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 440" font-family="'Spline Sans', system-ui, sans-serif" role="img" aria-label="p99 latency dropped from 1,840ms before to 210ms after">
+  <!-- Decluttered, directly-labeled, one-message chart. No gridlines, no legend,
+       no chartjunk. The accent colour points at the takeaway (the 'after' bar). -->
+  <line x1="120" y1="392" x2="860" y2="392" stroke="#3a3128" stroke-width="1.5"/>
+
+  <!-- before -->
+  <rect x="210" y="64" width="150" height="328" rx="2" fill="#5a5145"/>
+  <text x="285" y="50" fill="#ece3d4" font-size="30" font-weight="600" text-anchor="middle">1,840ms</text>
+  <text x="285" y="424" fill="#8a7f6d" font-size="22" text-anchor="middle">before</text>
+
+  <!-- after -->
+  <rect x="620" y="355" width="150" height="37" rx="2" fill="#e8643c"/>
+  <text x="695" y="341" fill="#fbf6ec" font-size="30" font-weight="600" text-anchor="middle">210ms</text>
+  <text x="695" y="424" fill="#8a7f6d" font-size="22" text-anchor="middle">after</text>
+
+  <!-- the single annotation that carries the message -->
+  <path d="M360 70 C 470 70, 520 350, 612 358" fill="none" stroke="#43b4a0" stroke-width="2" stroke-dasharray="2 7" stroke-linecap="round"/>
+  <text x="490" y="210" fill="#43b4a0" font-size="26" font-weight="600" text-anchor="middle">−89%</text>
+</svg>

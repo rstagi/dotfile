@@ -1,0 +1,16 @@
+{
+  "name": "talk-deck",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A reveal.js talk deck — edit slides.md, present locally, export a vector PDF.",
+  "scripts": {
+    "dev": "node serve.mjs",
+    "export:pdf": "node export-pdf.mjs",
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "reveal.js": "^5.2.1",
+    "playwright": "^1.49.1"
+  }
+}

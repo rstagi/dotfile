@@ -1,0 +1,215 @@
+/* =============================================================================
+   talk.css — bespoke reveal.js base theme
+   -----------------------------------------------------------------------------
+   A deliberately editorial, left-aligned, warm-dark theme. It exists to escape
+   the default reveal.js (black/white/league) look AND the generic "AI deck"
+   look (cold #1e1e2e, blue→purple gradients, centered everything, Inter).
+
+   Load AFTER dist/reveal.css and do NOT load a stock reveal theme — this file
+   IS the theme. Per-talk overrides live in accents.css, which only needs to
+   redefine the --talk-* tokens below.
+
+   Pair with reveal config:  { center: false }   (we control vertical rhythm)
+   ============================================================================= */
+
+:root {
+  /* ---- PER-TALK TOKENS — override these in accents.css, nothing else ------- */
+  --talk-bg:         #17130f;   /* warm near-black, never #1e1e2e             */
+  --talk-ink:        #ece3d4;   /* warm off-white body text                   */
+  --talk-ink-bright: #fbf6ec;   /* headings                                   */
+  --talk-muted:      #8a7f6d;   /* captions, slide numbers, de-emphasis       */
+  --talk-rule:       #3a3128;   /* hairlines                                  */
+  --talk-surface:    #211b15;   /* code blocks, cards                         */
+
+  /* The two meaning-mapped accents. Convention: --talk-accent = the subject /
+     "now" / the thing under the spotlight; --talk-accent-2 = the contrast /
+     "what could be". A talk maps its real meaning onto these in accents.css.  */
+  --talk-accent:     #e8643c;   /* warm vermilion                             */
+  --talk-accent-2:   #43b4a0;   /* deep teal                                  */
+
+  --talk-font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --talk-font-body:    "Spline Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --talk-font-mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ---- DERIVED — usually leave alone --------------------------------------- */
+  --r-background-color: var(--talk-bg);
+  --r-main-font:        var(--talk-font-body);
+  --r-main-font-size:   34px;
+  --r-main-color:       var(--talk-ink);
+  --r-block-margin:     0.7em;
+
+  --r-heading-font:           var(--talk-font-display);
+  --r-heading-color:          var(--talk-ink-bright);
+  --r-heading-text-transform: none;      /* kill reveal's default ALL-CAPS     */
+  --r-heading-text-shadow:    none;
+  --r-heading-font-weight:    560;
+  --r-heading-line-height:    1.05;
+  --r-heading-letter-spacing: -0.015em;  /* tighten the display serif          */
+  --r-heading1-size: 3.1em;
+  --r-heading2-size: 1.95em;
+  --r-heading3-size: 1.3em;
+  --r-heading4-size: 1.0em;
+
+  --r-code-font:  var(--talk-font-mono);
+  --r-link-color: var(--talk-accent);
+  --r-link-color-hover: var(--talk-accent-2);
+  --r-link-color-dark:  var(--talk-accent-2);
+  --r-selection-background-color: var(--talk-accent);
+  --r-selection-color: var(--talk-bg);
+}
+
+/* ----- canvas & default rhythm --------------------------------------------- */
+.reveal-viewport { background: var(--talk-bg); }
+
+.reveal {
+  font-family: var(--talk-font-body);
+  font-weight: 380;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: 0.002em;
+}
+
+/* Editorial = left-aligned by default, generous left margin, not centered.    */
+.reveal .slides { text-align: left; }
+.reveal .slides > section,
+.reveal .slides > section > section {
+  padding: 0 4%;
+  line-height: 1.4;
+}
+
+/* NB: reveal's CORE css consumes --r-main-color / --r-background-color etc., but
+   heading colour + sizes live in the stock THEME files we deliberately don't
+   load — so we apply them explicitly here from the --talk-* tokens. */
+.reveal h1, .reveal h2, .reveal h3, .reveal h4, .reveal h5, .reveal h6 {
+  font-family: var(--talk-font-display);
+  color: var(--talk-ink-bright);
+  font-weight: 560;
+  font-optical-sizing: auto;
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  text-transform: none;       /* kill any inherited ALL-CAPS                    */
+  margin: 0 0 0.35em;
+  max-width: 22ch;            /* keep display lines short and punchy           */
+  text-wrap: balance;
+}
+.reveal h1 { font-size: 3.1em; font-variation-settings: "opsz" 144; }
+.reveal h2 { font-size: 1.95em; font-variation-settings: "opsz" 72; }
+.reveal h3 { font-size: 1.3em; }
+.reveal h4 { font-size: 1.0em; }
+
+.reveal p, .reveal li { max-width: 34ch; }   /* readable measure ~45–75 chars  */
+.reveal strong { color: var(--talk-ink-bright); font-weight: 620; }
+.reveal em { color: var(--talk-accent); font-style: italic; }
+.reveal a { text-underline-offset: 0.18em; text-decoration-thickness: 0.06em; }
+
+/* Restrained, non-default lists: thin rule markers, not bullets or emoji.     */
+.reveal ul { list-style: none; margin-left: 0; }
+.reveal ul > li { position: relative; padding-left: 1.1em; margin: 0.35em 0; }
+.reveal ul > li::before {
+  content: ""; position: absolute; left: 0; top: 0.62em;
+  width: 0.6em; height: 0.09em; background: var(--talk-accent);
+}
+.reveal ol { margin-left: 1.1em; }
+.reveal ol > li::marker { color: var(--talk-muted); font-variant-numeric: tabular-nums; }
+
+/* ----- code: a compact bespoke highlight.js palette (not stock monokai) ---- */
+.reveal pre {
+  width: 100%; box-shadow: none; font-size: 0.6em; line-height: 1.45;
+  margin: 0.6em 0;
+}
+.reveal pre code {
+  padding: 0.9em 1.1em; border-radius: 2px;
+  background: var(--talk-surface);
+  border-left: 3px solid var(--talk-accent);
+  max-height: 520px;
+}
+.reveal code { font-family: var(--talk-font-mono); }
+.reveal :not(pre) > code {
+  background: var(--talk-surface); padding: 0.08em 0.34em; border-radius: 2px;
+  color: var(--talk-ink-bright); font-size: 0.92em;
+}
+.hljs { color: var(--talk-ink); background: transparent; }
+.hljs-comment, .hljs-quote { color: var(--talk-muted); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in { color: var(--talk-accent); }
+.hljs-string, .hljs-attr, .hljs-template-tag { color: var(--talk-accent-2); }
+.hljs-number, .hljs-literal { color: #d9b26b; }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--talk-ink-bright); font-weight: 600; }
+.hljs-type, .hljs-class .hljs-title { color: #d9b26b; }
+.hljs-line-highlight,
+.reveal .hljs .highlight-line { background: rgba(232,100,60,0.14); }
+.reveal pre .hljs-ln-line { transition: opacity .2s; }
+
+/* ----- tables, blockquote, figure caption ---------------------------------- */
+.reveal table { font-size: 0.72em; border-collapse: collapse; }
+.reveal table th { border-bottom: 2px solid var(--talk-accent); color: var(--talk-ink-bright); text-align: left; }
+.reveal table td { border-bottom: 1px solid var(--talk-rule); }
+.reveal blockquote {
+  width: 100%; box-shadow: none; background: transparent;
+  border-left: 3px solid var(--talk-accent); padding: 0.2em 0 0.2em 0.9em;
+  font-style: normal; color: var(--talk-ink);
+}
+.reveal figcaption, .reveal .caption { font-size: 0.5em; color: var(--talk-muted); margin-top: 0.4em; }
+
+/* =============================================================================
+   LAYOUT UTILITIES — apply per slide via markdown:  <!-- .slide: class="x" -->
+   ============================================================================= */
+
+/* Title slide: oversized display headline, kicker, byline at the foot.        */
+.reveal section.talk-title { height: 100%; display: flex; flex-direction: column; justify-content: center; }
+.reveal section.talk-title .kicker {
+  font-family: var(--talk-font-mono); font-size: 0.5em; letter-spacing: 0.22em;
+  text-transform: uppercase; color: var(--talk-accent); margin-bottom: 0.8em;
+}
+.reveal section.talk-title h1 { font-size: 3.7em; max-width: 18ch; }
+.reveal section.talk-title .byline { color: var(--talk-muted); font-size: 0.7em; margin-top: 1.2em; }
+
+/* Section divider: big tabular number + short title, lots of air.            */
+.reveal section.talk-section { display: flex; flex-direction: column; justify-content: center; height: 100%; }
+.reveal section.talk-section .num {
+  font-family: var(--talk-font-mono); font-size: 0.9em; color: var(--talk-muted);
+  font-variant-numeric: tabular-nums; margin-bottom: 0.2em;
+}
+.reveal section.talk-section h2 { font-size: 2.8em; border-top: 2px solid var(--talk-accent); padding-top: 0.3em; }
+
+/* Statement slide: one huge sentence, Lessig/Takahashi style.                 */
+.reveal section.talk-statement { display: flex; align-items: center; height: 100%; }
+.reveal section.talk-statement h2,
+.reveal section.talk-statement p { font-family: var(--talk-font-display); font-size: 2.6em; max-width: 20ch; line-height: 1.08; }
+
+/* Pull quote.                                                                 */
+.reveal section.talk-quote { display: flex; flex-direction: column; justify-content: center; height: 100%; }
+.reveal section.talk-quote blockquote { border: none; font-family: var(--talk-font-display); font-size: 2.1em; max-width: 24ch; padding: 0; }
+.reveal section.talk-quote .attrib { color: var(--talk-muted); font-size: 0.7em; margin-top: 0.6em; }
+.reveal section.talk-quote blockquote::before { content: "“"; color: var(--talk-accent); }
+
+/* Full-bleed background image (set data-background-image on the section).      */
+.reveal section.talk-fullbleed { height: 100%; display: flex; flex-direction: column; justify-content: flex-end; }
+.reveal section.talk-fullbleed::after {           /* legibility scrim          */
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(0deg, rgba(23,19,15,0.92) 0%, rgba(23,19,15,0.30) 55%, rgba(23,19,15,0) 100%);
+}
+.reveal section.talk-fullbleed h2,
+.reveal section.talk-fullbleed p { text-shadow: 0 1px 18px rgba(0,0,0,0.55); }
+
+/* Two-column.                                                                 */
+.reveal section.talk-2col .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4em; align-items: start; }
+.reveal section.talk-2col .cols > * { max-width: none; }
+
+/* Data slide: assertion headline on top, chart fills the body.               */
+.reveal section.talk-data h2 { font-family: var(--talk-font-body); font-weight: 560; font-size: 1.3em; max-width: 38ch; }
+.reveal section.talk-data .chart { margin-top: 0.4em; }
+.reveal section.talk-data img, .reveal section.talk-data svg { max-height: 60vh; }
+
+/* ----- chrome: thin running footer + slide number -------------------------- */
+.reveal .slide-number { background: transparent; color: var(--talk-muted); font-family: var(--talk-font-mono); font-size: 13px; }
+.reveal .talk-footer {
+  position: absolute; bottom: 18px; left: 4%; font-family: var(--talk-font-mono);
+  font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--talk-muted);
+}
+
+/* ----- fragments: a calm fade/slide, no spin/zoom -------------------------- */
+.reveal .fragment.fade-up { transform: translateY(14px); }
+.reveal .fragment.fade-up.visible { transform: none; }
+
+/* ----- progress bar uses the accent --------------------------------------- */
+.reveal .progress { color: var(--talk-accent); height: 3px; }
+.reveal .controls { color: var(--talk-muted); }

@@ -124,3 +124,15 @@ conda() {
   conda "$@"
 }
 
+# Ratel dev — run the built CLI from the local repo (no auto-build; rebuild via `pnpm -F @ratel-ai/cli build`)
+alias ratel_dev_latest="node /Users/rstagi/Dev/ratel-ai/ratel/src/integrations/cli/dist/bin.js"
+
+
+# Zero runner (added by the zero plugin SessionStart hook)
+export PATH="$HOME/.zero/runtime/bin:$PATH"
+
+# Zero runner (added by the zero plugin SessionStart hook)
+export PATH="$HOME/.zero/runtime/bin:$PATH"
+
+# opencode
+export PATH=/Users/rstagi/.opencode/bin:$PATH

@@ -19,7 +19,9 @@ _load_secret_to_file() {
 
   # Override HOME to prevent op from discovering the 1Password desktop app,
   # which hangs in non-interactive/launchd contexts even with a service account token.
-  HOME="$_op_home" op read "$op_path" > "$_tmpfile" 2>&1 &
+  # Close stdin so op fails fast instead of suspending on SIGTTIN when it tries
+  # to prompt (e.g. when no accounts/service-account-token are configured).
+  HOME="$_op_home" op read "$op_path" </dev/null > "$_tmpfile" 2>&1 &
   _pid=$!
   _waited=0
 

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Talk</title>
+
+    <!-- Fonts. Pick deliberately; mirror your choice in theme/accents.css.
+         Loaded over the network for dev; for offline/CI PDF, self-host (see README). -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..700&family=Spline+Sans:wght@300..700&family=JetBrains+Mono:wght@400..700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- reveal core + our bespoke theme. /vendor is aliased to reveal.js by the
+         dev server and copied into public/ by `npm run build`. -->
+    <link rel="stylesheet" href="vendor/dist/reset.css" />
+    <link rel="stylesheet" href="vendor/dist/reveal.css" />
+    <link rel="stylesheet" href="theme/talk.css" />
+    <link rel="stylesheet" href="theme/accents.css" />
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+        <!-- Single-file authoring: every slide lives in slides.md, split on a
+             line containing only ---  (vertical stacks on --, notes after Note:).
+             To compose a larger deck from reusable files instead, replace this
+             one <section> with several:  <section data-markdown="slides/01.md">… -->
+        <section
+          data-markdown="slides.md"
+          data-separator="^\r?\n---\r?\n"
+          data-separator-vertical="^\r?\n--\r?\n"
+          data-separator-notes="^Note:"
+        ></section>
+      </div>
+    </div>
+
+    <script src="vendor/dist/reveal.js"></script>
+    <script src="vendor/plugin/markdown/markdown.js"></script>
+    <script src="vendor/plugin/highlight/highlight.js"></script>
+    <script src="vendor/plugin/notes/notes.js"></script>
+    <script>
+      Reveal.initialize({
+        width: 1280,
+        height: 720,
+        margin: 0.06,
+        center: false, // we control vertical rhythm in talk.css
+        hash: true,
+        transition: "fade",
+        transitionSpeed: "fast",
+        backgroundTransition: "fade",
+        slideNumber: "c/t",
+        pdfMaxPagesPerSlide: 1,
+        pdfSeparateFragments: false,
+        plugins: [RevealMarkdown, RevealHighlight, RevealNotes],
+      });
+    </script>
+  </body>
+</html>

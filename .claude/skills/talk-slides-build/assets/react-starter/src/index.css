@@ -1,0 +1,185 @@
+/* ===========================================================================
+   THEME SCAFFOLD.
+   Token NAMES, the 16:9 container-query stage, the scene shells, and the type
+   primitives are the ENGINE — leave them. Only fill the token VALUES (palette
+   hex + font families) from 04-slides-style.md, and dress .deck::before/::after
+   with your talk's texture. Scenes only ever reference token NAMES + cqw/cqh, so
+   re-skinning is values-only.
+   =========================================================================== */
+
+:root {
+  /* --- palette: PLACEHOLDER values. Paste the :root block from 04-slides-style.md.
+         Rule: warm/neutral flat field, NOT #1e1e2e, no blue→purple gradient. Two
+         meaning-mapped accents, each ≥4.5:1 on the bg. --- */
+  --talk-bg:         #15130f; /* the 60% field */
+  --talk-ink:        #e9e3d6; /* body text */
+  --talk-ink-bright: #f7f2e8; /* headings / statements / emphasis */
+  --talk-muted:      #8a8170; /* captions, numbers, non-focal series */
+  --talk-rule:       #383022; /* hairlines */
+  --talk-surface:    #201c14; /* code block, any card */
+  --talk-accent:     #d8642e; /* accent-1 — the spotlight / "now" */
+  --talk-accent-2:   #5bbfae; /* accent-2 — the contrast / the other side */
+
+  /* faint tints of the accents, for non-focal fills only */
+  --accent-dim:   #6c3320;
+  --accent-2-dim: #2f574f;
+
+  /* --- type: PLACEHOLDER families. Match these to the Google Fonts <link> in
+         index.html and to 04-slides-style.md. Pick a face WITH CHARACTER (not a
+         default system/AI-era font). --- */
+  --talk-font-display: "Georgia", "Times New Roman", serif;     /* h1 / statements / quotes */
+  --talk-font-body:    system-ui, -apple-system, sans-serif;    /* body / lists / data headlines */
+  --talk-font-mono:    "SF Mono", ui-monospace, monospace;      /* kicker caps / numbers / code */
+
+  /* --- type scale, in container-query units of the 16:9 stage (DON'T rename) --- */
+  --fs-kicker:    1.25cqw;
+  --fs-micro:     1.5cqw;
+  --fs-body:      2.35cqw;
+  --fs-lead:      3.1cqw;
+  --fs-h2:        4.2cqw;
+  --fs-statement: 5.8cqw;
+  --fs-display:   7.4cqw;
+  --fs-num:       2.2cqw;
+
+  --margin: 6.5cqw; /* the left margin everything hangs off */
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+
+body {
+  background: #0b0907; /* letterbox — darker than the field */
+  color: var(--talk-ink);
+  font-family: var(--talk-font-body);
+  font-weight: 350;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "tnum" 1; /* tabular figures everywhere */
+}
+
+/* ---- the 16:9 stage; everything sizes off this container (ENGINE — leave) ---- */
+.deck {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: min(100vw, 177.78vh);
+  height: min(56.25vw, 100vh);
+  background: var(--talk-bg);
+  overflow: hidden;
+  container-type: size;
+  container-name: deck;
+}
+
+/* ---- per-talk texture lives here. Default is a faint neutral vignette.
+        Replace with your world's atmosphere (keep it WARM/low-contrast, never an
+        AI blue→purple gradient). ---- */
+.deck::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(140% 140% at 100% 100%, rgba(0, 0, 0, 0.5), transparent 55%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.stage-layer { position: absolute; inset: 0; z-index: 1; }
+
+/* ============================ scene shells (ENGINE) ======================= */
+.scene {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 9cqh var(--margin);
+  z-index: 1;
+}
+.scene--center { align-items: center; text-align: center; }
+
+/* flow scenes (charts, code, columns) hold a taller stack — top-align below the
+   chrome instead of vertically centering, so nothing collides. */
+.scene--flow {
+  justify-content: flex-start;
+  padding-top: 14cqh;
+  padding-bottom: 8cqh;
+}
+.flow-head {
+  font-family: var(--talk-font-display);
+  font-weight: 500;
+  font-size: 3.15cqw;
+  line-height: 1.08;
+  letter-spacing: -0.012em;
+  color: var(--talk-ink-bright);
+  max-width: 32ch;
+}
+
+/* ---- typography primitives (ENGINE) ---- */
+.kicker {
+  font-family: var(--talk-font-mono);
+  font-size: var(--fs-kicker);
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--talk-accent);
+}
+.kicker--muted { color: var(--talk-muted); }
+
+.display {
+  font-family: var(--talk-font-display);
+  font-weight: 600;
+  font-size: var(--fs-display);
+  line-height: 1.02;
+  letter-spacing: -0.015em;
+  color: var(--talk-ink-bright);
+  font-optical-sizing: auto;
+  max-width: 20ch;
+}
+.statement {
+  font-family: var(--talk-font-display);
+  font-weight: 400;
+  font-size: var(--fs-statement);
+  line-height: 1.08;
+  letter-spacing: -0.012em;
+  color: var(--talk-ink-bright);
+  font-optical-sizing: auto;
+  max-width: 19ch;
+}
+.statement em { font-style: italic; }
+.lead {
+  font-family: var(--talk-font-display);
+  font-weight: 400;
+  font-size: var(--fs-lead);
+  line-height: 1.12;
+  color: var(--talk-ink-bright);
+  max-width: 24ch;
+}
+.h2 {
+  font-family: var(--talk-font-display);
+  font-weight: 500;
+  font-size: var(--fs-h2);
+  line-height: 1.06;
+  letter-spacing: -0.012em;
+  color: var(--talk-ink-bright);
+  max-width: 22ch;
+}
+.body {
+  font-family: var(--talk-font-body);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  color: var(--talk-ink);
+  max-width: 34ch;
+}
+.muted { color: var(--talk-muted); }
+.byline { font-family: var(--talk-font-mono); font-size: var(--fs-micro); letter-spacing: 0.04em; color: var(--talk-muted); }
+.num { font-family: var(--talk-font-mono); font-variant-numeric: tabular-nums; }
+
+/* the two meaning-mapped accents (mapped to a1/a2 in rich.tsx) */
+.accent-1 { color: var(--talk-accent); }
+.accent-2 { color: var(--talk-accent-2); }
+
+/* a thin decorative flourish rule */
+.flourish { width: 7cqw; height: 0; border-top: 1px solid var(--talk-rule); position: relative; }
+.flourish::before { content: ""; position: absolute; left: 0; top: -2px; width: 4px; height: 4px; background: var(--talk-accent); transform: rotate(45deg); }
+
+.eyebrow-row { display: flex; align-items: center; gap: 1.5cqw; }

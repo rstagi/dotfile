@@ -1,0 +1,47 @@
+/* =============================================================================
+   accents.css — per-talk overrides (copy this to accents.css and edit)
+   -----------------------------------------------------------------------------
+   This is the ONLY file you touch to re-skin a talk. Redefine the --talk-*
+   tokens; talk.css derives everything else from them. Load it AFTER talk.css.
+
+   The two accents are MEANING-MAPPED — don't pick colours because they "look
+   nice", pick them because they stand for something in THIS talk. Examples:
+     • a migration talk:  --talk-accent = the legacy system, --talk-accent-2 = the new one
+     • a perf talk:        --talk-accent = "slow / before", --talk-accent-2 = "fast / after"
+   Then use them consistently so the audience learns the code.
+
+   CHECK before shipping (see ../references or talk/references/keep-it-human.md, Gate C):
+     • WCAG contrast: ink-on-bg ≥ 4.5:1, large text ≥ 3:1   (webaim.org/resources/contrastchecker)
+     • colourblind-safe: prefer an Okabe-Ito / ColorBrewer pair; blue+orange is safest
+     • survives greyscale (the two accents must still be distinguishable)
+     • NOT a blue→purple gradient, NOT the talk.css defaults shipped unchanged
+   ============================================================================= */
+
+:root {
+  /* --- palette ---------------------------------------------------------------
+     Defaults shown; replace with the talk's mapped colours. */
+  --talk-bg:         #17130f;
+  --talk-ink:        #ece3d4;
+  --talk-ink-bright: #fbf6ec;
+  --talk-muted:      #8a7f6d;
+  --talk-rule:       #3a3128;
+  --talk-surface:    #211b15;
+
+  --talk-accent:     #e8643c;   /* TODO: map to a real concept in this talk */
+  --talk-accent-2:   #43b4a0;   /* TODO: the contrasting concept            */
+
+  /* --- type ------------------------------------------------------------------
+     Pick a pairing with character. Avoid Inter/Roboto/Arial/Times as
+     unconscious defaults. Update the Google Fonts <link> in index.html to
+     match whatever you choose here. */
+  --talk-font-display: "Fraunces", Georgia, serif;
+  --talk-font-body:    "Spline Sans", system-ui, sans-serif;
+  --talk-font-mono:    "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+
+/* A light "warm paper" alternative — uncomment to flip the whole deck:
+:root {
+  --talk-bg: #f4efe6; --talk-ink: #2b2620; --talk-ink-bright: #15110c;
+  --talk-muted: #7a7060; --talk-rule: #ddd3c2; --talk-surface: #eae2d3;
+}
+*/
