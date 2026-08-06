@@ -26,7 +26,10 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh
+
+# Loop engineering shell tests (occupancy + orchestrator; also runs zsh -n over the loop-*.sh)
+zsh tests/run.sh
 
 # Loop Observatory (loop-web) tests + build
 cd loop-web && npm test && npm run build && cd ..
@@ -41,6 +44,7 @@ ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
 afk-ralph.sh            Legacy Docker sandbox mode
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
+loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
 loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-in Telegram)
 loop-state.sh           Loop engineering: state.json ops, run lock, event journal, daemon emit
@@ -57,7 +61,7 @@ loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React grap
 
 **Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx).
 
-**Loop engineering:** `.claude/skills/kestral-loop` orchestrates a published multiphase-plan end-to-end (headless runners per phase, single integration branch + PR, escalation → HIL, auto pr-review). Contract: `.claude/skills/kestral-loop/references/loop-protocol.md`; mechanism: the `loop-*.sh` scripts above.
+**Loop engineering:** `.claude/skills/kestral-loop` orchestrates a published multiphase-plan end-to-end (headless runners per phase, single integration branch + PR, escalation → HIL, auto pr-review). Contract: `.claude/skills/kestral-loop/references/loop-protocol.md`; mechanism: the `loop-*.sh` scripts above. **Two-tier (default):** a thin `supervise` main spawns a detached `loop-orchestrator.sh`, which runs disposable headless `sub` instances that self-measure their own context (`loop-state.sh occupancy`) and recycle at a safe boundary — keeping the interactive chat under its token ceiling. Merge conflicts + pr-review run in detached runners, never in the SUB. Shell tests live in `tests/` (`zsh tests/run.sh`).
 
 **Loop Observatory (`loop-web`):** a perpetual central daemon (launchd LaunchAgent, `127.0.0.1:7717`) that renders every loop as a live L→R graph. Loops register + push lifecycle events to it (`loop-emit.sh`, sourced by the `loop-*.sh` scripts) so status is authoritative via a monotone promotion lattice — never stale. Each loop is kept forever in `~/.kestral/loops/<runId>.json`; a header selector switches between loops. Daemon/event contract lives in `loop-protocol.md` → Daemon & events.
 
