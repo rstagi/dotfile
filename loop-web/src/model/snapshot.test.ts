@@ -29,7 +29,7 @@ function run(over: Partial<RawRunDir> & { name: string }): RawRunDir {
   return { meta: null, status: null, spawnLog: null, transcriptMtime: null, metaMtime: null, ...over };
 }
 function loop(over: Partial<LoopInput> = {}): LoopInput {
-  return { present: true, state: null, events: null, runs: [], hil: [], ...over };
+  return { present: true, state: null, events: null, runs: [], hil: [], notes: [], ...over };
 }
 
 const NOW = 1_000_000_000_000;

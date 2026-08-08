@@ -47,7 +47,7 @@ loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fa
 loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
 loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-in Telegram)
-loop-state.sh           Loop engineering: state.json ops, run lock, event journal, daemon emit
+loop-state.sh           Loop engineering: state/lock/journal/daemon + note/notes steering ops
 loop-plan.sh            Loop engineering: register/push a plan on the daemon + progress notes (local backend, Kestral-free)
 loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)
 loop-models.conf        Loop engineering: model chains, budgets, timeouts
@@ -62,7 +62,7 @@ loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React grap
 
 **Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx).
 
-**Loop engineering:** `.claude/skills/loop-execute` orchestrates a published multiphase-plan end-to-end (headless runners per phase, single integration branch + PR, escalation → HIL, auto pr-review). The plan backend is the central **Loop daemon** (`loop-plan.sh`, always); **Kestral is opt-in** — `multiphase-plan` links it only when asked, and `loop-{execute,pickup,handoff}` reconcile with Kestral only when the plan carries `kestralWorkContextId` in its `.loop/plan.md` header. On-disk state is a flattened `.loop/` dir (plan.md beside state.json; `.loop/progress.md` is the unlinked progress stream). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`; mechanism: the `loop-*.sh` scripts above. **Two-tier (default):** a thin `supervise` main spawns a detached `loop-orchestrator.sh`, which runs disposable headless `sub` instances that self-measure their own context (`loop-state.sh occupancy`) and recycle at a safe boundary — keeping the interactive chat under its token ceiling. Merge conflicts + pr-review run in detached runners, never in the SUB. Shell tests live in `tests/` (`zsh tests/run.sh`).
+**Loop engineering:** `.claude/skills/loop-execute` orchestrates a published multiphase-plan end-to-end (headless runners per phase, single integration branch + PR, escalation → HIL, auto pr-review). The plan backend is the central **Loop daemon** (`loop-plan.sh`, always); **Kestral is opt-in** — `multiphase-plan` links it only when asked, and `loop-{execute,pickup,handoff}` reconcile with Kestral only when the plan carries `kestralWorkContextId` in its `.loop/plan.md` header. On-disk state is a flattened `.loop/` dir (plan.md beside state.json; `.loop/progress.md` is the unlinked progress stream). Users can pre-drop persistent phase/review steering in `.loop/notes/`; prompts prove consumption and the Observatory edits the same files. Contract: `.claude/skills/loop-execute/references/loop-protocol.md`; mechanism: the `loop-*.sh` scripts above. **Two-tier (default):** a thin `supervise` main spawns a detached `loop-orchestrator.sh`, which runs disposable headless `sub` instances that self-measure their own context (`loop-state.sh occupancy`) and recycle at a safe boundary — keeping the interactive chat under its token ceiling. Merge conflicts + pr-review run in detached runners, never in the SUB. Shell tests live in `tests/` (`zsh tests/run.sh`).
 
 **Loop Observatory (`loop-web`):** a perpetual central daemon (launchd LaunchAgent, `127.0.0.1:7717`) that is the base backend for every plan and renders every loop as a live L→R graph. `multiphase-plan` registers a plan on it (status `planned`) before any run; loops then register + push lifecycle events (`loop-emit.sh`/`loop-plan.sh`, sourced by/talking to the daemon) so status is authoritative via a monotone promotion lattice — never stale. Each loop is kept forever in `~/.loop/loops/<runId>.json`; a header selector switches between loops. Daemon/event contract lives in `loop-protocol.md` → Daemon & events.
 
@@ -91,4 +91,3 @@ load_secret VAR_NAME "op://Remote Agents/Item Name/credential"
 ```
 
 Skips if var already set. Set `DISABLE_SECRETS=1` to skip all 1Password calls.
-

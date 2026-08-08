@@ -34,6 +34,9 @@ export function PhaseNode({ data, selected }: NodeProps) {
       <Handle type="source" position={Position.Right} />
 
       {rt?.hilOpen && <span className="node__hil">HIL</span>}
+      {node.notePending && (
+        <span className="node__note" title={node.noteMarkdown ?? undefined}>NOTE</span>
+      )}
 
       <div className="node__head">
         <span className="node__chip">{chip(node)}</span>

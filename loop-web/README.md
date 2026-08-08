@@ -2,7 +2,8 @@
 
 A **live** web graph for the loop-engineering flow, rendered as a left-to-right graph
 that live-updates to show what each node is working on — model, branch, attempt, problems
-(verify-fail / crash / timeout / blocked / chain-exhausted), and HIL escalations.
+(verify-fail / crash / timeout / blocked / chain-exhausted), HIL escalations, and pending
+steering notes.
 
 It runs as a **perpetual central daemon** (a launchd LaunchAgent on `127.0.0.1:7717`). It is the
 **base backend for every loop**: `multiphase-plan` registers a plan on it (status `planned`)
@@ -15,8 +16,10 @@ lattice — ranks never regress). Every loop is kept **forever** in a per-loop J
 (`~/.loop/loops/<runId>.json`), reviewable after its worktree is gone; a header **selector**
 switches between loops. Kestral is an **opt-in linked backend**, not a requirement.
 
-It **never writes** to `.loop/` or the plan — it only reads those files and folds the
-events pushed to it. HIL is answered in chat to the orchestrator, exactly as today.
+It reads `.loop/` and folds pushed events. The one write path is the node drawer's
+steering-note editor, which writes or clears the same `notes/<phase>.md` / `notes/pr-review.md`
+files as `loop-state.sh note`; it never writes the plan. A distinct aqua NOTE badge remains
+visible until that phase or review finishes.
 
 For a **two-tier self-recycling** run, the header also surfaces the sub-orchestrator's live
 occupancy + recycle count (a `sub-orch: N recycles · ~Xk tok` chip, fed by `sub.recycle` /
@@ -58,7 +61,7 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
   `127.0.0.1`. Does all I/O, then folds each ingest through the pure model (`reduce-loop.ts`) and
   renders it (`materialize.ts`). Per live loop: `fs.watch` (2s debounce) **plus a 15s reconcile**
   that self-heals missed POSTs — a hung runner emits no fs event, yet its stale heartbeat must
-  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish}`,
+  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish,note}`,
   `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{plan,
   snapshot,review,attempt/:slug/:k}` (`plan` returns `{runId,effort,status,integrationBranch,
   planText}` with no worktree needed — how a fresh checkout fetches the plan; `snapshot`/`review`/

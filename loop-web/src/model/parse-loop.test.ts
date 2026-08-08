@@ -30,6 +30,7 @@ function input(over: Partial<LoopInput> = {}): LoopInput {
     events: null,
     runs: [],
     hil: [],
+    notes: [],
     ...over,
   };
 }
@@ -116,5 +117,27 @@ describe("parseLoop — HIL", () => {
       input({ hil: [{ slug: "build-feature", markdown: "q", answered: true }] }),
     );
     expect(rt.phases["2"].hil?.open).toBe(false);
+  });
+});
+
+describe("parseLoop — steering notes", () => {
+  it("routes numeric notes to their phase and the reserved review note separately", () => {
+    const rt = parseLoop(
+      input({
+        notes: [
+          { key: "2", markdown: "rebase before merge" },
+          { key: "pr-review", markdown: "check the migration" },
+        ],
+      } as Partial<LoopInput>),
+    );
+    expect(rt.phases["2"].note).toBe("rebase before merge");
+    expect(rt.reviewNote).toBe("check the migration");
+  });
+
+  it("creates a phase runtime for a numeric note even before state appears", () => {
+    const rt = parseLoop(
+      input({ state: null, notes: [{ key: "7", markdown: "start here" }] } as Partial<LoopInput>),
+    );
+    expect(rt.phases["7"].note).toBe("start here");
   });
 });

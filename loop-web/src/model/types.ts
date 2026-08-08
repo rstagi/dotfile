@@ -189,6 +189,8 @@ export interface PhaseRuntime {
   state: StatePhase | null;
   attempts: Attempt[];
   hil: HilState | null;
+  /** User-authored steering note for this phase, read from notes/<phase>.md. */
+  note: string | null;
 }
 
 export interface ReviewRun {
@@ -203,6 +205,8 @@ export interface Runtime {
   phases: Record<string, PhaseRuntime>;
   events: RawEvent[];
   reviewRuns: ReviewRun[];
+  /** Reserved notes/pr-review.md steering note. */
+  reviewNote: string | null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -273,6 +277,9 @@ export interface GraphNode {
   /** Heartbeat animation cue: live/flatline while running, else null. */
   pulse: Liveness | null;
   runtime: NodeRuntime | null;
+  /** Derived from note presence and incomplete lifecycle; never trusts file deletion. */
+  notePending: boolean;
+  noteMarkdown: string | null;
 }
 
 export type EdgeKind = "plan-to-lane" | "depends" | "to-review";

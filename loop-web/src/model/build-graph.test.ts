@@ -72,9 +72,9 @@ function attempt(over: Partial<Attempt> & { k: number }): Attempt {
 function runtime(phases: Record<string, Partial<PhaseRuntime>>): Runtime {
   const out: Record<string, PhaseRuntime> = {};
   for (const [k, v] of Object.entries(phases)) {
-    out[k] = { phase: k, state: null, attempts: [], hil: null, ...v };
+    out[k] = { phase: k, state: null, attempts: [], hil: null, note: null, ...v };
   }
-  return { present: true, state: null, phases: out, events: [], reviewRuns: [] };
+  return { present: true, state: null, phases: out, events: [], reviewRuns: [], reviewNote: null };
 }
 
 describe("buildGraph — static shape (no runtime)", () => {
@@ -202,6 +202,19 @@ describe("buildGraph — runtime overlay", () => {
     expect(n.runtime?.awaiting).toBe(true);
     expect(n.ui).toBe("awaiting");
   });
+
+  it("shows a pending note until the phase reaches done or merged", () => {
+    const pending = runtime({ "2": { state: { status: "running" }, note: "rebase first" } });
+    expect(node(buildGraph(parsePlan(SINGLE_LANE), pending, { now }), "2")).toMatchObject({
+      notePending: true,
+      noteMarkdown: "rebase first",
+    });
+
+    for (const status of ["done", "merged"] as const) {
+      const complete = runtime({ "2": { state: { status }, note: "stale file" } });
+      expect(node(buildGraph(parsePlan(SINGLE_LANE), complete, { now }), "2").notePending).toBe(false);
+    }
+  });
 });
 
 describe("buildGraph — PR Review node", () => {
@@ -237,5 +250,22 @@ describe("buildGraph — PR Review node", () => {
   });
   it("shows PR Review as todo with no PR at all", () => {
     expect(node(buildGraph(parsePlan(SINGLE_LANE), null), "pr-review").ui).toBe("todo");
+  });
+  it("shows a review note only until review finishes", () => {
+    const rt = runtime({});
+    rt.reviewNote = "rebase integration first";
+    const pending = node(buildGraph(parsePlan(SINGLE_LANE), rt), "pr-review");
+    expect(pending.notePending).toBe(true);
+    expect(pending.noteMarkdown).toBe("rebase integration first");
+
+    const running = node(buildGraph(parsePlan(SINGLE_LANE), rt, {
+      pr: pr({ url: "https://gh/pr/1", outcome: null, reviewPresent: true }),
+    }), "pr-review");
+    expect(running.notePending).toBe(true);
+
+    const finished = node(buildGraph(parsePlan(SINGLE_LANE), rt, {
+      pr: pr({ outcome: "done", reviewPresent: true }),
+    }), "pr-review");
+    expect(finished.notePending).toBe(false);
   });
 });

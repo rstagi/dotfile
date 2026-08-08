@@ -3,7 +3,7 @@
 export * from "./types.ts";
 export { parsePlan } from "./parse-plan.ts";
 export { parseLoop } from "./parse-loop.ts";
-export type { LoopInput, RawRunDir, RawHil } from "./parse-loop.ts";
+export type { LoopInput, RawRunDir, RawHil, RawNote } from "./parse-loop.ts";
 export { buildGraph, PLAN_ID, REVIEW_ID } from "./build-graph.ts";
 export { buildSnapshot } from "./snapshot.ts";
 export * from "./store-types.ts";

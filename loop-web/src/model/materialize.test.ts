@@ -52,7 +52,7 @@ const stateAll: Ingest = {
   },
 };
 
-const emptyLive: LoopInput = { present: true, state: null, events: null, runs: [], hil: [] };
+const emptyLive: LoopInput = { present: true, state: null, events: null, runs: [], hil: [], notes: [] };
 
 describe("materialize — overlay drives the node status through the real buildSnapshot", () => {
   it("promotes phase 3 to done in the graph even though state.json still says running", () => {
@@ -92,6 +92,7 @@ describe("materialize — heartbeat comes from live mtimes, independent of the o
         },
       ],
       hil: [],
+      notes: [],
     };
     const snap = materialize(rec, live, { now, nowIso: "2026-08-03T10:00:00Z" });
     const node3 = snap.graph.nodes.find((n) => n.id === "3")!;

@@ -28,6 +28,12 @@ export interface RawHil {
   answered: boolean;
 }
 
+/** One user steering note under `.loop/notes/`. */
+export interface RawNote {
+  key: string;
+  markdown: string;
+}
+
 /** Everything the server reads out of `.loop/`, handed in as raw content. */
 export interface LoopInput {
   present: boolean;
@@ -35,12 +41,20 @@ export interface LoopInput {
   events: string | null;
   runs: RawRunDir[];
   hil: RawHil[];
+  notes: RawNote[];
 }
 
 const RUN_NAME = /^(.+)-a(\d+)$/;
 const REVIEW_NAME = /^review-a(\d+)$/;
 
-const EMPTY: Runtime = { present: false, state: null, phases: {}, events: [], reviewRuns: [] };
+const EMPTY: Runtime = {
+  present: false,
+  state: null,
+  phases: {},
+  events: [],
+  reviewRuns: [],
+  reviewNote: null,
+};
 
 /**
  * Normalize the raw `.loop/` contents into a `Runtime`. Pure — the server does
@@ -62,12 +76,14 @@ export function parseLoop(input: LoopInput): Runtime {
 
   const attemptsByPhase = groupAttempts(attemptDirs, slugToPhase);
   const hilByPhase = groupHil(input.hil, slugToPhase);
+  const { notesByPhase, reviewNote } = groupNotes(input.notes);
 
   const phases: Record<string, PhaseRuntime> = {};
   const phaseNums = new Set<string>([
     ...Object.keys(state?.phases ?? {}),
     ...attemptsByPhase.keys(),
     ...hilByPhase.keys(),
+    ...notesByPhase.keys(),
   ]);
   for (const num of phaseNums) {
     phases[num] = {
@@ -75,10 +91,11 @@ export function parseLoop(input: LoopInput): Runtime {
       state: state?.phases?.[num] ?? null,
       attempts: (attemptsByPhase.get(num) ?? []).sort((a, b) => a.k - b.k),
       hil: hilByPhase.get(num) ?? null,
+      note: notesByPhase.get(num) ?? null,
     };
   }
 
-  return { present: true, state: state ?? null, phases, events, reviewRuns };
+  return { present: true, state: state ?? null, phases, events, reviewRuns, reviewNote };
 }
 
 // --- run dirs ------------------------------------------------------------------------
@@ -136,6 +153,19 @@ function groupHil(
     out.set(phase, { open: !h.answered, markdown: h.markdown });
   }
   return out;
+}
+
+function groupNotes(notes: RawNote[]): {
+  notesByPhase: Map<string, string>;
+  reviewNote: string | null;
+} {
+  const notesByPhase = new Map<string, string>();
+  let reviewNote: string | null = null;
+  for (const note of notes) {
+    if (note.key === "pr-review") reviewNote = note.markdown;
+    else if (/^\d+$/.test(note.key)) notesByPhase.set(note.key, note.markdown);
+  }
+  return { notesByPhase, reviewNote };
 }
 
 // --- small helpers -------------------------------------------------------------------

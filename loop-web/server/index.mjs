@@ -26,6 +26,7 @@ const DIST_DIR = path.join(__dirname, "..", "dist");
 const WATCH_DEBOUNCE_MS = 2000;
 const RECONCILE_MS = 15000;
 const TAIL_BYTES = 64 * 1024;
+const NOTE_BYTES = 16 * 1024;
 const BODY_LIMIT = 4 * 1024 * 1024; // cap an ingest body (plan md + state) — reject beyond
 const HOST = "127.0.0.1";
 
@@ -242,6 +243,8 @@ function handle(req, res) {
   const p = u.pathname;
 
   if (req.method === "POST") {
+    const note = p.match(/^\/api\/loops\/([^/]+)\/note$/);
+    if (note) return handleNote(decodeURIComponent(note[1]), req, res);
     const m = p.match(/^\/api\/loops\/([^/]+)\/(register|state|event|finish)$/);
     if (m) return handleIngest(decodeURIComponent(m[1]), m[2], req, res);
     return json(res, 404, { error: "unknown endpoint" });
@@ -271,6 +274,43 @@ function handle(req, res) {
 
   if (p.startsWith("/api/")) return json(res, 404, { error: "unknown endpoint" });
   return serveStatic(req, res);
+}
+
+function handleNote(runId, req, res) {
+  const entry = loops.get(runId);
+  if (!entry) return json(res, 404, { error: "no such loop", runId });
+  const loopDir = entry.record.loopDir;
+  if (!loopDir || !isDir(loopDir)) {
+    return json(res, 410, { error: "worktree gone — archived loops are not steerable", runId });
+  }
+  readBody(req, BODY_LIMIT, (err, body) => {
+    if (err) return json(res, 413, { error: "body too large" });
+    const parsed = safeParse(body);
+    const key = parsed?.key;
+    if (typeof key !== "string" || !isSafeNoteKey(key)) {
+      return json(res, 400, { error: "invalid note key" });
+    }
+    const notesDir = path.join(loopDir, "notes");
+    const noteFile = path.resolve(notesDir, `${key}.md`);
+    if (!isContained(noteFile, path.resolve(notesDir))) return json(res, 400, { error: "bad path" });
+
+    try {
+      if (parsed.clear === true) {
+        fs.rmSync(noteFile, { force: true });
+      } else {
+        if (typeof parsed.markdown !== "string") return json(res, 400, { error: "markdown must be a string" });
+        if (Buffer.byteLength(parsed.markdown, "utf8") > NOTE_BYTES) {
+          return json(res, 413, { error: `note exceeds ${NOTE_BYTES} bytes` });
+        }
+        fs.mkdirSync(notesDir, { recursive: true });
+        fs.writeFileSync(noteFile, parsed.markdown, "utf8");
+      }
+      reconcile(entry);
+      return json(res, 200, { ok: true, runId, key });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  });
 }
 
 function handleIngest(runId, kind, req, res) {
@@ -410,7 +450,9 @@ function handleSse(req, res, runId) {
 // --- filesystem readers (I/O lives here; the model layer stays pure) -----------------
 
 function readLoopInput(loopDir) {
-  if (!loopDir || !isDir(loopDir)) return { present: false, state: null, events: null, runs: [], hil: [] };
+  if (!loopDir || !isDir(loopDir)) {
+    return { present: false, state: null, events: null, runs: [], hil: [], notes: [] };
+  }
 
   const runsDir = path.join(loopDir, "runs");
   const runs = [];
@@ -443,13 +485,27 @@ function readLoopInput(loopDir) {
     }
   }
 
+  const notesDir = path.join(loopDir, "notes");
+  const notes = [];
+  if (isDir(notesDir)) {
+    for (const f of safeReaddir(notesDir)) {
+      if (!f.endsWith(".md")) continue;
+      notes.push({ key: f.slice(0, -3), markdown: tail(path.join(notesDir, f), NOTE_BYTES) ?? "" });
+    }
+  }
+
   return {
     present: true,
     state: readText(path.join(loopDir, "state.json")),
     events: readText(path.join(loopDir, "events.jsonl")),
     runs,
     hil,
+    notes,
   };
+}
+
+function isSafeNoteKey(key) {
+  return /^[A-Za-z0-9._-]+$/.test(key) && key !== "." && key !== "..";
 }
 
 function isDir(p) {
