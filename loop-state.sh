@@ -13,6 +13,9 @@ set -u -o pipefail
 #   loop-state.sh get [--dir <d>] '<jq filter>'
 #   loop-state.sh set [--dir <d>] '<jq expression>'   # state.json | jq expr, atomic mv
 #   loop-state.sh log [--dir <d>] <event> [<phase>] [<detail>]
+#   loop-state.sh note [--dir <d>] [--force] <key> [text]
+#   loop-state.sh note [--dir <d>] --clear <key>
+#   loop-state.sh notes [--dir <d>]
 #   loop-state.sh occupancy --transcript <f> [--window <n>]
 #     sum the LAST usage-bearing assistant event in a stream-json transcript; print the
 #     token total (+ percent with --window); exit 10 when >= LOOP_ORCH_RECYCLE_TOKENS.
@@ -20,13 +23,14 @@ set -u -o pipefail
 DIR=".kestral/loop"
 CMD="${1:-}"; [[ -n "$CMD" ]] && shift
 
-JSON="" OWNER="" FORCE=0 TRANSCRIPT="" WINDOW="" ARGS=()
+JSON="" OWNER="" FORCE=0 CLEAR=0 TRANSCRIPT="" WINDOW="" ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --dir) DIR="$2"; shift 2 ;;
   --json) JSON="$2"; shift 2 ;;
   --owner) OWNER="$2"; shift 2 ;;
   --force) FORCE=1; shift ;;
+  --clear) CLEAR=1; shift ;;
   --transcript) TRANSCRIPT="$2"; shift 2 ;;
   --window) WINDOW="$2"; shift 2 ;;
   *) ARGS+=("$1"); shift ;;
@@ -74,7 +78,7 @@ init)
   [[ -n "$JSON" ]] || die "init requires --json"
   # printf, not echo — zsh echo mangles backslash escapes inside JSON strings
   printf '%s\n' "$JSON" | jq . >/dev/null || die "init: --json is not valid JSON"
-  mkdir -p "$DIR/runs" "$DIR/answers" "$DIR/hil"
+  mkdir -p "$DIR/runs" "$DIR/answers" "$DIR/hil" "$DIR/notes"
   if [[ -f "$STATE" ]]; then
     die "state.json already exists (use resume, or remove $DIR)" 2
   fi
@@ -131,6 +135,38 @@ log)
   printf '%s\n' "$line" >> "$DIR/events.jsonl"
   run_id="$(state_run_id)"
   [[ -n "$run_id" ]] && printf '%s' "$line" | loop_emit "$run_id" event
+  ;;
+note)
+  key="${ARGS[1]:-}"
+  [[ -n "$key" ]] || die "note requires <key>"
+  note_key_re='^[A-Za-z0-9._-]+$'
+  [[ "$key" =~ $note_key_re && "$key" != "." && "$key" != ".." ]] \
+    || die "invalid note key '$key' (use letters, numbers, dot, underscore, or hyphen)"
+  note_file="$DIR/notes/$key.md"
+  if [[ "$CLEAR" -eq 1 ]]; then
+    rm -f "$note_file"
+    exit 0
+  fi
+  if [[ "$key" == <-> && "$FORCE" -ne 1 && -f "$STATE" ]]; then
+    phase_status="$(jq -r --arg key "$key" '.phases[$key].status // empty' "$STATE" 2>/dev/null || true)"
+    if [[ "$phase_status" == "done" || "$phase_status" == "merged" ]]; then
+      die "phase $key is already $phase_status; use --force to write anyway"
+    fi
+  fi
+  mkdir -p "$DIR/notes"
+  if (( ${#ARGS} >= 2 )); then
+    note_text="${ARGS[2]}"
+  else
+    note_text="$(cat)"
+  fi
+  printf '%s\n' "$note_text" > "$note_file"
+  ;;
+notes)
+  for note_file in "$DIR/notes"/*.md(N); do
+    key="${${note_file:t}%.md}"
+    first_line="$(head -n 1 "$note_file")"
+    printf '%s\t%s\n' "$key" "$first_line"
+  done
   ;;
 register)
   # Idempotent ensure-daemon + register + seed state (used by resume).
@@ -190,6 +226,6 @@ occupancy)
   exit 0
   ;;
 *)
-  die "unknown command '${CMD}' (init|lock|unlock|get|set|log|register|finish|occupancy)"
+  die "unknown command '${CMD}' (init|lock|unlock|get|set|log|note|notes|register|finish|occupancy)"
   ;;
 esac

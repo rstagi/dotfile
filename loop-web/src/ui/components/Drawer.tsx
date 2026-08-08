@@ -33,6 +33,7 @@ export function Drawer({
   const defaultK = useMemo(() => pickDefaultAttempt(attempts), [attempts]);
   const [activeK, setActiveK] = useState<number | null>(defaultK);
   useEffect(() => setActiveK(defaultK), [defaultK, node.id]);
+  const canSteer = runId != null && ["phase", "integration", "pr-review"].includes(node.kind);
 
   const detail = useAttemptDetail(runId, rt?.slug ?? null, activeK);
 
@@ -86,6 +87,7 @@ export function Drawer({
 
         {node.kind === "plan" && plan && <PlanSection plan={plan} />}
         {node.kind === "pr-review" && <ReviewSection runId={runId} pr={pr} />}
+        {canSteer && <SteeringNote node={node} runId={runId} />}
 
         {rt?.hilOpen && rt.hilMarkdown && (
           <section>
@@ -129,6 +131,59 @@ export function Drawer({
         )}
       </div>
     </div>
+  );
+}
+
+function SteeringNote({ node, runId }: { node: GraphNode; runId: string }) {
+  const [markdown, setMarkdown] = useState(node.noteMarkdown ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const key = node.kind === "pr-review" ? "pr-review" : node.phase;
+
+  useEffect(() => setMarkdown(node.noteMarkdown ?? ""), [node.id, node.noteMarkdown]);
+
+  const update = async (clear: boolean) => {
+    if (!key) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/loops/${encodeURIComponent(runId)}/note`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(clear ? { key, clear: true } : { key, markdown }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? `request failed (${response.status})`);
+      }
+      if (clear) setMarkdown("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update note");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="steering-note">
+      <p className="section__title" style={{ color: "var(--aqua)" }}>Steering note</p>
+      <textarea
+        className="steering-note__input"
+        aria-label="Steering note"
+        value={markdown}
+        placeholder="Extra instructions for this phase…"
+        onChange={(event) => setMarkdown(event.target.value)}
+      />
+      <div className="steering-note__actions">
+        <button type="button" disabled={saving} onClick={() => void update(false)}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button type="button" disabled={saving || node.noteMarkdown == null} onClick={() => void update(true)}>
+          Clear
+        </button>
+        {error && <span role="alert">{error}</span>}
+      </div>
+    </section>
   );
 }
 

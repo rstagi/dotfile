@@ -2,7 +2,8 @@
 
 A **live** web graph for the Kestral loop-engineering flow, rendered as a left-to-right graph
 that live-updates to show what each node is working on — model, branch, attempt, problems
-(verify-fail / crash / timeout / blocked / chain-exhausted), and HIL escalations.
+(verify-fail / crash / timeout / blocked / chain-exhausted), HIL escalations, and pending
+steering notes.
 
 It runs as a **perpetual central daemon** (a launchd LaunchAgent on `127.0.0.1:7717`). Every
 `kestral-loop` run **registers** with it and **pushes clean lifecycle events** (via
@@ -14,8 +15,10 @@ lattice — ranks never regress). Every loop is kept **forever** in a per-loop J
 (`~/.kestral/loops/<runId>.json`), reviewable after its worktree is gone; a header **selector**
 switches between loops.
 
-It **never writes** to `.kestral/loop/` or the plan — it only reads those files and folds the
-events pushed to it. HIL is answered in chat to the orchestrator, exactly as today.
+It reads `.kestral/loop/` and folds pushed events. The one write path is the node drawer's
+steering-note editor, which writes or clears the same `notes/<phase>.md` / `notes/pr-review.md`
+files as `loop-state.sh note`; it never writes the plan. A distinct aqua NOTE badge remains
+visible until that phase or review finishes.
 
 For a **two-tier self-recycling** run, the header also surfaces the sub-orchestrator's live
 occupancy + recycle count (a `sub-orch: N recycles · ~Xk tok` chip, fed by `sub.recycle` /
@@ -57,7 +60,7 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
   `127.0.0.1`. Does all I/O, then folds each ingest through the pure model (`reduce-loop.ts`) and
   renders it (`materialize.ts`). Per live loop: `fs.watch` (2s debounce) **plus a 15s reconcile**
   that self-heals missed POSTs — a hung runner emits no fs event, yet its stale heartbeat must
-  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish}`,
+  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish,note}`,
   `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{snapshot,
   review,attempt/:slug/:k}` (410 when the worktree is gone), `/api/health`; back-compat
   `/api/model` · `/api/snapshot` · bare `/events` resolve to the default loop.

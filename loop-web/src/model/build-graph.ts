@@ -12,7 +12,6 @@ import type {
   PhaseStateStatus,
   ProblemClass,
   PrInfo,
-  Liveness,
 } from "./types.ts";
 import {
   classifyAttempt,
@@ -57,10 +56,12 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     ui: resolveUi(mapHeaderStatus(plan.status), null, false),
     pulse: null,
     runtime: null,
+    notePending: false,
+    noteMarkdown: null,
   };
 
   const phaseNodes = plan.phases.map((p) => buildPhaseNode(p, runtime?.phases[p.phase], now));
-  const reviewNode = buildReviewNode(opts.pr ?? null);
+  const reviewNode = buildReviewNode(opts.pr ?? null, runtime?.reviewNote ?? null);
 
   const nodes = [planNode, ...phaseNodes, reviewNode];
   const edges = buildEdges(plan.phases, nodes);
@@ -86,7 +87,15 @@ function buildPhaseNode(
 
   if (!pr) {
     const status = mapPlanStatus(phase.status);
-    return { ...base, status, ui: resolveUi(status, null, false), pulse: null, runtime: null };
+    return {
+      ...base,
+      status,
+      ui: resolveUi(status, null, false),
+      pulse: null,
+      runtime: null,
+      notePending: false,
+      noteMarkdown: null,
+    };
   }
   return { ...base, ...resolveRuntime(phase, pr, now) };
 }
@@ -96,7 +105,7 @@ function resolveRuntime(
   phase: PlanPhase,
   pr: PhaseRuntime,
   now: number,
-): { status: PhaseStateStatus; ui: NodeUiState; pulse: Liveness | null; runtime: NodeRuntime } {
+): Pick<GraphNode, "status" | "ui" | "pulse" | "runtime" | "notePending" | "noteMarkdown"> {
   const attempts = [...pr.attempts].sort((a, b) => a.k - b.k);
   const ended = attempts.filter((a) => a.meta).sort((a, b) => b.k - a.k);
   const inFlight = attempts.filter((a) => !a.meta).sort((a, b) => b.k - a.k)[0] ?? null;
@@ -132,7 +141,14 @@ function resolveRuntime(
     slug: pr.state?.slug ?? slugFromRunDir(ended[0]?.runDir ?? inFlight?.runDir ?? null),
   };
 
-  return { status: lifecycle, ui: resolveUi(lifecycle, problem, awaiting), pulse, runtime };
+  return {
+    status: lifecycle,
+    ui: resolveUi(lifecycle, problem, awaiting),
+    pulse,
+    runtime,
+    notePending: pr.note != null && lifecycle !== "done" && lifecycle !== "merged",
+    noteMarkdown: pr.note,
+  };
 }
 
 function resolveUi(
@@ -150,7 +166,7 @@ function resolveUi(
 
 // --- PR Review terminal --------------------------------------------------------------
 
-function buildReviewNode(pr: PrInfo | null): GraphNode {
+function buildReviewNode(pr: PrInfo | null, noteMarkdown: string | null): GraphNode {
   // Drive the terminal off the STRUCTURED review outcome, never the free-form summary prose
   // (a passing review's summary almost always contains "changes"/"blocking"/"approve").
   let status: PhaseStateStatus = "todo";
@@ -176,6 +192,8 @@ function buildReviewNode(pr: PrInfo | null): GraphNode {
     ui,
     pulse: null,
     runtime: null,
+    notePending: noteMarkdown != null && pr?.outcome == null,
+    noteMarkdown,
   };
 }
 

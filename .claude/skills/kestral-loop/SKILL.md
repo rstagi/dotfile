@@ -144,8 +144,9 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
 2. Generate `runs/<phase-slug>-a<K>/prompt.md` from the protocol's skeleton — it opens
    with `kestral-pickup --auto` (the runner claims its own task; both engines have the
    Kestral MCP) and closes with `kestral-handoff --auto ... status:in-progress` +
-   status.json. Include the verbatim phase block + plan Goal/decisions + prior-attempt
-   context (`answers/`, verify.log tails, HIL answers).
+   status.json. Include the verbatim phase block + plan Goal/decisions +
+   `notes/<phaseNumber>.md` verbatim on **every** attempt, including the first. Retry-only
+   context (`answers/`, verify.log tails, HIL answers) remains separate.
 3. Spawn detached per the protocol's Runner-spawn section (nohup + pid file):
    `~/dotfile/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --run-id
    <runId> --phase <N> --chain task --verify-cmd '<phase-or-effort verify>'` (it inherits
@@ -176,6 +177,11 @@ Switch on the exit code (protocol table). The extra checks only you can do:
   protocol's exit-40 rule (bounded backoff, then L3; multi-lane 40s pause scheduling).
 
 ### 6. Merge and sync
+
+Immediately before merging phase `<N>`, re-read `notes/<N>.md` and honor it (for example,
+rebase the lane onto the current integration tip first). This catches notes dropped after the
+runner started. After the merge is complete and the phase is promoted `done|merged`, run
+`loop-state.sh note --dir .kestral/loop --clear <N>` as best-effort housekeeping.
 
 Serialize merges (one at a time). `loop-merge.sh --worktree <int-wt> --lane-branch <b>
 --run-id <runId> --phase <N> --verify-cmd '<effort verify>'` (inherits `LOOP_DAEMON_URL`;
@@ -222,7 +228,8 @@ supervise main (step 3b.5) runs this step. The `sub` never runs pr-review. All p
 Progress log digest — never a raw log dump). `link_pr_to_task` for every phase task
 (dedup via state), statuses → awaiting-review, plan **Status: integrating**, repush,
 `trigger_brain_build`. Sweep any remaining lane worktrees (review needs the branches
-free). Then spawn the reviewer with a FULL runner prompt (the protocol skeleton, not a
+free). Re-read `notes/pr-review.md` now: honor any pre-review action against the integration
+worktree, then fold the note verbatim into the reviewer prompt. Then spawn the reviewer with a FULL runner prompt (the protocol skeleton, not a
 one-liner — it must end with the RUN_DIR/status.json instructions or the run is
 misclassified as a crash): task = "run the pr-review skill on <PR URL> with --headless
 (includes the stacked-PR-split lens); write the full report to `RUN_DIR/report.md` and post
@@ -230,7 +237,8 @@ it as a PR comment; then write status.json with outcome done and the verdict as 
 Spawn: `loop-runner.sh --chain review --worktree <int-wt> --run-dir <runs/review-a1> ...`.
 When it returns, promote the review onto state — `loop-state.sh set '.review =
 {outcome, summary, reportPath: "runs/review-a<K>/report.md", commentUrl}'` — log
-`review.finish`, then `loop-state.sh finish --json '{...prUrl, review}'` (emits `loop.finish`
+`review.finish`, clear `notes/pr-review.md` with `loop-state.sh note --clear pr-review`, then
+`loop-state.sh finish --json '{...prUrl, review}'` (emits `loop.finish`
 to the daemon). Finally `loop-notify.sh --level info` with PR + review verdict + split
 recommendation, journal, unlock, and stop — the human merges.
 
@@ -238,7 +246,8 @@ recommendation, journal, unlock, and stop — the human merges.
 
 - **resume** — re-lock with the state's run id, then reconcile per protocol (git > Kestral
   > state): finish/abort any in-progress merge first; re-attach or fail dead attempts;
-  repair status drift. Never double-spawn a phase with a live pid. Call `loop-state.sh
+  repair status drift. Sweep `notes/<N>.md` for every phase already `done|merged`; this is
+  idempotent housekeeping, not badge correctness. Never double-spawn a phase with a live pid. Call `loop-state.sh
   register` (idempotent ensure-daemon + re-register) so the loop reappears in the observer —
   no per-loop observer to relaunch. **If `LOOP_SUB=1` (you are a SUB instance):** FIRST, if
   `sub/handoff.md` exists, read it **once** and rename it to `sub/handoff.consumed-<k>.md`
@@ -247,7 +256,8 @@ recommendation, journal, unlock, and stop — the human merges.
 ### Sub recycle *(mode: `sub` only)*
 
 You are a disposable instance — recycle before you fill up so a fresh successor continues.
-Each tick, after handling any runner exits / merges, self-measure:
+Each tick, after handling any runner exits / merges, sweep notes for phases already
+`done|merged`, then self-measure:
 
 ```sh
 loop-state.sh occupancy --dir .kestral/loop \
@@ -271,6 +281,20 @@ thing left and no lane can progress).
 - **abort** — kill live runners, `--abort` any merge, flip in-progress phases back to
   todo, repush plan, notify, unlock. Leave worktrees for autopsy; tell the user the
   cleanup commands.
+
+## Steering notes
+
+Users may steer work without pausing the loop by writing `.kestral/loop/notes/<key>.md`.
+Phase keys are plan numbers (`notes/2.md`); `notes/pr-review.md` is the only reserved step key.
+A note persists until that phase or review completes. The `sub` reads phase notes for runner
+prompts and again before lane merges; the thin supervise main reads the review note before
+spawning pr-review. Any note consumed by a runner appears verbatim in that attempt's
+`prompt.md`, which is the durable proof of consumption.
+
+Use `loop-state.sh note <key> "text"` (or omit text and pipe multiline stdin),
+`loop-state.sh note --clear <key>`, and `loop-state.sh notes`. Numeric notes targeting a
+`done|merged` phase are refused unless `--force`. Cleanup is best-effort because the Observatory
+derives NOTE visibility from both file presence and unfinished lifecycle.
 
 ## Hard rules
 

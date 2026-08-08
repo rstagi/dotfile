@@ -384,6 +384,58 @@
   background: rgba(255, 179, 0, 0.06);
   padding: 12px;
 }
+.steering-note {
+  border: 1px solid rgba(47, 243, 208, 0.35);
+  border-radius: 4px;
+  background: rgba(47, 243, 208, 0.04);
+  padding: 10px;
+}
+.steering-note__input {
+  display: block;
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  box-sizing: border-box;
+  font: 11px/1.45 var(--font-mono);
+  color: var(--ink);
+  background: var(--bg-deep);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  padding: 9px;
+}
+.steering-note__input:focus {
+  outline: none;
+  border-color: var(--aqua);
+  box-shadow: 0 0 0 1px rgba(47, 243, 208, 0.16);
+}
+.steering-note__actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.steering-note__actions button {
+  font: 600 9px var(--font-display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--aqua);
+  background: transparent;
+  border: 1px solid rgba(47, 243, 208, 0.4);
+  border-radius: 3px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.steering-note__actions button:hover:not(:disabled) {
+  background: rgba(47, 243, 208, 0.1);
+}
+.steering-note__actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.steering-note__actions [role="alert"] {
+  color: var(--red);
+  font-size: 10px;
+}
 .log {
   font-family: var(--font-mono);
   font-size: 11px;

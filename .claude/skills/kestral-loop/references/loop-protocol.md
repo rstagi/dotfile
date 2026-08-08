@@ -57,6 +57,7 @@ State lives in the orchestrator's checkout of the target repo (add `.kestral/` t
   runs/review-a<K>/report.md # full pr-review report (also posted as the PR comment)
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
+  notes/<key>.md             # user steering notes (phase number | pr-review); persist until done
   sub/                       # two-tier self-recycling orchestrator runtime (§ Two-tier orchestration)
     transcript-<k>.jsonl     # SUB instance k's stream-json (mtime = heartbeat; occupancy source)
     status.json              # SUB → loop-orchestrator.sh: recycle|complete|fatal|blocked
@@ -82,6 +83,10 @@ crash-resume **source of truth** for code + bookkeeping. A launchd LaunchAgent a
 on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
 `loop_ensure_daemon` as the fallback. Loops **register**, then push clean lifecycle events.
 Emission is **best-effort** — a `curl` failure never fails the caller.
+The daemon also reads size-capped `notes/*.md` content on each reconcile. NOTE badges are
+file-derived but completion-aware: a phase note is pending only while its phase is not
+`done|merged`; `pr-review` is pending only until the review finishes. This makes missed
+best-effort file cleanup harmless.
 
 Endpoints (POST bodies are JSON built injection-safely with `jq`):
 
@@ -89,6 +94,7 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 - `POST /api/loops/:runId/state` — the full state.json contents.
 - `POST /api/loops/:runId/event` `{ event, phase?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — the server folds the body **verbatim** (no field whitelist), so `sub.*` events carry their extra fields straight into the model.
 - `POST /api/loops/:runId/finish` `{ status?, finishedAt?, prUrl?, review?:{outcome,summary,reportPath,commentUrl} }`.
+- `POST /api/loops/:runId/note` `{ key, markdown }` to write or `{ key, clear:true }` to delete a steering note; rejects archived loops.
 - `GET /api/loops` (selector) · `GET /events?runId=` (per-loop SSE) · `/api/loops/:runId/{snapshot,review,attempt/:slug/:k}` · `/api/health`.
 
 **Typed event vocabulary** (who emits what):
@@ -378,7 +384,10 @@ PHASE (from the shared plan):
 <verbatim phase block: title, Depends on, Touches, Done when, Verify, Notes>
 
 CONTEXT: <goal + key decisions from plan header; prior-attempt failure summary;
-answers/<phase>.md content; hil answer — whichever exist>
+steering notes: notes/<phaseNumber>.md — fold verbatim on EVERY attempt, including first;
+answers/<phase>.md retry guidance; hil answer — whichever exist>
+
+Read steering notes on every attempt, including the first. Read answers/ only on retries.
 
 WHEN FINISHED (Done when holds and `<verify cmd>` passes locally): run
 `$kestral-handoff --auto phase:<N> status:in-progress lane:<X> engine:<engine>` (comment:

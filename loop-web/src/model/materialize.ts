@@ -18,7 +18,7 @@ interface MaterializeOpts {
 }
 
 const FALLBACK_PLAN = "# No plan found — Multi-Phase Plan\n";
-const EMPTY_LIVE: LoopInput = { present: true, state: null, events: null, runs: [], hil: [] };
+const EMPTY_LIVE: LoopInput = { present: true, state: null, events: null, runs: [], hil: [], notes: [] };
 
 export function materialize(record: LoopRecord, live: LoopInput | null, opts: MaterializeOpts = {}): Snapshot {
   // Archived: the worktree is gone (no runs/hil to read) — return the frozen last snapshot,
@@ -29,7 +29,9 @@ export function materialize(record: LoopRecord, live: LoopInput | null, opts: Ma
     if (!frozen) return render(record, EMPTY_LIVE, opts);
     // Backfill defaults ONLY for a snapshot frozen by a pre-subOrch build (keep the same
     // reference otherwise, so a current snapshot short-circuits untouched).
-    return "subOrch" in frozen ? frozen : { subOrch: null, pendingHil: 0, ...frozen };
+    return Object.prototype.hasOwnProperty.call(frozen, "subOrch")
+      ? frozen
+      : { ...frozen, subOrch: null, pendingHil: 0 };
   }
   return render(record, live, opts);
 }
@@ -62,6 +64,7 @@ function render(record: LoopRecord, live: LoopInput, opts: MaterializeOpts): Sna
     events: eventsToJsonl(record.events),
     runs: live.runs,
     hil: live.hil,
+    notes: live.notes,
   };
   const runtime = parseLoop(loopInput);
   const now = opts.now ?? Date.now();
