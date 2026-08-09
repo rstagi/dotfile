@@ -29,7 +29,8 @@ export function materialize(record: LoopRecord, live: LoopInput | null, opts: Ma
     if (!frozen) return render(record, EMPTY_LIVE, opts);
     // Backfill defaults ONLY for a snapshot frozen by a pre-subOrch build (keep the same
     // reference otherwise, so a current snapshot short-circuits untouched).
-    return "subOrch" in frozen ? frozen : { subOrch: null, pendingHil: 0, ...frozen };
+    const current = Object.prototype.hasOwnProperty.call(frozen, "subOrch");
+    return current ? frozen : { ...frozen, subOrch: null, pendingHil: 0 };
   }
   return render(record, live, opts);
 }

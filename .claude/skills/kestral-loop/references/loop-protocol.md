@@ -305,10 +305,11 @@ by the orchestrator as a stall → escalate, never accept.
 ## Model chains (loop-models.conf)
 
 ```sh
-CHAIN_TASK=("codex:gpt-5.6-sol" "claude:opus+sonnet")
+CHAIN_TASK=("codex:gpt-5.6-sol" "claude:opus")
 CHAIN_ESCALATE=("claude:fable+opus")
 CHAIN_REVIEW=("claude:fable" "codex:gpt-5.6-sol" "claude:opus")
-CODEX_EXTRA_ARGS=(-c 'model_reasoning_effort="xhigh"')   # "ultra" tier; add delegation cfg here
+CODEX_EXTRA_ARGS=(-c 'model_reasoning_effort="high"')
+CLAUDE_EXTRA_ARGS=(--effort high)
 LOOP_BUDGET_USD=15        # per attempt, claude legs only (codex has no budget flag)
 LOOP_TIMEOUT_TASK=2700    # 45m
 LOOP_TIMEOUT_ESCALATE=1800
@@ -343,6 +344,7 @@ Claude leg (run with `command claude` from a non-login shell to avoid zsh init n
 
 ```sh
 command claude -p --model "$MODEL" ${FALLBACK:+--fallback-model "$FALLBACK"} \
+  "${CLAUDE_EXTRA_ARGS[@]}" \
   --output-format stream-json --verbose \
   --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
   --max-budget-usd "$LOOP_BUDGET_USD" \
