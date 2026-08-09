@@ -72,6 +72,8 @@ trap 'loop_runner_finish $?' EXIT
   echo "loop-runner: --worktree, --run-dir, --prompt-file are required" >&2; exit 1
 }
 source "$MODELS_CONF" || { echo "loop-runner: cannot source $MODELS_CONF" >&2; exit 1; }
+(( ${+CODEX_EXTRA_ARGS} )) || CODEX_EXTRA_ARGS=()
+(( ${+CLAUDE_EXTRA_ARGS} )) || CLAUDE_EXTRA_ARGS=()
 BUDGET="${BUDGET:-$LOOP_BUDGET_USD}"
 
 case "$CHAIN_NAME" in
@@ -109,12 +111,12 @@ launch_claude() { # $1 model, $2 fallback (may be empty)
   local fb_args=()
   [[ -n "$2" ]] && fb_args=(--fallback-model "$2")
   if [[ -n "$RESUME_SID" ]]; then
-    ( cd "$WT" && command claude -p --resume "$RESUME_SID" "${fb_args[@]}" \
+    ( cd "$WT" && command claude -p --resume "$RESUME_SID" "${fb_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
         --max-budget-usd "$BUDGET" < "$RUN_DIR/prompt.md" > "$TRANSCRIPT" 2> "$STDERR" )
   else
-    ( cd "$WT" && command claude -p --model "$1" "${fb_args[@]}" \
+    ( cd "$WT" && command claude -p --model "$1" "${fb_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
         --max-budget-usd "$BUDGET" < "$RUN_DIR/prompt.md" > "$TRANSCRIPT" 2> "$STDERR" )

@@ -1,0 +1,6 @@
+#!/bin/zsh
+set -u
+
+print -r -- "codex $*" >> "${FAKE_ENGINE_LOG:?FAKE_ENGINE_LOG required}"
+print -r -- "429 rate limit" >&2
+exit 1
