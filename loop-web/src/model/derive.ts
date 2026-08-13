@@ -120,6 +120,7 @@ export function normalizeEvent(raw: RawEvent): TimelineEvent {
     ts: typeof raw.ts === "string" ? raw.ts : null,
     event,
     phase: str(raw.phase),
+    repository: str(raw.repository),
     detail: str(raw.detail),
   };
   for (const rule of EVENT_RULES) {

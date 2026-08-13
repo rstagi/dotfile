@@ -56,6 +56,12 @@ Save the resolved plan to `.loop/plan.md` with the canonical header (see
 background (`entity_lookup({ type: "project_brain", id: projectId })`, or invoke
 `kestral-context`) — keep it to a short digest, don't dump it.
 
+Parse `## Repositories` and every phase's `Repository:`. Resolve the chosen phase's
+`owner/repo` through `loop-repo.sh get`; if missing in interactive mode, ask for its local
+checkout and persist it with `loop-repo.sh map`. Validate origin/default branch/collisions
+with `loop-repo.sh check`. Plans never carry checkout paths. Legacy plans use `primary`
+and the launching checkout.
+
 ### 2. Pick a lane
 
 Parse the plan's phases, lanes, and `[status: …]` markers. **When linked**, reconcile them
@@ -100,9 +106,10 @@ Confirm with the user, then claim the phase — the mechanism depends on the mod
   (step 3) *are* the conflict check — last-writer-wins is acceptable for single-user local
   mode.
 
-Use the phase's **Suggested branch** from the plan as the branch name. Create/switch to that
-git branch in the worktree — the Conductor worktree, commits, and PR all inherit this name,
-so it must describe the work.
+Use the phase's **Suggested branch** in its declared repository. Create/switch that branch
+from the repository integration tip, never from another repository's lane worktree. If a
+lane moved repositories, remove the previous worktree and create a target-repository
+worktree. The Conductor worktree, commits, and repository PR inherit this name.
 
 **If the suggested branch is missing or non-descriptive** (a bare `phase-N`, an
 `<effort>-phase-N`, or just a number), do not use it — derive a descriptive
@@ -136,12 +143,12 @@ Every "ask the user" gate becomes deterministic:
 - **No lane menu (step 2):** the given phase *is* the choice.
 - **No claim confirmation (step 4), no git prompt** — you are already in the lane worktree
   on the pre-created branch. What happens next depends on the mode:
-  - **Linked** → verify `git branch --show-current` matches the phase's **Suggested
-    branch** (mismatch → `REFUSED`), then claim via `claim_task_and_branch` with that
+  - **Linked** → verify both the checkout origin matches phase `Repository:` and
+    `git branch --show-current` matches **Suggested branch** (mismatch → `REFUSED`), then claim via `claim_task_and_branch` with that
     branch. Re-claiming a branch already linked to your own task is a no-op; never create
     or switch branches, never steal a claim.
-  - **Unlinked** → claim nothing (the orchestrator is the single writer): just verify
-    `git branch --show-current` matches the phase's **Suggested branch** (mismatch →
+  - **Unlinked** → claim nothing (the orchestrator is the single writer): verify checkout
+    origin + `git branch --show-current` match the phase repository/branch (mismatch →
     `REFUSED`), load context, and continue into the work. Do NOT flip `[status: …]` or run
     `loop-plan.sh push` — that's the orchestrator's job via `loop-handoff`.
 - **Refuse instead of asking:** emit a one-line structured refusal `REFUSED: <reason>`,

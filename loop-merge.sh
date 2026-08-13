@@ -27,7 +27,7 @@ else
 fi
 
 WT="" LANE="" VERIFY="" MODE="merge" PUSH=1 NOVERIFY=0
-RUN_ID="" PHASE=""
+RUN_ID="" PHASE="" REPOSITORY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,6 +40,7 @@ while [[ $# -gt 0 ]]; do
   --no-verify) NOVERIFY=1; shift ;;
   --run-id) RUN_ID="$2"; shift 2 ;;
   --phase) PHASE="$2"; shift 2 ;;
+  --repository) REPOSITORY="$2"; shift 2 ;;
   *) echo "loop-merge: unknown arg $1" >&2; exit 1 ;;
   esac
 done
@@ -48,14 +49,16 @@ done
 loop_merge_finish() {
   local rc="$1"
   [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" && "$MODE" != "abort" && "$rc" -eq 0 ]] || return 0
-  jq -cn --arg event phase.merged --arg phase "$PHASE" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{event:$event, phase:$phase, ts:$ts}' | loop_emit "$RUN_ID" event
+  jq -cn --arg event phase.merged --arg phase "$PHASE" --arg repository "$REPOSITORY" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end), ts:$ts}' | loop_emit "$RUN_ID" event
 }
 emit_conflict() { # $1 = conflicting files (newline-separated)
   [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" ]] || return 0
-  jq -cn --arg event merge.conflict --arg phase "$PHASE" --arg detail "$1" \
+  jq -cn --arg event merge.conflict --arg phase "$PHASE" --arg repository "$REPOSITORY" --arg detail "$1" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{event:$event, phase:$phase, detail:$detail, ts:$ts}' | loop_emit "$RUN_ID" event
+    '{event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end),
+      detail:$detail, ts:$ts}' | loop_emit "$RUN_ID" event
 }
 trap 'loop_merge_finish $?' EXIT
 

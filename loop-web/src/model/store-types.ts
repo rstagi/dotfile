@@ -28,6 +28,7 @@ export interface PhaseOverlay {
   hilOpen: boolean;
   /** Latest event-driven problem hint (e.g. "verify-fail", "merge-conflict"); non-promoting. */
   problem: string | null;
+  repository: string;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -72,6 +73,7 @@ export interface FinishInfo {
   finishedAt?: string | null;
   prUrl?: string | null;
   review?: ReviewInfo | null;
+  repositories?: Record<string, { prUrl?: string | null; review?: ReviewInfo | null }>;
 }
 
 /** One event push. Carries the typed vocabulary fields (`outcome`/`exitCode`/…) that the
@@ -80,6 +82,7 @@ export interface FinishInfo {
 export interface EventInfo {
   event: string;
   phase?: string | null;
+  repository?: string | null;
   detail?: string | null;
   ts?: string | null;
   outcome?: string | null;
@@ -103,7 +106,17 @@ export type Ingest =
 // The record (persisted per loop) & derived summary
 // ---------------------------------------------------------------------------------------
 
-export const STORE_SCHEMA_VERSION = 1;
+export const STORE_SCHEMA_VERSION = 2;
+
+export interface RepositoryRecord {
+  sourceRoot: string | null;
+  defaultBranch: string | null;
+  baseSha: string | null;
+  integrationBranch: string | null;
+  integrationWorktree: string | null;
+  prUrl: string | null;
+  review: ReviewInfo | null;
+}
 
 /** Per-loop event cap — drop oldest to bound disk (Resolved decision #2). */
 export const EVENT_CAP = 5000;
@@ -125,6 +138,7 @@ export interface LoopRecord {
   planText: string | null;
   /** Per-phase promotion overlay, keyed by phase number ("1".."N"). */
   phases: Record<string, PhaseOverlay>;
+  repositories: Record<string, RepositoryRecord>;
   /** Merged, deduped, capped event timeline (raw rows; display shape derived downstream). */
   events: RawEvent[];
   review: ReviewInfo | null;
@@ -157,6 +171,12 @@ export interface LoopSummary {
   updatedAt: string | null;
   prUrl: string | null;
   reviewOutcome: string | null;
+  repositories: Array<{
+    slug: string;
+    integrationBranch: string | null;
+    prUrl: string | null;
+    reviewOutcome: string | null;
+  }>;
   phaseCounts: PhaseCounts;
   /** Count of phases with an open, unanswered HIL request (derived from overlays). */
   pendingHil: number;

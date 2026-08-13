@@ -78,7 +78,9 @@ export function App() {
           {selectedNode && (
             <Drawer
               node={selectedNode}
-              pr={active?.effort.pr ?? null}
+              pr={selectedNode.repository
+                ? active?.effort.repositories.find((repository) => repository.slug === selectedNode.repository)?.pr ?? active?.effort.pr ?? null
+                : active?.effort.pr ?? null}
               plan={active?.plan ?? null}
               runId={dataRunId}
               onClose={() => setSelectedId(null)}

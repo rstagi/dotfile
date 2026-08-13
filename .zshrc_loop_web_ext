@@ -2,6 +2,8 @@
 alias loop-web="$HOME/dotfile/loop-web.sh"
 # Plan helper: register/push a plan on the daemon + post progress notes (the local backend).
 alias loop-plan="$HOME/dotfile/loop-plan.sh"
+# Global owner/repo → checkout registry + fresh-remote integration bootstrap.
+alias loop-repo="$HOME/dotfile/loop-repo.sh"
 # Two-tier self-recycling orchestrator: supervise spawns this detached; it respawns SUB instances.
 alias loop-orchestrator="$HOME/dotfile/loop-orchestrator.sh"
 

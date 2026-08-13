@@ -1,4 +1,4 @@
-import type { Plan, PlanPhase, PlanPhaseStatus, LoopConfig, PlanProse } from "./types.ts";
+import type { Plan, PlanPhase, PlanPhaseStatus, LoopConfig, PlanProse, PlanRepository } from "./types.ts";
 
 const PLAN_STATUSES: readonly PlanPhaseStatus[] = [
   "todo",
@@ -19,16 +19,83 @@ const STATUS_TAG = /\[status:\s*([^\]]+?)\s*\]/i;
 export function parsePlan(md: string): Plan {
   const warnings: string[] = [];
   const lines = md.split(/\r?\n/);
+  const loopConfig = parseLoopConfig(sectionLines(lines, "Loop config"));
+  const repositorySection = sectionLines(lines, "Repositories");
+  const repositories = repositorySection
+    ? parseRepositories(repositorySection, loopConfig, warnings)
+    : [legacyRepository(loopConfig)];
+  const phases = parsePhases(sectionLines(lines, "Phases"), repositories, repositorySection != null, warnings);
 
   return {
     name: parseName(lines),
     status: parseHeaderValue(lines, "Status"),
     updatedAt: parseHeaderValue(lines, "Last updated"),
-    loopConfig: parseLoopConfig(sectionLines(lines, "Loop config")),
-    phases: parsePhases(sectionLines(lines, "Phases"), warnings),
+    loopConfig,
+    repositories,
+    phases,
     prose: parseProse(lines),
     warnings,
   };
+}
+
+// --- repositories --------------------------------------------------------------------
+
+const REPOSITORY_HEADING = /^###\s+`?([^`\s]+)`?\s*$/;
+const REPOSITORY_SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function legacyRepository(config: LoopConfig | null): PlanRepository {
+  return {
+    slug: "primary",
+    verify: config?.verify ?? null,
+    integrationBranch: config?.integrationBranch ?? null,
+    pr: config?.pr ?? null,
+  };
+}
+
+function parseRepositories(
+  section: string[],
+  config: LoopConfig | null,
+  warnings: string[],
+): PlanRepository[] {
+  const repositories: PlanRepository[] = [];
+  const seen = new Set<string>();
+  let current: { slug: string; body: string[] } | null = null;
+  const flush = () => {
+    if (!current) return;
+    const slug = current.slug;
+    if (!REPOSITORY_SLUG.test(slug)) {
+      warnings.push(`Invalid repository slug "${slug}" — expected owner/repo`);
+      return;
+    }
+    if (seen.has(slug)) {
+      warnings.push(`Duplicate repository ${slug} — ignoring the repeat`);
+      return;
+    }
+    seen.add(slug);
+    const verify = stripBackticks(bulletValue(current.body, "Verify"));
+    if (!verify) warnings.push(`Repository ${slug}: missing Verify command`);
+    repositories.push({
+      slug,
+      verify,
+      integrationBranch:
+        stripBackticks(bulletValue(current.body, "Integration branch")) ??
+        config?.integrationBranch ??
+        null,
+      pr: normalizePr(bulletValue(current.body, "PR")),
+    });
+  };
+  for (const line of section) {
+    const match = line.match(REPOSITORY_HEADING);
+    if (match) {
+      flush();
+      current = { slug: match[1], body: [] };
+    } else if (current) {
+      current.body.push(line);
+    }
+  }
+  flush();
+  if (repositories.length === 0) warnings.push("Repositories section contains no valid repositories");
+  return repositories;
 }
 
 // --- header --------------------------------------------------------------------------
@@ -89,7 +156,12 @@ function normalizePr(raw: string | null): string | null {
 
 // --- phases --------------------------------------------------------------------------
 
-function parsePhases(section: string[] | null, warnings: string[]): PlanPhase[] {
+function parsePhases(
+  section: string[] | null,
+  repositories: PlanRepository[],
+  multiRepository: boolean,
+  warnings: string[],
+): PlanPhase[] {
   if (!section) return [];
   const phases: PlanPhase[] = [];
 
@@ -104,7 +176,7 @@ function parsePhases(section: string[] | null, warnings: string[]): PlanPhase[] 
       return;
     }
     seen.add(current.num);
-    phases.push(buildPhase(current, warnings));
+    phases.push(buildPhase(current, repositories, multiRepository, warnings));
   };
   for (const line of section) {
     const m = line.match(PHASE_HEADING);
@@ -121,6 +193,8 @@ function parsePhases(section: string[] | null, warnings: string[]): PlanPhase[] 
 
 function buildPhase(
   raw: { num: string; heading: string; body: string[] },
+  repositories: PlanRepository[],
+  multiRepository: boolean,
   warnings: string[],
 ): PlanPhase {
   const laneMatch = raw.heading.match(LANE_TAG);
@@ -132,11 +206,21 @@ function buildPhase(
     .replace(/`/g, "")
     .trim();
 
+  const repository = multiRepository
+    ? stripBackticks(bulletValue(raw.body, "Repository")) ?? ""
+    : "primary";
+  if (multiRepository && !repository) {
+    warnings.push(`Phase ${raw.num}: missing Repository assignment`);
+  } else if (repository && !repositories.some((entry) => entry.slug === repository)) {
+    warnings.push(`Phase ${raw.num}: unknown repository ${repository}`);
+  }
+
   return {
     phase: raw.num,
     title: title || `Phase ${raw.num}`,
     lane: laneMatch ? laneMatch[1].trim() : "A",
     status: normalizeStatus(statusMatch?.[1], raw.num, warnings),
+    repository,
     dependsOn: parseDependsOn(bulletValue(raw.body, "Depends on")),
     suggestedBranch: stripBackticks(bulletValue(raw.body, "Suggested branch")),
     touches: bulletValue(raw.body, "Touches"),

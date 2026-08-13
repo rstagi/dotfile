@@ -3,6 +3,7 @@
 // filesystem-free boundary so corrupt-file tolerance and the event cap are verifiable.
 
 import type { LoopRecord } from "./store-types.ts";
+import type { Snapshot } from "./types.ts";
 import { STORE_SCHEMA_VERSION, EVENT_CAP } from "./store-types.ts";
 import { emptyRecord } from "./reduce-loop.ts";
 
@@ -25,12 +26,62 @@ export function parseStoreFile(text: string): LoopRecord | null {
   if (typeof obj.runId !== "string" || !obj.runId) return null;
 
   const base = emptyRecord(obj.runId);
+  const legacy = obj.schemaVersion == null || obj.schemaVersion < 2;
+  const repositories = obj.repositories && typeof obj.repositories === "object"
+    ? obj.repositories
+    : legacy && (obj.integrationBranch || obj.prUrl || obj.review)
+      ? { primary: {
+          sourceRoot: null,
+          defaultBranch: null,
+          baseSha: null,
+          integrationBranch: obj.integrationBranch ?? null,
+          integrationWorktree: null,
+          prUrl: obj.prUrl ?? null,
+          review: obj.review ?? null,
+        } }
+      : {};
+  const phases = obj.phases && typeof obj.phases === "object"
+    ? Object.fromEntries(Object.entries(obj.phases).map(([phase, overlay]) => [
+        phase,
+        { ...overlay, repository: overlay.repository ?? "primary" },
+      ]))
+    : {};
+  const lastSnapshot = obj.lastSnapshot ? migrateSnapshot(obj.lastSnapshot) : null;
   return {
     ...base,
     ...obj,
     schemaVersion: STORE_SCHEMA_VERSION,
-    phases: obj.phases && typeof obj.phases === "object" ? obj.phases : {},
+    phases,
+    repositories,
+    lastSnapshot,
     events: Array.isArray(obj.events) ? obj.events : [],
     status: obj.status ?? base.status,
   };
+}
+
+function migrateSnapshot(snapshot: Snapshot): Snapshot {
+  const effort = {
+    ...snapshot.effort,
+    repositories: Array.isArray(snapshot.effort?.repositories) ? snapshot.effort.repositories : [],
+  };
+  const plan = snapshot.plan
+    ? {
+        ...snapshot.plan,
+        repositories: Array.isArray(snapshot.plan.repositories) ? snapshot.plan.repositories : [],
+        phaseSummary: (snapshot.plan.phaseSummary ?? []).map((phase) => ({
+          ...phase,
+          repository: phase.repository ?? "primary",
+        })),
+      }
+    : snapshot.plan;
+  const graph = snapshot.graph
+    ? {
+        ...snapshot.graph,
+        nodes: (snapshot.graph.nodes ?? []).map((node) => ({
+          ...node,
+          repository: node.repository ?? null,
+        })),
+      }
+    : snapshot.graph;
+  return { ...snapshot, effort, plan, graph };
 }

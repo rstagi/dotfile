@@ -64,6 +64,9 @@ Gather what actually moved this session and map it onto the plan's phases:
   against the diff, don't assume), `in-progress`, `blocked` (note why), or unchanged.
 - Note any **plan drift**: scope that changed, phases added/split/dropped, new conflicts
   discovered. The plan should reflect reality, not the original guess.
+- Reconcile a phase only against its declared `Repository:` checkout. Work in another
+  repository cannot complete it. Preserve repository blocks and never write checkout paths
+  into the plan.
 
 ### 3. Update the plan markdown
 
@@ -112,7 +115,7 @@ write it too, *second*, so local + daemon + Kestral stay in lockstep:
    `execute_operation("post_progress_comment", { taskId, content })` (2–4 lines,
    conversational outcomes, no file paths). Link the PR with
    `execute_operation("complete_task_with_review", { taskId, prUrl, comment })` when one
-   was opened.
+   was opened. Use only the PR for that phase's repository.
 5. Optionally `execute_operation("trigger_brain_build", { projectId })` if the plan
    changed materially, so the Project Brain absorbs the update.
 
@@ -156,11 +159,11 @@ Differences from the interactive flow (both contexts):
 - **No fallback, no questions:** never fall back to the generic `handoff` skill. If the
   plan can't be located (step 1 exhausted), return `REFUSED: <reason>` to the caller
   instead of asking.
-- **Loop-mode status semantics:** `[status: done]` = merged into the integration branch
-  (the plan's Loop config names it). When linked, the human PR-merge gate applies to the
-  single effort PR, so do NOT call `complete_task_with_review` per phase — use
-  `update_task_status` + `post_progress_comment` only. PR linking happens once at effort
-  completion (the caller does it via `link_pr_to_task`).
+- **Loop-mode status semantics:** `[status: done]` = merged into the phase repository's
+  integration branch. The human PR-merge gate applies per repository, so do NOT call
+  `complete_task_with_review` per phase — use
+  `update_task_status` + `post_progress_comment` only. PR linking happens at effort
+  completion, mapping each phase task to its repository PR.
 - **Progress log:** entries (in `.loop/plan.md`, `.loop/progress.md`, the daemon note, and
   the Kestral comment when linked) carry the lane + engine that did the work (the caller
   passes them), e.g. "via loop lane A (codex)".

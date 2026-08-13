@@ -46,6 +46,7 @@ export interface LoopInput {
 
 const RUN_NAME = /^(.+)-a(\d+)$/;
 const REVIEW_NAME = /^review-a(\d+)$/;
+const REPOSITORY_REVIEW_NAME = /^review-(.+)-a(\d+)$/;
 
 const EMPTY: Runtime = {
   present: false,
@@ -53,7 +54,9 @@ const EMPTY: Runtime = {
   phases: {},
   events: [],
   reviewRuns: [],
+  reviewRunsByRepository: {},
   reviewNote: null,
+  reviewNotes: {},
 };
 
 /**
@@ -66,7 +69,7 @@ export function parseLoop(input: LoopInput): Runtime {
 
   const state = safeJson<StateJson>(input.state);
   const events = parseEvents(input.events);
-  const { reviewRuns, attemptDirs } = splitRuns(input.runs);
+  const { reviewRuns, reviewRunsByRepository, attemptDirs } = splitRuns(input.runs);
 
   // slug → phase-number, from the authoritative state.json.
   const slugToPhase = new Map<string, string>();
@@ -76,7 +79,7 @@ export function parseLoop(input: LoopInput): Runtime {
 
   const attemptsByPhase = groupAttempts(attemptDirs, slugToPhase);
   const hilByPhase = groupHil(input.hil, slugToPhase);
-  const { notesByPhase, reviewNote } = groupNotes(input.notes);
+  const { notesByPhase, reviewNote, reviewNotes } = groupNotes(input.notes);
 
   const phases: Record<string, PhaseRuntime> = {};
   const phaseNums = new Set<string>([
@@ -95,24 +98,37 @@ export function parseLoop(input: LoopInput): Runtime {
     };
   }
 
-  return { present: true, state: state ?? null, phases, events, reviewRuns, reviewNote };
+  return { present: true, state: state ?? null, phases, events, reviewRuns,
+    reviewRunsByRepository, reviewNote, reviewNotes };
 }
 
 // --- run dirs ------------------------------------------------------------------------
 
-function splitRuns(runs: RawRunDir[]): { reviewRuns: ReviewRun[]; attemptDirs: RawRunDir[] } {
+function splitRuns(runs: RawRunDir[]): {
+  reviewRuns: ReviewRun[];
+  reviewRunsByRepository: Record<string, ReviewRun[]>;
+  attemptDirs: RawRunDir[];
+} {
   const reviewRuns: ReviewRun[] = [];
+  const reviewRunsByRepository: Record<string, ReviewRun[]> = {};
   const attemptDirs: RawRunDir[] = [];
   for (const r of runs) {
     const rev = r.name.match(REVIEW_NAME);
     if (rev) {
-      reviewRuns.push({ k: Number(rev[1]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status) });
+      reviewRuns.push({ k: Number(rev[1]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), repository: null });
+    } else if (r.name.match(REPOSITORY_REVIEW_NAME)) {
+      const match = r.name.match(REPOSITORY_REVIEW_NAME)!;
+      const repository = match[1];
+      const list = reviewRunsByRepository[repository] ?? [];
+      list.push({ k: Number(match[2]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), repository });
+      reviewRunsByRepository[repository] = list;
     } else {
       attemptDirs.push(r);
     }
   }
   reviewRuns.sort((a, b) => a.k - b.k);
-  return { reviewRuns, attemptDirs };
+  for (const list of Object.values(reviewRunsByRepository)) list.sort((a, b) => a.k - b.k);
+  return { reviewRuns, reviewRunsByRepository, attemptDirs };
 }
 
 function groupAttempts(
@@ -158,14 +174,17 @@ function groupHil(
 function groupNotes(notes: RawNote[]): {
   notesByPhase: Map<string, string>;
   reviewNote: string | null;
+  reviewNotes: Record<string, string>;
 } {
   const notesByPhase = new Map<string, string>();
   let reviewNote: string | null = null;
+  const reviewNotes: Record<string, string> = {};
   for (const note of notes) {
     if (note.key === "pr-review") reviewNote = note.markdown;
+    else if (note.key.startsWith("pr-review.")) reviewNotes[note.key.slice("pr-review.".length)] = note.markdown;
     else if (/^\d+$/.test(note.key)) notesByPhase.set(note.key, note.markdown);
   }
-  return { notesByPhase, reviewNote };
+  return { notesByPhase, reviewNote, reviewNotes };
 }
 
 // --- small helpers -------------------------------------------------------------------

@@ -62,14 +62,23 @@ export function computeLayout(graph: Graph): Layout {
     acc += h;
   }
   const totalBandH = acc - PAD_Y;
-  const spanY = PAD_Y + totalBandH / 2 - NODE_H / 2;
+  const reviewNodes = graph.nodes.filter((node) => node.kind === "pr-review");
+  const reviewStackH = Math.max(NODE_H, (reviewNodes.length - 1) * STACK_STEP + NODE_H);
+  const contentH = Math.max(totalBandH, reviewStackH + 2 * BAND_PAD);
+  const spanY = PAD_Y + contentH / 2 - NODE_H / 2;
 
   const positions = new Map<string, { x: number; y: number }>();
   for (const n of graph.nodes) {
     const layer = layers.get(n.id) ?? 0;
     const x = PAD_X + layer * COL_W;
-    if (n.kind === "plan" || n.kind === "pr-review") {
+    if (n.kind === "plan") {
       positions.set(n.id, { x, y: spanY });
+      continue;
+    }
+    if (n.kind === "pr-review") {
+      const rank = reviewNodes.findIndex((review) => review.id === n.id);
+      const offset = (rank - (reviewNodes.length - 1) / 2) * STACK_STEP;
+      positions.set(n.id, { x, y: spanY + offset });
       continue;
     }
     const li = laneIndex.get(n.lane ?? lanes[0]) ?? 0;
@@ -81,7 +90,7 @@ export function computeLayout(graph: Graph): Layout {
   }
 
   const width = PAD_X * 2 + maxLayer * COL_W + NODE_W;
-  const height = PAD_Y * 2 + totalBandH;
+  const height = PAD_Y * 2 + contentH;
   const bands: LaneBand[] = lanes.map((lane, index) => ({
     lane,
     label: lane,
@@ -118,6 +127,8 @@ function computeLayers(graph: Graph): Map<string, number> {
     1,
     ...graph.nodes.filter((n) => n.kind === "phase" || n.kind === "integration").map((n) => layers.get(n.id) ?? 1),
   );
-  layers.set("pr-review", phaseMax + 1);
+  for (const node of graph.nodes) {
+    if (node.kind === "pr-review") layers.set(node.id, phaseMax + 1);
+  }
   return layers;
 }

@@ -35,6 +35,7 @@ const STATE_STATUSES: readonly PhaseStateStatus[] = [
 interface BuildOpts {
   now?: number;
   pr?: PrInfo | null;
+  repositories?: Record<string, PrInfo | null>;
 }
 
 /**
@@ -52,6 +53,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     title: plan.name || "Plan",
     phase: null,
     lane: null,
+    repository: null,
     status: mapHeaderStatus(plan.status),
     ui: resolveUi(mapHeaderStatus(plan.status), null, false),
     pulse: null,
@@ -61,10 +63,15 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
   };
 
   const phaseNodes = plan.phases.map((p) => buildPhaseNode(p, runtime?.phases[p.phase], now));
-  const reviewNode = buildReviewNode(opts.pr ?? null, runtime?.reviewNote ?? null);
+  const reviewNodes = plan.repositories.map((repository) => {
+    const legacy = repository.slug === "primary";
+    const info = opts.repositories?.[repository.slug] ?? (legacy ? opts.pr ?? null : null);
+    const note = legacy ? runtime?.reviewNote ?? null : runtime?.reviewNotes[repositoryKey(repository.slug)] ?? null;
+    return buildReviewNode(repository.slug, info, note);
+  });
 
-  const nodes = [planNode, ...phaseNodes, reviewNode];
-  const edges = buildEdges(plan.phases, nodes);
+  const nodes = [planNode, ...phaseNodes, ...reviewNodes];
+  const edges = buildEdges(plan, nodes);
 
   return { nodes, edges, lanes };
 }
@@ -83,6 +90,7 @@ function buildPhaseNode(
     title: phase.title,
     phase: phase.phase,
     lane: phase.lane,
+    repository: phase.repository,
   };
 
   if (!pr) {
@@ -166,7 +174,7 @@ function resolveUi(
 
 // --- PR Review terminal --------------------------------------------------------------
 
-function buildReviewNode(pr: PrInfo | null, noteMarkdown: string | null): GraphNode {
+function buildReviewNode(repository: string, pr: PrInfo | null, noteMarkdown: string | null): GraphNode {
   // Drive the terminal off the STRUCTURED review outcome, never the free-form summary prose
   // (a passing review's summary almost always contains "changes"/"blocking"/"approve").
   let status: PhaseStateStatus = "todo";
@@ -183,11 +191,12 @@ function buildReviewNode(pr: PrInfo | null, noteMarkdown: string | null): GraphN
     ui = "running";
   }
   return {
-    id: REVIEW_ID,
+    id: reviewId(repository),
     kind: "pr-review",
-    title: "PR Review",
+    title: repository === "primary" ? "PR Review" : `${repository} Review`,
     phase: null,
     lane: null,
+    repository,
     status,
     ui,
     pulse: null,
@@ -199,7 +208,8 @@ function buildReviewNode(pr: PrInfo | null, noteMarkdown: string | null): GraphN
 
 // --- edges ---------------------------------------------------------------------------
 
-function buildEdges(phases: PlanPhase[], nodes: GraphNode[]): GraphEdge[] {
+function buildEdges(plan: Plan, nodes: GraphNode[]): GraphEdge[] {
+  const phases = plan.phases;
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const satisfied = (id: string) => {
     const s = byId.get(id)?.status;
@@ -208,7 +218,10 @@ function buildEdges(phases: PlanPhase[], nodes: GraphNode[]): GraphEdge[] {
   const edges: GraphEdge[] = [];
 
   if (phases.length === 0) {
-    edges.push({ id: `${PLAN_ID}->${REVIEW_ID}`, source: PLAN_ID, target: REVIEW_ID, kind: "to-review", blocking: false });
+    for (const repository of plan.repositories) {
+      const target = reviewId(repository.slug);
+      edges.push({ id: `${PLAN_ID}->${target}`, source: PLAN_ID, target, kind: "to-review", blocking: false });
+    }
     return edges;
   }
 
@@ -228,14 +241,27 @@ function buildEdges(phases: PlanPhase[], nodes: GraphNode[]): GraphEdge[] {
   }
 
   // Terminals (nothing depends on them) → PR Review. The integration phase is naturally one.
-  const depended = new Set(phases.flatMap((p) => p.dependsOn));
   for (const p of phases) {
-    if (!depended.has(p.phase)) {
-      edges.push({ id: `${p.phase}->${REVIEW_ID}`, source: p.phase, target: REVIEW_ID, kind: "to-review", blocking: false });
+    const hasSameRepositoryDependent = phases.some(
+      (candidate) => candidate.repository === p.repository && candidate.dependsOn.includes(p.phase),
+    );
+    if (!hasSameRepositoryDependent) {
+      const target = reviewId(p.repository);
+      if (byId.has(target)) {
+        edges.push({ id: `${p.phase}->${target}`, source: p.phase, target, kind: "to-review", blocking: false });
+      }
     }
   }
 
   return edges;
+}
+
+export function reviewId(repository: string): string {
+  return repository === "primary" ? REVIEW_ID : `${REVIEW_ID}:${repository}`;
+}
+
+function repositoryKey(repository: string): string {
+  return repository.replace("/", "--");
 }
 
 // --- lane ordering & small helpers ---------------------------------------------------

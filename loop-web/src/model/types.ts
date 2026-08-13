@@ -43,6 +43,7 @@ export interface StatePhase {
   slug?: string;
   taskId?: string;
   lane?: string;
+  repository?: string;
   branch?: string;
   worktree?: string | null;
   status?: PhaseStateStatus | string;
@@ -51,6 +52,21 @@ export interface StatePhase {
   pid?: number;
   sessionId?: string;
   questionRounds?: number;
+}
+
+export interface StateRepository {
+  sourceRoot?: string | null;
+  defaultBranch?: string | null;
+  baseSha?: string | null;
+  integrationBranch?: string | null;
+  integrationWorktree?: string | null;
+  prUrl?: string | null;
+  review?: {
+    outcome?: string | null;
+    summary?: string | null;
+    reportPath?: string | null;
+    commentUrl?: string | null;
+  } | null;
 }
 
 export type PhaseStateStatus =
@@ -69,6 +85,7 @@ export interface StateJson {
   integrationBranch?: string;
   integrationWorktree?: string;
   prUrl?: string | null;
+  repositories?: Record<string, StateRepository>;
   phases?: Record<string, StatePhase>;
   linkedPrTasks?: string[];
   /** PR-review verdict promoted by the orchestrator (`loop-state.sh set`). Structural (no
@@ -86,6 +103,7 @@ export interface RawEvent {
   ts?: string;
   event?: string;
   phase?: string;
+  repository?: string;
   detail?: string;
 }
 
@@ -102,6 +120,14 @@ export interface LoopConfig {
   concurrency: number | null;
 }
 
+export interface PlanRepository {
+  /** GitHub owner/repo slug. Legacy plans use the synthetic `primary` slug. */
+  slug: string;
+  verify: string | null;
+  integrationBranch: string | null;
+  pr: string | null;
+}
+
 export interface PlanPhase {
   /** Phase number as string ("1".."N"), from the `Phase N` marker. */
   phase: string;
@@ -109,6 +135,7 @@ export interface PlanPhase {
   title: string;
   lane: string;
   status: PlanPhaseStatus;
+  repository: string;
   /** Phase numbers this phase depends on (from "Depends on:"). */
   dependsOn: string[];
   suggestedBranch: string | null;
@@ -132,6 +159,7 @@ export interface Plan {
   status: string | null;
   updatedAt: string | null;
   loopConfig: LoopConfig | null;
+  repositories: PlanRepository[];
   phases: PlanPhase[];
   prose: PlanProse;
   warnings: string[];
@@ -143,6 +171,7 @@ export interface PlanPhaseSummary {
   title: string;
   lane: string;
   status: PlanPhaseStatus;
+  repository: string;
   dependsOn: string[];
 }
 
@@ -152,6 +181,7 @@ export interface PlanOverview {
   status: string | null;
   updatedAt: string | null;
   loopConfig: LoopConfig | null;
+  repositories: PlanRepository[];
   phaseSummary: PlanPhaseSummary[];
   laneCount: number;
   prose: PlanProse;
@@ -197,6 +227,7 @@ export interface ReviewRun {
   k: number;
   runDir: string;
   status: StatusJson | null;
+  repository: string | null;
 }
 
 export interface Runtime {
@@ -205,8 +236,10 @@ export interface Runtime {
   phases: Record<string, PhaseRuntime>;
   events: RawEvent[];
   reviewRuns: ReviewRun[];
+  reviewRunsByRepository: Record<string, ReviewRun[]>;
   /** Reserved notes/pr-review.md steering note. */
   reviewNote: string | null;
+  reviewNotes: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -270,6 +303,7 @@ export interface GraphNode {
   title: string;
   phase: string | null;
   lane: string | null;
+  repository: string | null;
   /** Lifecycle status, normalized across the plan and state.json enums. */
   status: PhaseStateStatus;
   /** The one token the UI colours from (folds status + problem + awaiting). */
@@ -305,6 +339,7 @@ export interface TimelineEvent {
   ts: string | null;
   event: string;
   phase: string;
+  repository: string;
   detail: string;
   glyph: string;
   label: string;
@@ -347,7 +382,15 @@ export interface EffortInfo {
   integrationBranch: string | null;
   updatedAt: string | null;
   pr: PrInfo | null;
+  repositories: RepositoryInfo[];
   runId: string | null;
+}
+
+export interface RepositoryInfo {
+  slug: string;
+  integrationBranch: string | null;
+  verify: string | null;
+  pr: PrInfo | null;
 }
 
 /** Sub-orchestrator context health: recycle count + latest context-window occupancy. */

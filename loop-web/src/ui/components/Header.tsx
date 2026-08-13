@@ -46,6 +46,18 @@ export function Header({
           </b>
         </div>
       )}
+      {(e?.repositories.length ?? 0) > 1 && (e?.repositories.some((repository) => repository.pr?.url) ?? false) && (
+        <div className="hdr__field">
+          <span className="eyebrow">pull requests</span>
+          <b className="hdr__prs">
+            {e!.repositories.filter((repository) => repository.pr?.url).map((repository) => (
+              <a key={repository.slug} href={repository.pr!.url!} target="_blank" rel="noreferrer">
+                {`${repository.slug} ${prLabel(repository.pr!.url!)}`}
+              </a>
+            ))}
+          </b>
+        </div>
+      )}
 
       <div className="hdr__spacer" />
 

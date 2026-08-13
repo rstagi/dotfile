@@ -90,6 +90,16 @@ describe("parseLoop — state & phase mapping", () => {
     // review dir must NOT leak into a phase
     expect(Object.values(rt.phases).every((p) => p.attempts.every((a) => !a.runDir.includes("review")))).toBe(true);
   });
+
+  it("groups repository review runs independently", () => {
+    const rt = parseLoop(input({ runs: [
+      run({ name: "review-acme--api-a1", status: JSON.stringify({ outcome: "done" }) }),
+      run({ name: "review-acme--web-a2", status: JSON.stringify({ outcome: "blocked" }) }),
+    ] }));
+    expect(rt.reviewRunsByRepository["acme--api"][0].status?.outcome).toBe("done");
+    expect(rt.reviewRunsByRepository["acme--web"][0].k).toBe(2);
+    expect(rt.reviewRuns).toEqual([]);
+  });
 });
 
 describe("parseLoop — events.jsonl", () => {
@@ -139,5 +149,14 @@ describe("parseLoop — steering notes", () => {
       input({ state: null, notes: [{ key: "7", markdown: "start here" }] } as Partial<LoopInput>),
     );
     expect(rt.phases["7"].note).toBe("start here");
+  });
+
+  it("routes repository review notes independently", () => {
+    const rt = parseLoop(input({ notes: [
+      { key: "pr-review.acme--api", markdown: "focus API" },
+      { key: "pr-review.acme--web", markdown: "focus UI" },
+    ] }));
+    expect(rt.reviewNotes).toEqual({ "acme--api": "focus API", "acme--web": "focus UI" });
+    expect(rt.reviewNote).toBeNull();
   });
 });

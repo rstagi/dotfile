@@ -117,8 +117,11 @@ function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null
   }
 
   const rt = n.runtime;
-  if (!rt) return null;
   const out = [];
+  if (n.repository && n.repository !== "primary") {
+    out.push(<span key="r" className="node__badge node__badge--repo">{n.repository}</span>);
+  }
+  if (!rt) return out;
   if (rt.attempt) out.push(<span key="a" className="node__badge">a{rt.attempt}</span>);
   if (rt.model)
     out.push(

@@ -15,6 +15,7 @@ function render(over: Partial<GraphNode>): string {
     title: "Build feature",
     phase: "2",
     lane: "A",
+    repository: "acme/api",
     status: "running",
     ui: "running",
     pulse: null,
@@ -36,5 +37,11 @@ describe("PhaseNode steering note badge", () => {
 
   it("omits NOTE when the note is no longer pending", () => {
     expect(render({ notePending: false, noteMarkdown: "stale" })).not.toContain("node__note");
+  });
+});
+
+describe("PhaseNode repository badge", () => {
+  it("renders the repository slug on phase nodes", () => {
+    expect(render({ repository: "acme/api" })).toContain("acme/api");
   });
 });

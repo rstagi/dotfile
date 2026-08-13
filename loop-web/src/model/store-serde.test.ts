@@ -62,6 +62,33 @@ describe("store serde — corrupt tolerance", () => {
     expect(parsed.subRecycles).toBe(0);
     expect(parsed.occupancy).toBeNull();
   });
+
+  it("migrates a v1 scalar PR/review record into the primary repository", () => {
+    const parsed = parseStoreFile(JSON.stringify({
+      schemaVersion: 1,
+      runId: "legacy",
+      integrationBranch: "feat/legacy",
+      prUrl: "https://github.com/acme/app/pull/1",
+      review: { outcome: "done", summary: "ok", reportPath: null, commentUrl: null },
+      phases: { "1": { rank: "done", hilOpen: false, problem: null } },
+    }))!;
+    expect(STORE_SCHEMA_VERSION).toBe(2);
+    expect(parsed.repositories.primary).toMatchObject({
+      integrationBranch: "feat/legacy",
+      prUrl: "https://github.com/acme/app/pull/1",
+    });
+    expect(parsed.phases["1"].repository).toBe("primary");
+  });
+
+  it("migrates archived v1 snapshot singular effort data", () => {
+    const parsed = parseStoreFile(JSON.stringify({
+      schemaVersion: 1,
+      runId: "archived",
+      lastSnapshot: { effort: { name: "Old", integrationBranch: "feat/old", pr: null }, graph: { nodes: [] } },
+    }))!;
+    expect(parsed.lastSnapshot?.effort.repositories).toEqual([]);
+    expect(parsed.schemaVersion).toBe(2);
+  });
 });
 
 describe("store serde — event cap", () => {

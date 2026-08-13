@@ -25,6 +25,23 @@ const PLAN = `# Widget revamp — Multi-Phase Plan
 - **Depends on:** Phase 1
 `;
 
+const MULTI_REPO_PLAN = `# Split — Multi-Phase Plan
+## Loop config
+- **Integration branch:** \`feat/shared\`
+## Repositories
+### \`acme/api\`
+- **Verify:** \`npm test\`
+### \`acme/web\`
+- **Verify:** \`npm run check\`
+## Phases
+### Phase 1 — API \`[lane: A]\` \`[status: done]\`
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+### Phase 2 — Web \`[lane: A]\` \`[status: done]\`
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 1
+`;
+
 function run(over: Partial<RawRunDir> & { name: string }): RawRunDir {
   return { meta: null, status: null, spawnLog: null, transcriptMtime: null, metaMtime: null, ...over };
 }
@@ -101,6 +118,26 @@ describe("buildSnapshot — PR info & review preference", () => {
     expect(snap.effort.pr?.outcome).toBe("done");
     expect(snap.effort.pr?.reportPath).toBeNull();
     expect(snap.effort.pr?.reviewAttempt).toBe(2);
+  });
+
+  it("builds independent repository PR/review summaries", () => {
+    const state = JSON.stringify({
+      repositories: {
+        "acme/api": { integrationBranch: "feat/api", prUrl: "https://github.com/acme/api/pull/1", review: { outcome: "done", summary: "api ok" } },
+        "acme/web": { integrationBranch: "feat/shared", prUrl: "https://github.com/acme/web/pull/2", review: { outcome: "blocked", summary: "web fix" } },
+      },
+      phases: {
+        "1": { repository: "acme/api", status: "merged" },
+        "2": { repository: "acme/web", status: "merged" },
+      },
+    });
+    const snap = buildSnapshot(parsePlan(MULTI_REPO_PLAN), parseLoop(loop({ state })), { now: NOW });
+    expect(snap.effort.repositories.map((repo) => [repo.slug, repo.pr?.outcome])).toEqual([
+      ["acme/api", "done"],
+      ["acme/web", "blocked"],
+    ]);
+    expect(snap.effort.pr).toBeNull();
+    expect(snap.problems.some((problem) => problem.nodeId === "pr-review:acme/web")).toBe(true);
   });
 });
 

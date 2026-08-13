@@ -23,6 +23,7 @@ export function Timeline({ events }: { events: TimelineEvent[] }) {
                   <div className="evt__row1">
                     <span className="evt__label">{e.label}</span>
                     {e.phase && <span className="evt__phase">P{e.phase}</span>}
+                    {e.repository && <span className="evt__phase">{e.repository}</span>}
                     <span className="evt__time">{fmtTime(e.ts)}</span>
                   </div>
                   {e.detail && <div className="evt__detail">{e.detail}</div>}

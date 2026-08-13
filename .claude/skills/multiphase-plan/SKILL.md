@@ -69,6 +69,12 @@ Author the plan in the **canonical plan format** (see
   `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
   refresh endpoint"), never "Phase 1" or a vague label — the title seeds the Kestral task
   title and usually the PR title.
+- **Repositories** — resolve every touched checkout to its GitHub `owner/repo` slug from
+  its `origin`; declare it under `## Repositories`, give it a mandatory repository-wide
+  `Verify:` command, and put `Repository:` on every phase. One phase belongs to one
+  repository; a lane may hop repositories. Store no checkout paths in the plan. Use the
+  shared integration branch default unless a repository needs an override. Newly authored
+  plans always use repository blocks; the legacy scalar format is read-only compatibility.
 - **Slices, not layers** — for full-stack work, each phase is a **vertical slice**: the
   backend *and* the frontend of one user-visible capability ship in the same phase, never
   "all the backend phases, then all the frontend phases". (Within a slice the backend is
@@ -85,10 +91,10 @@ Author the plan in the **canonical plan format** (see
   runs it and what it can start on immediately; the **integration points** (where lanes
   merge and who owns the merge); and a **conflict watch** listing files/areas that multiple
   lanes touch. If there's one lane, omit this section.
-- **Verify** per phase — where one exists, a runnable **Verify:** command (exit 0 = pass)
-  that checks the phase's *Done when*. Ask the user for the effort-wide verify command, and
-  whether this effort will run under `loop-execute` — if yes, emit the **Loop config**
-  section per `references/plan-format.md`.
+- **Verify** — every repository has a runnable **Verify:** command (exit 0 = pass). A
+  phase may override it with a narrower command that checks its *Done when*. Ask the user
+  for missing repository gates; never invent them. When the effort runs under
+  `loop-execute`, emit Loop config + Repositories per `references/plan-format.md`.
 - **Suggested branch** per phase — a **descriptive** `<type>/<imperative-outcome-slug>`
   (e.g. `feat/oauth-token-refresh`, `refactor/invoice-retry-state`), so `loop-pickup` and
   `kestral-sync` claim it deterministically and the worktree/commits/PR all read clearly.
@@ -103,7 +109,8 @@ Author the plan in the **canonical plan format** (see
 Two phases may go in **different lanes** only when **all three** hold. If any fails, keep
 them in the **same** lane:
 
-1. **No dependency** — neither needs the other's output; both can start from current `main`.
+1. **No dependency** — neither needs the other's output; both can start from the freshly
+   fetched GitHub default branch of their respective repositories.
 2. **Low file contention** — they don't edit the same files/modules. Incidental overlap
    (a shared type, a config line) is tolerable only if a tiny, one-time interface is
    settled up front and listed in the conflict watch — not if they'd fight over the same

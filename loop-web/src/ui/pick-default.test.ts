@@ -12,6 +12,7 @@ function entry(over: Partial<LoopListEntry> & { runId: string }): LoopListEntry 
     updatedAt: null,
     prUrl: null,
     reviewOutcome: null,
+    repositories: [],
     phaseCounts: { total: 0, todo: 0, running: 0, blocked: 0, done: 0, merged: 0 },
     pendingHil: 0,
     ...over,

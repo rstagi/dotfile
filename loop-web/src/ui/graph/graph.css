@@ -138,6 +138,11 @@
   border-color: rgba(47, 243, 208, 0.22);
 }
 
+.node__badge--repo {
+  color: var(--aqua);
+  border-color: var(--aqua-deep);
+}
+
 /* accent driven by --accent set inline per ui state */
 .node[data-ui] {
   border-left-color: var(--accent);

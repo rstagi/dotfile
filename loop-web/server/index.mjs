@@ -257,7 +257,9 @@ function handle(req, res) {
   let m;
   if ((m = p.match(/^\/api\/loops\/([^/]+)\/plan$/))) return handleLoopPlan(decodeURIComponent(m[1]), res);
   if ((m = p.match(/^\/api\/loops\/([^/]+)\/snapshot$/))) return handleLoopSnapshot(decodeURIComponent(m[1]), res);
-  if ((m = p.match(/^\/api\/loops\/([^/]+)\/review$/))) return handleReview(decodeURIComponent(m[1]), res);
+  if ((m = p.match(/^\/api\/loops\/([^/]+)\/review$/))) {
+    return handleReview(decodeURIComponent(m[1]), u.searchParams.get("repository"), res);
+  }
   if ((m = p.match(/^\/api\/loops\/([^/]+)\/attempt\/(.+)\/(\d+)\/?$/)))
     return handleAttempt(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], res);
 
@@ -373,11 +375,13 @@ function handleLoopSnapshot(runId, res) {
   sendJsonText(res, entry.lastSnapshotJson);
 }
 
-function handleReview(runId, res) {
+function handleReview(runId, repository, res) {
   const entry = loops.get(runId);
   if (!entry) return json(res, 404, { error: "no such loop", runId });
   const rec = entry.record;
-  const review = rec.review;
+  const repositoryRecord = repository ? rec.repositories?.[repository] : null;
+  if (repository && !repositoryRecord) return json(res, 404, { error: "no such repository", runId, repository });
+  const review = repositoryRecord?.review ?? rec.review;
   let reportMarkdown = null;
   if (review?.reportPath && rec.loopDir) {
     const abs = path.isAbsolute(review.reportPath) ? path.resolve(review.reportPath) : path.resolve(rec.loopDir, review.reportPath);
@@ -388,7 +392,8 @@ function handleReview(runId, res) {
     summary: review?.summary ?? null,
     reportMarkdown,
     commentUrl: review?.commentUrl ?? null,
-    prUrl: rec.prUrl ?? null,
+    prUrl: repositoryRecord?.prUrl ?? rec.prUrl ?? null,
+    repository: repository ?? null,
   });
 }
 

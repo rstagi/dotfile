@@ -50,6 +50,29 @@ const TWO_LANE = `# Two lanes — Multi-Phase Plan
 - **Depends on:** Phase 1, Phase 2
 `;
 
+const MULTI_REPO = `# Split — Multi-Phase Plan
+
+## Loop config
+- **Integration branch:** \`feat/split\`
+
+## Repositories
+### \`acme/api\`
+- **Verify:** \`npm test\`
+### \`acme/web\`
+- **Verify:** \`npm test\`
+
+## Phases
+### Phase 1 — API base \`[lane: A]\` \`[status: done]\`
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+### Phase 2 — API finish \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/api\`
+- **Depends on:** Phase 1
+### Phase 3 — Web \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 1
+`;
+
 function node(g: Graph, id: string) {
   const n = g.nodes.find((x) => x.id === id);
   if (!n) throw new Error(`no node ${id} (have: ${g.nodes.map((x) => x.id).join(",")})`);
@@ -74,7 +97,8 @@ function runtime(phases: Record<string, Partial<PhaseRuntime>>): Runtime {
   for (const [k, v] of Object.entries(phases)) {
     out[k] = { phase: k, state: null, attempts: [], hil: null, note: null, ...v };
   }
-  return { present: true, state: null, phases: out, events: [], reviewRuns: [], reviewNote: null };
+  return { present: true, state: null, phases: out, events: [], reviewRuns: [],
+    reviewRunsByRepository: {}, reviewNote: null, reviewNotes: {} };
 }
 
 describe("buildGraph — static shape (no runtime)", () => {
@@ -130,6 +154,27 @@ describe("buildGraph — lanes & integration", () => {
     const eFrom1 = g.edges.find((e) => e.source === "1" && e.target === "3")!;
     expect(eFrom2.blocking).toBe(true);
     expect(eFrom1.blocking).toBe(false);
+  });
+});
+
+describe("buildGraph — repositories", () => {
+  const graph = buildGraph(parsePlan(MULTI_REPO), null, {
+    repositories: {
+      "acme/api": pr({ url: "https://github.com/acme/api/pull/1", outcome: "done", reviewPresent: true }),
+      "acme/web": pr({ url: "https://github.com/acme/web/pull/2", outcome: "blocked", reviewPresent: true }),
+    },
+  });
+
+  it("adds one independently-stateful review node per repository", () => {
+    expect(node(graph, "pr-review:acme/api")).toMatchObject({ repository: "acme/api", ui: "done" });
+    expect(node(graph, "pr-review:acme/web")).toMatchObject({ repository: "acme/web", ui: "problem" });
+  });
+
+  it("connects each repository's final phases only to its review", () => {
+    expect(hasEdge(graph, "2", "pr-review:acme/api")).toBe(true);
+    expect(hasEdge(graph, "3", "pr-review:acme/web")).toBe(true);
+    expect(hasEdge(graph, "1", "pr-review:acme/api")).toBe(false);
+    expect(hasEdge(graph, "3", "pr-review:acme/api")).toBe(false);
   });
 });
 

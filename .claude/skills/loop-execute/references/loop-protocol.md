@@ -2,14 +2,14 @@
 
 The shared contract between the `loop-execute` orchestrator skill, the `loop-*.sh` scripts
 (`~/dotfile/loop-runner.sh`, `loop-merge.sh`, `loop-notify.sh`, `loop-state.sh`,
-`loop-plan.sh`, `loop-models.conf`), and the `--auto` modes of `loop-pickup` / `loop-handoff` /
+`loop-plan.sh`, `loop-repo.sh`, `loop-models.conf`), and the `--auto` modes of `loop-pickup` / `loop-handoff` /
 `pr-review`. Everything machine-parsed lives here; change it in lockstep everywhere.
 
 ## Roles
 
 - **Orchestrator** — owns the plan **document** (sole `update_document` writer — parallel
   repushes are last-writer-wins), post-merge task status flips, PR creation/linking, all
-  pushes to the integration branch, scheduling, escalation, HIL. In the two-tier model this
+  pushes to repository integration branches, scheduling, escalation, HIL. In the two-tier model this
   role is **split across two modes** (§ Two-tier orchestration): a THIN `supervise` main (the
   interactive Claude Code session the user talks to — preflight/init/lock, HIL answering,
   finalization) and disposable headless `sub` instances that do the heavy scheduling/merge/
@@ -21,7 +21,7 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   safe boundary (§ Two-tier orchestration). NEVER runs pr-review; NEVER `AskUserQuestion`
   (HIL → files only). Its final act is writing `sub/status.json`.
 - **Merge-runner** — a detached runner (loop-runner.sh style) the SUB spawns on a
-  `loop-merge.sh` exit-2 conflict: it resolves in the integration worktree via
+  `loop-merge.sh` exit-2 conflict: it resolves in the target repository integration worktree via
   `resolving-merge-conflicts` honoring both phases' *Done when*, then `loop-merge.sh
   --finish`, then writes `status.json`. Keeps the conflict diff out of the SUB's context
   (§ Merge policy — skeleton there).
@@ -40,7 +40,7 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 
 ## Directory layout
 
-State lives in the orchestrator's checkout of the target repo (add `.loop/` to
+State lives in the launching coordinator checkout (add `.loop/` to
 `.gitignore`):
 
 ```
@@ -48,7 +48,7 @@ State lives in the orchestrator's checkout of the target repo (add `.loop/` to
   state.json                 # orchestrator bookkeeping (loop-state.sh, atomic writes)
   plan.md                    # the plan document, beside state.json (register/push planText source)
   progress.md                # unlinked-mode progress stream (loop-plan.sh note / handoff --auto append)
-  events.jsonl               # append-only journal: {ts, event, phase, detail}
+  events.jsonl               # append-only journal: {ts, event, phase, repository?, detail}
   lock/                      # mkdir-lock; owner = run id (sessions have no stable pid);
                              # same owner re-locks freely, another owner needs --force
   runs/<phase-slug>-a<K>/    # one dir per attempt K of a phase
@@ -58,10 +58,10 @@ State lives in the orchestrator's checkout of the target repo (add `.loop/` to
     status.json              # runner-written result (schema below)
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
-  runs/review-a<K>/report.md # full pr-review report (also posted as the PR comment)
+  runs/review-<owner--repo>-a<K>/report.md # per-repository pr-review report
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
-  notes/<key>.md             # user steering notes (phase number | pr-review); persist until done
+  notes/<key>.md             # phase number | pr-review.<owner--repo>; persist until done
   sub/                       # two-tier self-recycling orchestrator runtime (§ Two-tier orchestration)
     transcript-<k>.jsonl     # SUB instance k's stream-json (mtime = heartbeat; occupancy source)
     status.json              # SUB → loop-orchestrator.sh: recycle|complete|fatal|blocked
@@ -74,10 +74,12 @@ State lives in the orchestrator's checkout of the target repo (add `.loop/` to
 
 Worktrees live outside the repo (ralph convention):
 
-- Lane: `~/.loop/worktrees/<repo>-<lane-branch-slug>` on the phase's Suggested
-  branch, cut from the **current integration-branch tip**.
-- Integration: `~/.loop/worktrees/<repo>-integration` on the integration branch.
-  All merges and pushes happen only here.
+- Lane: `~/.loop/worktrees/<runId>/<owner--repo>/<lane-branch-slug>` on the phase's
+  Suggested branch, cut from that repository's current integration tip. A lane repository
+  hop removes the old worktree; reuse is same-repository consecutive phases only.
+- Integration: `~/.loop/worktrees/<runId>/<owner--repo>/integration`. `loop-repo.sh
+  prepare` fetches GitHub's default ref and creates it from the exact fetched SHA. All
+  repository merges/pushes happen only here.
 
 ## Daemon & events
 
@@ -89,18 +91,20 @@ on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
 Emission is **best-effort** — a `curl` failure never fails the caller.
 The daemon also reads size-capped `notes/*.md` content on each reconcile. NOTE badges are
 file-derived but completion-aware: a phase note is pending only while its phase is not
-`done|merged`; `pr-review` is pending only until the review finishes. This makes missed
+`done|merged`; `pr-review.<owner--repo>` is pending only until that review finishes. This makes missed
 best-effort file cleanup harmless.
 
 Endpoints (POST bodies are JSON built injection-safely with `jq`):
 
 - `POST /api/loops/:runId/register` `{ loopDir, planFile?, effort?, projectId?, integrationBranch?, startedAt?, planText? }` — server reads plan.md from `planFile` if `planText` omitted.
 - `POST /api/loops/:runId/state` — the full state.json contents.
-- `POST /api/loops/:runId/event` `{ event, phase?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — the server folds the body **verbatim** (no field whitelist), so `sub.*` events carry their extra fields straight into the model.
-- `POST /api/loops/:runId/finish` `{ status?, finishedAt?, prUrl?, review?:{outcome,summary,reportPath,commentUrl} }`.
+- `POST /api/loops/:runId/event` `{ event, phase?, repository?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — folded verbatim.
+- `POST /api/loops/:runId/finish` accepts v2 `{ status?, finishedAt?, repositories:{slug:{prUrl?,review?}} }`; legacy scalar `prUrl/review` remains accepted.
 - `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, planText }` — how a fresh checkout fetches the plan with **no worktree needed**.
 - `POST /api/loops/:runId/note` `{ key, markdown }` to write or `{ key, clear:true }` to delete a steering note; rejects archived loops.
-- `GET /api/loops` (selector) · `GET /events?runId=` (per-loop SSE) · `/api/loops/:runId/{snapshot,review,attempt/:slug/:k}` · `/api/health`.
+- `GET /api/loops` (plural repository summaries) · `GET /events?runId=` ·
+  `/api/loops/:runId/review?repository=<owner/repo>`; bare `/review` is the legacy alias ·
+  `/api/loops/:runId/{snapshot,attempt/:slug/:k}` · `/api/health`.
 
 A register-only record shows status **`planned`** (a plan on the daemon with no run yet):
 `multiphase-plan` registers the plan (**`planned`**) before any run; the first state push or
@@ -110,13 +114,13 @@ event flips it to **`active`**.
 
 | event | emitted by | fields |
 |-------|-----------|--------|
-| `phase.attempt.start` | loop-runner.sh (after mkdir RUN_DIR) | phase, engine, model |
-| `phase.attempt.finish` | loop-runner.sh (EXIT trap) | phase, outcome, exitCode, engine, model |
-| `phase.merged` | loop-merge.sh (EXIT trap, rc==0) | phase |
-| `merge.conflict` | loop-merge.sh (conflict branch) | phase, detail |
+| `phase.attempt.start` | loop-runner.sh (after mkdir RUN_DIR) | phase, repository, engine, model |
+| `phase.attempt.finish` | loop-runner.sh (EXIT trap) | phase, repository, outcome, exitCode, engine, model |
+| `phase.merged` | loop-merge.sh (EXIT trap, rc==0) | phase, repository |
+| `merge.conflict` | loop-merge.sh (conflict branch) | phase, repository, detail |
 | `hil.raise` / `hil.resolve` | orchestrator (loop-state.sh log) | phase |
-| `review.finish` | orchestrator | outcome, summary |
-| `loop.finish` | orchestrator (loop-state.sh finish) | prUrl |
+| `review.finish` | orchestrator | repository, outcome, summary |
+| `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto (unlinked) | phase, detail |
@@ -136,7 +140,7 @@ so they ride the live daemon POST exclusively.
 promotes a phase to **done even if state.json bookkeeping lags** (fixes "done phases stuck at
 running/todo"). Ranks never regress — a phase never un-completes in the UI (v1).
 
-## state.json schema
+## state.json schema v2
 
 `runId` == the plan's `planId` (loop-execute adopts it). Crash-resume reads exactly these
 fields — keep the shape:
@@ -145,12 +149,17 @@ fields — keep the shape:
 {
   "runId": "loop-<effort-slug>-<date>-<HHMMSS|rand>",
   "effort": "...", "projectId": "...", "workContextId": "...",
-  "integrationBranch": "feat/<effort-slug>", "integrationWorktree": "<abs path>",
-  "prUrl": null,
-  "review": { "outcome": "...", "summary": "...",
-              "reportPath": "runs/review-a<K>/report.md", "commentUrl": "..." },
+  "repositories": {
+    "owner/api": {
+      "sourceRoot": "<mapped checkout>", "defaultBranch": "main", "baseSha": "<sha>",
+      "integrationBranch": "feat/<effort-slug>",
+      "integrationWorktree": "<abs path>", "prUrl": null,
+      "review": { "outcome": "done|question|blocked", "summary": "...",
+                  "reportPath": "runs/review-owner--api-a1/report.md", "commentUrl": "..." }
+    }
+  },
   "phases": {
-    "3": { "slug": "<task-slug>", "taskId": "...", "lane": "A",
+    "3": { "slug": "<task-slug>", "taskId": "...", "lane": "A", "repository": "owner/api",
            "branch": "feat/api-client-token-refresh", "worktree": "<abs path or null>",
            "status": "todo|claimed|running|merged|blocked|done",
            "attempt": 2, "runDir": ".loop/runs/<phase-slug>-a2",
@@ -159,6 +168,29 @@ fields — keep the shape:
   "linkedPrTasks": []
 }
 ```
+
+Legacy scalar `integrationBranch/integrationWorktree/prUrl/review` state migrates to the
+synthetic `primary` repository. Singular daemon projections remain for legacy consumers.
+Global scheduling follows the DAG/lane/concurrency cap; merge serialization is global, but
+worktree, verify, PR, and review operations always target the phase repository.
+
+## Repository registry and bootstrap
+
+`~/.loop/repos.json` is an atomic JSON map from GitHub `owner/repo` to local checkout root.
+It is reusable machine state, never plan content.
+
+```sh
+loop-repo.sh map <owner/repo> <checkout-root>
+loop-repo.sh get <owner/repo>
+loop-repo.sh list
+loop-repo.sh unmap <owner/repo>
+loop-repo.sh check --repo <owner/repo> --integration-branch <branch>
+loop-repo.sh prepare --repo <owner/repo> --run-id <runId> --integration-branch <branch>
+```
+
+`check` validates mapping, SSH/HTTPS GitHub origin, GitHub default branch, and branch/worktree
+collisions. `prepare` fetches the remote default ref, records its exact SHA, and creates the
+run/repository-scoped integration worktree from that SHA.
 
 ## Runner spawn (how the orchestrator launches loop-runner.sh)
 
@@ -184,8 +216,9 @@ keep the *interactive* chat under a hard ~200k ceiling, `loop-execute` runs in o
   preflight/init/lock, then spawn ONE detached `loop-orchestrator.sh` and poll **compact
   local** state (`loop-state.sh get '.phases|map(.status)'`, not the fat daemon snapshot) for
   a 2-3 line progress read. It answers HIL from the on-disk brief and, on `sub/PHASES_DONE`,
-  finalizes (spawn the review-runner, promote its verdict, `gh pr ready`, link PRs,
-  `loop-state.sh finish`, unlock). It spawns **only** the orchestrator and the review-runner;
+  finalizes (spawn bounded parallel repository review-runners, promote all verdicts,
+  `gh pr ready`, link repository PRs, one `loop-state.sh finish`, unlock). It spawns only
+  the orchestrator and final review-runners;
   it is designed never to need recycling (if it ever did, `state.json` is its backstop — a
   main auto-summary cannot lose the loop).
 - **headless `sub`** — a disposable SUB instance entered via `loop-execute resume`. Does the
@@ -414,13 +447,13 @@ you must stop early, skip the handoff and write status.json with outcome questio
 
 ## Merge policy (loop-merge.sh, serialized — one merge at a time)
 
-`loop-merge.sh --worktree <int-wt> --lane-branch <b> --verify-cmd '<effort verify>'`
+`loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --repository <owner/repo> --verify-cmd '<repository verify>'`
 (the script refuses to push unverified without an explicit `--no-verify`):
 
 - **0** — merged, verified, pushed (also idempotent `{"already":true}` for a re-merge).
 - **2** — textual conflict, merge left in progress, `{"conflicts":[files]}` on stdout.
   Resolution honors both phases' *Done when* with `resolving-merge-conflicts`, then
-  `loop-merge.sh --worktree <int-wt> --finish --verify-cmd '<effort verify>'`; not confident →
+  `loop-merge.sh --worktree <repo-int-wt> --finish --repository <owner/repo> --verify-cmd '<repository verify>'`; not confident →
   `--abort` + HIL. **Who resolves depends on the mode:** a single-tier `supervise` does it
   inline; a **`sub`** spawns a **detached merge-runner** (skeleton below) so the conflict diff
   never enters the SUB's context — the SUB promotes on the next tick when `loop-merge`'s EXIT
@@ -431,9 +464,9 @@ you must stop early, skip the handoff and write status.json with outcome questio
   done; otherwise escalate). Occurs after crash-resume repairs.
 - **1** — merge failed to start (dirty integration worktree) — clean it, don't "resolve".
 
-**First successful merge → open the draft PR** (`gh pr create --draft` from the
-integration branch); later merges just push. Only the orchestrator pushes the integration
-branch (the **merge-runner** is the one exception — it is an orchestrator-delegate finishing a
+**First successful merge per repository → open its draft PR** (`gh pr create --draft` from
+that integration branch); later repository merges just push. Only the orchestrator pushes
+integration branches (the **merge-runner** is the one exception — it is an orchestrator-delegate finishing a
 serialized merge on the orchestrator's behalf, never a phase runner); plain `git push`
 (fast-forward only — never force). Lane branches never get pushed. Cleanup order: switch or
 remove the lane worktree **first**, then `git branch -d <lane-branch>` (a branch checked out in
@@ -451,9 +484,9 @@ runner's context, never the SUB's. It runs on the **integration worktree** (not 
 
 ```sh
 nohup ~/dotfile/loop-runner.sh --chain escalate \
-  --worktree <int-wt> --run-dir <runs/merge-<phase-slug>-a1> \
+  --worktree <repo-int-wt> --run-dir <runs/merge-<phase-slug>-a1> \
   --prompt-file <runs/merge-<phase-slug>-a1/prompt.md> \
-  --run-id <runId> --phase <N> > <runDir>/spawn.log 2>&1 &
+  --run-id <runId> --phase <N> --repository <owner/repo> > <runDir>/spawn.log 2>&1 &
 echo $! > <runDir>/pid; disown
 ```
 
@@ -461,19 +494,19 @@ Prompt.md skeleton:
 
 ```
 You are a loop-engineering MERGE runner: fully non-interactive. You are in the INTEGRATION
-worktree <int-wt> on branch <integration>, mid-merge of lane <lane-branch> (phase <N>) — a
+worktree <repo-int-wt> on branch <integration>, mid-merge of lane <lane-branch> (phase <N>) — a
 textual conflict is in progress (`git status` shows unmerged paths). RUN_DIR is <abs path>.
 
 TASK: resolve the conflict with the `resolving-merge-conflicts` skill, honoring BOTH phases'
 *Done when* (the merging phase <N> and whatever is already on the integration branch — do not
 regress either). Never widen scope beyond conflict resolution. Then finish + verify + push:
 
-  ~/dotfile/loop-merge.sh --worktree <int-wt> --finish \
-    --verify-cmd '<effort verify>' --run-id <runId> --phase <N>
+  ~/dotfile/loop-merge.sh --worktree <repo-int-wt> --finish --repository <owner/repo> \
+    --verify-cmd '<repository verify>' --run-id <runId> --phase <N>
 
 - exit 0 → the merge is committed, verified, pushed; `phase.merged` already fired.
 - exit 2 → conflicts remain unresolved: keep resolving, or if not confident, abort
-  (`git -C <int-wt> merge --abort`) and stop with a question.
+  (`git -C <repo-int-wt> merge --abort`) and stop with a question.
 - exit 4 → committed but Verify failed (semantic conflict): stop with outcome "blocked".
 
 RULES: never touch files outside the integration worktree; never open PRs or update the plan
@@ -516,11 +549,11 @@ operation has an unlinked (local) and a linked (Kestral) form:
 | Claim (runner, via `loop-pickup --auto`) | orchestrator pre-creates the lane branch; the phase flips to `claimed` in state.json (`loop-state.sh`) + a `[status: claimed]` marker in `.loop/plan.md`; lane collisions are caught by the branch/worktree conflict-check, not a task claim. | `claim_task_and_branch { taskId, branchName: <lane branch> }` on the pre-created branch — re-claiming your own branch is a no-op; a 409 means someone else owns it → `REFUSED` → status.json `blocked` → HIL, never steal. The claim performs no git action. |
 | Runner handoff (via `loop-handoff --auto ... status:in-progress`) | `loop-plan.sh note --plan-id <runId> --phase <N> --body <progress>` (a `progress.note` event) + update the `[status: ...]` marker in the local `.loop/plan.md` copy; **task-scoped only** — no plan-doc rewrite, no PR links. | task progress comment + status kept task-scoped; **never** `update_document`, never PR links. |
 | Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + `loop-plan.sh push` (re-register/overwrite the plan on the daemon) + a `progress.note`. | `update_task_status` (statusKey via `list_statuses`) + `post_progress_comment` (2–4 conversational lines, noting lane + engine) + flip `[status: done]` in the plan doc + append Progress log + `update_document`. |
-| PR link (orchestrator, at effort completion, not at PR creation) | record `prUrl` in state.json + push it to the daemon (state push / `loop-state.sh finish`) so it shows on the loop graph; no per-task link. | `link_pr_to_task { taskId, prUrl }` once for **every** phase task (tasks carry plural prLinks; dedup via state.json `linkedPrTasks`). |
-| Completion (orchestrator) | `loop-state.sh finish` (a `loop.finish` event, `prUrl`); plan `Status: integrating` marker in `.loop/plan.md` + `loop-plan.sh push`; the daemon promotes the loop. | statuses → the workspace's awaiting-review status; plan `Status: integrating`; `trigger_brain_build`. |
+| PR link (orchestrator, at effort completion) | record each `repositories[slug].prUrl`; no per-task link. | `link_pr_to_task` once per phase task using only its repository PR (dedup via state). |
+| Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every reviewer finishes; plan remains `integrating`. | statuses → awaiting review; plan `integrating`; `trigger_brain_build`. |
 
-"done" in loop mode = merged into the integration branch (the human PR-merge gate applies to
-the single effort PR).
+"done" in loop mode = merged into the phase repository's integration branch. Humans merge
+one PR per repository.
 
 ## Crash-resume
 
@@ -532,7 +565,7 @@ truth for code, the plan/daemon for claims + phase status, state for attempt boo
 - attempt marked running: pid alive → re-attach (watch transcript mtime; stale >25m → kill,
   treat as 124); pid dead + status.json present → process it normally; pid dead + none →
   failed attempt.
-- `MERGE_HEAD` in integration worktree → finish or abort the merge before anything else.
+- `MERGE_HEAD` in any repository integration worktree → finish or abort before anything else.
 - Phase `done` in the plan/daemon (or Kestral when linked) but lane branch not merged (or
   vice versa) → repair from git.
 - Runners are spawned detached, so they survive orchestrator death; never double-spawn a

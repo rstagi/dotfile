@@ -3,9 +3,9 @@ name: loop-execute
 description: >-
   Loop engineering: autonomously execute a PUBLISHED multi-phase plan (registered on the Loop
   daemon; Kestral link optional) end-to-end — spawn a fresh headless runner per phase (Codex
-  or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into ONE
-  integration branch, escalate stuck work (retry → stronger model → human-in-the-loop pause),
-  open the single effort PR, run pr-review on it, then stop for the human to review and merge.
+  or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into its
+  repository integration branch, escalate stuck work (retry → stronger model → HIL pause),
+  open one effort PR per repository, review each, then stop for humans to merge.
   By default the heavy orchestration runs in a detached, self-recycling sub-orchestrator so
   the interactive chat stays thin. Use when asked to
   "run the loop", "execute the multi-phase plan", "run the published plan autonomously",
@@ -60,10 +60,11 @@ inline in single-tier)"; steps **1-3, 3b, 8** are supervise/single-tier.
 
 ## Prerequisites
 
-`gh auth status` OK; `jq`; the loop scripts present; a plan (registered on the Loop daemon or
-in `.loop/plan.md`) published by `multiphase-plan` **with a Loop config section** (integration
-branch + Verify command). Missing Loop config → offer to add it (ask the user for the
-verify command — never invent one). **Kestral only when the plan is LINKED:** if the plan
+`gh auth status` OK; `jq`; the loop scripts (including `loop-repo.sh`) present; a plan
+(registered on the Loop daemon or in `.loop/plan.md`) published by `multiphase-plan` with
+Loop config + repository blocks: shared integration branch, concurrency, and mandatory
+Verify per repository. Missing repository verify → ask; never invent one. Legacy scalar
+plans normalize to the synthetic `primary` repository. **Kestral only when the plan is LINKED:** if the plan
 carries a Kestral link, the Kestral MCP must work in-session (`whoami`) AND you must probe
 headless Kestral once per engine before launching lanes (runners claim their own Kestral
 tasks only in linked mode) — a one-shot `codex exec` / `claude -p` asking for Kestral
@@ -78,9 +79,13 @@ the Mac; do not manage power yourself.
 Resolve the plan LOCAL → daemon → Kestral-if-linked: `.loop/plan.md` header → the daemon
 (`loop-plan.sh get --plan-id <id>`, else `loop-plan.sh list`) → Kestral **only when linked**
 (argument → `.loop/plan.md` header → ask, like `loop-pickup` step 1). Parse phases, lanes,
-`Depends on` edges, statuses, per-phase `Verify`; when linked, re-fetch from Kestral and
-reconcile against live task statuses. Validate: DAG acyclic; every phase has *Done when*;
-Loop config present; working tree clean. Ensure `.loop/` is gitignored. **Adopt the plan's
+repositories, `Depends on` edges, statuses, and per-phase `Verify`; when linked, re-fetch
+from Kestral and reconcile against live task statuses. Validate: DAG acyclic; every phase
+has *Done when* and exactly one known repository. Resolve each `owner/repo` through
+`loop-repo.sh get`; before autonomy ask once for missing checkout paths and persist them
+with `loop-repo.sh map`. Run `loop-repo.sh check` for origin/default-branch/collision
+validation. Ensure coordinator `.loop/` is gitignored and repository worktrees are clean.
+**Adopt the plan's
 `planId` as the run id** — the planId IS the runId, so loop-execute drives the same daemon
 record through planned → active → finished (one selector entry); if that record is already
 `finished` (a re-run), mint `<planId>-r<K>` and re-register. Take the lock now —
@@ -90,8 +95,8 @@ gate so the gate's no-further-contact promise holds.
 
 ### 2. One confirm gate, then autonomy
 
-Show the user: the backend (local-only vs Kestral-linked), integration branch,
-phase/lane table, verify command, chains +
+Show the user: the backend (local-only vs Kestral-linked), repository → checkout/default
+branch/integration branch/verify table, phase/lane/repository table, chains +
 budget/timeouts from `loop-models.conf`, concurrency (the plan's **Concurrency** line
 overrides `LOOP_MAX_PARALLEL`; default 3). After their go, do not contact them again
 except through the HIL path or completion. `AskUserQuestion` is reserved for those two
@@ -99,11 +104,13 @@ moments.
 
 ### 3. Init
 
-`loop-state.sh init` with the state.json schema from the protocol. Create the integration
-branch **named in the plan's Loop config** from the repo's default branch tip, plus its
-worktree (`~/.loop/worktrees/<repo>-integration`), and push it (the one direct
-push — everything after goes through loop-merge). Write the branch back into the Loop
-config only if it was missing, set plan **Status: in progress**, repush the doc once.
+`loop-state.sh init` with runtime state v2 from the protocol. For every repository run
+`loop-repo.sh prepare --repo <owner/repo> --run-id <runId> --integration-branch <branch>`.
+It fetches GitHub's default ref and creates the integration branch/worktree from that exact
+fetched SHA under `~/.loop/worktrees/<runId>/<owner--repo>/integration`; never use stale
+local `main`. Push each initial integration branch (the only direct pushes — everything
+after goes through loop-merge) and persist the returned repository fields in state. Set plan
+**Status: in progress**, then repush once.
 
 **The observer runs itself (on by default).** `loop-state.sh init` sources `loop-emit.sh`,
 which runs `loop_ensure_daemon` (starts the central Loop daemon if it isn't already up) then
@@ -145,9 +152,9 @@ A phase is READY when `[status: todo]`, all its `Depends on` phases are done, it
 no phase running, and fewer runners are live than the concurrency cap (plan's
 **Concurrency**, else `LOOP_MAX_PARALLEL`). For each READY phase:
 
-1. Lane worktree on the Suggested branch, cut from the **integration tip**: new lane →
-   `git worktree add <path> -b <branch> <integration>`; lane continuing after a merged
-   phase → reuse its worktree via `git -C <wt> switch -c <branch> <integration>`.
+1. Lane worktree on the Suggested branch, cut from the phase repository's **integration
+   tip**. Reuse it only when the prior lane phase used the same repository. On a repository
+   hop, remove the old worktree and create the next from the target repository tip.
 2. Generate `runs/<phase-slug>-a<K>/prompt.md` from the protocol's skeleton — it opens
    with `loop-pickup --auto` (the runner claims its own task; both engines have the
    Kestral MCP) and closes with `loop-handoff --auto ... status:in-progress` +
@@ -156,7 +163,8 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
    context (`answers/`, verify.log tails, HIL answers) remains separate.
 3. Spawn detached per the protocol's Runner-spawn section (nohup + pid file):
    `~/dotfile/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --run-id
-   <runId> --phase <N> --chain task --verify-cmd '<phase-or-effort verify>'` (it inherits
+   <runId> --phase <N> --repository <owner/repo> --chain task --verify-cmd
+   '<phase-or-repository verify>'` (it inherits
    `LOOP_DAEMON_URL` via env, so its EXIT-trap `phase.attempt.*` events reach the daemon).
    Record pid + run dir in state; journal the event. A pickup `REFUSED` surfaces as the
    runner's `blocked` status → ladder, keep scheduling other lanes.
@@ -186,12 +194,13 @@ Switch on the exit code (protocol table). The extra checks only you can do:
 ### 6. Merge and sync
 
 Immediately before merging phase `<N>`, re-read `notes/<N>.md` and honor it (for example,
-rebase the lane onto the current integration tip first). This catches notes dropped after the
+rebase the lane onto its repository integration tip first). This catches notes dropped after the
 runner started. After the merge is complete and the phase is promoted `done|merged`, run
 `loop-state.sh note --dir .loop --clear <N>` as best-effort housekeeping.
 
-Serialize merges (one at a time). `loop-merge.sh --worktree <int-wt> --lane-branch <b>
---run-id <runId> --phase <N> --verify-cmd '<effort verify>'` (inherits `LOOP_DAEMON_URL`;
+Serialize merges globally (one at a time), targeting the phase repository.
+`loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --run-id <runId> --phase <N>
+--repository <owner/repo> --verify-cmd '<repository verify>'` (inherits `LOOP_DAEMON_URL`;
 its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
 
 - **0** → run `loop-handoff --auto phase:<N> status:done lane:<X> engine:<engine>`
@@ -200,16 +209,17 @@ its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
   (`update_document`), updates the task (`update_task_status`), and posts a progress comment
   noting lane + engine. **Local-only:** it instead flips the plan's `[status: done]` marker +
   `loop-plan.sh push`, appends `.loop/progress.md`, and `loop-plan.sh note` (no Kestral).
-  Cleanup is unchanged in both modes, in protocol order: switch the worktree to the lane's
-  next branch (or remove it if the lane is finished), **then** `git branch -d` the merged
-  branch. First merge → `gh pr create --draft` from the integration branch, PR URL into state
-  + Loop config. Schedule the lane's next phase.
+  Cleanup removes the worktree on a repository hop; otherwise it may switch to the next lane
+  branch. First merge in each repository → `gh pr create --draft` from that repository's
+  integration branch, PR URL into `state.repositories[slug]` + its plan block. Later merges
+  update only that PR. Schedule globally by DAG/lane capacity.
 - **2** → conflict. **`sub` mode: spawn a detached merge-runner** (protocol's
   Merge-runner skeleton — `loop-runner.sh --chain escalate --worktree <int-wt>` with NO
   `--verify-cmd`), so the diff never enters your context; promote on the next tick when its
   `phase.merged` fires. **single-tier:** resolve inline (`resolving-merge-conflicts`, honoring
-  both phases' *Done when*), then `loop-merge.sh --worktree <int-wt> --finish --verify-cmd
-  '<effort verify>'`. Either way, not confident it's semantically right → `--abort` + HIL.
+  both phases' *Done when*), then `loop-merge.sh --worktree <repo-int-wt> --finish
+  --repository <owner/repo> --verify-cmd '<repository verify>'`. Either way, not confident
+  it's semantically right → `--abort` + HIL.
 - **4** → semantic conflict: `git revert -m1 HEAD` in the integration worktree, then L3
   for this phase with the verify output.
 - **3 / 1** → reconcile from git per the protocol (already-merged → done; dirty
@@ -235,31 +245,25 @@ In supervise mode the `sub` does NOT finalize: when every phase is merged it wri
 `status.json{outcome:"complete"}`, `loop-orchestrator.sh` touches `sub/PHASES_DONE`, and the
 supervise main (step 3b.5) runs this step. The `sub` never runs pr-review.
 
-All phases done → `gh pr ready`; PR body from the plan (Goal, phase list with task links,
-Progress log digest — never a raw log dump). Then record completion on the backend:
+All phases done → mark every repository PR ready. Each PR body contains the Goal and only
+that repository's phases/task links plus a progress digest. Then record completion:
 
-- **Linked:** `link_pr_to_task` for every phase task (dedup via state), statuses →
+- **Linked:** link each phase task only to its repository PR (dedup via state), statuses →
   awaiting-review, plan **Status: integrating** via `update_document` (repush),
   `trigger_brain_build`.
 - **Local-only:** flip plan **Status: integrating** + `loop-plan.sh push`, append
   `.loop/progress.md` (no Kestral) — the daemon learns completion from `loop-state.sh finish`'s
   `loop.finish` below.
 
-Sweep any remaining lane worktrees (review needs the branches free). Re-read
-`notes/pr-review.md` now: honor any pre-review action against the integration worktree, then
-fold the note verbatim into the reviewer prompt. Then spawn the reviewer with a FULL runner
-prompt (the protocol skeleton, not a
-one-liner — it must end with the RUN_DIR/status.json instructions or the run is
-misclassified as a crash): task = "run the pr-review skill on <PR URL> with --headless
-(includes the stacked-PR-split lens); write the full report to `RUN_DIR/report.md` and post
-it as a PR comment; then write status.json with outcome done and the verdict as summary".
-Spawn: `loop-runner.sh --chain review --worktree <int-wt> --run-dir <runs/review-a1> ...`.
-When it returns, promote the review onto state — `loop-state.sh set '.review =
-{outcome, summary, reportPath: "runs/review-a<K>/report.md", commentUrl}'` — log
-`review.finish`, clear `notes/pr-review.md` with `loop-state.sh note --clear pr-review`, then
-`loop-state.sh finish --json '{...prUrl, review}'` (emits `loop.finish`
-to the daemon). Finally `loop-notify.sh --level info` with PR + review verdict + split
-recommendation, journal, unlock, and stop — the human merges.
+Sweep remaining lane worktrees. For each repository re-read
+`notes/pr-review.<owner--repo>.md`, honor it against that integration worktree, and fold it
+verbatim into a FULL reviewer prompt. Launch reviews in parallel, bounded by Loop
+Concurrency, in `runs/review-<owner--repo>-a<K>/`, passing `--repository <owner/repo>`.
+One review infrastructure failure records `blocked` without cancelling siblings. Wait for
+all reviews, promote each into `state.repositories[slug].review`, and clear its note.
+Aggregate verdict precedence is `blocked > question > done`. Emit exactly one terminal
+`loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`; keep plan Status
+`integrating` until humans merge every PR. Notify once with all PRs/verdicts, unlock, stop.
 
 ### 9. `resume` / `status` / `abort`
 
@@ -305,7 +309,9 @@ thing left and no lane can progress).
 ## Steering notes
 
 Users may steer work without pausing the loop by writing `.loop/notes/<key>.md`.
-Phase keys are plan numbers (`notes/2.md`); `notes/pr-review.md` is the only reserved step key.
+Phase keys are plan numbers (`notes/2.md`). Review keys are
+`notes/pr-review.<owner--repo>.md`; legacy single-repository runs also accept
+`notes/pr-review.md` as an alias.
 A note persists until that phase or review completes. The `sub` reads phase notes for runner
 prompts and again before lane merges; the thin supervise main reads the review note before
 spawning pr-review. Any note consumed by a runner appears verbatim in that attempt's

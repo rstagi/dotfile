@@ -9,6 +9,11 @@ The plan lives on disk in a flattened `.loop/` dir (this `plan.md` sits beside `
 Every plan is backed by the central Loop Observatory daemon (`http://localhost:7717`) — the
 base backend; Kestral is an **opt-in linked** backend (plans are local-only by default).
 
+Repository checkouts are deliberately absent from the plan. Plans carry GitHub
+`owner/repo` slugs only; each machine resolves them through `~/.loop/repos.json` via
+`loop-repo.sh map|get|list|unmap`. Every phase names exactly one repository. A lane may move
+between repositories.
+
 ## Markers (must stay machine-parseable)
 
 - Each phase heading ends with two bracket tags: `` `[lane: X]` `` and
@@ -17,6 +22,10 @@ base backend; Kestral is an **opt-in linked** backend (plans are local-only by d
   sequential within that worktree. Different letters = independent = parallel worktrees.
 - `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
   the daemon always, and to the linked Kestral task when the plan is linked.
+- `Repository:` is mandatory on every phase when `## Repositories` exists and must match one
+  declared slug. Repository `Verify:` is mandatory; a phase `Verify:` overrides it.
+- Legacy plans without `## Repositories` normalize to one synthetic `primary` repository;
+  their scalar Loop config `Verify` / `PR` fields remain executable.
 
 ## Document template
 
@@ -42,9 +51,18 @@ base backend; Kestral is an **opt-in linked** backend (plans are local-only by d
 > Optional — present only when the effort will run under `loop-execute`. Omit otherwise.
 
 - **Integration branch:** `<type>/<effort-slug>`
-- **Verify:** `<command>`   (effort-wide gate; per-phase **Verify:** lines override it)
-- **PR:** _none yet_   (filled by loop-execute)
 - **Concurrency:** 3
+
+## Repositories
+
+### `owner/api`
+- **Verify:** `<command>`
+- **Integration branch:** `<optional per-repository override>`
+- **PR:** _none yet_
+
+### `owner/web`
+- **Verify:** `<command>`
+- **PR:** _none yet_
 
 ## Goal
 <What we're building and why. 2–4 sentences.>
@@ -59,6 +77,7 @@ base backend; Kestral is an **opt-in linked** backend (plans are local-only by d
 > branch, worktree, commit, or PR name. (See "Naming" in the Rules section.)
 
 ### Phase 1 — Add OAuth token refresh endpoint `[lane: A]` `[status: todo]`
+- **Repository:** `owner/api`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** none
 - **Parallelizable with:** Phase 2 (independent)
@@ -69,6 +88,7 @@ base backend; Kestral is an **opt-in linked** backend (plans are local-only by d
 - **Notes:** <optional>
 
 ### Phase 2 — Migrate invoice retry to a state machine `[lane: B]` `[status: todo]`
+- **Repository:** `owner/api`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** none
 - **Parallelizable with:** Phase 1 (independent)
@@ -78,6 +98,7 @@ base backend; Kestral is an **opt-in linked** backend (plans are local-only by d
 - **Verify:** <optional — runnable acceptance check, exit 0 = pass>
 
 ### Phase 3 — Use refreshed tokens in the API client `[lane: A]` `[status: todo]`
+- **Repository:** `owner/web`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 1
 - **Parallelizable with:** Phase 2 (independent)
@@ -86,6 +107,7 @@ base backend; Kestral is an **opt-in linked** backend (plans are local-only by d
 - **Done when:** <...>
 
 ### Phase 4 — Integrate auth + billing paths and run e2e `[lane: integration]` `[status: todo]`
+- **Repository:** `owner/web`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 3, Phase 2
 - **Parallelizable with:** none — integration point
@@ -146,9 +168,9 @@ daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
 - **One parent effort task per plan; phases are its subtasks.** The plan maps to a single
   Kestral parent task (tag `multiphase-plan`, linked from the doc's `**Effort task:**`
   line); each phase is a subtask of it (`parentTaskId`), never a sibling top-level task.
-- **Loop mode ships as ONE PR.** When a Loop config section exists, per-phase Suggested
-  branches are short-lived lane branches cut from the integration branch tip and merged
-  back; no per-phase PRs; `[status: done]` = merged into the integration branch.
+- **Loop mode ships one PR per repository.** Per-phase Suggested branches are short-lived
+  lane branches cut from that repository's integration tip and merged back; no per-phase
+  PRs; `[status: done]` = merged into the phase repository's integration branch.
 - **Plan doc and Kestral tasks cross-reference.** Each phase's **Task:** line links its
   subtask; each subtask carries `tags: ["phase:<N>", "lane:<X>"]`.
 - **Status is kept in lockstep across its sinks:** the `[status: …]` marker in the doc and the

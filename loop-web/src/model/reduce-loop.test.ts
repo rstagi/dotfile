@@ -253,6 +253,36 @@ describe("reduceLoop — loop.finish", () => {
     );
     expect(rec.status).toBe("finished");
   });
+
+  it("folds plural repository PR/review results while retaining the primary projection", () => {
+    const rec = fold(
+      "r",
+      {
+        kind: "state",
+        state: {
+          repositories: {
+            "acme/api": { integrationBranch: "feat/api", prUrl: "https://github.com/acme/api/pull/1" },
+            "acme/web": { integrationBranch: "feat/web", prUrl: null },
+          },
+          phases: { "1": { repository: "acme/api", status: "running" } },
+        },
+      },
+      {
+        kind: "finish",
+        info: {
+          repositories: {
+            "acme/api": { prUrl: "https://github.com/acme/api/pull/1", review: { outcome: "done", summary: "ok", reportPath: null, commentUrl: null } },
+            "acme/web": { prUrl: "https://github.com/acme/web/pull/2", review: { outcome: "blocked", summary: "fix", reportPath: "runs/review-acme--web-a1/report.md", commentUrl: null } },
+          },
+        },
+      },
+    );
+    expect(rec.repositories["acme/api"].review?.outcome).toBe("done");
+    expect(rec.repositories["acme/web"].prUrl).toContain("/pull/2");
+    expect(rec.phases["1"].repository).toBe("acme/api");
+    expect(rec.prUrl).toBe("https://github.com/acme/api/pull/1");
+    expect(rec.review?.outcome).toBe("done");
+  });
 });
 
 describe("reduceLoop — purity", () => {

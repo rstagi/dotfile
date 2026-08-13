@@ -173,4 +173,19 @@ describe("summarize — phase counts + lifecycle", () => {
     const done = reduceLoop(paused, { kind: "finish", info: { finishedAt: "2026-08-03T11:00:00Z" } });
     expect(summarize(done).status).toBe("finished");
   });
+
+  it("exposes plural repository summaries and aggregate verdict precedence", () => {
+    const rec = fold("r", {
+      kind: "finish",
+      info: {
+        repositories: {
+          "acme/api": { prUrl: "https://github.com/acme/api/pull/1", review: { outcome: "done", summary: null, reportPath: null, commentUrl: null } },
+          "acme/web": { prUrl: "https://github.com/acme/web/pull/2", review: { outcome: "blocked", summary: null, reportPath: null, commentUrl: null } },
+        },
+      },
+    });
+    const summary = summarize(rec);
+    expect(summary.repositories.map((repo) => repo.slug)).toEqual(["acme/api", "acme/web"]);
+    expect(summary.reviewOutcome).toBe("blocked");
+  });
 });

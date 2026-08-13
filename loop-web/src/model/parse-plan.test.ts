@@ -52,6 +52,34 @@ Rebuild widgets.
 - **Done when:** both lanes merged and green
 `;
 
+const MULTI_REPO = `# Multi repo — Multi-Phase Plan
+
+## Loop config
+- **Integration branch:** \`feat/shared\`
+- **Concurrency:** 2
+
+## Repositories
+
+### \`acme/api\`
+- **Verify:** \`npm test\`
+- **Integration branch:** \`feat/api\`
+- **PR:** [#10](https://github.com/acme/api/pull/10)
+
+### \`acme/web\`
+- **Verify:** \`npm run check\`
+- **PR:** _none yet_
+
+## Phases
+
+### Phase 1 — API \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+
+### Phase 2 — Web \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 1
+`;
+
 describe("parsePlan — header", () => {
   it("extracts effort name, stripping the '— Multi-Phase Plan' suffix", () => {
     expect(parsePlan(MULTI_LANE).name).toBe("Widget revamp");
@@ -87,6 +115,55 @@ describe("parsePlan — loop config", () => {
       "- **PR:** _none yet_",
     );
     expect(parsePlan(p).loopConfig!.pr).toBeNull();
+  });
+});
+
+describe("parsePlan — repositories", () => {
+  it("parses repository blocks and shared branch defaults", () => {
+    const plan = parsePlan(MULTI_REPO);
+    expect(plan.repositories).toEqual([
+      {
+        slug: "acme/api",
+        verify: "npm test",
+        integrationBranch: "feat/api",
+        pr: "https://github.com/acme/api/pull/10",
+      },
+      {
+        slug: "acme/web",
+        verify: "npm run check",
+        integrationBranch: "feat/shared",
+        pr: null,
+      },
+    ]);
+    expect(plan.phases.map((phase) => phase.repository)).toEqual(["acme/api", "acme/web"]);
+  });
+
+  it("normalizes legacy scalar config into an implicit primary repository", () => {
+    const plan = parsePlan(MULTI_LANE);
+    expect(plan.repositories).toEqual([{
+      slug: "primary",
+      verify: "npm test",
+      integrationBranch: "feat/widget-revamp",
+      pr: "https://github.com/acme/widgets/pull/42",
+    }]);
+    expect(plan.phases.every((phase) => phase.repository === "primary")).toBe(true);
+  });
+
+  it("rejects duplicate/unknown repositories and missing verify or phase assignment", () => {
+    const plan = parsePlan(MULTI_REPO.replace(
+      "## Phases",
+      "### `acme/api`\n- **Verify:** `true`\n\n## Phases",
+    ));
+    expect(plan.warnings.join("\n")).toMatch(/Duplicate repository acme\/api/);
+
+    const invalid = parsePlan(MULTI_REPO
+      .replace("- **Verify:** `npm run check`", "- **PR:** _none yet_")
+      .replace("- **Repository:** `acme/web`", "- **Repository:** `acme/missing`"));
+    expect(invalid.warnings.join("\n")).toMatch(/acme\/web.*Verify/i);
+    expect(invalid.warnings.join("\n")).toMatch(/unknown repository.*acme\/missing/i);
+
+    const missing = parsePlan(MULTI_REPO.replace("- **Repository:** `acme/web`\n", ""));
+    expect(missing.warnings.join("\n")).toMatch(/Phase 2.*repository/i);
   });
 });
 

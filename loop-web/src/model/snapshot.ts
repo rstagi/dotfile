@@ -8,6 +8,7 @@ import type {
   TimelineEvent,
   EffortInfo,
   PlanOverview,
+  RepositoryInfo,
 } from "./types.ts";
 import { buildGraph } from "./build-graph.ts";
 import { normalizeEvent, problemSeverity } from "./derive.ts";
@@ -23,12 +24,14 @@ interface SnapshotOpts {
  */
 export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: SnapshotOpts = {}): Snapshot {
   const now = opts.now ?? Date.now();
-  const pr = buildPrInfo(plan, runtime);
-  const graph = buildGraph(plan, runtime, { now, pr });
+  const repositories = buildRepositoryInfo(plan, runtime);
+  const repositoryPrs = Object.fromEntries(repositories.map((repository) => [repository.slug, repository.pr]));
+  const pr = repositories.length === 1 ? repositories[0].pr : null;
+  const graph = buildGraph(plan, runtime, { now, pr, repositories: repositoryPrs });
 
   return {
-    effort: buildEffort(plan, runtime, pr),
-    plan: buildPlanOverview(plan),
+    effort: buildEffort(plan, runtime, pr, repositories),
+    plan: buildPlanOverview(plan, repositories),
     graph,
     problems: buildProblems(graph.nodes),
     events: buildTimeline(runtime),
@@ -44,25 +47,51 @@ export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: Snapsho
 
 // --- effort & PR ---------------------------------------------------------------------
 
-function buildEffort(plan: Plan, runtime: Runtime | null, pr: PrInfo | null): EffortInfo {
+function buildEffort(
+  plan: Plan,
+  runtime: Runtime | null,
+  pr: PrInfo | null,
+  repositories: RepositoryInfo[],
+): EffortInfo {
   return {
     name: plan.name,
     status: plan.status,
-    integrationBranch:
-      runtime?.state?.integrationBranch ?? plan.loopConfig?.integrationBranch ?? null,
+    integrationBranch: repositories.length === 1
+      ? repositories[0].integrationBranch
+      : runtime?.state?.integrationBranch ?? plan.loopConfig?.integrationBranch ?? null,
     updatedAt: plan.updatedAt,
     pr,
+    repositories,
     runId: runtime?.state?.runId ?? null,
   };
 }
 
+function buildRepositoryInfo(plan: Plan, runtime: Runtime | null): RepositoryInfo[] {
+  return plan.repositories.map((repository) => {
+    const stateRepository = runtime?.state?.repositories?.[repository.slug];
+    return {
+      slug: repository.slug,
+      integrationBranch:
+        stateRepository?.integrationBranch ??
+        (repository.slug === "primary" ? runtime?.state?.integrationBranch : null) ??
+        repository.integrationBranch,
+      verify: repository.verify,
+      pr: buildPrInfo(plan, runtime, repository.slug),
+    };
+  });
+}
+
 /** Prefer the orchestrator-promoted `state.review` verdict; fall back to the latest review run's
  * status.json. reportPath/commentUrl only exist on state.review; slug/attempt on the run. */
-function buildPrInfo(plan: Plan, runtime: Runtime | null): PrInfo | null {
-  const url = runtime?.state?.prUrl ?? plan.loopConfig?.pr ?? null;
-  const reviews = runtime?.reviewRuns ?? [];
+function buildPrInfo(plan: Plan, runtime: Runtime | null, repository: string): PrInfo | null {
+  const legacy = repository === "primary";
+  const stateRepository = runtime?.state?.repositories?.[repository];
+  const planRepository = plan.repositories.find((entry) => entry.slug === repository);
+  const url = stateRepository?.prUrl ?? (legacy ? runtime?.state?.prUrl : null) ?? planRepository?.pr ?? null;
+  const key = repositoryKey(repository);
+  const reviews = legacy ? runtime?.reviewRuns ?? [] : runtime?.reviewRunsByRepository[key] ?? [];
   const latest = reviews.length ? reviews[reviews.length - 1] : null;
-  const stateReview = runtime?.state?.review ?? null;
+  const stateReview = stateRepository?.review ?? (legacy ? runtime?.state?.review : null) ?? null;
   if (!url && reviews.length === 0 && !stateReview) return null;
   return {
     url,
@@ -81,6 +110,10 @@ function buildPrInfo(plan: Plan, runtime: Runtime | null): PrInfo | null {
   };
 }
 
+function repositoryKey(repository: string): string {
+  return repository.replace("/", "--");
+}
+
 function slugFromRunDir(runDir: string | null): string | null {
   if (!runDir) return null;
   const m = runDir.match(/runs\/(.+?)-a\d+\/?$/);
@@ -89,18 +122,27 @@ function slugFromRunDir(runDir: string | null): string | null {
 
 // --- plan overview -------------------------------------------------------------------
 
-function buildPlanOverview(plan: Plan): PlanOverview {
+function buildPlanOverview(plan: Plan, repositories: RepositoryInfo[]): PlanOverview {
   const lanes = new Set(plan.phases.map((p) => p.lane));
   return {
     name: plan.name,
     status: plan.status,
     updatedAt: plan.updatedAt,
     loopConfig: plan.loopConfig,
+    repositories: plan.repositories.map((repository) => {
+      const runtime = repositories.find((entry) => entry.slug === repository.slug);
+      return {
+        ...repository,
+        integrationBranch: runtime?.integrationBranch ?? repository.integrationBranch,
+        pr: runtime?.pr?.url ?? repository.pr,
+      };
+    }),
     phaseSummary: plan.phases.map((p) => ({
       phase: p.phase,
       title: p.title,
       lane: p.lane,
       status: p.status,
+      repository: p.repository,
       dependsOn: p.dependsOn,
     })),
     laneCount: lanes.size,

@@ -86,7 +86,7 @@ export function Drawer({
         </dl>
 
         {node.kind === "plan" && plan && <PlanSection plan={plan} />}
-        {node.kind === "pr-review" && <ReviewSection runId={runId} pr={pr} />}
+        {node.kind === "pr-review" && <ReviewSection runId={runId} pr={pr} repository={node.repository} />}
         {canSteer && <SteeringNote node={node} runId={runId} />}
 
         {rt?.hilOpen && rt.hilMarkdown && (
@@ -138,7 +138,11 @@ function SteeringNote({ node, runId }: { node: GraphNode; runId: string }) {
   const [markdown, setMarkdown] = useState(node.noteMarkdown ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const key = node.kind === "pr-review" ? "pr-review" : node.phase;
+  const key = node.kind === "pr-review"
+    ? node.repository && node.repository !== "primary"
+      ? `pr-review.${node.repository.replace("/", "--")}`
+      : "pr-review"
+    : node.phase;
 
   useEffect(() => setMarkdown(node.noteMarkdown ?? ""), [node.id, node.noteMarkdown]);
 
@@ -221,6 +225,22 @@ function PlanSection({ plan }: { plan: PlanOverview }) {
         </section>
       )}
 
+      {plan.repositories.length > 0 && plan.repositories[0].slug !== "primary" && (
+        <section>
+          <p className="section__title">Repositories</p>
+          <div className="plan-repositories">
+            {plan.repositories.map((repository) => (
+              <div key={repository.slug} className="plan-repository">
+                <b>{repository.slug}</b>
+                <span>{repository.integrationBranch ?? "—"}</span>
+                <span>{repository.verify ?? "missing verify"}</span>
+                {repository.pr ? <a href={repository.pr}>{prLabel(repository.pr)}</a> : <span>no PR</span>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <ProseSection title="Goal" text={plan.prose.goal} />
       <ProseSection title="Approach & key decisions" text={plan.prose.approach} />
       <ProseSection title="Parallelization guide" text={plan.prose.parallelGuide} />
@@ -259,8 +279,12 @@ function ProseSection({ title, text }: { title: string; text: string | null }) {
 
 // --- pr review -----------------------------------------------------------------------
 
-function ReviewSection({ runId, pr }: { runId: string | null; pr: PrInfo | null }) {
-  const review = useReview(runId, true);
+function ReviewSection({ runId, pr, repository }: {
+  runId: string | null;
+  pr: PrInfo | null;
+  repository: string | null;
+}) {
+  const review = useReview(runId, true, repository);
   const outcome = review?.outcome ?? pr?.outcome ?? null;
   const summary = review?.summary ?? pr?.verdict ?? null;
   const commentUrl = review?.commentUrl ?? pr?.commentUrl ?? null;

@@ -133,6 +133,17 @@ EOF
     plan note --plan-id "$PID" --phase 1 --body "hello from the timeline" >/dev/null
     note_hit="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$PID/snapshot" | jq -r '[.events[]? | select(.detail=="hello from the timeline")] | length')"
     assert_eq "$note_hit" "1" "the progress.note event appears on the timeline"
+
+    # Plural repository finish payloads round-trip; review retrieval is repository-selectable.
+    curl -sf -X POST --data-binary '{"repositories":{"acme/api":{"integrationBranch":"feat/api","prUrl":"https://github.com/acme/api/pull/1"},"acme/web":{"integrationBranch":"feat/web","prUrl":"https://github.com/acme/web/pull/2"}},"phases":{"1":{"repository":"acme/api","status":"merged"}}}' \
+      "$LOOP_DAEMON_URL/api/loops/$PID/state" >/dev/null
+    curl -sf -X POST --data-binary '{"repositories":{"acme/api":{"prUrl":"https://github.com/acme/api/pull/1","review":{"outcome":"done","summary":"api ok","reportPath":null,"commentUrl":null}},"acme/web":{"prUrl":"https://github.com/acme/web/pull/2","review":{"outcome":"blocked","summary":"web fix","reportPath":null,"commentUrl":null}}}}' \
+      "$LOOP_DAEMON_URL/api/loops/$PID/finish" >/dev/null
+    api_review="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$PID/review?repository=acme%2Fapi")"
+    assert_eq "$(print "$api_review" | jq -r .outcome)" "done" "repository review endpoint selects API review"
+    assert_eq "$(print "$api_review" | jq -r .prUrl)" "https://github.com/acme/api/pull/1" "repository review endpoint selects API PR"
+    aggregate="$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$PID" '.[] | select(.runId==$id) | .reviewOutcome')"
+    assert_eq "$aggregate" "blocked" "loop summary aggregates blocked over done"
   fi
 fi
 

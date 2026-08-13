@@ -7,7 +7,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 fail=0
 
 echo "== zsh -n (syntax) =="
-for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh; do
+for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-repo.sh; do
   [[ -f "$ROOT/$s" ]] || continue
   if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; fail=1; fi
 done

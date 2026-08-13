@@ -15,10 +15,12 @@ import type {
   EventInfo,
   FinishInfo,
   ReviewInfo,
+  RepositoryRecord,
 } from "./store-types.ts";
 import { STORE_SCHEMA_VERSION, EVENT_CAP } from "./store-types.ts";
 import type { StateJson, RawEvent, PhaseStateStatus } from "./types.ts";
 import { EVENT_RULES } from "./derive.ts";
+import { parsePlan } from "./parse-plan.ts";
 
 const RANK_INDEX: Record<PhaseRank, number> = { todo: 0, claimed: 1, running: 2, done: 3, merged: 4 };
 const STATE_STATUSES: readonly PhaseStateStatus[] = ["todo", "claimed", "running", "merged", "blocked", "done"];
@@ -85,6 +87,7 @@ export function emptyRecord(runId: string): LoopRecord {
     lastState: null,
     planText: null,
     phases: {},
+    repositories: {},
     events: [],
     review: null,
     prUrl: null,
@@ -117,6 +120,8 @@ export function effectivePhaseStatus(rec: LoopRecord, num: string): PhaseStateSt
 
 function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register" }>): LoopRecord {
   const info = msg.info;
+  const repositories = info.planText ? repositoriesFromPlan(info.planText, prev.repositories) : prev.repositories;
+  const primary = firstRepository(repositories);
   const next: LoopRecord = {
     ...prev,
     runId: info.runId || prev.runId,
@@ -124,19 +129,41 @@ function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register"
     projectId: info.projectId ?? prev.projectId,
     loopDir: info.loopDir ?? prev.loopDir,
     planFile: info.planFile ?? prev.planFile,
-    integrationBranch: info.integrationBranch ?? prev.integrationBranch,
+    integrationBranch: info.integrationBranch ?? primary?.integrationBranch ?? prev.integrationBranch,
     startedAt: info.startedAt ?? prev.startedAt,
     planText: info.planText ?? prev.planText,
+    repositories,
     updatedAt: info.startedAt ?? prev.updatedAt,
   };
   return { ...next, status: deriveStatus(next) };
 }
 
+function repositoriesFromPlan(
+  planText: string,
+  existing: Record<string, RepositoryRecord>,
+): Record<string, RepositoryRecord> {
+  const out = { ...existing };
+  for (const repository of parsePlan(planText).repositories) {
+    const prior = out[repository.slug] ?? emptyRepository();
+    out[repository.slug] = {
+      ...prior,
+      integrationBranch: prior.integrationBranch ?? repository.integrationBranch,
+      prUrl: prior.prUrl ?? repository.pr,
+    };
+  }
+  return out;
+}
+
 function applyState(prev: LoopRecord, state: StateJson, planText?: string | null): LoopRecord {
   const phases = { ...prev.phases };
   for (const [num, ph] of Object.entries(state?.phases ?? {})) {
-    phases[num] = joinOverlay(phases[num], { rank: rankOf(validStatus(ph?.status)) });
+    phases[num] = joinOverlay(phases[num], {
+      rank: rankOf(validStatus(ph?.status)),
+      repository: nonEmpty(ph?.repository) ?? phases[num]?.repository ?? legacyRepositorySlug(state),
+    });
   }
+  const repositories = normalizeRepositories(state, prev.repositories);
+  const primary = firstRepository(repositories);
   const next: LoopRecord = {
     ...prev,
     lastState: state ?? prev.lastState,
@@ -145,18 +172,31 @@ function applyState(prev: LoopRecord, state: StateJson, planText?: string | null
     integrationBranch: state?.integrationBranch ?? prev.integrationBranch,
     prUrl: state?.prUrl ?? prev.prUrl,
     review: normalizeReview(state?.review) ?? prev.review,
+    repositories,
     planText: planText ?? prev.planText,
     phases,
   };
-  return { ...next, status: deriveStatus(next) };
+  return { ...next, integrationBranch: next.integrationBranch ?? primary?.integrationBranch ?? null,
+    prUrl: next.prUrl ?? primary?.prUrl ?? null,
+    review: next.review ?? primary?.review ?? null, status: deriveStatus(next) };
 }
 
 function applyFinish(prev: LoopRecord, info: FinishInfo): LoopRecord {
+  const repositories = { ...prev.repositories };
+  for (const [slug, result] of Object.entries(info.repositories ?? {})) {
+    repositories[slug] = {
+      ...(repositories[slug] ?? emptyRepository()),
+      prUrl: result.prUrl ?? repositories[slug]?.prUrl ?? null,
+      review: result.review ?? repositories[slug]?.review ?? null,
+    };
+  }
+  const primary = firstRepository(repositories);
   return {
     ...prev,
     finishedAt: info.finishedAt ?? prev.finishedAt,
-    prUrl: info.prUrl ?? prev.prUrl,
-    review: info.review ?? prev.review,
+    repositories,
+    prUrl: info.prUrl ?? primary?.prUrl ?? prev.prUrl,
+    review: info.review ?? primary?.review ?? prev.review,
     updatedAt: info.finishedAt ?? prev.updatedAt,
     status: "finished",
   };
@@ -176,9 +216,15 @@ function applyEvent(prev: LoopRecord, ev: EventInfo): LoopRecord {
   let next: LoopRecord = { ...prev, events, updatedAt: ev.ts ?? prev.updatedAt };
   if (eff.finish) return applyFinish(next, eff.finish);
   if (eff.phase && eff.patch) {
-    next = { ...next, phases: { ...next.phases, [eff.phase]: joinOverlay(next.phases[eff.phase], eff.patch) } };
+    const patch = { ...eff.patch, repository: nonEmpty(ev.repository) ?? eff.patch.repository };
+    next = { ...next, phases: { ...next.phases, [eff.phase]: joinOverlay(next.phases[eff.phase], patch) } };
   }
   if (eff.prUrl) next = { ...next, prUrl: eff.prUrl };
+  if (eff.prUrl && ev.repository) {
+    const prior = next.repositories[ev.repository] ?? emptyRepository();
+    next = { ...next, repositories: { ...next.repositories,
+      [ev.repository]: { ...prior, prUrl: eff.prUrl } } };
+  }
   if (eff.review) next = { ...next, review: eff.review };
   if (eff.occupancy !== undefined) next = { ...next, occupancy: eff.occupancy };
   if (eff.subRecycles !== undefined) next = { ...next, subRecycles: Math.max(next.subRecycles, eff.subRecycles) };
@@ -266,11 +312,12 @@ function matchLabel(name: string): string | null {
 // ---------------------------------------------------------------------------------------
 
 function joinOverlay(existing: PhaseOverlay | undefined, patch: Partial<PhaseOverlay>): PhaseOverlay {
-  const base: PhaseOverlay = existing ?? { rank: "todo", hilOpen: false, problem: null };
+  const base: PhaseOverlay = existing ?? { rank: "todo", hilOpen: false, problem: null, repository: "primary" };
   return {
     rank: patch.rank ? joinRank(base.rank, patch.rank) : base.rank,
     hilOpen: patch.hilOpen ?? base.hilOpen,
     problem: patch.problem !== undefined ? patch.problem : base.problem,
+    repository: patch.repository ?? base.repository,
   };
 }
 
@@ -325,15 +372,56 @@ function mergeEvents(existing: RawEvent[], incoming: RawEvent[]): RawEvent[] {
 }
 
 function eventKey(e: RawEvent): string {
-  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.detail ?? ""}`;
+  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.repository ?? ""}|${e.detail ?? ""}`;
 }
 
 function toRawEvent(ev: EventInfo): RawEvent {
-  return { ts: ev.ts ?? undefined, event: ev.event, phase: ev.phase ?? "", detail: ev.detail ?? "" };
+  return { ts: ev.ts ?? undefined, event: ev.event, phase: ev.phase ?? "", repository: ev.repository ?? undefined, detail: ev.detail ?? "" };
 }
 
 function rawToEventInfo(raw: RawEvent): EventInfo {
-  return { event: str(raw.event), phase: str(raw.phase), detail: str(raw.detail), ts: typeof raw.ts === "string" ? raw.ts : null };
+  return { event: str(raw.event), phase: str(raw.phase), repository: str(raw.repository), detail: str(raw.detail), ts: typeof raw.ts === "string" ? raw.ts : null };
+}
+
+function emptyRepository(): RepositoryRecord {
+  return { sourceRoot: null, defaultBranch: null, baseSha: null, integrationBranch: null,
+    integrationWorktree: null, prUrl: null, review: null };
+}
+
+function normalizeRepositories(
+  state: StateJson,
+  existing: Record<string, RepositoryRecord>,
+): Record<string, RepositoryRecord> {
+  const out = { ...existing };
+  for (const [slug, repo] of Object.entries(state.repositories ?? {})) {
+    const prior = out[slug] ?? emptyRepository();
+    out[slug] = {
+      sourceRoot: repo.sourceRoot ?? prior.sourceRoot,
+      defaultBranch: repo.defaultBranch ?? prior.defaultBranch,
+      baseSha: repo.baseSha ?? prior.baseSha,
+      integrationBranch: repo.integrationBranch ?? prior.integrationBranch,
+      integrationWorktree: repo.integrationWorktree ?? prior.integrationWorktree,
+      prUrl: repo.prUrl ?? prior.prUrl,
+      review: normalizeReview(repo.review ?? undefined) ?? prior.review,
+    };
+  }
+  if (Object.keys(out).length === 0 && (state.integrationBranch || state.prUrl || state.review)) {
+    out.primary = {
+      ...emptyRepository(),
+      integrationBranch: state.integrationBranch ?? null,
+      prUrl: state.prUrl ?? null,
+      review: normalizeReview(state.review) ?? null,
+    };
+  }
+  return out;
+}
+
+function firstRepository(repositories: Record<string, RepositoryRecord>): RepositoryRecord | null {
+  return Object.values(repositories)[0] ?? null;
+}
+
+function legacyRepositorySlug(state: StateJson): string {
+  return Object.keys(state.repositories ?? {})[0] ?? "primary";
 }
 
 function parseJsonlEvents(text: string): RawEvent[] {
@@ -350,7 +438,12 @@ function parseJsonlEvents(text: string): RawEvent[] {
   return out;
 }
 
-function normalizeReview(r: StateJson["review"] | undefined): ReviewInfo | null {
+function normalizeReview(r: {
+  outcome?: string | null;
+  summary?: string | null;
+  reportPath?: string | null;
+  commentUrl?: string | null;
+} | null | undefined): ReviewInfo | null {
   if (!r) return null;
   return {
     outcome: r.outcome ?? null,

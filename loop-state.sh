@@ -23,7 +23,7 @@ set -u -o pipefail
 DIR=".loop"
 CMD="${1:-}"; [[ -n "$CMD" ]] && shift
 
-JSON="" OWNER="" FORCE=0 CLEAR=0 TRANSCRIPT="" WINDOW="" ARGS=()
+JSON="" OWNER="" FORCE=0 CLEAR=0 TRANSCRIPT="" WINDOW="" REPOSITORY="" ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --dir) DIR="$2"; shift 2 ;;
@@ -33,6 +33,7 @@ while [[ $# -gt 0 ]]; do
   --clear) CLEAR=1; shift ;;
   --transcript) TRANSCRIPT="$2"; shift 2 ;;
   --window) WINDOW="$2"; shift 2 ;;
+  --repository) REPOSITORY="$2"; shift 2 ;;
   *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -130,8 +131,10 @@ set)
 log)
   mkdir -p "$DIR"
   line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg event "${ARGS[1]:-}" --arg phase "${ARGS[2]:-}" --arg detail "${ARGS[3]:-}" \
-    '{ts: $ts, event: $event, phase: $phase, detail: $detail}')"
+    --arg event "${ARGS[1]:-}" --arg phase "${ARGS[2]:-}" --arg repository "$REPOSITORY" \
+    --arg detail "${ARGS[3]:-}" \
+    '{ts: $ts, event: $event, phase: $phase,
+      repository:(if ($repository|length)>0 then $repository else null end), detail: $detail}')"
   printf '%s\n' "$line" >> "$DIR/events.jsonl"
   run_id="$(state_run_id)"
   [[ -n "$run_id" ]] && printf '%s' "$line" | loop_emit "$run_id" event

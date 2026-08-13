@@ -29,14 +29,23 @@ export function materialize(record: LoopRecord, live: LoopInput | null, opts: Ma
     if (!frozen) return render(record, EMPTY_LIVE, opts);
     // Backfill defaults ONLY for a snapshot frozen by a pre-subOrch build (keep the same
     // reference otherwise, so a current snapshot short-circuits untouched).
-    return Object.prototype.hasOwnProperty.call(frozen, "subOrch")
+    const hasCurrentFields = Object.prototype.hasOwnProperty.call(frozen, "subOrch")
+      && Array.isArray(frozen.effort?.repositories);
+    return hasCurrentFields
       ? frozen
-      : { ...frozen, subOrch: null, pendingHil: 0 };
+      : { ...frozen, effort: { ...frozen.effort, repositories: frozen.effort?.repositories ?? [] },
+          subOrch: frozen.subOrch ?? null, pendingHil: frozen.pendingHil ?? 0 };
   }
   return render(record, live, opts);
 }
 
 export function summarize(record: LoopRecord): LoopSummary {
+  const repositories = Object.entries(record.repositories).map(([slug, repository]) => ({
+    slug,
+    integrationBranch: repository.integrationBranch,
+    prUrl: repository.prUrl,
+    reviewOutcome: repository.review?.outcome ?? null,
+  }));
   return {
     runId: record.runId,
     effort: record.effort,
@@ -46,10 +55,19 @@ export function summarize(record: LoopRecord): LoopSummary {
     finishedAt: record.finishedAt,
     updatedAt: record.updatedAt,
     prUrl: record.prUrl,
-    reviewOutcome: record.review?.outcome ?? null,
+    reviewOutcome: aggregateReviewOutcome(repositories.map((repository) => repository.reviewOutcome))
+      ?? record.review?.outcome ?? null,
+    repositories,
     phaseCounts: countPhases(record),
     pendingHil: countHilOpen(record),
   };
+}
+
+function aggregateReviewOutcome(outcomes: Array<string | null>): string | null {
+  if (outcomes.includes("blocked")) return "blocked";
+  if (outcomes.includes("question")) return "question";
+  if (outcomes.includes("done")) return "done";
+  return null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -93,9 +111,14 @@ function effectiveState(record: LoopRecord): StateJson {
   const base = record.lastState ?? {};
   const phases: Record<string, StatePhase> = {};
   for (const num of phaseNums(record)) {
-    phases[num] = { ...(base.phases?.[num] ?? {}), status: effectivePhaseStatus(record, num) };
+    phases[num] = { ...(base.phases?.[num] ?? {}), status: effectivePhaseStatus(record, num),
+      repository: record.phases[num]?.repository ?? base.phases?.[num]?.repository };
   }
-  return { ...base, phases };
+  const repositories = Object.fromEntries(Object.entries(record.repositories).map(([slug, repository]) => [
+    slug,
+    { ...repository },
+  ]));
+  return { ...base, repositories, phases };
 }
 
 function eventsToJsonl(events: RawEvent[]): string {
