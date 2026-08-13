@@ -9,7 +9,7 @@ The point of a review is to catch what a diff alone hides. Reading the patch tel
 
 Don't skip the worktree step because the change "looks trivial." Trivial-looking changes are exactly where confident-but-wrong reviews come from.
 
-**Writing style for the report and any posted comments:** be concise. Lead with the verdict, keep each finding to a few sentences, cut the narrative. Never use em-dashes; use commas, colons, parentheses, or separate sentences instead.
+**Writing style for the report and any posted comments:** be concise. Lead with the verdict, keep each finding to a few sentences, cut the narrative. Never use em-dashes; use commas, colons, parentheses, or separate sentences instead. Label each finding `[major]`, `[minor]`, `[nit]`, or `[style]`.
 
 ## Step 1 — Check it out and run it (do this first)
 
@@ -47,7 +47,29 @@ Go through the change with each of these in mind. For every issue, point to the 
 
 ## Step 3 — Report
 
-Lead with the verdict and whether it ran cleanly in Step 1. Then list findings grouped by the lenses above, each with a file:line reference, ordered most to least serious. Separate must-fix issues from nice-to-haves. Be honest when something is clean — don't manufacture findings to fill a section.
+Lead with the verdict and whether it ran cleanly in Step 1. Then list findings grouped by the lenses above, each with a file:line reference, ordered most to least serious. Separate must-fix issues from nice-to-haves. Use `[major]` for issues that should be fixed before merge, `[minor]` for real but deferrable issues, `[nit]` for small optional improvements, and `[style]` for formatting or convention only. Be honest when something is clean; don't manufacture findings to fill a section.
+
+## Posting to GitHub
+
+Default to one GitHub review with `event: "COMMENT"`. Put every `[major]`, `[minor]`, `[nit]`, and `[style]` finding in an inline review comment anchored to the relevant diff line. Do not duplicate findings in the overall body. Use `APPROVE` or `REQUEST_CHANGES` only when the user explicitly asks.
+
+The overall review body must be concise and contain:
+
+- the verdict,
+- the validation result,
+- the stacked-PR split proposal, or a short statement that no split is recommended,
+- and `:)` as its final characters.
+
+Always preview the overall body and each inline comment with its `path:line`, then wait for approval before posting. Pin the review to the head SHA that was reviewed. Fetch the unified diff to validate anchors, then post the review through the GitHub API:
+
+```bash
+gh api "repos/<owner>/<repo>/pulls/<n>" -H "Accept: application/vnd.github.v3.diff" > /tmp/pr.diff
+
+# review.json: {commit_id, event:"COMMENT", body, comments:[{path, line, side, body}]}
+gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input review.json
+```
+
+Anchor comments to lines in the unified diff. When the relevant code is pre-existing or part of a rename-only diff, anchor to the changed line that introduces the issue and name the original location in the comment. After posting, re-read the review and confirm its state and anchors.
 
 ## Headless mode
 
@@ -59,4 +81,4 @@ git worktree remove --force ../<repo>-review-<number> 2>/dev/null || true   # le
 git worktree add --detach ../<repo>-review-<number> FETCH_HEAD
 ```
 
-The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post the full report as a PR comment via `gh pr comment`: lead with the verdict line, include the stacked-PR-split section. Still clean up the worktree when done.
+The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as described above: findings inline, concise overall body, stacked-PR split proposal included, and `:)` at the end. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Clean up the worktree when done.
