@@ -18,7 +18,7 @@ switches between loops. Kestral is an **opt-in linked backend**, not a requireme
 
 It reads `.loop/` and folds pushed events. The one write path is the node drawer's
 steering-note editor, which writes or clears the same `notes/<phase>.md` /
-`notes/pr-review.<owner--repo>.md`
+legacy `notes/pr-review.<owner--repo>.md`
 files as `loop-state.sh note`; it never writes the plan. A distinct aqua NOTE badge remains
 visible until that phase or review finishes.
 
@@ -99,9 +99,13 @@ is never rendered as an error.
 Layout is a deterministic longest-path layered layout with horizontal swimlane bands
 (`src/ui/graph/layout.ts`). elkjs was intentionally dropped: its `layered` algorithm doesn't model
 horizontal lanes as a first-class concept, and our DAGs are tiny, so a deterministic layout gives
-  guaranteed clean bands with a synthetic Plan root and stacked repository PR Review terminals.
+  guaranteed clean bands with a synthetic Plan root. New plans render explicit PR-review
+  phases inline, including repeated review rounds after late-added work; legacy plans retain
+  stacked synthetic repository review terminals.
 
-Plans declare GitHub `owner/repo` slugs and assign one repository to every phase. Runtime
+Plans declare GitHub `owner/repo` slugs and assign one repository to every work phase;
+explicit review phases cover all repositories. Re-registering edited plan text preserves
+completed phase ranks and reopens a finished loop when unfinished phases are appended. Runtime
 state/store schema v2 keeps independent integration branches, base SHAs, PRs, and reviews per
 repository; v1 scalar records migrate to an implicit `primary` repository. Local checkout
 mappings live outside plans in `~/.loop/repos.json`, managed by `../loop-repo.sh`.

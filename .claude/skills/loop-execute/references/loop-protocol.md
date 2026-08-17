@@ -5,6 +5,13 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 `loop-plan.sh`, `loop-repo.sh`, `loop-models.conf`), and the `--auto` modes of `loop-pickup` / `loop-handoff` /
 `pr-review`. Everything machine-parsed lives here; change it in lockstep everywhere.
 
+## Contents
+
+- Roles · editable plan reconciliation · directory layout · daemon/events · state schema
+- Repository bootstrap · runner spawn · two-tier orchestration · runner status/exit codes
+- Model chains · engine invocations · runner prompts · merge/escalation/HIL
+- Backend mapping · crash-resume
+
 ## Roles
 
 - **Orchestrator** — owns the plan **document** (sole `update_document` writer — parallel
@@ -12,7 +19,7 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   pushes to repository integration branches, scheduling, escalation, HIL. In the two-tier model this
   role is **split across two modes** (§ Two-tier orchestration): a THIN `supervise` main (the
   interactive Claude Code session the user talks to — preflight/init/lock, HIL answering,
-  finalization) and disposable headless `sub` instances that do the heavy scheduling/merge/
+  and review phases) and disposable headless `sub` instances that do the heavy scheduling/merge/
   escalation and self-recycle. A single-tier run (`supervise` doing everything itself) is
   still valid for a short effort.
 - **Sub-orchestrator (SUB)** — a disposable headless orchestrator (`claude -p`,
@@ -38,6 +45,23 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   notes the plan on the daemon — the local backend). They never decide; the orchestrator
   switches on their exit codes.
 
+## Editable plan reconciliation
+
+The plan is mutable until humans merge the PRs. Reconcile it at every safe scheduling and
+review boundary. Phase numbers are stable identities used by state, notes, events, run dirs,
+and linked tasks; document order is the displayed/executed order. Allocate the next unused
+number and never renumber, reuse, move, or reopen a completed phase.
+
+Every new-format executable plan ends in `[kind: pr-review]`:
+
+- Pending last review: insert newly added work before it and extend its dependency closure.
+- Completed last review: keep it in place, append new work after it, then append a new review.
+
+Merge new phase entries into `state.phases` as `todo`; never replace existing entries.
+Edits that conflict with a live runner wait for a safe boundary or raise HIL. Push the fully
+reconciled document atomically to the daemon and, when linked, Kestral. Legacy no-kind plans
+continue to use one synthetic terminal review.
+
 ## Directory layout
 
 State lives in the launching coordinator checkout (add `.loop/` to
@@ -58,17 +82,18 @@ State lives in the launching coordinator checkout (add `.loop/` to
     status.json              # runner-written result (schema below)
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
-  runs/review-<owner--repo>-a<K>/report.md # per-repository pr-review report
+  runs/review-p<N>-<owner--repo>-a<K>/report.md # review phase N, per repository
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
-  notes/<key>.md             # phase number | pr-review.<owner--repo>; persist until done
+  notes/<key>.md             # explicit phase number; legacy pr-review.* keys accepted
   sub/                       # two-tier self-recycling orchestrator runtime (§ Two-tier orchestration)
     transcript-<k>.jsonl     # SUB instance k's stream-json (mtime = heartbeat; occupancy source)
-    status.json              # SUB → loop-orchestrator.sh: recycle|complete|fatal|blocked
+    status.json              # SUB → loop-orchestrator: recycle|review-ready|complete|fatal|blocked
     handoff.md               # single-consumption recycle handoff → renamed handoff.consumed-<k>.md
     current.pid              # live SUB pid (loop-orchestrator.sh writes; supervise polls it)
     saturation.json          # optional sidecar-watcher occupancy fallback (if stream-json buffers)
-    PHASES_DONE              # touched on `complete` → supervise finalizes (PR ready, links, finish)
+    REVIEW_READY             # explicit review barrier ready → supervise executes that phase
+    PHASES_DONE              # legacy no-kind plan only: synthetic review ready
     control/                 # reserved: out-of-band control files (e.g. pause/abort)
 ```
 
@@ -90,16 +115,16 @@ on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
 `loop_ensure_daemon` as the fallback. Loops **register**, then push clean lifecycle events.
 Emission is **best-effort** — a `curl` failure never fails the caller.
 The daemon also reads size-capped `notes/*.md` content on each reconcile. NOTE badges are
-file-derived but completion-aware: a phase note is pending only while its phase is not
-`done|merged`; `pr-review.<owner--repo>` is pending only until that review finishes. This makes missed
-best-effort file cleanup harmless.
+file-derived but completion-aware: a numeric phase note is pending only while its phase is
+not `done|merged`; legacy `pr-review.<owner--repo>` is pending only until that review
+finishes. This makes missed best-effort file cleanup harmless.
 
 Endpoints (POST bodies are JSON built injection-safely with `jq`):
 
 - `POST /api/loops/:runId/register` `{ loopDir, planFile?, effort?, projectId?, integrationBranch?, startedAt?, planText? }` — server reads plan.md from `planFile` if `planText` omitted.
 - `POST /api/loops/:runId/state` — the full state.json contents.
 - `POST /api/loops/:runId/event` `{ event, phase?, repository?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — folded verbatim.
-- `POST /api/loops/:runId/finish` accepts v2 `{ status?, finishedAt?, repositories:{slug:{prUrl?,review?}} }`; legacy scalar `prUrl/review` remains accepted.
+- `POST /api/loops/:runId/finish` accepts v2 `{ status?, finishedAt?, repositories:{slug:{prUrl?,review?}} }`; legacy scalar `prUrl/review` remains accepted. For explicit plans it is ignored until the terminal review phase is `done|merged`.
 - `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, planText }` — how a fresh checkout fetches the plan with **no worktree needed**.
 - `POST /api/loops/:runId/note` `{ key, markdown }` to write or `{ key, clear:true }` to delete a steering note; rejects archived loops.
 - `GET /api/loops` (plural repository summaries) · `GET /events?runId=` ·
@@ -110,6 +135,10 @@ A register-only record shows status **`planned`** (a plan on the daemon with no 
 `multiphase-plan` registers the plan (**`planned`**) before any run; the first state push or
 event flips it to **`active`**.
 
+Re-registering replaces `planText` without discarding phase overlays. If a finished record
+receives a newly appended unfinished phase, it reopens as `active` under the same runId;
+completed phase ranks remain monotone.
+
 **Typed event vocabulary** (who emits what):
 
 | event | emitted by | fields |
@@ -119,7 +148,7 @@ event flips it to **`active`**.
 | `phase.merged` | loop-merge.sh (EXIT trap, rc==0) | phase, repository |
 | `merge.conflict` | loop-merge.sh (conflict branch) | phase, repository, detail |
 | `hil.raise` / `hil.resolve` | orchestrator (loop-state.sh log) | phase |
-| `review.finish` | orchestrator | repository, outcome, summary |
+| `review.finish` | orchestrator | phase, repository, outcome, summary |
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
@@ -159,7 +188,7 @@ fields — keep the shape:
     }
   },
   "phases": {
-    "3": { "slug": "<task-slug>", "taskId": "...", "lane": "A", "repository": "owner/api",
+    "3": { "kind": "work|pr-review", "slug": "<task-slug>", "taskId": "...", "lane": "A", "repository": "owner/api|all",
            "branch": "feat/api-client-token-refresh", "worktree": "<abs path or null>",
            "status": "todo|claimed|running|merged|blocked|done",
            "attempt": 2, "runDir": ".loop/runs/<phase-slug>-a2",
@@ -215,10 +244,10 @@ keep the *interactive* chat under a hard ~200k ceiling, `loop-execute` runs in o
 - **`supervise`** (new default for a hands-off run) — the interactive session. THIN:
   preflight/init/lock, then spawn ONE detached `loop-orchestrator.sh` and poll **compact
   local** state (`loop-state.sh get '.phases|map(.status)'`, not the fat daemon snapshot) for
-  a 2-3 line progress read. It answers HIL from the on-disk brief and, on `sub/PHASES_DONE`,
-  finalizes (spawn bounded parallel repository review-runners, promote all verdicts,
-  `gh pr ready`, link repository PRs, one `loop-state.sh finish`, unlock). It spawns only
-  the orchestrator and final review-runners;
+  a 2-3 line progress read. It answers HIL from the on-disk brief and, on
+  `sub/REVIEW_READY`, executes that explicit review phase (bounded parallel repository
+  review-runners), then either respawns scheduling for later work or finishes when the
+  review is terminal. It spawns only the orchestrator and review-runners;
   it is designed never to need recycling (if it ever did, `state.json` is its backstop — a
   main auto-summary cannot lose the loop).
 - **headless `sub`** — a disposable SUB instance entered via `loop-execute resume`. Does the
@@ -229,7 +258,8 @@ while-loop**, not a concurrent daemon. It runs SUB instance *k*, waits for it to
 `sub/status.json`, and:
 
 - `recycle` → emit `sub.recycle`, `k++`, respawn SUB *k+1* with a `resume` prompt.
-- `complete` → `touch sub/PHASES_DONE`, emit, break.
+- `review-ready` → `touch sub/REVIEW_READY`, notify, break so supervise runs the barrier.
+- `complete` → `touch sub/PHASES_DONE`, notify, break (legacy no-kind plans only).
 - `fatal` / `blocked` → `loop-notify.sh`, break (supervise surfaces it).
 - no valid `sub/status.json` → crash → respawn (`resume`), capped at `LOOP_ORCH_MAX_RESPAWN`
   consecutive crashes, then notify + exit.
@@ -298,7 +328,7 @@ schema with orchestrator-role outcomes:
 
 ```json
 {
-  "outcome": "recycle | complete | fatal | blocked",
+  "outcome": "recycle | review-ready | complete | fatal | blocked",
   "summary": "1-3 lines: why it stopped / what is done",
   "tokens": 152341,
   "recycleIndex": 2
@@ -307,8 +337,10 @@ schema with orchestrator-role outcomes:
 
 - `recycle` — occupancy hit the soft threshold at a safe boundary; `sub/handoff.md` written.
   `tokens`/`recycleIndex` populate the `sub.recycle` event.
-- `complete` — every phase merged; the effort is ready for finalization. The loop touches
-  `sub/PHASES_DONE` and stops; `supervise` takes over.
+- `review-ready` — the next ready document phase is `[kind: pr-review]`; the loop touches
+  `sub/REVIEW_READY` and stops so `supervise` executes it.
+- `complete` — legacy plan work is complete and its synthetic review is ready. The loop
+  touches `sub/PHASES_DONE` and stops.
 - `fatal` — unrecoverable orchestration error (bad config, the lock was taken by another owner).
 - `blocked` — a HIL is open that only the human can answer AND no other lane can progress. (An
   open HIL with other lanes still running is NOT `blocked` — the SUB keeps going.)

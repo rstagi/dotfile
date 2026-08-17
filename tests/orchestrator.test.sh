@@ -35,6 +35,13 @@ assert_contains "$(cat "$EMIT_LOG")" "sub.recycle" "emitted a sub.recycle event"
 assert_contains "$(cat "$EMIT_LOG")" '"recycleIndex":1' "sub.recycle carries recycleIndex 1"
 assert_contains "$(cat "$EMIT_LOG")" '"tokens":151000' "sub.recycle carries tokens from status.json"
 
+echo "orchestrator: review barrier → hand control to supervise"
+reset
+FAKE_OUTCOMES="review-ready" orch
+assert_exit "$RC" "0" "review-ready exits cleanly"
+assert_eq "$([[ -f "$SUB/REVIEW_READY" ]] && echo yes)" "yes" "touches REVIEW_READY"
+assert_eq "$([[ -f "$SUB/PHASES_DONE" ]] && echo yes || echo no)" "no" "does not mark every phase done"
+
 echo "orchestrator: crash → respawn, capped at LOOP_ORCH_MAX_RESPAWN"
 reset
 LOOP_ORCH_MAX_RESPAWN=2 FAKE_OUTCOMES="crash crash crash" orch

@@ -144,6 +144,39 @@ EOF
     assert_eq "$(print "$api_review" | jq -r .prUrl)" "https://github.com/acme/api/pull/1" "repository review endpoint selects API PR"
     aggregate="$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$PID" '.[] | select(.runId==$id) | .reviewOutcome')"
     assert_eq "$aggregate" "blocked" "loop summary aggregates blocked over done"
+
+    # A finished explicit-review flow reopens in place when new unfinished phases are pushed.
+    EDIT="$TMP/editable/.loop"; mkdir -p "$EDIT"
+    cat > "$EDIT/plan.md" <<'EOF'
+<!-- loop-plan
+planId: loop-editable-e2e
+daemon: http://localhost:7717
+-->
+# Editable — Multi-Phase Plan
+## Phases
+### Phase 1 — Initial work `[lane: A]` `[status: done]`
+- **Depends on:** none
+### Phase 2 — First review `[lane: review]` `[status: done]` `[kind: pr-review]`
+- **Depends on:** Phase 1
+EOF
+    EDIT_PID="$(plan register --dir "$EDIT")"
+    curl -sf -X POST --data-binary '{"phases":{"1":{"status":"merged"},"2":{"status":"done"}}}' \
+      "$LOOP_DAEMON_URL/api/loops/$EDIT_PID/state" >/dev/null
+    curl -sf -X POST --data-binary '{}' "$LOOP_DAEMON_URL/api/loops/$EDIT_PID/finish" >/dev/null
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$EDIT_PID" '.[] | select(.runId==$id) | .status')" \
+      "finished" "explicit flow finishes after its review phase"
+
+    cat >> "$EDIT/plan.md" <<'EOF'
+### Phase 3 — Follow-up work `[lane: A]` `[status: todo]`
+- **Depends on:** Phase 2
+### Phase 4 — Final review `[lane: review]` `[status: todo]` `[kind: pr-review]`
+- **Depends on:** Phase 3
+EOF
+    plan push --dir "$EDIT" >/dev/null
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$EDIT_PID" '.[] | select(.runId==$id) | .status')" \
+      "active" "pushing appended phases reopens the same loop"
+    ids="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$EDIT_PID/snapshot" | jq -r '[.graph.nodes[].id] | join(",")')"
+    assert_eq "$ids" "plan,1,2,3,4" "snapshot keeps the prior review inline and adds a terminal review"
   fi
 fi
 

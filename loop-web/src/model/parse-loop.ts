@@ -46,6 +46,7 @@ export interface LoopInput {
 
 const RUN_NAME = /^(.+)-a(\d+)$/;
 const REVIEW_NAME = /^review-a(\d+)$/;
+const PHASE_REPOSITORY_REVIEW_NAME = /^review-p(\d+)-(.+)-a(\d+)$/;
 const REPOSITORY_REVIEW_NAME = /^review-(.+)-a(\d+)$/;
 
 const EMPTY: Runtime = {
@@ -115,12 +116,18 @@ function splitRuns(runs: RawRunDir[]): {
   for (const r of runs) {
     const rev = r.name.match(REVIEW_NAME);
     if (rev) {
-      reviewRuns.push({ k: Number(rev[1]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), repository: null });
+      reviewRuns.push({ k: Number(rev[1]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), phase: null, repository: null });
+    } else if (r.name.match(PHASE_REPOSITORY_REVIEW_NAME)) {
+      const match = r.name.match(PHASE_REPOSITORY_REVIEW_NAME)!;
+      const repository = match[2];
+      const list = reviewRunsByRepository[repository] ?? [];
+      list.push({ k: Number(match[3]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), phase: match[1], repository });
+      reviewRunsByRepository[repository] = list;
     } else if (r.name.match(REPOSITORY_REVIEW_NAME)) {
       const match = r.name.match(REPOSITORY_REVIEW_NAME)!;
       const repository = match[1];
       const list = reviewRunsByRepository[repository] ?? [];
-      list.push({ k: Number(match[2]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), repository });
+      list.push({ k: Number(match[2]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), phase: null, repository });
       reviewRunsByRepository[repository] = list;
     } else {
       attemptDirs.push(r);

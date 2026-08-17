@@ -84,7 +84,7 @@ function traceMode(n: GraphNode): "live" | "flat" | "idle" {
 
 function chip(n: GraphNode): string {
   if (n.kind === "plan") return "PLAN";
-  if (n.kind === "pr-review") return "REVIEW";
+  if (n.kind === "pr-review") return n.phase ? `P${n.phase} · REVIEW` : "REVIEW";
   return `P${n.phase}${n.lane ? ` · ${n.lane}` : ""}`;
 }
 
@@ -98,7 +98,8 @@ function statusLabel(n: GraphNode): string {
 
 function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null) {
   if (n.kind === "pr-review") {
-    const pill = reviewPill(pr?.outcome);
+    const verdictBelongsToThisRound = n.phase == null || n.status === "done" || n.status === "blocked";
+    const pill = reviewPill(verdictBelongsToThisRound ? pr?.outcome : null);
     if (pill)
       return (
         <span className="node__badge" style={{ color: pill.color, borderColor: pill.color }}>

@@ -40,6 +40,7 @@ export interface StatusJson {
 
 /** state.json phase entry — schema per loop-protocol.md, every field optional. */
 export interface StatePhase {
+  kind?: PlanPhaseKind;
   slug?: string;
   taskId?: string;
   lane?: string;
@@ -112,6 +113,7 @@ export interface RawEvent {
 // ---------------------------------------------------------------------------------------
 
 export type PlanPhaseStatus = "todo" | "in-progress" | "blocked" | "done";
+export type PlanPhaseKind = "work" | "pr-review";
 
 export interface LoopConfig {
   integrationBranch: string | null;
@@ -133,6 +135,7 @@ export interface PlanPhase {
   phase: string;
   /** Descriptive title with the bracket markers stripped. */
   title: string;
+  kind: PlanPhaseKind;
   lane: string;
   status: PlanPhaseStatus;
   repository: string;
@@ -169,6 +172,7 @@ export interface Plan {
 export interface PlanPhaseSummary {
   phase: string;
   title: string;
+  kind: PlanPhaseKind;
   lane: string;
   status: PlanPhaseStatus;
   repository: string;
@@ -227,6 +231,7 @@ export interface ReviewRun {
   k: number;
   runDir: string;
   status: StatusJson | null;
+  phase: string | null;
   repository: string | null;
 }
 
@@ -237,7 +242,7 @@ export interface Runtime {
   events: RawEvent[];
   reviewRuns: ReviewRun[];
   reviewRunsByRepository: Record<string, ReviewRun[]>;
-  /** Reserved notes/pr-review.md steering note. */
+  /** Legacy reserved notes/pr-review.md steering note. */
   reviewNote: string | null;
   reviewNotes: Record<string, string>;
 }

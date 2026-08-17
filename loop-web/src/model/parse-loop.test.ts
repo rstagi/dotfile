@@ -100,6 +100,17 @@ describe("parseLoop — state & phase mapping", () => {
     expect(rt.reviewRunsByRepository["acme--web"][0].k).toBe(2);
     expect(rt.reviewRuns).toEqual([]);
   });
+
+  it("groups phase-scoped review rounds by repository", () => {
+    const rt = parseLoop(input({
+      runs: [run({ name: "review-p5-acme--api-a1", status: JSON.stringify({ outcome: "done" }) })],
+    }));
+    expect(rt.reviewRunsByRepository["acme--api"][0]).toMatchObject({
+      k: 1,
+      phase: "5",
+      repository: "acme--api",
+    });
+  });
 });
 
 describe("parseLoop — events.jsonl", () => {

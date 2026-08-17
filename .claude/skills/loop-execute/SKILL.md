@@ -1,16 +1,16 @@
 ---
 name: loop-execute
 description: >-
-  Loop engineering: autonomously execute a PUBLISHED multi-phase plan (registered on the Loop
+  Loop engineering: autonomously execute an editable multi-phase plan registered on the Loop
   daemon; Kestral link optional) end-to-end — spawn a fresh headless runner per phase (Codex
   or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into its
   repository integration branch, escalate stuck work (retry → stronger model → HIL pause),
-  open one effort PR per repository, review each, then stop for humans to merge.
+  open one effort PR per repository, execute explicit review phases, then stop for humans to merge.
   By default the heavy orchestration runs in a detached, self-recycling sub-orchestrator so
   the interactive chat stays thin. Use when asked to
   "run the loop", "execute the multi-phase plan", "run the published plan autonomously",
   "loop-engineer this", or after multiphase-plan when the user wants the phases executed
-  hands-off. NOT for implementing an in-chat plan yourself — it needs a published plan with a
+  hands-off. NOT for implementing an in-chat plan yourself — it needs a registered plan with a
   Loop config.
 argument-hint: "<project / plan doc> | resume | status | abort"
 ---
@@ -18,9 +18,9 @@ argument-hint: "<project / plan doc> | resume | status | abort"
 # Loop Execute
 
 The execution engine for `multiphase-plan`. The plan backend is the **Loop daemon** (a
-Kestral link is optional; default local-only). The human plans (and answers questions) once;
-this skill runs every phase through pickup → implement → handoff automatically and comes
-back with one reviewed PR. Each headless runner runs the pickup/handoff auto modes itself
+Kestral link is optional; default local-only). The human plans once and may keep editing;
+this skill runs work phases through pickup → implement → handoff and treats explicit review
+phases as orchestrator-owned barriers. Each headless runner runs the pickup/handoff auto modes itself
 (both engines carry the Kestral MCP when the plan is linked); you — the orchestrator session
 — are the sole writer of the plan document and the integration branch, and the policy brain.
 Scripts do the mechanics. The full contract (dir layout,
@@ -41,8 +41,8 @@ its safe ceiling. So `loop-execute` runs in one of three shapes (contract:
 - **`supervise`** (default for a hands-off run) — the interactive session you're in stays
   **THIN**. It does preflight / init / lock / the confirm gate, spawns ONE detached
   `loop-orchestrator.sh`, then only: polls **compact local** state for a 2-3 line progress read,
-  answers HIL from on-disk briefs, and finalizes on `sub/PHASES_DONE`. It spawns **only** the
-  orchestrator and the final review-runner — the heavy scheduling/merge/escalation runs in
+  answers HIL from on-disk briefs, and handles `sub/REVIEW_READY` barriers. It spawns **only** the
+  orchestrator and review-runners — the heavy scheduling/merge/escalation runs in
   disposable **`sub`** instances that self-recycle, so this chat never fills up.
 - **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
   spawned by `loop-orchestrator.sh`, entered via `loop-execute resume` (signalled by env
@@ -61,7 +61,7 @@ inline in single-tier)"; steps **1-3, 3b, 8** are supervise/single-tier.
 ## Prerequisites
 
 `gh auth status` OK; `jq`; the loop scripts (including `loop-repo.sh`) present; a plan
-(registered on the Loop daemon or in `.loop/plan.md`) published by `multiphase-plan` with
+(registered on the Loop daemon or in `.loop/plan.md`) authored by `multiphase-plan` with
 Loop config + repository blocks: shared integration branch, concurrency, and mandatory
 Verify per repository. Missing repository verify → ask; never invent one. Legacy scalar
 plans normalize to the synthetic `primary` repository. **Kestral only when the plan is LINKED:** if the plan
@@ -78,17 +78,20 @@ the Mac; do not manage power yourself.
 
 Resolve the plan LOCAL → daemon → Kestral-if-linked: `.loop/plan.md` header → the daemon
 (`loop-plan.sh get --plan-id <id>`, else `loop-plan.sh list`) → Kestral **only when linked**
-(argument → `.loop/plan.md` header → ask, like `loop-pickup` step 1). Parse phases, lanes,
-repositories, `Depends on` edges, statuses, and per-phase `Verify`; when linked, re-fetch
-from Kestral and reconcile against live task statuses. Validate: DAG acyclic; every phase
-has *Done when* and exactly one known repository. Resolve each `owner/repo` through
+(argument → `.loop/plan.md` header → ask, like `loop-pickup` step 1). Parse phases, kinds,
+lanes, repositories, `Depends on` edges, statuses, and per-phase `Verify`; when linked,
+re-fetch from Kestral and reconcile against live task statuses. Validate: DAG acyclic;
+every phase has *Done when*; every work phase has exactly one known repository; the final
+document phase is `[kind: pr-review]`. Legacy plans without explicit kinds retain their
+synthetic terminal review. Resolve each `owner/repo` through
 `loop-repo.sh get`; before autonomy ask once for missing checkout paths and persist them
 with `loop-repo.sh map`. Run `loop-repo.sh check` for origin/default-branch/collision
 validation. Ensure coordinator `.loop/` is gitignored and repository worktrees are clean.
 **Adopt the plan's
 `planId` as the run id** — the planId IS the runId, so loop-execute drives the same daemon
-record through planned → active → finished (one selector entry); if that record is already
-`finished` (a re-run), mint `<planId>-r<K>` and re-register. Take the lock now —
+record through planned → active → finished (one selector entry). If it is already `finished`,
+re-read the plan: newly appended unfinished phases reopen that same record; only an unchanged
+intentional re-run mints `<planId>-r<K>`. Take the lock now —
 `loop-state.sh lock --owner <run-id>`: a foreign owner means a live orchestrator already runs
 this effort; surface it and stop (never `--force` silently). This happens before the confirm
 gate so the gate's no-further-contact promise holds.
@@ -96,7 +99,7 @@ gate so the gate's no-further-contact promise holds.
 ### 2. One confirm gate, then autonomy
 
 Show the user: the backend (local-only vs Kestral-linked), repository → checkout/default
-branch/integration branch/verify table, phase/lane/repository table, chains +
+branch/integration branch/verify table, phase/kind/lane/repository table, chains +
 budget/timeouts from `loop-models.conf`, concurrency (the plan's **Concurrency** line
 overrides `LOOP_MAX_PARALLEL`; default 3). After their go, do not contact them again
 except through the HIL path or completion. `AskUserQuestion` is reserved for those two
@@ -136,19 +139,38 @@ session hands the heavy work to a detached orchestrator and stays thin:
 3. **Poll thin.** Every ~60-120s read **compact local** state only — `loop-state.sh get
    '.phases|map(.status)'` + a couple of `events.jsonl` tail lines — and summarize to 2-3 lines.
    Do NOT skim diffs, resolve conflicts, or pull the fat daemon snapshot; that heavy work is the
-   SUB's, and reading it here defeats the purpose. If `sub/orch.pid` is dead and there's no
-   `sub/PHASES_DONE`, re-spawn the orchestrator (it `resume`s cleanly — the dead-orchestrator
+   SUB's, and reading it here defeats the purpose. If `sub/orch.pid` is dead and there is no
+   `sub/REVIEW_READY` or legacy `sub/PHASES_DONE`, re-spawn the orchestrator (it `resume`s cleanly — the dead-orchestrator
    backstop).
 4. **HIL asker.** Each poll, scan `hil/*.md` lacking a sibling `.answer.md`. For each: read the
    brief, `AskUserQuestion` (the ONLY user contact besides completion), write the reply to
    `hil/<slug>.answer.md`. The `sub` picks it up and requeues that lane — the human-facing HIL
    lives HERE in supervise, never in the SUB.
-5. On `sub/PHASES_DONE` → go to **step 8** (finalize). On an orchestrator `fatal`/`blocked`
-   notification with no path forward, surface it and stop.
+5. On `sub/REVIEW_READY` → reconcile the plan once more, then go to **step 8**. A late edit
+   that makes the review no longer ready clears the marker and respawns the orchestrator.
+   Legacy `sub/PHASES_DONE` uses the legacy final-review path. On `fatal`/`blocked` with no
+   path forward, surface it and stop.
 
 ### 4. Schedule *(run by the `sub` instance — or inline in single-tier)*
 
-A phase is READY when `[status: todo]`, all its `Depends on` phases are done, its lane has
+At every safe scheduling boundary, re-read the newest plan (daemon; Kestral too when linked)
+and reconcile it into `state.phases` without replacing existing entries. Phase numbers are
+stable identities; document order is the sequence. Add each new phase as `todo` (and create
+its linked subtask when applicable), then repush. Preserve completed and running state.
+
+Enforce review topology as one coherent plan edit:
+
+- Last review pending → place new work immediately before it and extend that review's
+  dependency closure. Reuse the review.
+- Last review done → keep it where it ran, place new work after it, and append a fresh
+  terminal `[kind: pr-review]` phase using the next unused phase number.
+
+Never renumber, move, or reopen a completed phase. If an edit races a live runner or changes
+its body/repository/branch, preserve the running snapshot and apply it at the next safe
+boundary; incompatible edits raise HIL. A review phase follows normal readiness rules, but
+the SUB yields it to supervise with `status.json{outcome:"review-ready"}`.
+
+A work phase is READY when `[status: todo]`, all its `Depends on` phases are done, its lane has
 no phase running, and fewer runners are live than the concurrency cap (plan's
 **Concurrency**, else `LOOP_MAX_PARALLEL`). For each READY phase:
 
@@ -239,31 +261,42 @@ the *only* thing left and no lane can progress, write `status.json{outcome:"bloc
 supervise carry it. **single-tier:** ask the user in-session (`AskUserQuestion`). On answer,
 requeue the phase with it in context.
 
-### 8. Complete *(supervise / single-tier — never the `sub`)*
+### 8. Execute the review phase *(supervise / single-tier — never the `sub`)*
 
-In supervise mode the `sub` does NOT finalize: when every phase is merged it writes
-`status.json{outcome:"complete"}`, `loop-orchestrator.sh` touches `sub/PHASES_DONE`, and the
-supervise main (step 3b.5) runs this step. The `sub` never runs pr-review.
+In supervise mode the `sub` stops at the next ready explicit review phase with
+`status.json{outcome:"review-ready"}`; `loop-orchestrator.sh` touches `sub/REVIEW_READY`, and
+the supervise main runs this step. The `sub` never runs pr-review.
 
-All phases done → mark every repository PR ready. Each PR body contains the Goal and only
+Re-fetch and reconcile the plan before spawning reviewers. If new work was inserted before
+this pending review, clear `REVIEW_READY` and resume scheduling. Otherwise mark every
+repository PR ready on the first review round; later rounds reuse those PRs. Each PR body
+contains the Goal and only
 that repository's phases/task links plus a progress digest. Then record completion:
 
-- **Linked:** link each phase task only to its repository PR (dedup via state), statuses →
-  awaiting-review, plan **Status: integrating** via `update_document` (repush),
+- **Linked:** link each work-phase task only to its repository PR (dedup via state); the
+  aggregate review-phase task links the plan/effort rather than arbitrarily choosing one PR.
+  Move statuses to awaiting-review and plan **Status: integrating** via `update_document` (repush),
   `trigger_brain_build`.
 - **Local-only:** flip plan **Status: integrating** + `loop-plan.sh push`, append
   `.loop/progress.md` (no Kestral) — the daemon learns completion from `loop-state.sh finish`'s
   `loop.finish` below.
 
-Sweep remaining lane worktrees. For each repository re-read
-`notes/pr-review.<owner--repo>.md`, honor it against that integration worktree, and fold it
+Sweep remaining lane worktrees. Re-read `notes/<reviewPhase>.md` plus legacy repository
+review-note aliases, honor them against each integration worktree, and fold them
 verbatim into a FULL reviewer prompt. Launch reviews in parallel, bounded by Loop
-Concurrency, in `runs/review-<owner--repo>-a<K>/`, passing `--repository <owner/repo>`.
+Concurrency, in `runs/review-p<N>-<owner--repo>-a<K>/`, passing `--phase <N>` and
+`--repository <owner/repo>`.
 One review infrastructure failure records `blocked` without cancelling siblings. Wait for
 all reviews, promote each into `state.repositories[slug].review`, and clear its note.
-Aggregate verdict precedence is `blocked > question > done`. Emit exactly one terminal
-`loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`; keep plan Status
-`integrating` until humans merge every PR. Notify once with all PRs/verdicts, unlock, stop.
+Aggregate verdict precedence is `blocked > question > done`. Promote the explicit review
+phase to `done` only for a non-blocking aggregate; otherwise mark it `blocked` and use the
+normal HIL/retry path. Repush after promotion.
+
+If later document phases exist, set plan Status back to `in progress`, clear `REVIEW_READY`,
+and respawn the orchestrator for the next segment. If this review is terminal, emit exactly
+one `loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`; the daemon
+rejects finish unless the terminal explicit review is done. Keep plan Status `integrating`
+until humans merge every PR. Notify once with final PRs/verdicts, unlock, stop.
 
 ### 9. `resume` / `status` / `abort`
 
@@ -298,7 +331,8 @@ runDir + lane-branch awaiting a `phase.merged`, per-lane notes, why-stopped), th
 `loop-orchestrator.sh` respawns your successor, which consumes the handoff once and picks up
 via `resume`. Gated on quiescence: if a phase op is mid-flight, keep going (even past the
 ceiling) and recycle asap once every lane is at a checkpoint — **never** hard-kill a runner to
-recycle. When every phase is merged instead, write `{outcome:"complete"}`; on an unrecoverable
+recycle. When the next ready phase is a review, write `{outcome:"review-ready"}`. Use
+`{outcome:"complete"}` only for a legacy plan without explicit review phases; on an unrecoverable
 error `{outcome:"fatal"}` (bad config / lost lock) or `{outcome:"blocked"}` (HIL is the only
 thing left and no lane can progress).
 - **status** — print the lane table from state + live pids + last events; read-only.
@@ -309,9 +343,8 @@ thing left and no lane can progress).
 ## Steering notes
 
 Users may steer work without pausing the loop by writing `.loop/notes/<key>.md`.
-Phase keys are plan numbers (`notes/2.md`). Review keys are
-`notes/pr-review.<owner--repo>.md`; legacy single-repository runs also accept
-`notes/pr-review.md` as an alias.
+All explicit phase keys, including review phases, are plan numbers (`notes/2.md`). Legacy
+review keys `notes/pr-review.<owner--repo>.md` and `notes/pr-review.md` remain accepted.
 A note persists until that phase or review completes. The `sub` reads phase notes for runner
 prompts and again before lane merges; the thin supervise main reads the review note before
 spawning pr-review. Any note consumed by a runner appears verbatim in that attempt's

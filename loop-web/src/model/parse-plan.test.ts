@@ -80,6 +80,21 @@ const MULTI_REPO = `# Multi repo — Multi-Phase Plan
 - **Depends on:** Phase 1
 `;
 
+const EDITABLE_WITH_REVIEW = `# Editable — Multi-Phase Plan
+
+## Phases
+
+### Phase 1 — Build the first slice \`[lane: A]\` \`[status: done]\`
+- **Depends on:** none
+
+### Phase 3 — Add a late slice before review \`[lane: A]\` \`[status: todo]\`
+- **Depends on:** Phase 1
+
+### Phase 2 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`
+- **Depends on:** Phase 3
+- **Done when:** every repository PR has a non-blocking review verdict
+`;
+
 describe("parsePlan — header", () => {
   it("extracts effort name, stripping the '— Multi-Phase Plan' suffix", () => {
     expect(parsePlan(MULTI_LANE).name).toBe("Widget revamp");
@@ -212,6 +227,24 @@ describe("parsePlan — phases", () => {
     const p3 = parsePlan(MULTI_LANE).phases[2];
     expect(p3.notes).toBe("same PR as Phase 1");
     expect(p3.verify).toBeNull();
+  });
+
+  it("recognizes an explicit PR-review phase and preserves document order", () => {
+    const phases = parsePlan(EDITABLE_WITH_REVIEW).phases;
+    expect(phases.map((phase) => [phase.phase, phase.kind])).toEqual([
+      ["1", "work"],
+      ["3", "work"],
+      ["2", "pr-review"],
+    ]);
+    expect(phases[2].repository).toBe("all");
+  });
+
+  it("warns when work appears after the last explicit PR-review phase", () => {
+    const invalid = EDITABLE_WITH_REVIEW.replace(
+      /### Phase 3[\s\S]*?(?=### Phase 2)/,
+      "",
+    ) + `\n### Phase 4 — Too late \`[lane: A]\` \`[status: todo]\`\n- **Depends on:** Phase 2\n`;
+    expect(parsePlan(invalid).warnings.join("\n")).toMatch(/must end with.*PR-review/i);
   });
 });
 
