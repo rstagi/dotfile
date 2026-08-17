@@ -156,5 +156,10 @@ function countPhases(record: LoopRecord): PhaseCounts {
 }
 
 function phaseNums(record: LoopRecord): string[] {
-  return [...new Set([...Object.keys(record.lastState?.phases ?? {}), ...Object.keys(record.phases)])];
+  const planned = parsePlan(record.planText ?? FALLBACK_PLAN).phases.map((phase) => phase.phase);
+  return [...new Set([
+    ...planned,
+    ...Object.keys(record.lastState?.phases ?? {}),
+    ...Object.keys(record.phases),
+  ])];
 }

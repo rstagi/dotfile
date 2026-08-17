@@ -4,7 +4,7 @@ set -u -o pipefail
 # loop-orchestrator.sh — the sequential SUB respawner for the two-tier self-recycling loop.
 # Detached (nohup) by `loop-execute` supervise. Runs disposable headless sub-orchestrator
 # instances (claude -p, CHAIN_ORCHESTRATE) ONE AT A TIME; on each exit it reads sub/status.json
-# and recycles / completes / gives up. Sequential-by-construction: the predecessor has exited
+# and recycles / yields at a review barrier / completes / gives up. Sequential-by-construction:
 # before the successor starts, so two SUBs never share the run id (the reentrant lock gives no
 # mutual exclusion). See loop-protocol.md § Two-tier orchestration.
 #
@@ -94,8 +94,9 @@ Each tick, self-measure occupancy:
 At or above $RECYCLE_TOKENS tokens AND a safe phase boundary (no runner mid-attempt without a
 written status.json, no merge in progress), flush durable state, write \`$SUB/handoff.md\`,
 then write \`$STATUS\` with outcome "recycle" and exit. NEVER run pr-review; NEVER
-AskUserQuestion (HIL → files only, keep other lanes running). When every phase is merged,
-write \`$STATUS\` outcome "complete". On an unrecoverable error, outcome "fatal" or "blocked".
+AskUserQuestion (HIL → files only, keep other lanes running). When the next ready phase is
+\`[kind: pr-review]\`, write \`$STATUS\` outcome "review-ready". Use "complete" only for a
+legacy plan with no explicit review phase. On an unrecoverable error, outcome "fatal" or "blocked".
 Your final act MUST be writing \`$STATUS\` (schema: {outcome, summary, tokens, recycleIndex}).
 EOF
 }
@@ -189,6 +190,12 @@ while :; do
   complete)
     touch "$SUB/PHASES_DONE"
     notify info "phases complete — ready to finalize"
+    rm -f "$PIDFILE"
+    exit 0
+    ;;
+  review-ready)
+    touch "$SUB/REVIEW_READY"
+    notify info "review phase ready — handing control to supervise"
     rm -f "$PIDFILE"
     exit 0
     ;;

@@ -73,6 +73,19 @@ const MULTI_REPO = `# Split — Multi-Phase Plan
 - **Depends on:** Phase 1
 `;
 
+const REVIEW_ROUNDS = `# Editable — Multi-Phase Plan
+
+## Phases
+### Phase 1 — Initial work \`[lane: A]\` \`[status: done]\`
+- **Depends on:** none
+### Phase 2 — First review \`[lane: review]\` \`[status: done]\` \`[kind: pr-review]\`
+- **Depends on:** Phase 1
+### Phase 3 — Follow-up work \`[lane: A]\` \`[status: todo]\`
+- **Depends on:** Phase 2
+### Phase 4 — Final review \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`
+- **Depends on:** Phase 3
+`;
+
 function node(g: Graph, id: string) {
   const n = g.nodes.find((x) => x.id === id);
   if (!n) throw new Error(`no node ${id} (have: ${g.nodes.map((x) => x.id).join(",")})`);
@@ -128,6 +141,19 @@ describe("buildGraph — static shape (no runtime)", () => {
     expect(node(g, "1").status).toBe("done");
     expect(node(g, "2").status).toBe("running"); // in-progress → running
     expect(node(g, "3").ui).toBe("todo");
+  });
+});
+
+describe("buildGraph — explicit review phases", () => {
+  const graph = buildGraph(parsePlan(REVIEW_ROUNDS), null);
+
+  it("keeps completed review rounds inline and uses the final review as the terminal", () => {
+    expect(graph.nodes.map((entry) => entry.id)).toEqual(["plan", "1", "2", "3", "4"]);
+    expect(node(graph, "2")).toMatchObject({ kind: "pr-review", phase: "2", status: "done" });
+    expect(node(graph, "4")).toMatchObject({ kind: "pr-review", phase: "4", status: "todo" });
+    expect(hasEdge(graph, "1", "2")).toBe(true);
+    expect(hasEdge(graph, "2", "3")).toBe(true);
+    expect(hasEdge(graph, "3", "4")).toBe(true);
   });
 });
 

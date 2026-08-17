@@ -107,10 +107,12 @@ export function emptyRecord(runId: string): LoopRecord {
 export function effectivePhaseStatus(rec: LoopRecord, num: string): PhaseStateStatus {
   const overlay = rec.phases[num];
   const live = validStatus(rec.lastState?.phases?.[num]?.status);
-  const rank = overlay?.rank ?? rankOf(live);
+  const planned = planPhaseStatus(rec.planText, num);
+  const rank = joinRank(overlay?.rank ?? "todo", rankOf(live ?? planned));
   if (rank === "merged") return "merged";
   if (rank === "done") return "done";
   if (live) return live;
+  if (planned === "blocked" && rank === "todo") return "blocked";
   return rankToStatus(rank);
 }
 
@@ -120,6 +122,7 @@ export function effectivePhaseStatus(rec: LoopRecord, num: string): PhaseStateSt
 
 function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register" }>): LoopRecord {
   const info = msg.info;
+  const reopened = prev.status === "finished" && hasNewUnfinishedPhase(prev.planText, info.planText ?? null);
   const repositories = info.planText ? repositoriesFromPlan(info.planText, prev.repositories) : prev.repositories;
   const primary = firstRepository(repositories);
   const next: LoopRecord = {
@@ -131,11 +134,20 @@ function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register"
     planFile: info.planFile ?? prev.planFile,
     integrationBranch: info.integrationBranch ?? primary?.integrationBranch ?? prev.integrationBranch,
     startedAt: info.startedAt ?? prev.startedAt,
+    finishedAt: reopened ? null : prev.finishedAt,
     planText: info.planText ?? prev.planText,
     repositories,
     updatedAt: info.startedAt ?? prev.updatedAt,
   };
-  return { ...next, status: deriveStatus(next) };
+  return { ...next, status: reopened ? "active" : deriveStatus(next) };
+}
+
+function hasNewUnfinishedPhase(previousText: string | null, nextText: string | null): boolean {
+  if (!previousText || !nextText) return false;
+  const previousIds = new Set(parsePlan(previousText).phases.map((phase) => phase.phase));
+  return parsePlan(nextText).phases.some(
+    (phase) => !previousIds.has(phase.phase) && phase.status !== "done",
+  );
 }
 
 function repositoriesFromPlan(
@@ -182,6 +194,7 @@ function applyState(prev: LoopRecord, state: StateJson, planText?: string | null
 }
 
 function applyFinish(prev: LoopRecord, info: FinishInfo): LoopRecord {
+  if (!terminalReviewComplete(prev)) return prev;
   const repositories = { ...prev.repositories };
   for (const [slug, result] of Object.entries(info.repositories ?? {})) {
     repositories[slug] = {
@@ -200,6 +213,16 @@ function applyFinish(prev: LoopRecord, info: FinishInfo): LoopRecord {
     updatedAt: info.finishedAt ?? prev.updatedAt,
     status: "finished",
   };
+}
+
+function terminalReviewComplete(record: LoopRecord): boolean {
+  if (!record.planText) return true;
+  const phases = parsePlan(record.planText).phases;
+  if (!phases.some((phase) => phase.kind === "pr-review")) return true;
+  const terminal = phases.at(-1);
+  if (!terminal || terminal.kind !== "pr-review") return false;
+  const status = effectivePhaseStatus(record, terminal.phase);
+  return status === "done" || status === "merged";
 }
 
 // ---------------------------------------------------------------------------------------
@@ -455,6 +478,12 @@ function normalizeReview(r: {
 
 function validStatus(s: string | undefined): PhaseStateStatus | null {
   return s && (STATE_STATUSES as readonly string[]).includes(s) ? (s as PhaseStateStatus) : null;
+}
+
+function planPhaseStatus(planText: string | null, num: string): PhaseStateStatus | null {
+  if (!planText) return null;
+  const status = parsePlan(planText).phases.find((phase) => phase.phase === num)?.status;
+  return status === "in-progress" ? "running" : status ?? null;
 }
 
 function nonEmpty(s: string | null | undefined): string | null {

@@ -16,14 +16,16 @@ between repositories.
 
 ## Markers (must stay machine-parseable)
 
-- Each phase heading ends with two bracket tags: `` `[lane: X]` `` and
-  `` `[status: todo|in-progress|blocked|done]` ``.
+- Each work-phase heading ends with `` `[lane: X]` `` and
+  `` `[status: todo|in-progress|blocked|done]` ``. A review phase adds
+  `` `[kind: pr-review]` ``; phases without `kind:` are work phases.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.
 - `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
   the daemon always, and to the linked Kestral task when the plan is linked.
-- `Repository:` is mandatory on every phase when `## Repositories` exists and must match one
-  declared slug. Repository `Verify:` is mandatory; a phase `Verify:` overrides it.
+- `Repository:` is mandatory on every work phase when `## Repositories` exists and must match
+  one declared slug. A PR-review phase covers every repository and omits `Repository:`.
+  Repository `Verify:` is mandatory; a work phase `Verify:` overrides it.
 - Legacy plans without `## Repositories` normalize to one synthetic `primary` repository;
   their scalar Loop config `Verify` / `PR` fields remain executable.
 
@@ -115,6 +117,12 @@ between repositories.
 - **Touches:** <...>
 - **Done when:** <both lanes merged and green>
 
+### Phase 5 — Review pull requests `[lane: review]` `[status: todo]` `[kind: pr-review]`
+- **Task:** [<slug> - <title>](task-url)
+- **Depends on:** Phase 4
+- **Parallelizable with:** none — review barrier
+- **Done when:** every repository PR has a non-blocking review verdict
+
 ## Parallel execution guide
 - **Lane A** (worktree 1): Phase 1 → Phase 3. Start immediately.
 - **Lane B** (worktree 2): Phase 2. Independent — start immediately.
@@ -149,6 +157,18 @@ daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
 
 ## Rules
 
+- **The plan is editable for its whole lifetime.** Re-read it at every orchestration boundary;
+  execution and even a completed review do not freeze it. Phase numbers are stable identities,
+  while document order is presentation/execution order, so IDs may be non-monotonic after an
+  insertion. Allocate the next unused number; never renumber or reuse an existing phase once
+  execution starts because notes, events, tasks, and state are keyed by that number.
+- **Every executable plan ends with an explicit PR-review phase.** `loop-execute` owns
+  `[kind: pr-review]` phases; lane runners never claim them. When work is added while the last
+  review is still pending, place the new work block immediately before that review and update
+  its `Depends on` closure—do not add another review. When work is added after the last review
+  is `done`, keep that completed review in place, append the work after it, then append a new
+  terminal PR-review phase. Never reopen or move a completed review.
+
 - **No fake parallelism — default to one lane.** Decompose the work into the phases it
   naturally has first; only then look for independence. Split phases into separate lanes
   only when they pass all three independence checks (no dependency, low file contention, no
@@ -165,7 +185,8 @@ daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
 - **Every phase has a testable *Done when*.** A phase without acceptance criteria can't be
   claimed or handed off cleanly. A runnable **Verify:** line (a command, exit 0 = pass) is
   what lets `loop-execute` enforce the *Done when* mechanically.
-- **One parent effort task per plan; phases are its subtasks.** The plan maps to a single
+- **One parent effort task per plan; work and review phases are its subtasks.** The plan maps
+  to a single
   Kestral parent task (tag `multiphase-plan`, linked from the doc's `**Effort task:**`
   line); each phase is a subtask of it (`parentTaskId`), never a sibling top-level task.
 - **Loop mode ships one PR per repository.** Per-phase Suggested branches are short-lived

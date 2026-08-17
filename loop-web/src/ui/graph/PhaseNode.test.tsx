@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GraphNode } from "../../model/types.ts";
+import type { GraphNode, PrInfo } from "../../model/types.ts";
 import { PhaseNode } from "./PhaseNode.tsx";
 
 vi.mock("@xyflow/react", () => ({
@@ -8,7 +8,7 @@ vi.mock("@xyflow/react", () => ({
   Position: { Left: "left", Right: "right" },
 }));
 
-function render(over: Partial<GraphNode>): string {
+function render(over: Partial<GraphNode>, pr?: PrInfo | null): string {
   const node = {
     id: "2",
     kind: "phase",
@@ -24,7 +24,7 @@ function render(over: Partial<GraphNode>): string {
     noteMarkdown: null,
     ...over,
   } as GraphNode;
-  return renderToStaticMarkup(PhaseNode({ data: { node }, selected: false } as never));
+  return renderToStaticMarkup(PhaseNode({ data: { node, pr }, selected: false } as never));
 }
 
 describe("PhaseNode steering note badge", () => {
@@ -43,5 +43,25 @@ describe("PhaseNode steering note badge", () => {
 describe("PhaseNode repository badge", () => {
   it("renders the repository slug on phase nodes", () => {
     expect(render({ repository: "acme/api" })).toContain("acme/api");
+  });
+});
+
+describe("PhaseNode explicit review rounds", () => {
+  it("does not show a prior approval on a new todo review phase", () => {
+    const html = render(
+      { kind: "pr-review", phase: "4", repository: null, status: "todo", ui: "todo" },
+      {
+        url: "https://github.com/acme/api/pull/1",
+        outcome: "done",
+        verdict: "approved in the previous round",
+        reviewPresent: true,
+        reportPath: null,
+        commentUrl: null,
+        reviewSlug: null,
+        reviewAttempt: null,
+      },
+    );
+    expect(html).not.toContain("APPROVED");
+    expect(html).toContain("awaiting review");
   });
 });

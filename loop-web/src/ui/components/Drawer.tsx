@@ -86,7 +86,14 @@ export function Drawer({
         </dl>
 
         {node.kind === "plan" && plan && <PlanSection plan={plan} />}
-        {node.kind === "pr-review" && <ReviewSection runId={runId} pr={pr} repository={node.repository} />}
+        {node.kind === "pr-review" && (
+          <ReviewSection
+            runId={runId}
+            pr={pr}
+            repository={node.repository}
+            currentRound={node.phase == null || node.status === "done" || node.status === "blocked"}
+          />
+        )}
         {canSteer && <SteeringNote node={node} runId={runId} />}
 
         {rt?.hilOpen && rt.hilMarkdown && (
@@ -138,7 +145,7 @@ function SteeringNote({ node, runId }: { node: GraphNode; runId: string }) {
   const [markdown, setMarkdown] = useState(node.noteMarkdown ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const key = node.kind === "pr-review"
+  const key = node.kind === "pr-review" && node.phase == null
     ? node.repository && node.repository !== "primary"
       ? `pr-review.${node.repository.replace("/", "--")}`
       : "pr-review"
@@ -279,15 +286,16 @@ function ProseSection({ title, text }: { title: string; text: string | null }) {
 
 // --- pr review -----------------------------------------------------------------------
 
-function ReviewSection({ runId, pr, repository }: {
+function ReviewSection({ runId, pr, repository, currentRound }: {
   runId: string | null;
   pr: PrInfo | null;
   repository: string | null;
+  currentRound: boolean;
 }) {
-  const review = useReview(runId, true, repository);
-  const outcome = review?.outcome ?? pr?.outcome ?? null;
-  const summary = review?.summary ?? pr?.verdict ?? null;
-  const commentUrl = review?.commentUrl ?? pr?.commentUrl ?? null;
+  const review = useReview(runId, currentRound, repository);
+  const outcome = currentRound ? review?.outcome ?? pr?.outcome ?? null : null;
+  const summary = currentRound ? review?.summary ?? pr?.verdict ?? null : null;
+  const commentUrl = currentRound ? review?.commentUrl ?? pr?.commentUrl ?? null : null;
   const prUrl = review?.prUrl ?? pr?.url ?? null;
   const report = review?.reportMarkdown ?? null;
   const pill = reviewPill(outcome);
@@ -319,7 +327,7 @@ function ReviewSection({ runId, pr, repository }: {
 
       {summary && <Markdown text={summary} />}
 
-      {review === undefined ? (
+      {currentRound && review === undefined ? (
         <div className="rail__empty" style={{ padding: 12 }}>Loading review…</div>
       ) : report ? (
         <div className="md--report">
@@ -411,7 +419,7 @@ function isVerifyFail(attempts: AttemptSummary[], k: number): boolean {
 
 function chip(n: GraphNode): string {
   if (n.kind === "plan") return "EFFORT ROOT";
-  if (n.kind === "pr-review") return "TERMINAL · PR REVIEW";
+  if (n.kind === "pr-review") return n.phase ? `PHASE ${n.phase} · PR REVIEW` : "TERMINAL · PR REVIEW";
   return `PHASE ${n.phase}${n.lane ? ` · LANE ${n.lane}` : ""}`;
 }
 

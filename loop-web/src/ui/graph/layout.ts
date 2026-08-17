@@ -1,8 +1,8 @@
 import type { Graph } from "../../model/types.ts";
 
 // A deterministic left→right layered layout with horizontal swimlane bands.
-// Columns come from longest-path depth (Plan=0 … PR Review=last); rows come from the lane.
-// The synthetic Plan / PR Review nodes span every band and sit vertically centred.
+// Columns come from longest-path depth; rows come from the lane. Explicit review phases keep
+// their dependency layer; only legacy synthetic Plan / PR Review nodes span every band.
 
 export const NODE_W = 216;
 export const NODE_H = 108;
@@ -40,7 +40,7 @@ export function computeLayout(graph: Graph): Layout {
   // Group phase nodes by (lane, layer) so co-located nodes can be stacked, not overlapped.
   const cell = new Map<string, string[]>();
   for (const n of graph.nodes) {
-    if (n.kind === "plan" || n.kind === "pr-review") continue;
+    if (n.kind === "plan" || isSyntheticReview(n)) continue;
     const li = laneIndex.get(n.lane ?? lanes[0]) ?? 0;
     const key = `${li}:${layers.get(n.id) ?? 1}`;
     (cell.get(key) ?? cell.set(key, []).get(key)!).push(n.id);
@@ -62,7 +62,7 @@ export function computeLayout(graph: Graph): Layout {
     acc += h;
   }
   const totalBandH = acc - PAD_Y;
-  const reviewNodes = graph.nodes.filter((node) => node.kind === "pr-review");
+  const reviewNodes = graph.nodes.filter(isSyntheticReview);
   const reviewStackH = Math.max(NODE_H, (reviewNodes.length - 1) * STACK_STEP + NODE_H);
   const contentH = Math.max(totalBandH, reviewStackH + 2 * BAND_PAD);
   const spanY = PAD_Y + contentH / 2 - NODE_H / 2;
@@ -75,7 +75,7 @@ export function computeLayout(graph: Graph): Layout {
       positions.set(n.id, { x, y: spanY });
       continue;
     }
-    if (n.kind === "pr-review") {
+    if (isSyntheticReview(n)) {
       const rank = reviewNodes.findIndex((review) => review.id === n.id);
       const offset = (rank - (reviewNodes.length - 1) / 2) * STACK_STEP;
       positions.set(n.id, { x, y: spanY + offset });
@@ -104,7 +104,7 @@ export function computeLayout(graph: Graph): Layout {
   return { positions, bands, width, height };
 }
 
-/** Longest-path layer per node: plan at 0, phases relaxed over depends-edges, PR Review last. */
+/** Longest-path layer per node; only legacy synthetic review nodes are forced terminal. */
 function computeLayers(graph: Graph): Map<string, number> {
   const layers = new Map<string, number>();
   for (const n of graph.nodes) layers.set(n.id, n.kind === "plan" ? 0 : 1);
@@ -125,10 +125,14 @@ function computeLayers(graph: Graph): Map<string, number> {
 
   const phaseMax = Math.max(
     1,
-    ...graph.nodes.filter((n) => n.kind === "phase" || n.kind === "integration").map((n) => layers.get(n.id) ?? 1),
+    ...graph.nodes.filter((node) => node.phase != null).map((node) => layers.get(node.id) ?? 1),
   );
   for (const node of graph.nodes) {
-    if (node.kind === "pr-review") layers.set(node.id, phaseMax + 1);
+    if (isSyntheticReview(node)) layers.set(node.id, phaseMax + 1);
   }
   return layers;
+}
+
+function isSyntheticReview(node: Graph["nodes"][number]): boolean {
+  return node.kind === "pr-review" && node.phase == null;
 }

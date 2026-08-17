@@ -1,4 +1,12 @@
-import type { Plan, PlanPhase, PlanPhaseStatus, LoopConfig, PlanProse, PlanRepository } from "./types.ts";
+import type {
+  Plan,
+  PlanPhase,
+  PlanPhaseKind,
+  PlanPhaseStatus,
+  LoopConfig,
+  PlanProse,
+  PlanRepository,
+} from "./types.ts";
 
 const PLAN_STATUSES: readonly PlanPhaseStatus[] = [
   "todo",
@@ -10,6 +18,7 @@ const PLAN_STATUSES: readonly PlanPhaseStatus[] = [
 const PHASE_HEADING = /^###\s+Phase\s+(\d+)\s*(.*)$/;
 const LANE_TAG = /\[lane:\s*([^\]]+?)\s*\]/i;
 const STATUS_TAG = /\[status:\s*([^\]]+?)\s*\]/i;
+const KIND_TAG = /\[kind:\s*([^\]]+?)\s*\]/i;
 
 /**
  * Parse the canonical multi-phase plan markdown into a normalized `Plan`.
@@ -25,6 +34,9 @@ export function parsePlan(md: string): Plan {
     ? parseRepositories(repositorySection, loopConfig, warnings)
     : [legacyRepository(loopConfig)];
   const phases = parsePhases(sectionLines(lines, "Phases"), repositories, repositorySection != null, warnings);
+  if (phases.some((phase) => phase.kind === "pr-review") && phases.at(-1)?.kind !== "pr-review") {
+    warnings.push("Executable plans with explicit review phases must end with a PR-review phase");
+  }
 
   return {
     name: parseName(lines),
@@ -199,25 +211,30 @@ function buildPhase(
 ): PlanPhase {
   const laneMatch = raw.heading.match(LANE_TAG);
   const statusMatch = raw.heading.match(STATUS_TAG);
+  const kind = normalizeKind(raw.heading.match(KIND_TAG)?.[1], raw.num, warnings);
   const title = raw.heading
     .replace(/`?\[lane:[^\]]*\]`?/i, "")
     .replace(/`?\[status:[^\]]*\]`?/i, "")
+    .replace(/`?\[kind:[^\]]*\]`?/i, "")
     .replace(/^\s*[—–-]\s*/, "")
     .replace(/`/g, "")
     .trim();
 
-  const repository = multiRepository
-    ? stripBackticks(bulletValue(raw.body, "Repository")) ?? ""
-    : "primary";
-  if (multiRepository && !repository) {
+  const repository = kind === "pr-review"
+    ? "all"
+    : multiRepository
+      ? stripBackticks(bulletValue(raw.body, "Repository")) ?? ""
+      : "primary";
+  if (kind === "work" && multiRepository && !repository) {
     warnings.push(`Phase ${raw.num}: missing Repository assignment`);
-  } else if (repository && !repositories.some((entry) => entry.slug === repository)) {
+  } else if (kind === "work" && repository && !repositories.some((entry) => entry.slug === repository)) {
     warnings.push(`Phase ${raw.num}: unknown repository ${repository}`);
   }
 
   return {
     phase: raw.num,
     title: title || `Phase ${raw.num}`,
+    kind,
     lane: laneMatch ? laneMatch[1].trim() : "A",
     status: normalizeStatus(statusMatch?.[1], raw.num, warnings),
     repository,
@@ -229,6 +246,17 @@ function buildPhase(
     taskUrl: extractUrl(bulletValue(raw.body, "Task")),
     notes: bulletValue(raw.body, "Notes"),
   };
+}
+
+function normalizeKind(
+  raw: string | undefined,
+  phaseNum: string,
+  warnings: string[],
+): PlanPhaseKind {
+  const value = (raw ?? "work").trim().toLowerCase();
+  if (value === "work" || value === "pr-review") return value;
+  warnings.push(`Phase ${phaseNum}: unknown kind "${value}" — defaulting to work`);
+  return "work";
 }
 
 function normalizeStatus(

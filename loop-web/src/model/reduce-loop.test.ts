@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { emptyRecord, reduceLoop, effectivePhaseStatus } from "./reduce-loop.ts";
+import { summarize } from "./materialize.ts";
 import type { Ingest, LoopRecord } from "./store-types.ts";
 import type { StateJson } from "./types.ts";
 
@@ -12,6 +13,21 @@ const stateWith = (phases: StateJson["phases"], extra: Partial<StateJson> = {}):
   kind: "state",
   state: { runId: "r", effort: "Demo", phases, ...extra },
 });
+
+const REVIEWED_PLAN = `# Editable — Multi-Phase Plan
+## Phases
+### Phase 1 — Initial work \`[lane: A]\` \`[status: done]\`
+- **Depends on:** none
+### Phase 2 — First review \`[lane: review]\` \`[status: done]\` \`[kind: pr-review]\`
+- **Depends on:** Phase 1
+`;
+
+const APPENDED_PLAN = `${REVIEWED_PLAN}
+### Phase 3 — Follow-up work \`[lane: A]\` \`[status: todo]\`
+- **Depends on:** Phase 2
+### Phase 4 — Final review \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`
+- **Depends on:** Phase 3
+`;
 
 describe("reduceLoop — register", () => {
   it("seeds identity + planText and marks a register-only loop planned", () => {
@@ -35,6 +51,33 @@ describe("reduceLoop — register", () => {
     // register-only ⇒ planned (plan on the daemon, no run yet)
     expect(rec.status).toBe("planned");
     expect(rec.startedAt).toBe("2026-08-03T09:00:00Z");
+  });
+
+  it("reopens a finished loop when an unfinished phase is appended", () => {
+    const finished = fold(
+      "r",
+      { kind: "register", info: { runId: "r", planText: REVIEWED_PLAN } },
+      stateWith({ "1": { status: "merged" }, "2": { status: "done" } }),
+      { kind: "finish", info: { finishedAt: "2026-08-03T11:00:00Z" } },
+    );
+    const reopened = reduceLoop(finished, {
+      kind: "register",
+      info: { runId: "r", planText: APPENDED_PLAN },
+    });
+    expect(reopened.status).toBe("active");
+    expect(reopened.finishedAt).toBeNull();
+    expect(effectivePhaseStatus(reopened, "1")).toBe("merged");
+    expect(effectivePhaseStatus(reopened, "2")).toBe("done");
+    expect(effectivePhaseStatus(reopened, "3")).toBe("todo");
+    expect(effectivePhaseStatus(reopened, "4")).toBe("todo");
+    expect(summarize(reopened).phaseCounts).toEqual({
+      total: 4,
+      todo: 2,
+      running: 0,
+      blocked: 0,
+      done: 1,
+      merged: 1,
+    });
   });
 });
 
@@ -64,6 +107,15 @@ describe("reduceLoop — planned → active", () => {
 });
 
 describe("reduceLoop — promotion lattice (the staleness fix)", () => {
+  it("keeps an event-only running promotion over a static todo plan marker", () => {
+    const rec = fold(
+      "r",
+      { kind: "register", info: { runId: "r", planText: APPENDED_PLAN } },
+      { kind: "event", event: { event: "phase.attempt.start", phase: "3" } },
+    );
+    expect(effectivePhaseStatus(rec, "3")).toBe("running");
+  });
+
   it("promotes a phase to done from a finished attempt even while state.json still says running", () => {
     const rec = fold(
       "r",
@@ -243,6 +295,33 @@ describe("reduceLoop — loop.finish", () => {
     expect(rec.prUrl).toBe("https://github.com/acme/shop/pull/128");
     expect(rec.review?.outcome).toBe("done");
     expect(rec.review?.reportPath).toBe("runs/review-a1/report.md");
+  });
+
+  it("does not finish an explicit flow until its terminal PR-review phase is done", () => {
+    const notReviewed = fold(
+      "r",
+      { kind: "register", info: { runId: "r", planText: APPENDED_PLAN } },
+      stateWith({
+        "1": { status: "merged" },
+        "2": { status: "done" },
+        "3": { status: "merged" },
+        "4": { status: "todo" },
+      }),
+      { kind: "finish", info: { finishedAt: "2026-08-03T12:00:00Z" } },
+    );
+    expect(notReviewed.status).toBe("active");
+    expect(notReviewed.finishedAt).toBeNull();
+
+    const reviewed = reduceLoop(
+      reduceLoop(notReviewed, stateWith({
+        "1": { status: "merged" },
+        "2": { status: "done" },
+        "3": { status: "merged" },
+        "4": { status: "done" },
+      })),
+      { kind: "finish", info: { finishedAt: "2026-08-03T12:05:00Z" } },
+    );
+    expect(reviewed.status).toBe("finished");
   });
 
   it("keeps the loop finished even if a stray late state push arrives after finish", () => {

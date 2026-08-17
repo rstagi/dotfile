@@ -56,7 +56,7 @@ Save the resolved plan to `.loop/plan.md` with the canonical header (see
 background (`entity_lookup({ type: "project_brain", id: projectId })`, or invoke
 `kestral-context`) — keep it to a short digest, don't dump it.
 
-Parse `## Repositories` and every phase's `Repository:`. Resolve the chosen phase's
+Parse `## Repositories` and every work phase's `Repository:`. Resolve the chosen phase's
 `owner/repo` through `loop-repo.sh get`; if missing in interactive mode, ask for its local
 checkout and persist it with `loop-repo.sh map`. Validate origin/default branch/collisions
 with `loop-repo.sh check`. Plans never carry checkout paths. Legacy plans use `primary`
@@ -64,7 +64,9 @@ and the launching checkout.
 
 ### 2. Pick a lane
 
-Parse the plan's phases, lanes, and `[status: …]` markers. **When linked**, reconcile them
+Parse the plan's phases, lanes, `[status: …]`, and optional `[kind: pr-review]` marker.
+Review phases are orchestrator-owned barriers: never offer, claim, or execute one from a
+worktree. **When linked**, reconcile work phases
 with live Kestral task status (`entity_lookup` on the phase tasks, or `list_tasks_by_status`);
 **unlinked**, the `[status: …]` markers in `.loop/plan.md` are authoritative. Then:
 
@@ -141,6 +143,8 @@ Every "ask the user" gate becomes deterministic:
 - **Step 1 still re-resolves** the plan (daemon; also Kestral when linked) — freshness
   matters even more with parallel lanes.
 - **No lane menu (step 2):** the given phase *is* the choice.
+- **Review refusal:** if the given phase is `[kind: pr-review]`, emit
+  `REFUSED: review phases are orchestrator-owned`, write blocked status, and stop.
 - **No claim confirmation (step 4), no git prompt** — you are already in the lane worktree
   on the pre-created branch. What happens next depends on the mode:
   - **Linked** → verify both the checkout origin matches phase `Repository:` and

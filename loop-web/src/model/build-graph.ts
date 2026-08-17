@@ -40,8 +40,8 @@ interface BuildOpts {
 
 /**
  * Turn the normalized plan (+ optional runtime overlay) into the left-to-right DAG:
- * a synthetic `Plan` root, one node per phase laid out in lane bands, and a synthetic
- * `PR Review` terminal. Edges: Plan→lane-roots, phase Depends-on, terminals→PR Review.
+ * a synthetic `Plan` root and one node per phase laid out in lane bands. Legacy plans get
+ * synthetic repository review terminals; editable plans carry explicit review phases inline.
  */
 export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts = {}): Graph {
   const now = opts.now ?? Date.now();
@@ -62,8 +62,11 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     noteMarkdown: null,
   };
 
-  const phaseNodes = plan.phases.map((p) => buildPhaseNode(p, runtime?.phases[p.phase], now));
-  const reviewNodes = plan.repositories.map((repository) => {
+  const explicitReviews = plan.phases.some((phase) => phase.kind === "pr-review");
+  const phaseNodes = plan.phases.map((phase) => phase.kind === "pr-review"
+    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase])
+    : buildPhaseNode(phase, runtime?.phases[phase.phase], now));
+  const reviewNodes = explicitReviews ? [] : plan.repositories.map((repository) => {
     const legacy = repository.slug === "primary";
     const info = opts.repositories?.[repository.slug] ?? (legacy ? opts.pr ?? null : null);
     const note = legacy ? runtime?.reviewNote ?? null : runtime?.reviewNotes[repositoryKey(repository.slug)] ?? null;
@@ -172,6 +175,24 @@ function resolveUi(
   return "todo";
 }
 
+function buildExplicitReviewNode(phase: PlanPhase, runtime: PhaseRuntime | undefined): GraphNode {
+  const status = validStateStatus(runtime?.state?.status) ?? mapPlanStatus(phase.status);
+  return {
+    id: phase.phase,
+    kind: "pr-review",
+    title: phase.title,
+    phase: phase.phase,
+    lane: phase.lane,
+    repository: null,
+    status,
+    ui: status === "blocked" ? "problem" : resolveUi(status, null, false),
+    pulse: null,
+    runtime: null,
+    notePending: runtime?.note != null && status !== "done" && status !== "merged",
+    noteMarkdown: runtime?.note ?? null,
+  };
+}
+
 // --- PR Review terminal --------------------------------------------------------------
 
 function buildReviewNode(repository: string, pr: PrInfo | null, noteMarkdown: string | null): GraphNode {
@@ -210,6 +231,7 @@ function buildReviewNode(repository: string, pr: PrInfo | null, noteMarkdown: st
 
 function buildEdges(plan: Plan, nodes: GraphNode[]): GraphEdge[] {
   const phases = plan.phases;
+  const explicitReviews = phases.some((phase) => phase.kind === "pr-review");
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const satisfied = (id: string) => {
     const s = byId.get(id)?.status;
@@ -240,7 +262,9 @@ function buildEdges(plan: Plan, nodes: GraphNode[]): GraphEdge[] {
     }
   }
 
-  // Terminals (nothing depends on them) → PR Review. The integration phase is naturally one.
+  if (explicitReviews) return edges;
+
+  // Legacy plans: terminals (nothing depends on them) → synthetic PR Review.
   for (const p of phases) {
     const hasSameRepositoryDependent = phases.some(
       (candidate) => candidate.repository === p.repository && candidate.dependsOn.includes(p.phase),
@@ -270,12 +294,17 @@ function orderLanes(phases: PlanPhase[]): string[] {
   const seen: string[] = [];
   for (const p of phases) if (!seen.includes(p.lane)) seen.push(p.lane);
   const integ = seen.filter(isIntegrationLane);
-  const rest = seen.filter((l) => !isIntegrationLane(l));
-  return [...rest, ...integ];
+  const review = seen.filter(isReviewLane);
+  const rest = seen.filter((lane) => !isIntegrationLane(lane) && !isReviewLane(lane));
+  return [...rest, ...integ, ...review];
 }
 
 function isIntegrationLane(lane: string): boolean {
   return /integration/i.test(lane);
+}
+
+function isReviewLane(lane: string): boolean {
+  return /review/i.test(lane);
 }
 
 function mapPlanStatus(s: PlanPhaseStatus): PhaseStateStatus {

@@ -64,6 +64,9 @@ Gather what actually moved this session and map it onto the plan's phases:
   against the diff, don't assume), `in-progress`, `blocked` (note why), or unchanged.
 - Note any **plan drift**: scope that changed, phases added/split/dropped, new conflicts
   discovered. The plan should reflect reality, not the original guess.
+- Treat phase numbers as stable identities and document order as the sequence. Allocate the
+  next unused number for new phases; never renumber or reuse an existing number after
+  execution starts.
 - Reconcile a phase only against its declared `Repository:` checkout. Work in another
   repository cannot complete it. Preserve repository blocks and never write checkout paths
   into the plan.
@@ -79,6 +82,11 @@ Edit the canonical plan (follow
 - Append a **Progress log** entry: one line, plain-language outcomes, which lane/worktree.
 - Apply any drift (edit phase bodies, add integration/conflict notes) so a fresh reader
   trusts it.
+- Reconcile the terminal review invariant. If the last `[kind: pr-review]` phase has not run,
+  insert new work immediately before it and extend its `Depends on` closure. If it is `done`,
+  leave it in place, append new work after it, and append a new terminal review phase. Never
+  reopen a completed review. Push one coherent edit so readers never observe a work-terminal
+  executable plan.
 
 Redact secrets (API keys, tokens, PII) — never write them into the plan or comments.
 
@@ -160,7 +168,8 @@ Differences from the interactive flow (both contexts):
   plan can't be located (step 1 exhausted), return `REFUSED: <reason>` to the caller
   instead of asking.
 - **Loop-mode status semantics:** `[status: done]` = merged into the phase repository's
-  integration branch. The human PR-merge gate applies per repository, so do NOT call
+  integration branch for a work phase; for `[kind: pr-review]`, `done` means every scoped
+  repository review returned a non-blocking verdict. The human PR-merge gate applies per repository, so do NOT call
   `complete_task_with_review` per phase — use
   `update_task_status` + `post_progress_comment` only. PR linking happens at effort
   completion, mapping each phase task to its repository PR.

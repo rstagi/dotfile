@@ -69,9 +69,14 @@ Author the plan in the **canonical plan format** (see
   `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
   refresh endpoint"), never "Phase 1" or a vague label — the title seeds the Kestral task
   title and usually the PR title.
+- **Terminal review phase** — every executable plan ends with one explicit
+  `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
+  It represents the bounded per-repository reviews run by `loop-execute`; it has no
+  `Repository:`, branch, or Verify command. The plan remains editable during execution and
+  after review; follow the insertion rules in `references/plan-format.md`.
 - **Repositories** — resolve every touched checkout to its GitHub `owner/repo` slug from
   its `origin`; declare it under `## Repositories`, give it a mandatory repository-wide
-  `Verify:` command, and put `Repository:` on every phase. One phase belongs to one
+  `Verify:` command, and put `Repository:` on every work phase. One work phase belongs to one
   repository; a lane may hop repositories. Store no checkout paths in the plan. Use the
   shared integration branch default unless a repository needs an override. Newly authored
   plans always use repository blocks; the legacy scalar format is read-only compatibility.

@@ -140,6 +140,7 @@ function buildPlanOverview(plan: Plan, repositories: RepositoryInfo[]): PlanOver
     phaseSummary: plan.phases.map((p) => ({
       phase: p.phase,
       title: p.title,
+      kind: p.kind,
       lane: p.lane,
       status: p.status,
       repository: p.repository,
