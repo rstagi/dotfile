@@ -5,7 +5,7 @@ description: Thoroughly review a pull request or branch by first checking it out
 
 # PR review
 
-The point of a review is to catch what a diff alone hides. Reading the patch tells you what changed; it doesn't tell you whether it works, whether the tests actually exercise it, or whether the docs still match reality. So this skill always starts by running the code, then works through a fixed set of lenses.
+The point of a review is to catch what a diff alone hides. Reading the patch tells you what changed; it doesn't tell you whether it works, whether the tests actually exercise it, or whether the docs still match reality. So this skill always starts by running the code, works through a fixed set of lenses, then asks what allowed each problem to happen and how to prevent its whole class from recurring.
 
 Don't skip the worktree step because the change "looks trivial." Trivial-looking changes are exactly where confident-but-wrong reviews come from.
 
@@ -45,9 +45,19 @@ Go through the change with each of these in mind. For every issue, point to the 
 - **Docs** — were they updated to match the change? Is the information complete and coherent, and are there any inconsistencies between what the docs say and what the implementation actually does?
 - **Stacked-PR split** — should this single PR ship as a stack? Signals: over ~800 changed LOC, 2+ independently reviewable and revertable units, mechanical churn mixed with behavioral change. If `.loop/plan.md` exists in the repo, use its phases/lanes as candidate seams. If a split is warranted, propose it concretely: ordered list of PRs, each with title, base, and which commits/paths it takes (plain `gh` branch stack; no stacking tool assumed). Propose only, never execute the split.
 
+## Prevention pass — go one level deeper
+
+For every substantive finding, don't stop at the immediate defect. Investigate the condition that made this class of problem possible:
+
+- Could the same failure shape exist elsewhere?
+- Which missing boundary, invariant, shared abstraction, test, type, validation, static check, or documented convention allowed it?
+- What is the smallest durable change that would prevent recurrence rather than repair only this instance?
+
+When the evidence supports a structural cause, report both the local correction and the preventive change. Prefer removing the path to a class of failures over repeatedly patching symptoms. If the evidence says the issue is isolated, say so; don't invent a broad refactor merely to sound systemic.
+
 ## Step 3 — Report
 
-Lead with the verdict and whether it ran cleanly in Step 1. Then list findings, each with a `[label]` (below) and a file:line reference, ordered most to least serious. Be honest when something is clean; don't manufacture findings to fill a section.
+Lead with the verdict and whether it ran cleanly in Step 1. Then list findings, each with a `[label]` (below) and a file:line reference, ordered most to least serious. For each substantive finding, include the immediate fix and any evidence-backed preventive change from the prevention pass. Be honest when something is clean; don't manufacture findings to fill a section.
 
 Before you hand the report over, reconcile the headline against the list. If the verdict says "two things to fix" and the list has six entries, one of them is wrong. Fix the mismatch rather than leaving the reader to spot it.
 
@@ -120,7 +130,6 @@ gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input review.jso
 ```
 
 Use `APPROVE` or `REQUEST_CHANGES` only when the user says so; gating a merge is their call, not yours. Pin `commit_id` to the head SHA you actually reviewed. Afterwards, verify: re-read the posted comments and confirm the review state landed as intended.
-
 ## Headless mode
 
 When invoked with `--headless` (the loop-execute orchestrator runs this after opening the effort PR): never pause to ask anything, and never mutate the checkout you were started in. Skip `gh pr checkout` entirely. Instead, from a clone of the repo:
