@@ -5,7 +5,8 @@ description: >-
   daemon; Kestral link optional) end-to-end — spawn a fresh headless runner per phase (Codex
   or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into its
   repository integration branch, escalate stuck work (retry → stronger model → HIL pause),
-  open one effort PR per repository, review each, then stop for humans to merge.
+  open one effort PR per repository, run three independent reviews on each, then stop for
+  humans to merge.
   By default the heavy orchestration runs in a detached, self-recycling sub-orchestrator so
   the interactive chat stays thin. Use when asked to
   "run the loop", "execute the multi-phase plan", "run the published plan autonomously",
@@ -42,7 +43,7 @@ its safe ceiling. So `loop-execute` runs in one of three shapes (contract:
   **THIN**. It does preflight / init / lock / the confirm gate, spawns ONE detached
   `loop-orchestrator.sh`, then only: polls **compact local** state for a 2-3 line progress read,
   answers HIL from on-disk briefs, and finalizes on `sub/PHASES_DONE`. It spawns **only** the
-  orchestrator and the final review-runner — the heavy scheduling/merge/escalation runs in
+  orchestrator and the final review-runners — the heavy scheduling/merge/escalation runs in
   disposable **`sub`** instances that self-recycle, so this chat never fills up.
 - **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
   spawned by `loop-orchestrator.sh`, entered via `loop-execute resume` (signalled by env
@@ -257,11 +258,29 @@ that repository's phases/task links plus a progress digest. Then record completi
 
 Sweep remaining lane worktrees. For each repository re-read
 `notes/pr-review.<owner--repo>.md`, honor it against that integration worktree, and fold it
-verbatim into a FULL reviewer prompt. Launch reviews in parallel, bounded by Loop
-Concurrency, in `runs/review-<owner--repo>-a<K>/`, passing `--repository <owner/repo>`.
-One review infrastructure failure records `blocked` without cancelling siblings. Wait for
-all reviews, promote each into `state.repositories[slug].review`, and clear its note.
-Aggregate verdict precedence is `blocked > question > done`. Emit exactly one terminal
+verbatim into one FULL reviewer prompt. Snapshot the PR head SHA into that prompt so all three
+review the same code. Copy the prompt into three isolated run directories, then launch all
+review jobs, bounded by Loop Concurrency:
+
+| Run | Chain | Required reviewer |
+|-----|-------|-------------------|
+| `runs/review-<owner--repo>-a1/` | `review-fable` | Claude Code, Fable 5.1 |
+| `runs/review-<owner--repo>-a2/` | `review-astra` | Codex, Astra 6 |
+| `runs/review-<owner--repo>-a3/` | `review-opus` | Claude Code, Opus 5 |
+
+Each prompt invokes `pr-review --headless`, passes `--repository <owner/repo>`, and requires
+exactly one GitHub review with event `COMMENT`. It must forbid reading sibling review run
+directories or existing GitHub reviews/comments before posting; reviewers share only the PR,
+head SHA, project instructions, and steering note. Never substitute one reviewer for another
+or use another reviewer's output as fallback. Each runner writes its own `report.md` and
+`status.json` including `commentUrl`.
+
+One review infrastructure failure records that reviewer as `blocked` without cancelling the
+other two. Wait for all three reviews per repository. Build
+`runs/review-<owner--repo>/report.md` with separate Fable/Astra/Opus sections and each GitHub
+review URL. Promote one aggregate into `state.repositories[slug].review` using verdict
+precedence `blocked > question > done`, the combined report path, and `commentUrl: null`
+(there are three). Clear the review note only after all three finish. Emit exactly one terminal
 `loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`; keep plan Status
 `integrating` until humans merge every PR. Notify once with all PRs/verdicts, unlock, stop.
 
@@ -340,6 +359,7 @@ derives NOTE visibility from both file presence and unfinished lifecycle.
   `loop-orchestrator.sh` — a SUB never spawns its own successor (that would overlap two
   orchestrators on one run id, which the reentrant lock does not prevent). Recycle only at a
   persisted checkpoint; never hard-kill a live phase runner to hit the token ceiling.
-- Supervise stays THIN: spawn only the orchestrator + the review-runner, and read only
+- Supervise stays THIN: spawn only the orchestrator + the three review-runners per repository,
+  and read only
   compact local state. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
   the main chat defeats the two-tier design — that work is the `sub`'s.

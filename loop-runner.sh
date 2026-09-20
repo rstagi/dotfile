@@ -8,7 +8,8 @@ set -u -o pipefail
 #
 # Usage:
 #   loop-runner.sh --worktree <path> --run-dir <abs path> --prompt-file <f>
-#     [--chain task|escalate|review] [--timeout <s>] [--verify-cmd <cmd>]
+#     [--chain task|escalate|review-fable|review-astra|review-opus]
+#     [--timeout <s>] [--verify-cmd <cmd>]
 #     [--resume <sessionId> --engine codex|claude] [--models-conf <f>] [--budget <usd>]
 #
 # Exit: 0 done+verified · 10 question · 12 verify failed · 20 blocked
@@ -82,7 +83,9 @@ BUDGET="${BUDGET:-$LOOP_BUDGET_USD}"
 case "$CHAIN_NAME" in
 task) chain=("${CHAIN_TASK[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_TASK}" ;;
 escalate) chain=("${CHAIN_ESCALATE[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_ESCALATE}" ;;
-review) chain=("${CHAIN_REVIEW[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
+review-fable) chain=("${CHAIN_REVIEW_FABLE[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
+review-astra) chain=("${CHAIN_REVIEW_ASTRA[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
+review-opus) chain=("${CHAIN_REVIEW_OPUS[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
 *) echo "loop-runner: unknown chain '$CHAIN_NAME'" >&2; exit 1 ;;
 esac
 [[ "$TIMEOUT" == <-> ]] || { echo "loop-runner: --timeout must be integer seconds" >&2; exit 1; }

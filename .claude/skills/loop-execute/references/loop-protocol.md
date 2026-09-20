@@ -5,6 +5,24 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 `loop-plan.sh`, `loop-repo.sh`, `loop-models.conf`), and the `--auto` modes of `loop-pickup` / `loop-handoff` /
 `pr-review`. Everything machine-parsed lives here; change it in lockstep everywhere.
 
+## Contents
+
+- [Roles](#roles)
+- [Directory layout](#directory-layout)
+- [Daemon and events](#daemon--events)
+- [State schema](#statejson-schema-v2)
+- [Repository bootstrap](#repository-registry-and-bootstrap)
+- [Runner mechanics](#runner-spawn-how-the-orchestrator-launches-loop-runnersh)
+- [Two-tier orchestration](#two-tier-orchestration-self-recycling-sub)
+- [Runner contract](#statusjson-runner--orchestrator)
+- [Model chains and invocations](#model-chains-loop-modelsconf)
+- [Runner prompts](#runner-prompt-skeleton-orchestrator-generates-promptmd-per-attempt)
+- [Final PR reviews](#final-pr-reviews)
+- [Merge policy](#merge-policy-loop-mergesh-serialized--one-merge-at-a-time)
+- [Escalation and HIL](#escalation-ladder-per-phase)
+- [Backend mapping](#backend-mapping)
+- [Crash-resume](#crash-resume)
+
 ## Roles
 
 - **Orchestrator** — owns the plan **document** (sole `update_document` writer — parallel
@@ -34,6 +52,10 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   note` when **unlinked**. Runners NEVER: push, open PRs, call `update_document` or any
   plan-doc/PR-link operation, touch files outside their worktree, or ask the user. A
   runner's final act is writing `status.json`.
+- **Review runner** — one of exactly three independent headless `pr-review --headless`
+  processes per repository PR: Fable 5.1 through Claude Code, Astra 6 through Codex, and
+  Opus 5 through Claude Code. Each reviews the same pinned PR head without reading sibling
+  reports or existing GitHub reviews, then posts its own GitHub `COMMENT` review.
 - **Scripts** — mechanism only (spawn/merge/notify/state; `loop-plan.sh` registers/pushes/
   notes the plan on the daemon — the local backend). They never decide; the orchestrator
   switches on their exit codes.
@@ -58,7 +80,8 @@ State lives in the launching coordinator checkout (add `.loop/` to
     status.json              # runner-written result (schema below)
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
-  runs/review-<owner--repo>-a<K>/report.md # per-repository pr-review report
+  runs/review-<owner--repo>-a<1|2|3>/report.md # Fable 5.1 / Astra 6 / Opus 5 reports
+  runs/review-<owner--repo>/report.md      # aggregate report with all 3 GitHub review links
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
   notes/<key>.md             # phase number | pr-review.<owner--repo>; persist until done
@@ -154,8 +177,8 @@ fields — keep the shape:
       "sourceRoot": "<mapped checkout>", "defaultBranch": "main", "baseSha": "<sha>",
       "integrationBranch": "feat/<effort-slug>",
       "integrationWorktree": "<abs path>", "prUrl": null,
-      "review": { "outcome": "done|question|blocked", "summary": "...",
-                  "reportPath": "runs/review-owner--api-a1/report.md", "commentUrl": "..." }
+      "review": { "outcome": "done|question|blocked", "summary": "Fable: ...; Astra: ...; Opus: ...",
+                  "reportPath": "runs/review-owner--api/report.md", "commentUrl": null }
     }
   },
   "phases": {
@@ -216,7 +239,8 @@ keep the *interactive* chat under a hard ~200k ceiling, `loop-execute` runs in o
   preflight/init/lock, then spawn ONE detached `loop-orchestrator.sh` and poll **compact
   local** state (`loop-state.sh get '.phases|map(.status)'`, not the fat daemon snapshot) for
   a 2-3 line progress read. It answers HIL from the on-disk brief and, on `sub/PHASES_DONE`,
-  finalizes (spawn bounded parallel repository review-runners, promote all verdicts,
+  finalizes (spawn three independent bounded-parallel review-runners per repository, promote
+  aggregate verdicts,
   `gh pr ready`, link repository PRs, one `loop-state.sh finish`, unlock). It spawns only
   the orchestrator and final review-runners;
   it is designed never to need recycling (if it ever did, `state.json` is its backstop — a
@@ -360,7 +384,10 @@ by the orchestrator as a stall → escalate, never accept.
 ```sh
 CHAIN_TASK=("codex:gpt-5.6-sol" "claude:opus")
 CHAIN_ESCALATE=("claude:fable+opus")
-CHAIN_REVIEW=("claude:fable" "codex:gpt-5.6-sol" "claude:opus")
+CHAIN_REVIEW_FABLE=("claude:claude-fable-5-1")
+CHAIN_REVIEW_ASTRA=("codex:gpt-6-astra")
+CHAIN_REVIEW_OPUS=("claude:claude-opus-5")
+CHAIN_ORCHESTRATE=("claude:claude-fable-5-1+claude-opus-5")
 CODEX_EXTRA_ARGS=(-c 'model_reasoning_effort="high"')
 CLAUDE_EXTRA_ARGS=(--effort high)
 LOOP_BUDGET_USD=15        # per attempt, claude legs only (codex has no budget flag)
@@ -372,8 +399,10 @@ LOOP_MAX_PARALLEL=3
 
 Leg grammar: `engine:model[+fallback[,fallback2]]`. The `+` list maps to Claude's native
 `--fallback-model` (comma-separated; CLI retries the primary each turn) — so intra-Claude
-fallback is one leg. Codex→Claude hops are the wrapper's job. Claude legs use model
-aliases (`fable`, `opus`, `sonnet`) so the newest generation resolves automatically.
+fallback is one leg. Codex→Claude hops are the wrapper's job. Task/escalation legs may use
+Claude aliases; review and orchestration roles use full model names to pin Fable 5.1,
+Astra 6, and Opus 5. Each review chain contains exactly one leg: a failed reviewer stays
+failed instead of silently becoming a duplicate of another reviewer.
 
 Failure classing per leg (from structured error events first — `.is_error` result events in
 Claude stream-json, `error` events in Codex JSONL — stderr regex last):
@@ -444,6 +473,46 @@ implementation complete, awaiting merge — "done" is the orchestrator's post-me
 then write RUN_DIR/status.json exactly per this schema <schema> and end the session. If
 you must stop early, skip the handoff and write status.json with outcome question/blocked.
 ```
+
+## Final PR reviews
+
+Finalization runs exactly three independent reviews against each repository PR's captured
+head SHA. The mapping is fixed and each chain has one model leg:
+
+| `a<K>` | Chain | Host | Model |
+|--------|-------|------|-------|
+| `a1` | `review-fable` | Claude Code | `claude-fable-5-1` |
+| `a2` | `review-astra` | Codex | `gpt-6-astra` |
+| `a3` | `review-opus` | Claude Code | `claude-opus-5` |
+
+Create one complete base prompt, including the PR URL, captured head SHA, project
+instructions, verify commands, and the repository review steering note. Copy it to the three
+run directories and append only the reviewer identity. Launch each with `loop-runner.sh
+--chain <chain> --worktree <repo-int-wt> --run-dir <runDir> --prompt-file
+<runDir>/prompt.md --repository <owner/repo>`. Queue jobs across repositories under
+`LOOP_MAX_PARALLEL`; do not wait for one review before launching its siblings when capacity
+exists.
+
+Each prompt says:
+
+```
+Invoke pr-review in --headless mode for <PR URL> at exactly <head SHA>. Review independently:
+do not read sibling .loop/runs/review-* directories, their reports/transcripts/status files,
+or existing GitHub reviews/comments. Run the code and inspect the diff yourself.
+
+Post exactly one GitHub pull-request review with event COMMENT (never APPROVE or
+REQUEST_CHANGES), including a no-findings result. Save the full report to RUN_DIR/report.md.
+Your final act is RUN_DIR/status.json:
+{"outcome":"done|question|blocked","summary":"...","commentUrl":"<posted review html_url>"}
+```
+
+The `pr-review` headless flow posts through GitHub's review API with `event:"COMMENT"` and
+verifies the result. If one runner or post fails, synthesize `blocked` for that reviewer and
+let its siblings finish; never substitute another model. After all three finish, write
+`runs/review-<owner--repo>/report.md` with three clearly labelled sections and their GitHub
+review URLs. Promote one repository aggregate using `blocked > question > done`, point
+`reportPath` at that combined report, and keep `commentUrl: null` because the three URLs live
+in the report. Emit one aggregate `review.finish` event per repository.
 
 ## Merge policy (loop-merge.sh, serialized — one merge at a time)
 

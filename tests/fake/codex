@@ -2,5 +2,10 @@
 set -u
 
 print -r -- "codex $*" >> "${FAKE_ENGINE_LOG:?FAKE_ENGINE_LOG required}"
+if [[ "${FAKE_CODEX_OUTCOME:-rate-limit}" == "done" ]]; then
+  jq -cn '{outcome:"done"}' > "${FAKE_RUN_DIR:?FAKE_RUN_DIR required}/status.json"
+  print -r -- '{"type":"result","result":"done"}'
+  exit 0
+fi
 print -r -- "429 rate limit" >&2
 exit 1
