@@ -610,6 +610,12 @@ install_claude_config() {
     mkdir -p ~/.codex
     ln -sfn ~/dotfile/AGENTS_GLOBAL.md ~/.codex/AGENTS.md
 
+    # Share the Loop workflow through current/legacy Codex discovery and Ratel Local.
+    if ! ~/dotfile/install-agent-skills.sh --source ~/dotfile/.claude/skills; then
+      echo "Failed to install shared Loop skills" >&2
+      return 1
+    fi
+
     # Let Codex reuse repository-level CLAUDE.md files when AGENTS.md is absent
     local codex_config="$HOME/.codex/config.toml"
     touch "$codex_config"
@@ -643,7 +649,7 @@ install_claude_config() {
       echo "$updated" > "$settings"
     fi
 
-    echo "Claude config installed (agents, skills, MCP servers)"
+    echo "Agent config installed (Claude Code, Codex, Ratel Local, MCP servers)"
   }
 
   if [ "$INTERACTIVE_MODE" = true ]; then
@@ -719,7 +725,7 @@ main() {
     else
       echo "=== Installing requested packages ==="
       for package in "${REQUESTED_PACKAGES[@]}"; do
-        install_package "$package"
+        install_package "$package" || return 1
       done
     fi
   fi

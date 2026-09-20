@@ -39,6 +39,7 @@ cd loop-web && npm test && npm run build && cd ..
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
+install-agent-skills.sh Shares Loop skills across Claude Code, Codex, and Ratel Local
 ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
 ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
