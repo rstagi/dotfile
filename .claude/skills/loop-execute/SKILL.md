@@ -265,14 +265,13 @@ Concurrency; stages within one repository are ordered:
 1. Capture the current PR head SHA. Launch Astra 6 (`review-astra`, `a1`) and Fable 5.1
    (`review-fable`, `a2`) adversarially against that same SHA. They independently run the full
    `pr-review` inspection but **never post or mutate GitHub** and never read each other's output.
-2. Launch Opus 5 (`review-fix`, `a3`) on the integration worktree. It reads both reports,
-   reproduces and reconciles findings into `remediation-plan.md`, then delegates every accepted
-   non-overlapping fix group to the registered `loop-opus-fixer` subagent (also Opus 5; max 3).
-   It integrates, verifies, commits, and pushes all fixes itself. Rejected/duplicate findings
-   require evidence in the plan. No accepted finding may be silently skipped.
+2. Launch Opus 5 (`review-fix`, `a3`) on the integration worktree. Its prompt invokes
+   `/pr-review-fix-all` with both report paths, `RUN_DIR`, branch/remote, and repository verify
+   command. That skill reproduces and reconciles every finding, then delegates independent fix
+   groups to Opus 5 subagents (max 3), integrates, verifies, commits, and pushes. Rejected or
+   duplicate findings require evidence; no accepted finding may be silently skipped.
 3. Capture the new PR head. Repeat the independent local-only Astra/Fable reviews as `a4`/`a5`.
-4. Repeat Opus reconciliation and delegated remediation with `review-fix`, `a6`, then
-   verify/commit/push.
+4. Repeat `/pr-review-fix-all` through Opus 5 (`review-fix`, `a6`), then verify/commit/push.
 5. Capture the new PR head. Run the third independent local-only Astra/Fable reviews as
    `a7`/`a8`.
 6. Launch Opus 5 (`review-final`, `a9`). It reads the two third-pass reports, reconciles them

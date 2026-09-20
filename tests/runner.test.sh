@@ -65,8 +65,7 @@ assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "Astra review 
 run_review review-fix
 assert_exit "$RC" "0" "Opus remediation coordinator completes"
 assert_contains "$INVOCATIONS" 'claude -p --model claude-opus-5' "pins remediation coordinator to Opus 5"
-assert_contains "$INVOCATIONS" '--agents' "registers the remediation fixer subagent"
-assert_contains "$INVOCATIONS" '"model":"claude-opus-5"' "pins fixer subagents to Opus 5"
+assert_eq "$([[ "$INVOCATIONS" == *'--agents'* ]] && echo yes || echo no)" "no" "remediation delegation belongs to the skill"
 assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "remediation coordinator has no model fallback"
 
 run_review review-final

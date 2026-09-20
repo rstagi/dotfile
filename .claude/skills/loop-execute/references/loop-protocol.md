@@ -56,8 +56,8 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   Each independently reviews a pinned PR head, saves a local report, and never posts to or
   mutates GitHub. Two run per round for three rounds.
 - **Remediation coordinator** — Opus 5 through Claude Code after rounds 1 and 2. It reconciles
-  the round's two reports into a plan, delegates accepted fix groups to the registered
-  `loop-opus-fixer` subagent (also pinned to Opus 5), integrates, verifies, commits, and pushes.
+  the round's two reports through `/pr-review-fix-all`, which delegates accepted independent
+  fix groups to Opus 5 subagents, then integrates, verifies, commits, and pushes.
 - **Final review runner** — Opus 5 through Claude Code after round 3. It reconciles the latest
   two reports against current code and posts the pipeline's only GitHub review.
 - **Scripts** — mechanism only (spawn/merge/notify/state; `loop-plan.sh` registers/pushes/
@@ -397,7 +397,6 @@ CHAIN_REVIEW_ASTRA=("codex:gpt-6-astra")
 CHAIN_REVIEW_FIX=("claude:claude-opus-5")
 CHAIN_REVIEW_FINAL=("claude:claude-opus-5")
 CHAIN_ORCHESTRATE=("claude:claude-fable-5-1+claude-opus-5")
-CLAUDE_REVIEW_FIX_AGENTS='{"loop-opus-fixer":{"description":"...","prompt":"...","model":"claude-opus-5"}}'
 CODEX_EXTRA_ARGS=(-c 'model_reasoning_effort="high"')
 CLAUDE_EXTRA_ARGS=(--effort high)
 LOOP_BUDGET_USD=15        # per attempt, claude legs only (codex has no budget flag)
@@ -413,8 +412,8 @@ Leg grammar: `engine:model[+fallback[,fallback2]]`. The `+` list maps to Claude'
 fallback is one leg. Codex→Claude hops are the wrapper's job. Task/escalation legs may use
 Claude aliases; review and orchestration roles use full model names to pin Fable 5.1,
 Astra 6, and Opus 5. Each review chain contains exactly one leg: a failed stage stays failed
-instead of silently becoming a duplicate of another model. `review-fix` additionally passes
-the configured `--agents` JSON so every delegated fixer is Opus 5.
+instead of silently becoming a duplicate of another model. The `review-fix` prompt invokes
+`/pr-review-fix-all`; that skill owns Opus 5 subagent delegation.
 
 Failure classing per leg (from structured error events first — `.is_error` result events in
 Claude stream-json, `error` events in Codex JSONL — stderr regex last):
@@ -523,23 +522,26 @@ its sibling finishes; never substitute a model.
 ### Opus remediation (`a3`, `a6`)
 
 Run `review-fix` in the repository integration worktree after both reports exist. Its prompt
-names only that round's two report paths and says:
+passes only that round's reports plus the remediation execution inputs and says:
 
 ```
-Read both adversarial reports and reproduce every finding against current code. Reconcile
-duplicates and conflicts. Write RUN_DIR/remediation-plan.md with every finding, disposition
-(accepted/rejected/duplicate), evidence, fix group, files, test-first step, and verify command.
-Rejected findings require concrete evidence; no accepted finding may be skipped.
+Invoke `/pr-review-fix-all` with:
+- astra-report: <absolute a1-or-a4 report.md>
+- fable-report: <absolute a2-or-a5 report.md>
+- run-dir: <absolute a3-or-a6 RUN_DIR>
+- worktree: <absolute repository integration worktree>
+- branch: <integration branch>
+- remote: origin
+- verify: <repository verify command, verbatim>
 
-For every accepted fix group, delegate implementation to the registered loop-opus-fixer
-subagent, pinned to Opus 5. Spawn one agent per non-overlapping group, at most 3 concurrently;
-serialize groups that touch overlapping files. Fixers may edit and test but never commit, push,
-or post to GitHub. After they return, inspect and integrate all changes, run the repository
-verify command, commit logical fixes, and push the integration branch. If there are no accepted
-findings, record the no-op and do not create an empty commit. Finally write status.json.
+Follow that skill through its final status.json. Do not implement remediation outside it.
 ```
 
-The coordinator, not its subagents, owns integration and push. Confirm the remote PR head moved
+The skill reconciles all findings into `remediation-plan.md`, groups non-overlapping work,
+spawns at most three `pr-review-fixer` subagents pinned to Opus 5, and serializes overlaps or
+dependencies. Subagents edit and test only; the coordinator owns integration, verification,
+commits, and fast-forward push. It does not create an empty commit when no findings are accepted.
+Confirm the remote PR head moved
 to the pushed SHA before starting the next round. Any unresolved accepted finding or failed
 verification yields `blocked` and stops this repository pipeline.
 

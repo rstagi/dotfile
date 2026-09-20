@@ -79,7 +79,6 @@ source "$MODELS_CONF" || { echo "loop-runner: cannot source $MODELS_CONF" >&2; e
 (( ${+CODEX_EXTRA_ARGS} )) || CODEX_EXTRA_ARGS=()
 (( ${+CLAUDE_EXTRA_ARGS} )) || CLAUDE_EXTRA_ARGS=()
 BUDGET="${BUDGET:-$LOOP_BUDGET_USD}"
-CLAUDE_ROLE_ARGS=()
 
 case "$CHAIN_NAME" in
 task) chain=("${CHAIN_TASK[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_TASK}" ;;
@@ -89,7 +88,6 @@ review-astra) chain=("${CHAIN_REVIEW_ASTRA[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIME
 review-fix)
   chain=("${CHAIN_REVIEW_FIX[@]}")
   TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REMEDIATE}"
-  CLAUDE_ROLE_ARGS=(--agents "$CLAUDE_REVIEW_FIX_AGENTS")
   ;;
 review-final) chain=("${CHAIN_REVIEW_FINAL[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
 *) echo "loop-runner: unknown chain '$CHAIN_NAME'" >&2; exit 1 ;;
@@ -124,12 +122,12 @@ launch_claude() { # $1 model, $2 fallback (may be empty)
   local fb_args=()
   [[ -n "$2" ]] && fb_args=(--fallback-model "$2")
   if [[ -n "$RESUME_SID" ]]; then
-    ( cd "$WT" && command claude -p --resume "$RESUME_SID" "${fb_args[@]}" "${CLAUDE_ROLE_ARGS[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && command claude -p --resume "$RESUME_SID" "${fb_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
         --max-budget-usd "$BUDGET" < "$RUN_DIR/prompt.md" > "$TRANSCRIPT" 2> "$STDERR" )
   else
-    ( cd "$WT" && command claude -p --model "$1" "${fb_args[@]}" "${CLAUDE_ROLE_ARGS[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && command claude -p --model "$1" "${fb_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
         --max-budget-usd "$BUDGET" < "$RUN_DIR/prompt.md" > "$TRANSCRIPT" 2> "$STDERR" )
