@@ -50,7 +50,7 @@ run_review() {
   INVOCATIONS="$(cat "$FAKE_ENGINE_LOG")"
 }
 
-echo "runner: independent review model chains"
+echo "runner: staged adversarial review model chains"
 run_review review-fable
 assert_exit "$RC" "0" "Fable review completes"
 assert_contains "$INVOCATIONS" 'claude -p --model claude-fable-5-1' "pins Fable 5.1"
@@ -62,9 +62,17 @@ assert_contains "$INVOCATIONS" 'codex exec --json' "runs Astra through Codex"
 assert_contains "$INVOCATIONS" '-m gpt-6-astra' "pins Astra 6"
 assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "Astra review has no fallback reviewer"
 
-run_review review-opus
-assert_exit "$RC" "0" "Opus review completes"
-assert_contains "$INVOCATIONS" 'claude -p --model claude-opus-5' "pins Opus 5"
-assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "Opus review has no fallback reviewer"
+run_review review-fix
+assert_exit "$RC" "0" "Opus remediation coordinator completes"
+assert_contains "$INVOCATIONS" 'claude -p --model claude-opus-5' "pins remediation coordinator to Opus 5"
+assert_contains "$INVOCATIONS" '--agents' "registers the remediation fixer subagent"
+assert_contains "$INVOCATIONS" '"model":"claude-opus-5"' "pins fixer subagents to Opus 5"
+assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "remediation coordinator has no model fallback"
+
+run_review review-final
+assert_exit "$RC" "0" "Opus final review completes"
+assert_contains "$INVOCATIONS" 'claude -p --model claude-opus-5' "pins final reviewer to Opus 5"
+assert_eq "$([[ "$INVOCATIONS" == *'--agents'* ]] && echo yes || echo no)" "no" "final reviewer does not spawn remediation agents"
+assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "final reviewer has no model fallback"
 
 test_summary
