@@ -5,7 +5,9 @@ description: >-
   daemon; Kestral link optional) end-to-end — spawn a fresh headless runner per phase (Codex
   or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into its
   repository integration branch, escalate stuck work (retry → stronger model → HIL pause),
-  open one effort PR per repository, execute explicit review phases, then stop for humans to merge.
+  open one effort PR per repository, execute each explicit review phase as three Astra/Fable
+  adversarial passes with Opus remediation between them, post one final Opus verdict, then stop
+  for humans to merge.
   By default the heavy orchestration runs in a detached, self-recycling sub-orchestrator so
   the interactive chat stays thin. Use when asked to
   "run the loop", "execute the multi-phase plan", "run the published plan autonomously",
@@ -42,7 +44,7 @@ its safe ceiling. So `loop-execute` runs in one of three shapes (contract:
   **THIN**. It does preflight / init / lock / the confirm gate, spawns ONE detached
   `loop-orchestrator.sh`, then only: polls **compact local** state for a 2-3 line progress read,
   answers HIL from on-disk briefs, and handles `sub/REVIEW_READY` barriers. It spawns **only** the
-  orchestrator and review-runners — the heavy scheduling/merge/escalation runs in
+  orchestrator and review/remediation runners — the heavy scheduling/merge/escalation runs in
   disposable **`sub`** instances that self-recycle, so this chat never fills up.
 - **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
   spawned by `loop-orchestrator.sh`, entered via `loop-execute resume` (signalled by env
@@ -111,8 +113,9 @@ moments.
 `loop-repo.sh prepare --repo <owner/repo> --run-id <runId> --integration-branch <branch>`.
 It fetches GitHub's default ref and creates the integration branch/worktree from that exact
 fetched SHA under `~/.loop/worktrees/<runId>/<owner--repo>/integration`; never use stale
-local `main`. Push each initial integration branch (the only direct pushes — everything
-after goes through loop-merge) and persist the returned repository fields in state. Set plan
+local `main`. Push each initial integration branch and persist the returned repository fields
+in state. Later phase merges go through loop-merge; only a review-phase remediation
+coordinator may also fast-forward-push its verified fixes. Set plan
 **Status: in progress**, then repush once.
 
 **The observer runs itself (on by default).** `loop-state.sh init` sources `loop-emit.sh`,
@@ -282,21 +285,47 @@ that repository's phases/task links plus a progress digest. Then record completi
   `loop.finish` below.
 
 Sweep remaining lane worktrees. Re-read `notes/<reviewPhase>.md` plus legacy repository
-review-note aliases, honor them against each integration worktree, and fold them
-verbatim into a FULL reviewer prompt. Launch reviews in parallel, bounded by Loop
-Concurrency, in `runs/review-p<N>-<owner--repo>-a<K>/`, passing `--phase <N>` and
-`--repository <owner/repo>`.
-One review infrastructure failure records `blocked` without cancelling siblings. Wait for
-all reviews, promote each into `state.repositories[slug].review`, and clear its note.
-Aggregate verdict precedence is `blocked > question > done`. Promote the explicit review
-phase to `done` only for a non-blocking aggregate; otherwise mark it `blocked` and use the
-normal HIL/retry path. Repush after promotion.
+review-note aliases, honor them against each integration worktree throughout this review phase,
+and fold them verbatim into every reviewer/remediator prompt. For each repository run this exact
+pipeline in `runs/review-p<N>-<owner--repo>-a<1..9>/`, passing `--phase <N>` and
+`--repository <owner/repo>`. Different repositories may progress in parallel under Loop
+Concurrency; stages within one repository are ordered:
 
-If later document phases exist, set plan Status back to `in progress`, clear `REVIEW_READY`,
-and respawn the orchestrator for the next segment. If this review is terminal, emit exactly
-one `loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`; the daemon
-rejects finish unless the terminal explicit review is done. Keep plan Status `integrating`
-until humans merge every PR. Notify once with final PRs/verdicts, unlock, stop.
+1. Capture the current PR head SHA. Launch Astra 6 (`review-astra`, `a1`) and Fable 5.1
+   (`review-fable`, `a2`) adversarially against that same SHA. They independently run the full
+   `pr-review` inspection but **never post or mutate GitHub** and never read each other's output.
+2. Launch Opus 5 (`review-fix`, `a3`) on the integration worktree. Its prompt invokes
+   `/pr-review-fix-all` with both report paths, `RUN_DIR`, branch/remote, and repository verify
+   command. That skill reproduces and reconciles every finding, then delegates independent fix
+   groups to Opus 5 subagents (max 3), integrates, verifies, commits, and pushes. Rejected or
+   duplicate findings require evidence; no accepted finding may be silently skipped.
+3. Capture the new PR head. Repeat the independent local-only Astra/Fable reviews as `a4`/`a5`.
+4. Repeat `/pr-review-fix-all` through Opus 5 (`review-fix`, `a6`), then verify/commit/push.
+5. Capture the new PR head. Run the third independent local-only Astra/Fable reviews as
+   `a7`/`a8`.
+6. Launch Opus 5 (`review-final`, `a9`). It reads the two third-pass reports, reconciles them
+   against the current code, and posts the pipeline's **only** GitHub review:
+   `REQUEST_CHANGES` for one or more unresolved `[blocker]` findings; otherwise `COMMENT` for
+   one or more unresolved `[major]` findings; otherwise `APPROVE`. Minor/nit/style findings do
+   not prevent approval. Save the API response URL in `status.json.commentUrl`.
+
+Persist `repositories[slug].reviewPipeline` with this review's `phase` and the **next** `stage`
+(`round1 → fix1 → round2 → fix2 → round3 → final → done`), advancing it only after that stage
+finishes. Initialize it to `{phase:<N>,stage:"round1"}` for a new explicit review phase. The
+final review body includes the phase-scoped idempotency marker from the protocol; resume searches
+GitHub for it before posting. Any reviewer/remediator infrastructure failure records `blocked`
+without cancelling sibling repositories; do not substitute models or advance that repository.
+After `a9`, promote its verdict, report path, and comment URL into
+`state.repositories[slug].review`, clear the review note, and emit one `review.finish`.
+
+Wait for every repository. Aggregate verdict precedence is `blocked > question > done`. If any
+repository is blocked, mark the explicit review phase `blocked` and use the normal HIL/retry path;
+otherwise promote it to `done`. Repush after promotion. If later document phases exist, set plan
+Status back to `in progress`, clear `REVIEW_READY`, and respawn the orchestrator for the next
+segment. If this review is terminal, emit exactly one
+`loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`; the daemon rejects
+finish unless the terminal explicit review is done. Keep plan Status `integrating` until humans
+merge every PR. Notify once with final PRs/verdicts, unlock, stop.
 
 ### 9. `resume` / `status` / `abort`
 
@@ -357,13 +386,14 @@ derives NOTE visibility from both file presence and unfinished lifecycle.
 
 ## Hard rules
 
-- Never force-push anything; integration pushes are fast-forward via loop-merge only
-  (sole exception: step 3's initial branch push).
+- Never force-push anything; integration pushes are fast-forward via loop-merge, except step
+  3's initial branch push and verified remediation commits pushed by the Opus coordinator.
 - Never steal a Kestral claim (409) or a foreign lock — both mean a colleague exists.
 - Single plan-writer: only the orchestrator pushes the plan — to the daemon via
   `loop-plan.sh push` and/or Kestral via `update_document` — and links PRs; runners emit
   events/notes only (the task-scoped pickup/handoff auto ops) and never push git or call
-  `update_document`.
+  `update_document`. The Opus remediation coordinator is an orchestrator-delegate for verified
+  integration-branch commits/pushes only; it never writes the plan or Kestral.
 - Every prompt, transcript, and decision lands under `.loop/` — if it isn't in
   state.json or events.jsonl, it didn't happen (crash-resume depends on this).
 - Budget: `--max-budget-usd` per attempt is the ceiling; on repeated 40s across lanes,
@@ -373,6 +403,6 @@ derives NOTE visibility from both file presence and unfinished lifecycle.
   `loop-orchestrator.sh` — a SUB never spawns its own successor (that would overlap two
   orchestrators on one run id, which the reentrant lock does not prevent). Recycle only at a
   persisted checkpoint; never hard-kill a live phase runner to hit the token ceiling.
-- Supervise stays THIN: spawn only the orchestrator + the review-runner, and read only
-  compact local state. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
+- Supervise stays THIN: spawn only the orchestrator + staged review/remediation runners, and
+  read only compact local state. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
   the main chat defeats the two-tier design — that work is the `sub`'s.

@@ -7,6 +7,7 @@
 #   <word> → status.json {outcome:<word>, tokens, recycleIndex:<instance-n>}
 set -u
 SUB="${LOOP_SUB_DIR:?LOOP_SUB_DIR required}"
+[[ -n "${FAKE_ENGINE_ARGS_LOG:-}" ]] && print -r -- "$*" >> "$FAKE_ENGINE_ARGS_LOG"
 cf="$SUB/.fake-count"
 n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$cf"

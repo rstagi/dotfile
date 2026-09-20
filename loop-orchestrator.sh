@@ -54,8 +54,8 @@ PIDFILE="$SUB/current.pid"
 mkdir -p "$SUB/control"
 
 # First CHAIN_ORCHESTRATE leg → engine:model[+fallback]  (zsh arrays are 1-indexed).
-leg="${CHAIN_ORCHESTRATE[1]:-claude:fable+opus}"
-[[ "$leg" == *:* ]] || leg="claude:fable+opus"  # guard a scalar/garbage CHAIN_ORCHESTRATE
+leg="${CHAIN_ORCHESTRATE[1]:-claude:claude-fable-5-1+claude-opus-5}"
+[[ "$leg" == *:* ]] || leg="claude:claude-fable-5-1+claude-opus-5"  # guard malformed config
 LEG_MODEL="${leg#*:}"; LEG_MODEL="${LEG_MODEL%%+*}"
 LEG_FALLBACK=""; [[ "${leg#*:}" == *"+"* ]] && LEG_FALLBACK="${leg#*+}"
 

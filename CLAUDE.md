@@ -39,6 +39,7 @@ cd loop-web && npm test && npm run build && cd ..
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
+install-agent-skills.sh Shares Loop skills across Claude Code, Codex, and Ratel Local
 ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
 ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
@@ -63,7 +64,7 @@ loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React grap
 
 **Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx).
 
-**Loop engineering:** `.claude/skills/loop-execute` orchestrates a plan end-to-end across repositories: one repository per phase and one integration branch/worktree/PR/review per repository. GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. The central **Loop daemon** is always the base backend; **Kestral is opt-in**. On-disk coordinator state stays in flattened `.loop/`; repository review notes use `notes/pr-review.<owner--repo>.md`. Contract: `.claude/skills/loop-execute/references/loop-protocol.md`. Two-tier mode keeps scheduling/merges in recyclable SUBs and final repository reviews in detached runners. Shell tests live in `tests/` (`zsh tests/run.sh`).
+**Loop engineering:** `.claude/skills/loop-execute` orchestrates a plan end-to-end across repositories: one repository per phase and one integration branch/worktree/PR per repository. Each explicit PR-review phase runs three local-only Astra/Fable adversarial rounds, with `.claude/skills/pr-review-fix-all` driving Opus 5 reconciliation and delegated Opus 5 remediation after rounds 1 and 2. Opus 5 alone posts the final GitHub review (`REQUEST_CHANGES`, `COMMENT`, or `APPROVE`, based on unresolved severity). GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. The central **Loop daemon** is always the base backend; **Kestral is opt-in**. On-disk coordinator state stays in flattened `.loop/`; review notes use `notes/<reviewPhase>.md` (legacy `notes/pr-review.*` aliases remain accepted). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`. Two-tier mode keeps scheduling/merges in recyclable SUBs and review-phase pipelines in detached runners. Shell tests live in `tests/` (`zsh tests/run.sh`).
 
 **Loop Observatory (`loop-web`):** a perpetual central daemon (launchd LaunchAgent, `127.0.0.1:7717`) that is the base backend for every plan and renders every loop as a live L→R graph. `multiphase-plan` registers a plan on it (status `planned`) before any run; loops then register + push lifecycle events (`loop-emit.sh`/`loop-plan.sh`, sourced by/talking to the daemon) so status is authoritative via a monotone promotion lattice — never stale. Each loop is kept forever in `~/.loop/loops/<runId>.json`; a header selector switches between loops. Daemon/event contract lives in `loop-protocol.md` → Daemon & events.
 
