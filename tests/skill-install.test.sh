@@ -51,6 +51,25 @@ assert_exit "$RC" "0" "rerun succeeds"
 assert_eq "$(grep -c '^skill import ' "$FAKE_RATEL_LOG")" "6" "does not re-import configured Ratel skills"
 assert_eq "$(grep -c '^skill list --discovered' "$FAKE_RATEL_LOG")" "1" "does not rediscover fully configured skills"
 
+echo "skill install: recovers from native links left by an interrupted registration"
+RETRY_HOME="$TMP/retry-home"
+mkdir -p "$RETRY_HOME/.claude/skills" "$RETRY_HOME/.agents/skills" "$RETRY_HOME/.codex/skills"
+for skill in "${SKILLS[@]}"; do
+  ln -s "$SOURCE/$skill" "$RETRY_HOME/.claude/skills/$skill"
+  ln -s "$SOURCE/$skill" "$RETRY_HOME/.agents/skills/$skill"
+  ln -s "$SOURCE/$skill" "$RETRY_HOME/.codex/skills/$skill"
+done
+: > "$FAKE_RATEL_LOG"
+export FAKE_RATEL_CONFIGURED_JSON='[]'
+HOME="$RETRY_HOME" PATH="$FAKE_BIN:$PATH" bash "$ROOT/install-agent-skills.sh" \
+  --source "$SOURCE" > "$TMP/retry.out" 2>&1
+RC=$?
+assert_exit "$RC" "0" "retry succeeds despite duplicate native discovery links"
+for skill in "${SKILLS[@]}"; do
+  assert_eq "$(readlink "$RETRY_HOME/.agents/skills/$skill")" "$SOURCE/$skill" "retry restores Codex $skill"
+  assert_eq "$(readlink "$RETRY_HOME/.codex/skills/$skill")" "$SOURCE/$skill" "retry restores legacy Codex $skill"
+done
+
 echo "skill install: refuses conflicting native paths"
 CONFLICT_HOME="$TMP/conflict-home"
 mkdir -p "$CONFLICT_HOME/.agents/skills/pr-review-fix-all"

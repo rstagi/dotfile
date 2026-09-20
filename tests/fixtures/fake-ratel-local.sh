@@ -18,6 +18,11 @@ case "${1:-} ${2:-} ${3:-}" in
       })}' >&2
     ;;
   "skill import "*)
+    if [[ -L "$HOME/.agents/skills/pr-review-fix-all" ||
+      -L "$HOME/.codex/skills/pr-review-fix-all" ]]; then
+      printf 'ambiguous discovered skill %s; use its candidateId\n' "${3:-unknown}" >&2
+      exit 1
+    fi
     printf 'imported 1 skill(s)\n' >&2
     ;;
   *)
