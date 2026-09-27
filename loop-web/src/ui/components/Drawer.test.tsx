@@ -48,4 +48,17 @@ describe("Drawer Jev decisions", () => {
     expect(html).toContain("raise-hil");
     expect(html).toContain("question, plan");
   });
+
+  it("labels merge risk and the actual full-skim disposition", () => {
+    const html = renderToStaticMarkup(<Drawer node={node([{
+      runId: "r", phase: "5", attempt: 1, stage: "merge-risk", mode: "active",
+      candidate: "scope-gap:possible · risk:high", confidence: 0.91,
+      probabilities: { "risk:high": 0.91 }, appliedAction: "focused-full-diff-skim",
+      fallbackReason: null, resolvedModel: "jev-test", ts: "2026-09-27T10:00:00Z",
+    }])} pr={null} plan={null} runId={null} onClose={() => {}} />);
+    expect(html).toContain("risk judgment");
+    expect(html).toContain("scope-gap:possible · risk:high");
+    expect(html).toContain("actual disposition");
+    expect(html).toContain("focused-full-diff-skim");
+  });
 });

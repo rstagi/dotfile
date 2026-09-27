@@ -102,6 +102,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
     status.json              # runner-written result (schema below)
     checkpoint.md            # observable worktree state if the 30m phase deadline fired
     question-decision.json   # ordinary exit-10 advice + evidence-backed disposition
+    risk-decision-<head>.json # merge-risk advice + actual full-skim disposition/gate evidence
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
   runs/review-p<N>-<owner--repo>-a<1..9>/ # review phase N; see PR review phase pipeline
@@ -177,7 +178,7 @@ completed phase ranks remain monotone.
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto (unlinked) | phase, detail |
-| `jev.decision` | runner (route) or SUB (question/risk) | phase, attempt, stage, mode, candidate, confidence/probabilities, appliedAction, fallbackReason, resolvedModel, evidenceChecked/evidenceSources, questionRound, ts |
+| `jev.decision` | runner (route) or SUB (question/risk) | phase, attempt, stage, mode, candidate, confidence/probabilities, appliedAction, fallbackReason, resolvedModel, evidenceChecked/evidenceSources, questionRound, head, required/completed/remaining gates, focus, ts |
 
 `progress.note` is the unlinked-mode progress narration — kept on the timeline, promotes
 nothing in the lattice.
@@ -547,6 +548,48 @@ Omit the HIL-only fields for other actions. Exit 0 returns the typed decision. E
 policy, never bypass it. A checkpoint or fourth round returns a `bypass:true` disposition and
 must not be emitted as a Jev decision.
 
+### Pre-merge risk judgment
+
+After a phase attempt returns verified exit 0, and before any merge, the SUB executes this
+unconditional order:
+
+1. confirm verified exit 0;
+2. obtain one bounded merge-risk judgment for the attempt's `headAfter`;
+3. skim the **entire** `git diff <base>...HEAD`, using advice only to focus attention;
+4. reject `headBefore == headAfter` as a stall;
+5. require a clean lane worktree;
+6. reread `notes/<phase>.md` and honor it;
+7. run the globally serialized `loop-merge.sh`;
+8. let `loop-merge.sh` Verify the merged repository tree.
+
+Steps 1 and 3–8 are unconditional in off, shadow, active, low-risk, fallback, error,
+low-confidence, and malformed-response paths. A Jev record is observational and never a merge
+permit.
+
+For step 2, call `loop-jev-risk-input.mjs` with repository root, base/head, phase/attempt,
+verbatim *Done when*, and only `{exitCode:0,summary:<bounded success summary>}` for verification.
+It uses `git` directly, includes every changed path plus aggregate additions/deletions, caps each
+and total patch excerpt, suppresses known secret-file contents, redacts secret-like lines/tokens,
+and fails closed if the complete path inventory cannot fit its 48 KiB output bound. Pipe its
+output directly into `loop-jev.mjs`; never persist the request, raw API response, transcript,
+verify log, environment values, or credentials. The two Choice questions are `scopeGap`
+(`none|possible|likely`) and `changeRisk` (`low|medium|high`).
+
+After steps 3–6, call `loop-jev-risk.mjs` with the structured Jev result, phase/attempt,
+`headBefore`, `headAfter`, decision head, verification exit, clean/skimming evidence, focus,
+and the completed gate prefix. It accepts only `full-diff-skim` or
+`focused-full-diff-skim`, validates exact gate order and evidence, and returns a versioned
+proposal-versus-disposition record with the immutable required/remaining gate list. Any builder,
+Jev, or policy error uses a typed `merge-risk` fallback and the unfocused full skim; it never
+waives a gate.
+
+Persist the validated record atomically (`tmp` + `mv`) as
+`<runDir>/risk-decision-<head>.json`, then pipe that record to
+`loop_emit_jev_decision <runId>` before starting the merge. If that exact attempt/head record
+already exists and validates, reuse it rather than calling Jev again. A retry or changed head
+must create and emit a new timestamped record. The canonical candidate is
+`scope-gap:<label> · risk:<label>`; `appliedAction` is the actual full-skim disposition.
+
 ## Runner prompt skeleton (orchestrator generates prompt.md per attempt)
 
 ```
@@ -678,6 +721,9 @@ phase-scoped completed run artifacts plus git/GitHub evidence over a stale stage
 reruns a live pid, repeats a completed remediation push, or duplicates that phase's final review.
 
 ## Merge policy (loop-merge.sh, serialized — one merge at a time)
+
+Entry requires the persisted merge-risk disposition described above. This adds focus and
+observability only: serialized merge and merged-tree Verify remain unconditional.
 
 `loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --repository <owner/repo> --verify-cmd '<repository verify>'`
 (the script refuses to push unverified without an explicit `--no-verify`):
