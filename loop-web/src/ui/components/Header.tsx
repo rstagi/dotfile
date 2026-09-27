@@ -67,6 +67,14 @@ export function Header({
           {so.contextTokens != null ? ` · ~${formatOccupancy(so.contextTokens)} tok` : ""}
         </span>
       )}
+      {snapshot?.jev && (
+        <span className="pill pill--jev">
+          Jev {snapshot.jev.mode} · {snapshot.jev.count} decision{snapshot.jev.count === 1 ? "" : "s"}
+          {snapshot.jev.fallbackCount > 0
+            ? ` · ${snapshot.jev.fallbackCount} fallback${snapshot.jev.fallbackCount === 1 ? "" : "s"}`
+            : ""}
+        </span>
+      )}
       {e?.status && <span className="pill">{e.status}</span>}
       {snapshot?.loopActive && (
         <span className="pill" style={{ color: "var(--aqua)", borderColor: "var(--aqua-deep)" }}>

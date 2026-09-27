@@ -44,6 +44,15 @@ describe("PhaseNode repository badge", () => {
   it("renders the repository slug on phase nodes", () => {
     expect(render({ repository: "acme/api" })).toContain("acme/api");
   });
+
+  it("shows the latest Jev decision badge and omits it for pre-Jev nodes", () => {
+    expect(render({ decisions: [{
+      runId: "r", phase: "2", attempt: 1, stage: "route", mode: "shadow", candidate: "light",
+      confidence: 0.91, probabilities: { light: 0.91 }, appliedAction: "default",
+      fallbackReason: "shadow-mode", resolvedModel: "systemone", ts: "2026-09-27T10:00:00Z",
+    }] })).toContain("JEV · ROUTE · SHADOW");
+    expect(render({ decisions: undefined })).not.toContain("JEV");
+  });
 });
 
 describe("PhaseNode explicit review rounds", () => {

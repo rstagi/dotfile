@@ -122,6 +122,14 @@ function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null
   if (n.repository && n.repository !== "primary") {
     out.push(<span key="r" className="node__badge node__badge--repo">{n.repository}</span>);
   }
+  const decision = n.decisions?.at(-1);
+  if (decision) {
+    out.push(
+      <span key="jev" className="node__badge node__badge--jev">
+        JEV · {decision.stage.toUpperCase()} · {decision.mode.toUpperCase()}
+      </span>,
+    );
+  }
   if (!rt) return out;
   if (rt.attempt) out.push(<span key="a" className="node__badge">a{rt.attempt}</span>);
   if (rt.model)

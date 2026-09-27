@@ -18,7 +18,7 @@ import type {
   RepositoryRecord,
 } from "./store-types.ts";
 import { STORE_SCHEMA_VERSION, EVENT_CAP } from "./store-types.ts";
-import type { StateJson, RawEvent, PhaseStateStatus } from "./types.ts";
+import type { StateJson, RawEvent, PhaseStateStatus, JevDecision, JevMode } from "./types.ts";
 import { EVENT_RULES } from "./derive.ts";
 import { parsePlan } from "./parse-plan.ts";
 
@@ -38,6 +38,7 @@ const TYPED_EVENTS = new Set([
   "sub.saturation",
   "review.finish",
   "loop.finish",
+  "jev.decision",
 ]);
 
 /** Effect of one event on the record (all fields optional; `phase`/`patch` drive the overlay). */
@@ -89,6 +90,7 @@ export function emptyRecord(runId: string): LoopRecord {
     phases: {},
     repositories: {},
     events: [],
+    decisions: [],
     review: null,
     prUrl: null,
     lastSnapshot: null,
@@ -236,7 +238,9 @@ function applyEvent(prev: LoopRecord, ev: EventInfo): LoopRecord {
   const heartbeat = (ev.event ?? "").trim().toLowerCase() === "sub.saturation";
   const events = heartbeat ? prev.events : mergeEvents(prev.events, [toRawEvent(ev)]);
   const eff = eventSemantics(ev);
-  let next: LoopRecord = { ...prev, events, updatedAt: ev.ts ?? prev.updatedAt };
+  const decision = decisionFromEvent(prev.runId, ev);
+  const decisions = decision ? mergeDecisions(prev.decisions, [decision]) : prev.decisions;
+  let next: LoopRecord = { ...prev, events, decisions, updatedAt: ev.ts ?? prev.updatedAt };
   if (eff.finish) return applyFinish(next, eff.finish);
   if (eff.phase && eff.patch) {
     const patch = { ...eff.patch, repository: nonEmpty(ev.repository) ?? eff.patch.repository };
@@ -302,6 +306,8 @@ function typedSemantics(name: string, ev: EventInfo, phase: string | null): Even
       };
     case "loop.finish":
       return { phase: null, patch: null, finish: { finishedAt: ev.ts ?? null, prUrl: ev.prUrl ?? null } };
+    case "jev.decision":
+      return { phase, patch: null };
     default:
       // review.finish and any other typed name: timeline-only (review is owned by state/finish).
       return { phase, patch: null };
@@ -374,7 +380,7 @@ function deriveStatus(rec: LoopRecord): LoopStatus {
   if (Object.values(rec.phases).some((o) => o.hilOpen)) return "paused";
   // A register-only record (no state push, no lifecycle event) is a plan registered but not
   // yet running; the first state push or event flips it to active. No new ingest field needed.
-  if (rec.lastState === null && rec.events.length === 0) return "planned";
+  if (rec.lastState === null && !rec.events.some((event) => event.event !== "jev.decision")) return "planned";
   return "active";
 }
 
@@ -395,15 +401,66 @@ function mergeEvents(existing: RawEvent[], incoming: RawEvent[]): RawEvent[] {
 }
 
 function eventKey(e: RawEvent): string {
-  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.repository ?? ""}|${e.detail ?? ""}`;
+  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.repository ?? ""}|${e.detail ?? ""}|${e.attempt ?? ""}|${e.stage ?? ""}`;
 }
 
 function toRawEvent(ev: EventInfo): RawEvent {
-  return { ts: ev.ts ?? undefined, event: ev.event, phase: ev.phase ?? "", repository: ev.repository ?? undefined, detail: ev.detail ?? "" };
+  return {
+    runId: ev.runId ?? undefined, ts: ev.ts ?? undefined, event: ev.event, phase: ev.phase ?? "",
+    repository: ev.repository ?? undefined, detail: ev.detail ?? "", attempt: ev.attempt ?? undefined,
+    stage: ev.stage ?? undefined, mode: ev.mode ?? undefined, candidate: ev.candidate,
+    confidence: ev.confidence, probabilities: ev.probabilities ?? undefined,
+    appliedAction: ev.appliedAction, fallbackReason: ev.fallbackReason,
+    resolvedModel: ev.resolvedModel,
+  };
 }
 
 function rawToEventInfo(raw: RawEvent): EventInfo {
-  return { event: str(raw.event), phase: str(raw.phase), repository: str(raw.repository), detail: str(raw.detail), ts: typeof raw.ts === "string" ? raw.ts : null };
+  return {
+    event: str(raw.event), runId: str(raw.runId), phase: str(raw.phase), repository: str(raw.repository),
+    detail: str(raw.detail), ts: typeof raw.ts === "string" ? raw.ts : null,
+    attempt: typeof raw.attempt === "number" ? raw.attempt : null, stage: raw.stage ?? null,
+    mode: raw.mode ?? null, candidate: raw.candidate, confidence: raw.confidence,
+    probabilities: raw.probabilities, appliedAction: raw.appliedAction,
+    fallbackReason: raw.fallbackReason, resolvedModel: raw.resolvedModel,
+  };
+}
+
+function decisionFromEvent(runId: string, ev: EventInfo): JevDecision | null {
+  if (ev.event !== "jev.decision" || !nonEmpty(ev.phase) || !nonEmpty(ev.stage) || !isJevMode(ev.mode)) return null;
+  if (!Number.isInteger(ev.attempt) || Number(ev.attempt) < 1) return null;
+  return {
+    runId: nonEmpty(ev.runId) ?? runId,
+    phase: nonEmpty(ev.phase)!,
+    attempt: Number(ev.attempt),
+    stage: nonEmpty(ev.stage)!,
+    mode: ev.mode,
+    candidate: nonEmpty(ev.candidate),
+    confidence: typeof ev.confidence === "number" ? ev.confidence : null,
+    probabilities: ev.probabilities ?? {},
+    appliedAction: nonEmpty(ev.appliedAction),
+    fallbackReason: nonEmpty(ev.fallbackReason),
+    resolvedModel: nonEmpty(ev.resolvedModel),
+    ts: ev.ts ?? null,
+  };
+}
+
+function mergeDecisions(existing: JevDecision[], incoming: JevDecision[]): JevDecision[] {
+  const seen = new Set(existing.map(decisionKey));
+  return existing.concat(incoming.filter((decision) => {
+    const key = decisionKey(decision);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }));
+}
+
+function decisionKey(decision: JevDecision): string {
+  return `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}`;
+}
+
+function isJevMode(value: unknown): value is JevMode {
+  return value === "off" || value === "shadow" || value === "active";
 }
 
 function emptyRepository(): RepositoryRecord {

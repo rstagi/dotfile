@@ -21,9 +21,22 @@ describe("Header repositories", () => {
       },
       subOrch: null,
       loopActive: false,
-    } as Snapshot;
+    } as unknown as Snapshot;
     const html = renderToStaticMarkup(<Header snapshot={snapshot} conn="live" />);
     expect(html).toContain("acme/api #1");
     expect(html).toContain("acme/web #2");
+    expect(html).not.toContain("Jev");
+  });
+});
+
+describe("Header Jev status", () => {
+  it("shows mode, count, and fallback count", () => {
+    const snapshot = {
+      effort: { name: "Jev", status: null, integrationBranch: null, updatedAt: null, pr: null, runId: "r", repositories: [] },
+      subOrch: null, loopActive: false,
+      jev: { mode: "shadow", count: 3, fallbackCount: 1 },
+    } as unknown as Snapshot;
+    const html = renderToStaticMarkup(<Header snapshot={snapshot} conn="live" />);
+    expect(html).toContain("Jev shadow · 3 decisions · 1 fallback");
   });
 });

@@ -142,6 +142,10 @@
   color: var(--aqua);
   border-color: var(--aqua-deep);
 }
+.node__badge--jev {
+  color: var(--amber);
+  border-color: rgba(255, 179, 0, 0.35);
+}
 
 /* accent driven by --accent set inline per ui state */
 .node[data-ui] {

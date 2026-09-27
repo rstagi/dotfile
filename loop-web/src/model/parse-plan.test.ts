@@ -239,6 +239,14 @@ describe("parsePlan — phases", () => {
     expect(phases[2].repository).toBe("all");
   });
 
+  it("accepts a terminal PR-review phase without Repository as canonical", () => {
+    const plan = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`\n- **Depends on:** Phase 2\n`);
+    const review = plan.phases.at(-1)!;
+    expect(review.kind).toBe("pr-review");
+    expect(review.repository).toBe("all");
+    expect(plan.warnings.join("\n")).not.toMatch(/Phase 3.*Repository/i);
+  });
+
   it("warns when work appears after the last explicit PR-review phase", () => {
     const invalid = EDITABLE_WITH_REVIEW.replace(
       /### Phase 3[\s\S]*?(?=### Phase 2)/,

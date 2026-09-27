@@ -9,6 +9,8 @@ import type {
   EffortInfo,
   PlanOverview,
   RepositoryInfo,
+  JevDecision,
+  JevStatus,
 } from "./types.ts";
 import { buildGraph } from "./build-graph.ts";
 import { normalizeEvent, problemSeverity } from "./derive.ts";
@@ -16,6 +18,7 @@ import { normalizeEvent, problemSeverity } from "./derive.ts";
 interface SnapshotOpts {
   now?: number;
   nowIso?: string | null;
+  decisions?: JevDecision[];
 }
 
 /**
@@ -24,10 +27,11 @@ interface SnapshotOpts {
  */
 export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: SnapshotOpts = {}): Snapshot {
   const now = opts.now ?? Date.now();
+  const decisions = opts.decisions ?? decisionsFromRuntime(runtime);
   const repositories = buildRepositoryInfo(plan, runtime);
   const repositoryPrs = Object.fromEntries(repositories.map((repository) => [repository.slug, repository.pr]));
   const pr = repositories.length === 1 ? repositories[0].pr : null;
-  const graph = buildGraph(plan, runtime, { now, pr, repositories: repositoryPrs });
+  const graph = buildGraph(plan, runtime, { now, pr, repositories: repositoryPrs, decisions });
 
   return {
     effort: buildEffort(plan, runtime, pr, repositories),
@@ -42,6 +46,43 @@ export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: Snapsho
     // with the real overlay-derived values; other callers/tests keep compiling.
     subOrch: null,
     pendingHil: 0,
+    decisions,
+    jev: summarizeJev(decisions),
+  };
+}
+
+function decisionsFromRuntime(runtime: Runtime | null): JevDecision[] {
+  const out: JevDecision[] = [];
+  const seen = new Set<string>();
+  for (const event of runtime?.events ?? []) {
+    if (event.event !== "jev.decision" || !event.phase || !event.stage || !event.mode || !Number.isInteger(event.attempt)) continue;
+    const decision: JevDecision = {
+      runId: event.runId ?? runtime?.state?.runId ?? "",
+      phase: event.phase,
+      attempt: event.attempt!,
+      stage: event.stage,
+      mode: event.mode,
+      candidate: event.candidate ?? null,
+      confidence: typeof event.confidence === "number" ? event.confidence : null,
+      probabilities: event.probabilities ?? {},
+      appliedAction: event.appliedAction ?? null,
+      fallbackReason: event.fallbackReason ?? null,
+      resolvedModel: event.resolvedModel ?? null,
+      ts: event.ts ?? null,
+    };
+    const key = `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}`;
+    if (!seen.has(key)) { seen.add(key); out.push(decision); }
+  }
+  return out;
+}
+
+function summarizeJev(decisions: JevDecision[]): JevStatus | null {
+  const latest = decisions.at(-1);
+  if (!latest) return null;
+  return {
+    mode: latest.mode,
+    count: decisions.length,
+    fallbackCount: decisions.filter((decision) => decision.fallbackReason != null).length,
   };
 }
 
