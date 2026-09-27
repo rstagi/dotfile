@@ -148,7 +148,7 @@ function JevDecisionSection({ decisions }: { decisions: NonNullable<GraphNode["d
       <p className="section__title">Jev decisions</p>
       <div className="jev-decisions">
         {decisions.slice().reverse().map((decision) => (
-          <div className="jev-decision" key={`${decision.attempt}:${decision.stage}:${decision.ts ?? ""}`}>
+          <div className="jev-decision" key={`${decision.runId}:${decision.phase}:${decision.attempt}:${decision.stage}:${decision.ts ?? ""}:${decision.head ?? ""}`}>
             <div className="jev-decision__head">
               <b>{decision.stage}</b>
               <span>{decision.mode} · a{decision.attempt}</span>
@@ -160,6 +160,15 @@ function JevDecisionSection({ decisions }: { decisions: NonNullable<GraphNode["d
               <dd>{decision.appliedAction ?? "—"}</dd>
               {decision.stage === "question" && (
                 <><dt>evidence checked</dt><dd>{decision.evidenceChecked ? decision.evidenceSources?.join(", ") || "yes" : "no"}</dd></>
+              )}
+              {decision.stage === "merge-risk" && (
+                <>
+                  {decision.head && <><dt>head</dt><dd>{decision.head}</dd></>}
+                  {decision.requiredGates && <><dt>required gates</dt><dd>{decision.requiredGates.join(", ") || "none"}</dd></>}
+                  {decision.completedGates && <><dt>completed gates</dt><dd>{decision.completedGates.join(", ") || "none"}</dd></>}
+                  {decision.remainingGates && <><dt>remaining gates</dt><dd>{decision.remainingGates.join(", ") || "none"}</dd></>}
+                  {decision.focus && <><dt>focus</dt><dd>{decision.focus.join(", ") || "none"}</dd></>}
+                </>
               )}
               <dt>confidence</dt><dd>{formatConfidence(decision.confidence)}</dd>
               {Object.keys(decision.probabilities).length > 0 && (

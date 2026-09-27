@@ -122,6 +122,11 @@ export interface RawEvent {
   evidenceChecked?: boolean;
   evidenceSources?: string[];
   questionRound?: number | null;
+  head?: string | null;
+  requiredGates?: string[];
+  completedGates?: string[];
+  remainingGates?: string[];
+  focus?: string[];
 }
 
 export type JevMode = "off" | "shadow" | "active";
@@ -141,6 +146,11 @@ export interface JevDecision {
   evidenceChecked?: boolean;
   evidenceSources?: string[];
   questionRound?: number | null;
+  head?: string | null;
+  requiredGates?: string[];
+  completedGates?: string[];
+  remainingGates?: string[];
+  focus?: string[];
   ts: string | null;
 }
 

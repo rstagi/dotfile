@@ -27,6 +27,11 @@ choose a mode:
 - `LOOP_JEV_MODE=active` may apply only allowlisted, above-threshold decisions. Routing remains
   opt-in until shadow replay supports the configured threshold.
 
+Routing sends bounded phase title, Done when, and Estimate text after redacting common credential
+forms. Without Done when and Estimate evidence, active routing keeps the default task chain.
+Pre-merge risk requests send changed paths, diff totals, Done when, and a bounded verification
+summary; they omit patch contents. The mandatory full diff skim still runs locally.
+
 Verification, full diff review, merge checks, escalation, and human gates remain authoritative in
 every mode. Observatory shows the current mode and fallback count in the header, decision badges on
 phases, and proposal-versus-applied details in the phase drawer. Archived loop snapshots retain the

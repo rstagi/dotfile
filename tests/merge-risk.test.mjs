@@ -16,7 +16,7 @@ const REQUIRED_GATES = [
   "clean-worktree-check", "reread-steering-notes", "serialized-merge", "post-merge-verify",
 ];
 
-test("builds bounded redacted risk input from every changed path", async () => {
+test("builds bounded risk input from every changed path without patch text", async () => {
   const repo = await fixtureRepo();
   const result = await run(BUILDER, {
     repositoryRoot: repo, base: "HEAD^", head: "HEAD", phase: "5", attempt: 1,
@@ -26,10 +26,100 @@ test("builds bounded redacted risk input from every changed path", async () => {
   assert.equal(result.code, 0);
   assert.deepEqual(result.json.state.changedPaths.map(({ path: value }) => value), [".env", "src/app.js", "src/extra.js", "src/tab\tname.js"]);
   assert.equal(result.json.state.diff.files, 4);
+  assert.equal(Object.hasOwn(result.json.state, "patchExcerpts"), false);
   assert.match(JSON.stringify(result.json), /\[REDACTED/);
   assert.doesNotMatch(JSON.stringify(result.json), /super-secret|ghp_1234567890|plan-secret|verify-secret/);
   assert.ok(Buffer.byteLength(JSON.stringify(result.json)) <= 48 * 1024);
   assert.deepEqual(Object.keys(result.json.questions), ["scopeGap", "changeRisk"]);
+});
+
+test("omits secret content when a secret file is renamed to an ordinary path", async () => {
+  const repo = await bareRepo();
+  await writeFile(path.join(repo, ".env"), "FOO=private-value-123456789\n");
+  await command("git", ["-C", repo, "add", ".env"]);
+  await command("git", ["-C", repo, "commit", "-qm", "secret"]);
+  await command("git", ["-C", repo, "mv", ".env", "config.txt"]);
+  await command("git", ["-C", repo, "commit", "-qm", "rename"]);
+
+  const result = await run(BUILDER, riskRequest(repo));
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.json.state.changedPaths, [{ status: "R", path: "config.txt", previousPath: ".env" }]);
+  assert.doesNotMatch(JSON.stringify(result.json), /private-value-123456789/);
+});
+
+test("omits patch text when Git reports a secret rename as a deletion and addition", async () => {
+  const repo = await bareRepo();
+  await command("git", ["-C", repo, "config", "diff.renames", "false"]);
+  await writeFile(path.join(repo, ".env"), "FOO=private-value-123456789\n");
+  await command("git", ["-C", repo, "add", ".env"]);
+  await command("git", ["-C", repo, "commit", "-qm", "secret"]);
+  await command("git", ["-C", repo, "mv", ".env", "config.txt"]);
+  await command("git", ["-C", repo, "commit", "-qm", "rename"]);
+
+  const result = await run(BUILDER, riskRequest(repo));
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.json.state.changedPaths, [
+    { status: "D", path: ".env" }, { status: "A", path: "config.txt" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result.json), /private-value-123456789/);
+});
+
+test("omits content from common env file names", async () => {
+  for (const secretPath of [".envrc", "prod.env", "prod.env.local"]) {
+    const repo = await bareRepo();
+    await writeFile(path.join(repo, "base.txt"), "base\n");
+    await command("git", ["-C", repo, "add", "base.txt"]);
+    await command("git", ["-C", repo, "commit", "-qm", "base"]);
+    await writeFile(path.join(repo, secretPath), "FOO=private-value-123456789\n");
+    await command("git", ["-C", repo, "add", secretPath]);
+    await command("git", ["-C", repo, "commit", "-qm", "env file"]);
+
+    const result = await run(BUILDER, riskRequest(repo));
+
+    assert.equal(result.code, 0, secretPath);
+    assert.doesNotMatch(JSON.stringify(result.json), /private-value-123456789/, secretPath);
+  }
+});
+
+test("omits credential URLs in ordinary changed files", async () => {
+  const repo = await bareRepo();
+  await writeFile(path.join(repo, "base.txt"), "base\n");
+  await command("git", ["-C", repo, "add", "base.txt"]);
+  await command("git", ["-C", repo, "commit", "-qm", "base"]);
+  await writeFile(path.join(repo, "app.js"), "const db = 'postgres://admin:hunter2@db/app';\n");
+  await command("git", ["-C", repo, "add", "app.js"]);
+  await command("git", ["-C", repo, "commit", "-qm", "app"]);
+
+  const result = await run(BUILDER, riskRequest(repo));
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.json.state.changedPaths, [{ status: "A", path: "app.js" }]);
+  assert.doesNotMatch(JSON.stringify(result.json), /admin|hunter2/);
+});
+
+test("uses the merge base for paths and stats after parallel lanes diverge", async () => {
+  const repo = await bareRepo();
+  await writeFile(path.join(repo, "base.txt"), "base\n");
+  await command("git", ["-C", repo, "add", "base.txt"]);
+  await command("git", ["-C", repo, "commit", "-qm", "base"]);
+  await command("git", ["-C", repo, "branch", "-M", "main"]);
+  await command("git", ["-C", repo, "switch", "-qc", "lane-b"]);
+  await writeFile(path.join(repo, "b.txt"), "b change\n");
+  await command("git", ["-C", repo, "add", "b.txt"]);
+  await command("git", ["-C", repo, "commit", "-qm", "lane b"]);
+  await command("git", ["-C", repo, "switch", "-q", "main"]);
+  await writeFile(path.join(repo, "a.txt"), "a change\n");
+  await command("git", ["-C", repo, "add", "a.txt"]);
+  await command("git", ["-C", repo, "commit", "-qm", "lane a"]);
+
+  const result = await run(BUILDER, riskRequest(repo, { base: "main", head: "lane-b" }));
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.json.state.changedPaths, [{ status: "A", path: "b.txt" }]);
+  assert.deepEqual(result.json.state.diff, { files: 1, additions: 1, deletions: 0 });
+  assert.doesNotMatch(JSON.stringify(result.json), /a change/);
 });
 
 test("records advice separately from mandatory full-skim disposition", async () => {
@@ -132,6 +222,22 @@ async function fixtureRepo() {
   await command("git", ["-C", dir, "add", ".env", "src"]);
   await command("git", ["-C", dir, "commit", "-qm", "change"]);
   return dir;
+}
+
+async function bareRepo() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "loop-risk-"));
+  await command("git", ["init", "-q", dir]);
+  await command("git", ["-C", dir, "config", "user.email", "test@example.com"]);
+  await command("git", ["-C", dir, "config", "user.name", "Test"]);
+  return dir;
+}
+
+function riskRequest(repositoryRoot, overrides = {}) {
+  return {
+    repositoryRoot, base: "HEAD^", head: "HEAD", phase: "5", attempt: 1,
+    doneWhen: "Review the changed paths", verification: { exitCode: 0, summary: "passed" },
+    ...overrides,
+  };
 }
 
 async function run(file, payload) {

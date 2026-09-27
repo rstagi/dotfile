@@ -130,6 +130,37 @@ describe("materialize — archived loop (live = null)", () => {
     expect(archived.graph.nodes.find((node) => node.id === "3")?.decisions).toEqual(reloaded.decisions);
   });
 
+  it("keeps merge-risk head and gate evidence through event replay and archive", () => {
+    const riskEvent: Ingest = {
+      kind: "event",
+      event: {
+        event: "jev.decision", phase: "3", attempt: 2, stage: "merge-risk", mode: "active",
+        candidate: "scope-gap:possible · risk:medium", confidence: 0.82,
+        probabilities: { "scope-gap:possible": 0.82, "risk:medium": 0.78 },
+        appliedAction: "focused-full-diff-skim", fallbackReason: null,
+        resolvedModel: "systemone", head: "abc123",
+        requiredGates: ["verified-exit-zero", "jev-risk", "full-diff-skim"],
+        completedGates: ["verified-exit-zero", "jev-risk"],
+        remainingGates: ["full-diff-skim"], focus: ["payment boundary"],
+        ts: "2026-09-27T10:00:00Z",
+      },
+    };
+    const received = fold("r", register, riskEvent);
+    const replayed = reduceLoop(received, { kind: "eventsFile", text: JSON.stringify(received.events[0]) });
+    const reloaded = parseStoreFile(serializeRecord(replayed))!;
+    const live = materialize(reloaded, emptyLive, { now: 1, nowIso: "2026-09-27T10:00:01Z" });
+    const archivedRecord = parseStoreFile(serializeRecord({ ...reloaded, lastSnapshot: live }))!;
+    const archived = materialize(archivedRecord, null, {});
+
+    expect(archived.decisions).toHaveLength(1);
+    expect(archived.decisions?.[0]).toMatchObject({
+      head: "abc123",
+      requiredGates: ["verified-exit-zero", "jev-risk", "full-diff-skim"],
+      completedGates: ["verified-exit-zero", "jev-risk"],
+      remainingGates: ["full-diff-skim"], focus: ["payment boundary"],
+    });
+  });
+
   it("still returns a valid snapshot when no lastSnapshot was stored", () => {
     const rec = fold("r", register, stateAll);
     const snap = materialize(rec, null, { now: 1, nowIso: "2026-08-03T10:00:00Z" });

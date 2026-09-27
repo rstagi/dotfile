@@ -77,6 +77,25 @@ describe("buildSnapshot — effort info", () => {
   });
 });
 
+describe("buildSnapshot — Jev decisions", () => {
+  it("preserves merge-risk evidence when rendering events directly", () => {
+    const events = JSON.stringify({
+      event: "jev.decision", runId: "r", phase: "2", attempt: 1,
+      stage: "merge-risk", mode: "active", head: "abc123",
+      requiredGates: ["verified-exit-zero", "full-diff-skim"],
+      completedGates: ["verified-exit-zero"], remainingGates: ["full-diff-skim"],
+      focus: ["payment boundary"],
+    });
+    const snap = buildSnapshot(parsePlan(PLAN), parseLoop(loop({ events })), { now: NOW });
+
+    expect(snap.decisions?.[0]).toMatchObject({
+      head: "abc123", requiredGates: ["verified-exit-zero", "full-diff-skim"],
+      completedGates: ["verified-exit-zero"], remainingGates: ["full-diff-skim"],
+      focus: ["payment boundary"],
+    });
+  });
+});
+
 describe("buildSnapshot — PR info & review preference", () => {
   it("prefers state.review over the review run's status.json, and surfaces report/comment", () => {
     const state = JSON.stringify({

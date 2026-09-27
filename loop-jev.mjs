@@ -12,7 +12,7 @@ async function run() {
   try {
     input = parseInput(await readStdin());
     validateInput(input);
-    if (process.env.LOOP_JEV_MODE === "off") {
+    if (process.env.LOOP_JEV_MODE === "off" && process.env.LOOP_JEV_MODE_EXPLICIT !== "0") {
       writeFallback(input, "disabled");
       return;
     }

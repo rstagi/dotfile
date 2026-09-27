@@ -151,6 +151,71 @@ describe("reduceLoop — planned → active", () => {
       appliedAction: "full-review", confidence: 0.73,
     })]);
   });
+
+  it("retains separate merge-risk decisions for changed heads with the same timestamp", () => {
+    const first = {
+      event: "jev.decision", phase: "2", attempt: 2, stage: "merge-risk", mode: "active" as const,
+      appliedAction: "full-diff-skim", head: "abc123", ts: "2026-09-27T10:00:00Z",
+    };
+    const rec = fold("r",
+      { kind: "event", event: first },
+      { kind: "event", event: { ...first, head: "def456" } },
+    );
+
+    expect(rec.decisions.map((decision) => decision.head)).toEqual(["abc123", "def456"]);
+    expect(rec.events.map((event) => event.head)).toEqual(["abc123", "def456"]);
+  });
+
+  it("keeps the latest update time while accepting delayed events after finish", () => {
+    const decision: Ingest = {
+      kind: "event",
+      event: {
+        event: "jev.decision", phase: "2", attempt: 1, stage: "merge-risk", mode: "active",
+        head: "abc123", ts: "2026-09-27T10:00:00Z",
+      },
+    };
+    const finished = fold("r", decision,
+      { kind: "event", event: { event: "phase.attempt.finish", phase: "2", outcome: "done",
+        exitCode: 0, ts: "2026-09-27T10:05:00Z" } },
+      { kind: "finish", info: { finishedAt: "2026-09-27T10:10:00Z" } },
+    );
+    const replayed = reduceLoop(finished, decision);
+    const delayed = reduceLoop(replayed, {
+      kind: "event",
+      event: { event: "review.finish", phase: "2", ts: "2026-09-27T10:02:00Z" },
+    });
+
+    expect(replayed.updatedAt).toBe("2026-09-27T10:10:00Z");
+    expect(replayed.decisions).toHaveLength(1);
+    expect(delayed.updatedAt).toBe("2026-09-27T10:10:00Z");
+    expect(delayed.events.map((event) => event.event)).toContain("review.finish");
+  });
+
+  it("compares update times by instant when timestamps have different precision", () => {
+    const recent = fold("r", {
+      kind: "event", event: { event: "phase.attempt.finish", phase: "2",
+        ts: "2026-09-27T10:00:00.001Z" },
+    });
+    const backfilled = reduceLoop(recent, {
+      kind: "event", event: { event: "jev.decision", phase: "2", attempt: 1,
+        stage: "route", mode: "active", ts: "2026-09-27T10:00:00Z" },
+    });
+
+    expect(backfilled.updatedAt).toBe("2026-09-27T10:00:00.001Z");
+  });
+
+  it("sorts out-of-order decisions chronologically with a deterministic timestamp tie", () => {
+    const event = { event: "jev.decision", phase: "2", attempt: 1,
+      mode: "active" as const };
+    const rec = fold("r",
+      { kind: "event", event: { ...event, stage: "route", ts: "2026-09-27T10:00:00.001Z" } },
+      { kind: "event", event: { ...event, stage: "question", ts: "2026-09-27T10:00:00Z" } },
+      { kind: "event", event: { ...event, stage: "merge-risk", head: "abc123",
+        ts: "2026-09-27T10:00:00Z" } },
+    );
+
+    expect(rec.decisions.map((decision) => decision.stage)).toEqual(["merge-risk", "question", "route"]);
+  });
 });
 
 describe("reduceLoop — promotion lattice (the staleness fix)", () => {

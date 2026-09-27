@@ -139,6 +139,8 @@ crash-resume **source of truth** for code + bookkeeping. A launchd LaunchAgent a
 on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
 `loop_ensure_daemon` as the fallback. Loops **register**, then push clean lifecycle events.
 Emission is **best-effort** — a `curl` failure never fails the caller.
+On startup and reconcile, the daemon recovers persisted route, question, and risk decision files
+after missed POSTs while the coordinator `.loop/` directory still exists.
 The daemon also reads size-capped `notes/*.md` content on each reconcile. NOTE badges are
 file-derived but completion-aware: a numeric phase note is pending only while its phase is
 not `done|merged`; legacy `pr-review.<owner--repo>` is pending only until that review
@@ -570,9 +572,9 @@ permit.
 
 For step 2, call `loop-jev-risk-input.mjs` with repository root, base/head, phase/attempt,
 verbatim *Done when*, and only `{exitCode:0,summary:<bounded success summary>}` for verification.
-It uses `git` directly, includes every changed path plus aggregate additions/deletions, caps each
-and total patch excerpt, suppresses known secret-file contents, redacts secret-like lines/tokens,
-and fails closed if the complete path inventory cannot fit its 48 KiB output bound. Pipe its
+It uses `git` directly, includes every changed path plus aggregate additions/deletions, omits
+all patch contents, bounds and redacts the supplied Done when and verification summary, and
+fails closed if the complete path inventory cannot fit its 48 KiB output bound. Pipe its
 output directly into `loop-jev.mjs`; never persist the request, raw API response, transcript,
 verify log, environment values, or credentials. The two Choice questions are `scopeGap`
 (`none|possible|likely`) and `changeRisk` (`low|medium|high`).

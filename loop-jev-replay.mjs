@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 const STAGES = ["route", "question", "merge-risk"];
@@ -91,7 +92,8 @@ function countFallbackReasons(decisions) {
 function decisionsFromSource(source) {
   if (Array.isArray(source)) return source.filter(isDecision);
   if (!isRecord(source)) return [];
-  const decisions = source.status === "archived" && Array.isArray(source.lastSnapshot?.decisions)
+  const decisions = Array.isArray(source.lastSnapshot?.decisions)
+    && !isDirectory(source.loopDir)
     ? source.lastSnapshot.decisions
     : source.decisions;
   return Array.isArray(decisions) ? decisions.filter(isDecision) : [];
@@ -119,6 +121,15 @@ function isDecision(value) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isDirectory(path) {
+  if (!nonEmpty(path)) return false;
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function nonEmpty(value) {

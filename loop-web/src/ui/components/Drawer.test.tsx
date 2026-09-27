@@ -61,4 +61,31 @@ describe("Drawer Jev decisions", () => {
     expect(html).toContain("actual disposition");
     expect(html).toContain("focused-full-diff-skim");
   });
+
+  it("shows each same-second merge head with its gates and focus", () => {
+    const decision = {
+      runId: "r", phase: "2", attempt: 1, stage: "merge-risk", mode: "active" as const,
+      candidate: "scope-gap:possible · risk:medium", confidence: 0.82,
+      probabilities: { "risk:medium": 0.82 }, appliedAction: "focused-full-diff-skim",
+      fallbackReason: null, resolvedModel: "systemone", ts: "2026-09-27T10:00:00Z",
+      requiredGates: ["verified-exit-zero", "full-diff-skim", "serialized-merge"],
+      completedGates: ["verified-exit-zero", "full-diff-skim"],
+      remainingGates: ["serialized-merge"],
+    };
+    const html = renderToStaticMarkup(<Drawer node={node([
+      { ...decision, head: "abc123", focus: ["src/payment.ts"] },
+      { ...decision, head: "def456", focus: ["src/cart.ts"] },
+    ])} pr={null} plan={null} runId={null} onClose={() => {}} />);
+
+    expect(html.match(/class="jev-decision"/g)).toHaveLength(2);
+    expect(html).toContain("abc123");
+    expect(html).toContain("def456");
+    expect(html).toContain("required gates");
+    expect(html).toContain("completed gates");
+    expect(html).toContain("remaining gates");
+    expect(html).toContain("verified-exit-zero");
+    expect(html).toContain("serialized-merge");
+    expect(html).toContain("src/payment.ts");
+    expect(html).toContain("src/cart.ts");
+  });
 });

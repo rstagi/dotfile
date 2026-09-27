@@ -80,6 +80,16 @@ trap 'loop_runner_finish $?' EXIT
 source "$MODELS_CONF" || { echo "loop-runner: cannot source $MODELS_CONF" >&2; exit 1; }
 (( ${+CODEX_EXTRA_ARGS} )) || CODEX_EXTRA_ARGS=()
 (( ${+CLAUDE_EXTRA_ARGS} )) || CLAUDE_EXTRA_ARGS=()
+LOOP_TASK_DEFAULT_PROFILE="${LOOP_TASK_DEFAULT_PROFILE:-default}"
+LOOP_TASK_LIGHT_PROFILE="${LOOP_TASK_LIGHT_PROFILE:-light}"
+if [[ -z "${LOOP_JEV_MODE_EXPLICIT:-}" ]]; then
+  [[ -n "${LOOP_JEV_MODE:-}" ]] && LOOP_JEV_MODE_EXPLICIT=1 || LOOP_JEV_MODE_EXPLICIT=0
+fi
+if [[ -z "${LOOP_JEV_MODE:-}" ]]; then
+  [[ -n "${TYPESAFE_API_KEY:-}" ]] && LOOP_JEV_MODE=shadow || LOOP_JEV_MODE=off
+fi
+LOOP_JEV_ROUTE_MIN_CONFIDENCE="${LOOP_JEV_ROUTE_MIN_CONFIDENCE:-0.8}"
+export LOOP_JEV_MODE LOOP_JEV_MODE_EXPLICIT
 BUDGET="${BUDGET:-$LOOP_BUDGET_USD}"
 
 case "$CHAIN_NAME" in
@@ -103,7 +113,7 @@ CHECKPOINT_MODE=1
 mkdir -p "$RUN_DIR"
 route_task_attempt() {
   local attempt=1 phase_key cache decision raw request candidate confidence probabilities
-  local mode decision_status fallback model actual threshold_ok tmp
+  local mode decision_status fallback model actual threshold_ok tmp task_evidence evidence_ready
   [[ "$CHAIN_NAME" == "task" && -n "$RUN_ID" && -n "$PHASE" ]] || return 0
   [[ "${RUN_DIR:t}" =~ '-a([0-9]+)$' ]] && attempt="$match[1]"
   phase_key="${PHASE//[^A-Za-z0-9._-]/_}"
@@ -121,9 +131,27 @@ route_task_attempt() {
   else
     raw="$RUN_DIR/.route-jev.json"
     request="$RUN_DIR/.route-request.json"
+    # The phase block starts near the top; never send the full runner prompt.
+    task_evidence="$(head -c 8192 "$PROMPT_FILE" | jq -Rsc '
+      def safe:
+        gsub("(?i)[a-z][a-z0-9+.-]*://[^[:space:]/@:]+:[^[:space:]/@]+@[^[:space:]]+"; "[REDACTED_URL]")
+        | gsub("[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:],;]+"; "[REDACTED]")
+        | gsub("(?i)(password|secret|token|api[_-]?key|credential):[[:space:]]*[^[:space:],;]+"; "[REDACTED]")
+        | .[:300];
+      def field($block; $label):
+        ($block | split("\n") | map(select(startswith("- **" + $label + ":**"))
+          | ltrimstr("- **" + $label + ":**") | gsub("^[[:space:]]+"; "") | safe) | .[0] // null);
+      (split("PHASE (from the shared plan):") | .[1] // "" | split("CONTEXT:")[0]) as $block
+      | {title: ($block | split("\n") | map(select(startswith("### Phase "))
+          | sub("^### Phase [^—]*—[[:space:]]*"; "")
+          | sub("[[:space:]]*\\[lane:.*$"; "") | safe) | .[0] // null),
+         doneWhen: field($block; "Done when"), estimate: field($block; "Estimate")}
+    ')"
+    evidence_ready="$(print -r -- "$task_evidence" | jq -r '(.doneWhen != null) and (.estimate != null)')"
     jq -cn --arg phase "$PHASE" --arg repository "$REPOSITORY" \
       --arg default "$LOOP_TASK_DEFAULT_PROFILE" --arg light "$LOOP_TASK_LIGHT_PROFILE" \
-      '{stage:"route",state:{phase:$phase,repository:$repository,chain:"task"},questions:{profile:{type:"choice",instructions:"Choose the bounded task-runner profile for this ready phase.",criteria:{($default):"Established task chain",($light):"Lower-cost chain for a small, low-risk task"}}}}' \
+      --argjson task "$task_evidence" \
+      '{stage:"route",state:{phase:$phase,repository:$repository,chain:"task",task:$task},questions:{profile:{type:"choice",instructions:"Choose the bounded task-runner profile for this ready phase using the task evidence.",criteria:{($default):"Established task chain",($light):"Lower-cost chain for a small, low-risk task"}}}}' \
       > "$request"
     if ! node "${LOOP_JEV_CLIENT:-$SCRIPT_DIR/loop-jev.mjs}" < "$request" > "$raw" 2>/dev/null; then
       print -r -- '{}' > "$raw"
@@ -151,8 +179,14 @@ route_task_attempt() {
     elif [[ "$mode" == "shadow" ]]; then
       fallback=shadow-mode
     elif [[ "$mode" == "active" && "$candidate" == "$LOOP_TASK_LIGHT_PROFILE" ]]; then
-      actual="$LOOP_TASK_LIGHT_PROFILE"
-      fallback=""
+      if [[ "$evidence_ready" != true ]]; then
+        fallback=missing-task-evidence
+      elif (( ! ${+CHAIN_TASK_LIGHT} )); then
+        fallback=unsupported-profile
+      else
+        actual="$LOOP_TASK_LIGHT_PROFILE"
+        fallback=""
+      fi
     elif [[ "$mode" == "active" && "$candidate" == "$LOOP_TASK_DEFAULT_PROFILE" ]]; then
       fallback=""
     else

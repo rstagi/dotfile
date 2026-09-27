@@ -346,6 +346,25 @@ test("shell config uses the same mode defaults and bounds", async () => {
   assert.equal(invalid.stdout, "off|0.8|5000");
 });
 
+test("sourced config distinguishes missing credentials from explicit off", async () => {
+  const command = "source ./loop-models.conf; node ./loop-jev.mjs";
+  const implicit = await runProcess("zsh", ["-c", command], {}, VALID_INPUT);
+  const explicit = await runProcess("zsh", ["-c", command], { LOOP_JEV_MODE: "off" }, VALID_INPUT);
+
+  assert.equal(implicit.code, 0, implicit.stderr);
+  assert.equal(JSON.parse(implicit.stdout).reason, "missing_credentials");
+  assert.equal(explicit.code, 0, explicit.stderr);
+  assert.equal(JSON.parse(explicit.stdout).reason, "disabled");
+});
+
+test("implicit off remains implicit when supervisor and runner both source config", async () => {
+  const command = "source ./loop-models.conf; source ./loop-models.conf; node ./loop-jev.mjs";
+  const result = await runProcess("zsh", ["-c", command], {}, VALID_INPUT);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).reason, "missing_credentials");
+});
+
 test("returns invalid-input fallback for malformed JSON", async () => {
   const result = await runClient("{", { TYPESAFE_API_KEY: "test-key" });
 
@@ -396,12 +415,12 @@ function runClient(input, extraEnv = {}) {
   });
 }
 
-function runProcess(command, args, extraEnv = {}) {
+function runProcess(command, args, extraEnv = {}, input) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: ROOT,
       env: { PATH: process.env.PATH, ...extraEnv },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
@@ -409,6 +428,7 @@ function runProcess(command, args, extraEnv = {}) {
     child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() }));
+    child.stdin.end(input === undefined ? "" : JSON.stringify(input));
   });
 }
 

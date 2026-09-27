@@ -1,5 +1,5 @@
-// The daemon's pure fold: (LoopRecord, Ingest) → LoopRecord. No I/O, no Date — the server
-// does all of that and hands in messages. Owns the promotion lattice and the event
+// The daemon's pure fold: (LoopRecord, Ingest) → LoopRecord. No I/O or wall-clock reads —
+// the server supplies timestamped messages. Owns the promotion lattice and the event
 // vocabulary; `materialize.ts` turns the resulting record into a `Snapshot`.
 //
 // Contract, in one line: a phase's rank only ever advances (monotone max over
@@ -140,7 +140,7 @@ function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register"
     finishedAt: reopened ? null : prev.finishedAt,
     planText: info.planText ?? prev.planText,
     repositories,
-    updatedAt: info.startedAt ?? prev.updatedAt,
+    updatedAt: latestTimestamp(prev.updatedAt, info.startedAt),
   };
   return { ...next, status: reopened ? "active" : deriveStatus(next) };
 }
@@ -213,7 +213,7 @@ function applyFinish(prev: LoopRecord, info: FinishInfo): LoopRecord {
     repositories,
     prUrl: info.prUrl ?? primary?.prUrl ?? prev.prUrl,
     review: info.review ?? primary?.review ?? prev.review,
-    updatedAt: info.finishedAt ?? prev.updatedAt,
+    updatedAt: latestTimestamp(prev.updatedAt, info.finishedAt),
     status: "finished",
   };
 }
@@ -241,7 +241,7 @@ function applyEvent(prev: LoopRecord, ev: EventInfo): LoopRecord {
   const eff = eventSemantics(ev, prev.planText);
   const decision = decisionFromEvent(prev.runId, ev);
   const decisions = decision ? mergeDecisions(prev.decisions, [decision]) : prev.decisions;
-  let next: LoopRecord = { ...prev, events, decisions, updatedAt: ev.ts ?? prev.updatedAt };
+  let next: LoopRecord = { ...prev, events, decisions, updatedAt: latestTimestamp(prev.updatedAt, ev.ts) };
   if (eff.finish) return applyFinish(next, eff.finish);
   if (eff.phase && eff.patch) {
     const patch = { ...eff.patch, repository: nonEmpty(ev.repository) ?? eff.patch.repository };
@@ -415,7 +415,7 @@ function mergeEvents(existing: RawEvent[], incoming: RawEvent[]): RawEvent[] {
 }
 
 function eventKey(e: RawEvent): string {
-  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.repository ?? ""}|${e.detail ?? ""}|${e.attempt ?? ""}|${e.stage ?? ""}`;
+  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.repository ?? ""}|${e.detail ?? ""}|${e.attempt ?? ""}|${e.stage ?? ""}|${e.head ?? ""}`;
 }
 
 function toRawEvent(ev: EventInfo): RawEvent {
@@ -427,6 +427,9 @@ function toRawEvent(ev: EventInfo): RawEvent {
     appliedAction: ev.appliedAction, fallbackReason: ev.fallbackReason,
     resolvedModel: ev.resolvedModel, evidenceChecked: ev.evidenceChecked ?? undefined,
     evidenceSources: ev.evidenceSources ?? undefined, questionRound: ev.questionRound ?? undefined,
+    head: ev.head ?? undefined, requiredGates: ev.requiredGates ?? undefined,
+    completedGates: ev.completedGates ?? undefined, remainingGates: ev.remainingGates ?? undefined,
+    focus: ev.focus ?? undefined,
   };
 }
 
@@ -440,6 +443,8 @@ function rawToEventInfo(raw: RawEvent): EventInfo {
     fallbackReason: raw.fallbackReason, resolvedModel: raw.resolvedModel,
     evidenceChecked: raw.evidenceChecked, evidenceSources: raw.evidenceSources,
     questionRound: raw.questionRound,
+    head: raw.head, requiredGates: raw.requiredGates, completedGates: raw.completedGates,
+    remainingGates: raw.remainingGates, focus: raw.focus,
   };
 }
 
@@ -463,8 +468,19 @@ function decisionFromEvent(runId: string, ev: EventInfo): JevDecision | null {
       ? ev.evidenceSources.filter((value): value is string => typeof value === "string" && value.length > 0)
       : [],
     questionRound: Number.isInteger(ev.questionRound) ? Number(ev.questionRound) : null,
+    head: nonEmpty(ev.head) ?? undefined,
+    requiredGates: stringList(ev.requiredGates),
+    completedGates: stringList(ev.completedGates),
+    remainingGates: stringList(ev.remainingGates),
+    focus: stringList(ev.focus),
     ts: ev.ts ?? null,
   };
+}
+
+function stringList(value: string[] | null | undefined): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : undefined;
 }
 
 function mergeDecisions(existing: JevDecision[], incoming: JevDecision[]): JevDecision[] {
@@ -474,11 +490,20 @@ function mergeDecisions(existing: JevDecision[], incoming: JevDecision[]): JevDe
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }));
+  })).sort(compareDecisions);
+}
+
+function compareDecisions(left: JevDecision, right: JevDecision): number {
+  const leftTime = timestampMillis(left.ts);
+  const rightTime = timestampMillis(right.ts);
+  if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+  const leftKey = decisionKey(left);
+  const rightKey = decisionKey(right);
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 
 function decisionKey(decision: JevDecision): string {
-  return `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}`;
+  return `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}|${decision.head ?? ""}`;
 }
 
 function isJevMode(value: unknown): value is JevMode {
@@ -567,6 +592,17 @@ function planPhaseStatus(planText: string | null, num: string): PhaseStateStatus
 
 function nonEmpty(s: string | null | undefined): string | null {
   return s && s.trim() ? s.trim() : null;
+}
+
+function latestTimestamp(previous: string | null, incoming: string | null | undefined): string | null {
+  if (!incoming) return previous;
+  return !previous || timestampMillis(incoming) > timestampMillis(previous) ? incoming : previous;
+}
+
+function timestampMillis(value: string | null | undefined): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 function str(v: unknown): string {

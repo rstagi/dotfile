@@ -71,9 +71,14 @@ function decisionsFromRuntime(runtime: Runtime | null): JevDecision[] {
       evidenceChecked: event.evidenceChecked === true,
       evidenceSources: event.evidenceSources ?? [],
       questionRound: Number.isInteger(event.questionRound) ? event.questionRound! : null,
+      head: event.head ?? undefined,
+      requiredGates: event.requiredGates,
+      completedGates: event.completedGates,
+      remainingGates: event.remainingGates,
+      focus: event.focus,
       ts: event.ts ?? null,
     };
-    const key = `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}`;
+    const key = `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}|${decision.head ?? ""}`;
     if (!seen.has(key)) { seen.add(key); out.push(decision); }
   }
   return out;

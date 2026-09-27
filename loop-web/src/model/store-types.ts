@@ -106,6 +106,11 @@ export interface EventInfo {
   evidenceChecked?: boolean | null;
   evidenceSources?: string[] | null;
   questionRound?: number | null;
+  head?: string | null;
+  requiredGates?: string[] | null;
+  completedGates?: string[] | null;
+  remainingGates?: string[] | null;
+  focus?: string[] | null;
 }
 
 export type Ingest =

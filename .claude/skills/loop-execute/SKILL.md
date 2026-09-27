@@ -214,8 +214,8 @@ Switch on the exit code (protocol table). The extra checks only you can do:
   verified exit 0 → one merge-risk judgment for this attempt/head → **full** diff skim →
   `headBefore/headAfter` stall check → clean-worktree check → reread steering notes →
   serialized merge → merged-tree Verify. Build the bounded judgment input with
-  `loop-jev-risk-input.mjs` from *Done when*, every changed path, diff statistics, bounded
-  redacted patch excerpts, and the successful verification summary; pipe it directly to
+  `loop-jev-risk-input.mjs` from *Done when*, every changed path, aggregate diff statistics,
+  and the successful verification summary. It omits all patch contents; pipe it directly to
   `loop-jev.mjs` without persisting the request or raw vendor response. Ask only `scopeGap`
   (`none|possible|likely`) and `changeRisk` (`low|medium|high`). In active mode, use valid
   advice only to focus the mandatory full `git diff <base>...HEAD` skim. Shadow, off, error,
@@ -227,7 +227,7 @@ Switch on the exit code (protocol table). The extra checks only you can do:
   existing valid record only for the same attempt and head; a retry or new head gets a new
   judgment and record. A builder/policy/Jev failure falls back to a typed `full-diff-skim`
   disposition and never blocks these deterministic checks. Never send transcripts, logs,
-  environment values, credentials, or unredacted secret-like patches to TypeSafe.
+  environment values, credentials, or patch contents to TypeSafe.
 - **exit 10** — read `status.json`'s question. For `checkpoint:true`, read `checkpoint.md`
   when present and inspect the worktree; give a concrete next step from the plan and code.
   If the phase made no meaningful progress over two work blocks, escalate instead of
