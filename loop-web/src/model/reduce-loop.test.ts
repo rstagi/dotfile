@@ -120,6 +120,9 @@ describe("reduceLoop — planned → active", () => {
         appliedAction: "default",
         fallbackReason: "shadow-mode",
         resolvedModel: "typesafe-systemone",
+        evidenceChecked: true,
+        evidenceSources: ["question", "plan"],
+        questionRound: 2,
         ts: "2026-09-27T10:00:00Z",
       },
     };
@@ -127,7 +130,8 @@ describe("reduceLoop — planned → active", () => {
     const twice = reduceLoop(once, decision);
 
     expect(twice.decisions).toEqual([
-      expect.objectContaining({ runId: "r", phase: "1", attempt: 1, stage: "route" }),
+      expect.objectContaining({ runId: "r", phase: "1", attempt: 1, stage: "route",
+        evidenceChecked: true, evidenceSources: ["question", "plan"], questionRound: 2 }),
     ]);
     expect(twice.status).toBe("planned");
     expect(effectivePhaseStatus(twice, "1")).toBe("todo");

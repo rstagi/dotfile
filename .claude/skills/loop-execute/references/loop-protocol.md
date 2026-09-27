@@ -101,6 +101,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
     last.md                  # final assistant message
     status.json              # runner-written result (schema below)
     checkpoint.md            # observable worktree state if the 30m phase deadline fired
+    question-decision.json   # ordinary exit-10 advice + evidence-backed disposition
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
   runs/review-p<N>-<owner--repo>-a<1..9>/ # review phase N; see PR review phase pipeline
@@ -176,6 +177,7 @@ completed phase ranks remain monotone.
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto (unlinked) | phase, detail |
+| `jev.decision` | runner (route) or SUB (question/risk) | phase, attempt, stage, mode, candidate, confidence/probabilities, appliedAction, fallbackReason, resolvedModel, evidenceChecked/evidenceSources, questionRound, ts |
 
 `progress.note` is the unlinked-mode progress narration — kept on the timeline, promotes
 nothing in the lattice.
@@ -505,6 +507,45 @@ an answer, then `loop-runner.sh --resume <sessionId> --engine <same engine>` wit
 as the prompt — **in a fresh attempt dir** (`-a<K+1>`, answer as its `prompt.md`), never the
 original run dir (rerunning there would clobber the transcript and session id). If resume
 fails, fall back to a fresh attempt with the answer prepended via `answers/<phase-slug>.md`.
+
+### Ordinary question triage
+
+`checkpoint:true` follows the deterministic checkpoint path and never invokes Jev. For any
+other exit 10, enforce `questionRounds < 3` first; an exhausted phase proceeds to L3 without
+another judgment. Increment the round before triage so a crash cannot create a fourth L2 answer.
+
+Call `loop-jev.mjs` at stage `question` with one Choice named `triage` and exactly these
+candidates: `plan-answer`, `code-investigation`, `human-preference`, `uncertain`. Bound state
+to the runner question, phase/attempt/repository, Goal, Done-when, dependencies, and relevant
+plan lines. Never include transcripts, environment values, credentials, or full state.json;
+never persist the request or raw vendor response.
+
+The SUB inspects the actual question and plan, and code where relevant, independently of the
+label. It records the disposition through `loop-jev-question.mjs`. The policy requires
+`question + plan` evidence for every answer or HIL disposition, adds `code` for an answer after
+investigation, and permits `raise-hil` only with a substantive reason at L4. Thus
+`human-preference` is an investigation hint, never an escalation gate. Shadow, error,
+low-confidence, off, and `uncertain` use `current-behavior`. Persist the typed result atomically
+as `<runDir>/question-decision.json`, emit it with `loop_emit_jev_decision`, then act.
+`candidate` is the advice; `appliedAction` is what actually happened.
+
+`loop-jev-question.mjs` reads one JSON object from stdin:
+
+```json
+{
+  "phase": "4", "attempt": 2, "questionRound": 1, "checkpoint": false,
+  "jev": { "...": "structured loop-jev.mjs result" },
+  "action": "answer-from-plan | investigate-code | answer-after-investigation | raise-hil | current-behavior",
+  "evidenceSources": ["question", "plan", "code"],
+  "hilReason": "required for raise-hil", "escalationLevel": 4,
+  "ts": "2026-09-27T10:00:00Z"
+}
+```
+
+Omit the HIL-only fields for other actions. Exit 0 returns the typed decision. Exit 2 returns
+`{"error":"..."}` and forbids the action; investigate the missing evidence and retry the
+policy, never bypass it. A checkpoint or fourth round returns a `bypass:true` disposition and
+must not be emitted as a Jev decision.
 
 ## Runner prompt skeleton (orchestrator generates prompt.md per attempt)
 

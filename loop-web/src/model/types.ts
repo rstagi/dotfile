@@ -119,6 +119,9 @@ export interface RawEvent {
   appliedAction?: string | null;
   fallbackReason?: string | null;
   resolvedModel?: string | null;
+  evidenceChecked?: boolean;
+  evidenceSources?: string[];
+  questionRound?: number | null;
 }
 
 export type JevMode = "off" | "shadow" | "active";
@@ -135,6 +138,9 @@ export interface JevDecision {
   appliedAction: string | null;
   fallbackReason: string | null;
   resolvedModel: string | null;
+  evidenceChecked?: boolean;
+  evidenceSources?: string[];
+  questionRound?: number | null;
   ts: string | null;
 }
 

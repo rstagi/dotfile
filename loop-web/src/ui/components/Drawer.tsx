@@ -154,10 +154,13 @@ function JevDecisionSection({ decisions }: { decisions: NonNullable<GraphNode["d
               <span>{decision.mode} · a{decision.attempt}</span>
             </div>
             <dl className="kv">
-              <dt>{decision.stage === "route" ? "proposed profile" : "proposed"}</dt>
+              <dt>{decision.stage === "route" ? "proposed profile" : decision.stage === "question" ? "triage suggestion" : "proposed"}</dt>
               <dd>{decision.candidate ?? "—"}</dd>
-              <dt>{decision.stage === "route" ? "actual profile" : "applied"}</dt>
+              <dt>{decision.stage === "route" ? "actual profile" : decision.stage === "question" ? "actual action" : "applied"}</dt>
               <dd>{decision.appliedAction ?? "—"}</dd>
+              {decision.stage === "question" && (
+                <><dt>evidence checked</dt><dd>{decision.evidenceChecked ? decision.evidenceSources?.join(", ") || "yes" : "no"}</dd></>
+              )}
               <dt>confidence</dt><dd>{formatConfidence(decision.confidence)}</dd>
               {Object.keys(decision.probabilities).length > 0 && (
                 <><dt>probabilities</dt><dd>{formatProbabilities(decision.probabilities)}</dd></>
