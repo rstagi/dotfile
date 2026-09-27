@@ -110,7 +110,10 @@ function truncateBytes(value, limit) {
 }
 
 function bounded(value) {
-  return String(value).slice(0, MAX_FIELD_CHARS).replaceAll(TOKEN, "[REDACTED TOKEN]");
+  return String(value).slice(0, MAX_FIELD_CHARS).split("\n").map((line) => SECRET_LINE.test(line)
+    ? "[REDACTED SECRET-LIKE TEXT]"
+    : line.replaceAll(TOKEN, "[REDACTED TOKEN]"))
+    .join("\n");
 }
 
 function git(root, args) {

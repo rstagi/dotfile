@@ -20,14 +20,14 @@ test("builds bounded redacted risk input from every changed path", async () => {
   const repo = await fixtureRepo();
   const result = await run(BUILDER, {
     repositoryRoot: repo, base: "HEAD^", head: "HEAD", phase: "5", attempt: 1,
-    doneWhen: "Builder sees all paths and no secrets", verification: { exitCode: 0, summary: "tests passed" },
+    doneWhen: "Builder sees all paths; PASSWORD=plan-secret", verification: { exitCode: 0, summary: "tests passed; token=verify-secret" },
   });
 
   assert.equal(result.code, 0);
   assert.deepEqual(result.json.state.changedPaths.map(({ path: value }) => value), [".env", "src/app.js", "src/extra.js"]);
   assert.equal(result.json.state.diff.files, 3);
   assert.match(JSON.stringify(result.json), /\[REDACTED/);
-  assert.doesNotMatch(JSON.stringify(result.json), /super-secret|ghp_1234567890/);
+  assert.doesNotMatch(JSON.stringify(result.json), /super-secret|ghp_1234567890|plan-secret|verify-secret/);
   assert.ok(Buffer.byteLength(JSON.stringify(result.json)) <= 48 * 1024);
   assert.deepEqual(Object.keys(result.json.questions), ["scopeGap", "changeRisk"]);
 });
@@ -43,6 +43,18 @@ test("records advice separately from mandatory full-skim disposition", async () 
   assert.deepEqual(result.json.remainingGates, REQUIRED_GATES.slice(6));
   assert.deepEqual(result.json.focus, ["scope gaps", "high-risk changes"]);
   assert.equal(result.json.evidenceChecked, true);
+});
+
+test("low-risk advice still records the complete mandatory gate sequence", async () => {
+  const low = input();
+  low.jev.answers.scopeGap = { type: "choice", choice: "none", confidence: 0.91, probabilities: distribution(SCOPE, "none") };
+  low.jev.answers.changeRisk = { type: "choice", choice: "low", confidence: 0.91, probabilities: distribution(RISKS, "low") };
+  low.focus = ["routine changes"];
+  const result = await run(POLICY, low);
+  assert.equal(result.code, 0);
+  assert.equal(result.json.candidate, "scope-gap:none · risk:low");
+  assert.equal(result.json.appliedAction, "focused-full-diff-skim");
+  assert.deepEqual(result.json.requiredGates, REQUIRED_GATES);
 });
 
 for (const [name, override] of [
