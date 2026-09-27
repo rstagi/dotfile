@@ -27,6 +27,9 @@ export interface MetaJson {
   headAfter?: string;
   engineExit?: number;
   timedOut?: boolean;
+  proposedProfile?: string | null;
+  actualProfile?: string | null;
+  routeFallbackReason?: string | null;
 }
 
 export type RunnerOutcome = "done" | "question" | "blocked";

@@ -187,12 +187,19 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
    `notes/<phaseNumber>.md` verbatim on **every** attempt, including the first. Retry-only
    context (`answers/`, verify.log tails, HIL answers) remains separate.
 3. Spawn detached per the protocol's Runner-spawn section (nohup + pid file):
-   `~/dotfile/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --run-id
+   `<runtime-root>/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --run-id
    <runId> --phase <N> --repository <owner/repo> --chain task --verify-cmd
    '<phase-or-repository verify>'` (it inherits
    `LOOP_DAEMON_URL` via env, so its EXIT-trap `phase.attempt.*` events reach the daemon).
    Record pid + run dir in state; journal the event. A pickup `REFUSED` surfaces as the
    runner's `blocked` status → ladder, keep scheduling other lanes.
+
+   Resolve `<runtime-root>` once during preflight. Normally it is `~/dotfile`. When the
+   effort modifies `rstagi/dotfile` Loop runtime files, use that repository's integration
+   worktree after each lane merge. Read this skill and `references/loop-protocol.md` from
+   the same root when composing later SUB/runner prompts. The runner then resolves
+   `loop-models.conf`, `loop-jev.mjs`, and `loop-emit.sh` beside itself, exercising the
+   merged runtime without copying into or editing the installed checkout.
 
 There are no completion notifications from detached runners — monitor by polling per the
 protocol: `meta.json` appearing means the attempt ended; a `transcript.jsonl` staler than

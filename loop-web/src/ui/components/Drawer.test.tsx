@@ -21,11 +21,12 @@ describe("Drawer Jev decisions", () => {
     expect(html).toContain("Jev decisions");
     expect(html).toContain("proposed");
     expect(html).toContain("light");
-    expect(html).toContain("applied");
     expect(html).toContain("default");
     expect(html).toContain("91%");
     expect(html).toContain("shadow-mode");
     expect(html).toContain("systemone");
+    expect(html).toContain("proposed profile");
+    expect(html).toContain("actual profile");
   });
 
   it("renders no Jev section for a pre-Jev node", () => {
