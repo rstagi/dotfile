@@ -248,10 +248,16 @@ run/repository-scoped integration worktree from that SHA.
 
 ## Runner spawn (how the orchestrator launches loop-runner.sh)
 
+Resolve `RUNTIME_ROOT` to the repository integration worktree when the effort changes the
+Loop runtime itself; otherwise use `~/dotfile`. The runner resolves its Jev client, model
+config, and emitter from that same directory. Compose later SUB prompts from
+`$RUNTIME_ROOT/.claude/skills/loop-execute/{SKILL.md,references/loop-protocol.md}` too, so
+merged self-hosting changes run without mutating the installed checkout.
+
 Detached, so runners survive orchestrator death:
 
 ```sh
-nohup ~/dotfile/loop-runner.sh <args> > <runDir>/spawn.log 2>&1 &
+nohup "$RUNTIME_ROOT/loop-runner.sh" <args> > <runDir>/spawn.log 2>&1 &
 echo $! > <runDir>/pid; disown
 ```
 
@@ -423,6 +429,7 @@ plan proves there were no accepted findings. Those cases are not stalls.
 
 ```sh
 CHAIN_TASK=("codex:gpt-6-sol" "claude:claude-sonnet-5")
+CHAIN_TASK_LIGHT=("codex:gpt-5.6-terra" "${CHAIN_TASK[@]}")
 CHAIN_ESCALATE=("claude:fable+opus")
 CHAIN_REVIEW_FABLE=("claude:claude-fable-5-1")
 CHAIN_REVIEW_ASTRA=("codex:gpt-6-astra")
@@ -440,6 +447,14 @@ LOOP_TIMEOUT_REMEDIATE=1800
 LOOP_MAX_PARALLEL=3
 LOOP_ORCH_CTX_WINDOW=1000000
 ```
+
+For `--chain task` with run/phase correlation, the runner records one bounded `route`
+decision before engine launch. It caches the decision by phase beside attempt directories
+and materializes `route-decision.json` plus proposed/actual profile fields in each attempt's
+`meta.json`; retries and resumes reuse it. Shadow mode and every fallback use `CHAIN_TASK`.
+Active mode selects `CHAIN_TASK_LIGHT` only for the allowlisted `light` candidate at or
+above `LOOP_JEV_ROUTE_MIN_CONFIDENCE`; that chain falls through to the default chain on
+API/usage failure. Escalation, merge-resolution, remediation, and review chains never route.
 
 Leg grammar: `engine:model[+fallback[,fallback2]]`. The `+` list maps to Claude's native
 `--fallback-model` (comma-separated; CLI retries the primary each turn) — so intra-Claude
