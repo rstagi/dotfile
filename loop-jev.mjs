@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
+import { readFileSync, statSync } from "node:fs";
+
 const API_URL = process.env.TYPESAFE_API_URL || "https://api.typesafe.ai/v1/systemone";
+const DEFAULT_KEY_FILE = new URL("./.loop-secrets/typesafe-api-key", import.meta.url);
 const MAX_INPUT_BYTES = 64 * 1024;
 const MODEL = "jev-latest";
 const VERSION = 1;
@@ -8,36 +11,50 @@ const VERSION = 1;
 await run();
 
 async function run() {
+  const apiKey = resolveApiKey();
   let input;
   try {
     input = parseInput(await readStdin());
     validateInput(input);
     if (process.env.LOOP_JEV_MODE === "off" && process.env.LOOP_JEV_MODE_EXPLICIT !== "0") {
-      writeFallback(input, "disabled");
+      writeFallback(input, "disabled", Boolean(apiKey));
       return;
     }
-    if (!process.env.TYPESAFE_API_KEY) {
-      writeFallback(input, "missing_credentials");
+    if (!apiKey) {
+      writeFallback(input, "missing_credentials", false);
       return;
     }
     if (parseMode(process.env.LOOP_JEV_MODE, true) === "off") {
-      writeFallback(input, "disabled");
+      writeFallback(input, "disabled", true);
       return;
     }
-    await main(input);
+    await main(input, apiKey);
   } catch (error) {
     const reason = error?.reason
       || (["AbortError", "TimeoutError"].includes(error?.name) ? "timeout" : "api_error");
-    writeFallback(input, reason);
+    writeFallback(input, reason, Boolean(apiKey));
   }
 }
 
-async function main(input) {
-  const mode = parseMode(process.env.LOOP_JEV_MODE, Boolean(process.env.TYPESAFE_API_KEY));
+function resolveApiKey() {
+  if (process.env.TYPESAFE_API_KEY) return process.env.TYPESAFE_API_KEY;
+  const file = process.env.LOOP_JEV_KEY_FILE || DEFAULT_KEY_FILE;
+  try {
+    const stat = statSync(file);
+    if (!stat.isFile() || stat.size > 4096) return "";
+    const key = readFileSync(file, "utf8").trim();
+    return key && !/[\r\n]/.test(key) ? key : "";
+  } catch {
+    return "";
+  }
+}
+
+async function main(input, apiKey) {
+  const mode = parseMode(process.env.LOOP_JEV_MODE, true);
   const response = await fetch(API_URL, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${process.env.TYPESAFE_API_KEY}`,
+      authorization: `Bearer ${apiKey}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({ state: input.state, model: MODEL, questions: input.questions }),
@@ -78,18 +95,20 @@ async function main(input) {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-function writeFallback(input, reason) {
+function writeFallback(input, reason, hasKey) {
   process.stdout.write(`${JSON.stringify({
     version: VERSION,
     status: "fallback",
     stage: input?.stage ?? null,
-    mode: parseMode(process.env.LOOP_JEV_MODE, Boolean(process.env.TYPESAFE_API_KEY)),
+    mode: parseMode(process.env.LOOP_JEV_MODE, hasKey),
     reason,
   })}\n`);
 }
 
 function parseMode(value, hasKey) {
-  if (!value) return hasKey ? "shadow" : "off";
+  if (!value || (value === "off" && process.env.LOOP_JEV_MODE_EXPLICIT === "0")) {
+    return hasKey ? "shadow" : "off";
+  }
   return ["off", "shadow", "active"].includes(value) ? value : "off";
 }
 

@@ -7,6 +7,7 @@ source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+export LOOP_JEV_KEY_FILE="$TMP/missing-key"
 RUN_DIR="$TMP/run"
 mkdir -p "$RUN_DIR"
 print -r -- "implement phase" > "$TMP/prompt.md"
@@ -57,6 +58,27 @@ RC=$?
 assert_exit "$RC" "0" "legacy config reaches the engine"
 assert_contains "$(cat "$FAKE_ENGINE_LOG" 2>/dev/null)" '-m legacy-model' "uses legacy configured chain"
 unset FAKE_JEV_LOG FAKE_JEV_RESPONSE LOOP_JEV_CLIENT FAKE_CODEX_OUTCOME
+
+echo "runner: local key file enables shadow mode with a legacy model config"
+print -r -- 'file-key' > "$TMP/typesafe-api-key"
+chmod 600 "$TMP/typesafe-api-key"
+(
+  unset TYPESAFE_API_KEY LOOP_JEV_MODE LOOP_JEV_MODE_EXPLICIT
+  export LOOP_JEV_KEY_FILE="$TMP/typesafe-api-key"
+  export FAKE_RUN_DIR="$TMP/local-key-a1"
+  export FAKE_ENGINE_LOG="$TMP/local-key-engines.log"
+  export FAKE_JEV_LOG="$TMP/local-key-jev.log"
+  export FAKE_JEV_RESPONSE='{"version":1,"status":"fallback","stage":"route","mode":"shadow","reason":"low_confidence"}'
+  export LOOP_JEV_CLIENT="$HERE/fake/loop-jev.mjs"
+  export FAKE_CODEX_OUTCOME=done
+  mkdir -p "$FAKE_RUN_DIR"
+  zsh "$ROOT/loop-runner.sh" \
+    --worktree "$ROOT" --run-dir "$FAKE_RUN_DIR" --prompt-file "$TMP/prompt.md" \
+    --models-conf "$TMP/legacy-models.conf" --run-id local-key --phase local-key \
+    --repository rstagi/dotfile --chain task --timeout 5 > "$TMP/local-key.out" 2>&1
+  assert_exit "$?" "0" "local key reaches the engine"
+  assert_eq "$(jq -r '.mode' "$FAKE_RUN_DIR/route-decision.json")" "shadow" "local key chooses shadow mode"
+)
 
 cat > "$TMP/route-prompt.md" <<'EOF'
 You are a loop-engineering task runner.
