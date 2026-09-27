@@ -1,6 +1,7 @@
 ---
 name: checkpoint-30
 description: Keep one agent task to 30-minute work blocks with a status report and a request for guidance before continuing. Use when the user invokes checkpoint-30 for interactive Claude or Codex work; Loop phase runners follow the same checkpoint through loop-runner.sh.
+disable-model-invocation: true
 ---
 
 # 30-minute checkpoint
