@@ -320,6 +320,9 @@ finishes. Initialize it to `{phase:<N>,stage:"round1"}` for a new explicit revie
 final review body includes the phase-scoped idempotency marker from the protocol; resume searches
 GitHub for it before posting. Any reviewer/remediator infrastructure failure records `blocked`
 without cancelling sibling repositories; do not substitute models or advance that repository.
+For exit 10 with `checkpoint:true`, read the status and checkpoint report, give the
+runner one concrete answer, and resume the same stage against the same PR head.
+Do not count this as a reviewer failure or advance the stage; sibling repositories continue.
 After `a9`, promote its verdict, report path, and comment URL into
 `state.repositories[slug].review`, clear the review note, and emit one `review.finish`.
 

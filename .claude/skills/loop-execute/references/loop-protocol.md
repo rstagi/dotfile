@@ -562,7 +562,9 @@ write RUN_DIR/status.json with {"outcome":"done|question|blocked","summary":"...
 ```
 
 Round 2 is local-only just like rounds 1 and 3. A reviewer failure blocks the repository after
-its sibling finishes; never substitute a model.
+its sibling finishes; never substitute a model. An exit-10 `checkpoint:true` is a timed status
+request: the supervisor answers and resumes the same stage at the same PR head while other
+repositories continue. Do not advance the stage until it finishes.
 
 ### Opus remediation (`a3`, `a6`)
 
