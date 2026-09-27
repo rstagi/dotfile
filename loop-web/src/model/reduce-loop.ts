@@ -1,10 +1,11 @@
-// The daemon's pure fold: (LoopRecord, Ingest) → LoopRecord. No I/O, no Date — the server
-// does all of that and hands in messages. Owns the promotion lattice and the event
+// The daemon's pure fold: (LoopRecord, Ingest) → LoopRecord. No I/O or wall-clock reads —
+// the server supplies timestamped messages. Owns the promotion lattice and the event
 // vocabulary; `materialize.ts` turns the resulting record into a `Snapshot`.
 //
 // Contract, in one line: a phase's rank only ever advances (monotone max over
 // `todo<claimed<running<done<merged`), so a `phase.attempt.finish{done,exit0}` event
-// promotes the phase to `done` even while state.json still says `running` — the staleness fix.
+// promotes a work phase to `done` even while state.json still says `running` — the staleness
+// fix. Explicit review phases advance only from their aggregate pipeline state.
 
 import type {
   Ingest,
@@ -18,7 +19,7 @@ import type {
   RepositoryRecord,
 } from "./store-types.ts";
 import { STORE_SCHEMA_VERSION, EVENT_CAP } from "./store-types.ts";
-import type { StateJson, RawEvent, PhaseStateStatus } from "./types.ts";
+import type { StateJson, RawEvent, PhaseStateStatus, JevDecision, JevMode } from "./types.ts";
 import { EVENT_RULES } from "./derive.ts";
 import { parsePlan } from "./parse-plan.ts";
 
@@ -38,6 +39,7 @@ const TYPED_EVENTS = new Set([
   "sub.saturation",
   "review.finish",
   "loop.finish",
+  "jev.decision",
 ]);
 
 /** Effect of one event on the record (all fields optional; `phase`/`patch` drive the overlay). */
@@ -89,6 +91,7 @@ export function emptyRecord(runId: string): LoopRecord {
     phases: {},
     repositories: {},
     events: [],
+    decisions: [],
     review: null,
     prUrl: null,
     lastSnapshot: null,
@@ -137,7 +140,7 @@ function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register"
     finishedAt: reopened ? null : prev.finishedAt,
     planText: info.planText ?? prev.planText,
     repositories,
-    updatedAt: info.startedAt ?? prev.updatedAt,
+    updatedAt: latestTimestamp(prev.updatedAt, info.startedAt),
   };
   return { ...next, status: reopened ? "active" : deriveStatus(next) };
 }
@@ -210,7 +213,7 @@ function applyFinish(prev: LoopRecord, info: FinishInfo): LoopRecord {
     repositories,
     prUrl: info.prUrl ?? primary?.prUrl ?? prev.prUrl,
     review: info.review ?? primary?.review ?? prev.review,
-    updatedAt: info.finishedAt ?? prev.updatedAt,
+    updatedAt: latestTimestamp(prev.updatedAt, info.finishedAt),
     status: "finished",
   };
 }
@@ -235,8 +238,10 @@ function applyEvent(prev: LoopRecord, ev: EventInfo): LoopRecord {
   // the EVENT_CAP. (sub.recycle IS a real milestone and stays in the timeline.)
   const heartbeat = (ev.event ?? "").trim().toLowerCase() === "sub.saturation";
   const events = heartbeat ? prev.events : mergeEvents(prev.events, [toRawEvent(ev)]);
-  const eff = eventSemantics(ev);
-  let next: LoopRecord = { ...prev, events, updatedAt: ev.ts ?? prev.updatedAt };
+  const eff = eventSemantics(ev, prev.planText);
+  const decision = decisionFromEvent(prev.runId, ev);
+  const decisions = decision ? mergeDecisions(prev.decisions, [decision]) : prev.decisions;
+  let next: LoopRecord = { ...prev, events, decisions, updatedAt: latestTimestamp(prev.updatedAt, ev.ts) };
   if (eff.finish) return applyFinish(next, eff.finish);
   if (eff.phase && eff.patch) {
     const patch = { ...eff.patch, repository: nonEmpty(ev.repository) ?? eff.patch.repository };
@@ -258,14 +263,19 @@ function applyEventsFile(prev: LoopRecord, text: string): LoopRecord {
   return parseJsonlEvents(text).reduce((rec, raw) => applyEvent(rec, rawToEventInfo(raw)), prev);
 }
 
-function eventSemantics(ev: EventInfo): EventEffect {
+function eventSemantics(ev: EventInfo, planText: string | null): EventEffect {
   const phase = nonEmpty(ev.phase);
   const name = (ev.event ?? "").trim().toLowerCase();
-  if (TYPED_EVENTS.has(name)) return typedSemantics(name, ev, phase);
+  if (TYPED_EVENTS.has(name)) return typedSemantics(name, ev, phase, planText);
   return keywordSemantics(name, phase);
 }
 
-function typedSemantics(name: string, ev: EventInfo, phase: string | null): EventEffect {
+function typedSemantics(
+  name: string,
+  ev: EventInfo,
+  phase: string | null,
+  planText: string | null,
+): EventEffect {
   switch (name) {
     case "phase.attempt.start":
       return { phase, patch: phase ? { rank: "running" } : null };
@@ -274,6 +284,7 @@ function typedSemantics(name: string, ev: EventInfo, phase: string | null): Even
       if (ev.exitCode === 12) return { phase, patch: { problem: "verify-fail" } };
       const outcome = (ev.outcome ?? "").toLowerCase();
       if (outcome === "done" && (ev.exitCode == null || ev.exitCode === 0)) {
+        if (isExplicitReviewPhase(planText, phase)) return { phase, patch: { problem: null } };
         return { phase, patch: { rank: "done", problem: null } };
       }
       const problem = outcome && outcome !== "done" ? outcome : ev.exitCode ? `exit-${ev.exitCode}` : null;
@@ -302,10 +313,19 @@ function typedSemantics(name: string, ev: EventInfo, phase: string | null): Even
       };
     case "loop.finish":
       return { phase: null, patch: null, finish: { finishedAt: ev.ts ?? null, prUrl: ev.prUrl ?? null } };
+    case "jev.decision":
+      return { phase, patch: null };
     default:
       // review.finish and any other typed name: timeline-only (review is owned by state/finish).
       return { phase, patch: null };
   }
+}
+
+function isExplicitReviewPhase(planText: string | null, phase: string): boolean {
+  if (!planText) return false;
+  return parsePlan(planText).phases.some(
+    (plannedPhase) => plannedPhase.phase === phase && plannedPhase.kind === "pr-review",
+  );
 }
 
 /** Legacy fallback: reuse derive.ts EVENT_RULES so a free-form events.jsonl still promotes. */
@@ -374,7 +394,7 @@ function deriveStatus(rec: LoopRecord): LoopStatus {
   if (Object.values(rec.phases).some((o) => o.hilOpen)) return "paused";
   // A register-only record (no state push, no lifecycle event) is a plan registered but not
   // yet running; the first state push or event flips it to active. No new ingest field needed.
-  if (rec.lastState === null && rec.events.length === 0) return "planned";
+  if (rec.lastState === null && !rec.events.some((event) => event.event !== "jev.decision")) return "planned";
   return "active";
 }
 
@@ -395,15 +415,99 @@ function mergeEvents(existing: RawEvent[], incoming: RawEvent[]): RawEvent[] {
 }
 
 function eventKey(e: RawEvent): string {
-  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.repository ?? ""}|${e.detail ?? ""}`;
+  return `${e.ts ?? ""}|${e.event ?? ""}|${e.phase ?? ""}|${e.repository ?? ""}|${e.detail ?? ""}|${e.attempt ?? ""}|${e.stage ?? ""}|${e.head ?? ""}`;
 }
 
 function toRawEvent(ev: EventInfo): RawEvent {
-  return { ts: ev.ts ?? undefined, event: ev.event, phase: ev.phase ?? "", repository: ev.repository ?? undefined, detail: ev.detail ?? "" };
+  return {
+    runId: ev.runId ?? undefined, ts: ev.ts ?? undefined, event: ev.event, phase: ev.phase ?? "",
+    repository: ev.repository ?? undefined, detail: ev.detail ?? "", attempt: ev.attempt ?? undefined,
+    stage: ev.stage ?? undefined, mode: ev.mode ?? undefined, candidate: ev.candidate,
+    confidence: ev.confidence, probabilities: ev.probabilities ?? undefined,
+    appliedAction: ev.appliedAction, fallbackReason: ev.fallbackReason,
+    resolvedModel: ev.resolvedModel, evidenceChecked: ev.evidenceChecked ?? undefined,
+    evidenceSources: ev.evidenceSources ?? undefined, questionRound: ev.questionRound ?? undefined,
+    head: ev.head ?? undefined, requiredGates: ev.requiredGates ?? undefined,
+    completedGates: ev.completedGates ?? undefined, remainingGates: ev.remainingGates ?? undefined,
+    focus: ev.focus ?? undefined,
+  };
 }
 
 function rawToEventInfo(raw: RawEvent): EventInfo {
-  return { event: str(raw.event), phase: str(raw.phase), repository: str(raw.repository), detail: str(raw.detail), ts: typeof raw.ts === "string" ? raw.ts : null };
+  return {
+    event: str(raw.event), runId: str(raw.runId), phase: str(raw.phase), repository: str(raw.repository),
+    detail: str(raw.detail), ts: typeof raw.ts === "string" ? raw.ts : null,
+    attempt: typeof raw.attempt === "number" ? raw.attempt : null, stage: raw.stage ?? null,
+    mode: raw.mode ?? null, candidate: raw.candidate, confidence: raw.confidence,
+    probabilities: raw.probabilities, appliedAction: raw.appliedAction,
+    fallbackReason: raw.fallbackReason, resolvedModel: raw.resolvedModel,
+    evidenceChecked: raw.evidenceChecked, evidenceSources: raw.evidenceSources,
+    questionRound: raw.questionRound,
+    head: raw.head, requiredGates: raw.requiredGates, completedGates: raw.completedGates,
+    remainingGates: raw.remainingGates, focus: raw.focus,
+  };
+}
+
+function decisionFromEvent(runId: string, ev: EventInfo): JevDecision | null {
+  if (ev.event !== "jev.decision" || !nonEmpty(ev.phase) || !nonEmpty(ev.stage) || !isJevMode(ev.mode)) return null;
+  if (!Number.isInteger(ev.attempt) || Number(ev.attempt) < 1) return null;
+  return {
+    runId: nonEmpty(ev.runId) ?? runId,
+    phase: nonEmpty(ev.phase)!,
+    attempt: Number(ev.attempt),
+    stage: nonEmpty(ev.stage)!,
+    mode: ev.mode,
+    candidate: nonEmpty(ev.candidate),
+    confidence: typeof ev.confidence === "number" ? ev.confidence : null,
+    probabilities: ev.probabilities ?? {},
+    appliedAction: nonEmpty(ev.appliedAction),
+    fallbackReason: nonEmpty(ev.fallbackReason),
+    resolvedModel: nonEmpty(ev.resolvedModel),
+    evidenceChecked: ev.evidenceChecked === true,
+    evidenceSources: Array.isArray(ev.evidenceSources)
+      ? ev.evidenceSources.filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [],
+    questionRound: Number.isInteger(ev.questionRound) ? Number(ev.questionRound) : null,
+    head: nonEmpty(ev.head) ?? undefined,
+    requiredGates: stringList(ev.requiredGates),
+    completedGates: stringList(ev.completedGates),
+    remainingGates: stringList(ev.remainingGates),
+    focus: stringList(ev.focus),
+    ts: ev.ts ?? null,
+  };
+}
+
+function stringList(value: string[] | null | undefined): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : undefined;
+}
+
+function mergeDecisions(existing: JevDecision[], incoming: JevDecision[]): JevDecision[] {
+  const seen = new Set(existing.map(decisionKey));
+  return existing.concat(incoming.filter((decision) => {
+    const key = decisionKey(decision);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  })).sort(compareDecisions);
+}
+
+function compareDecisions(left: JevDecision, right: JevDecision): number {
+  const leftTime = timestampMillis(left.ts);
+  const rightTime = timestampMillis(right.ts);
+  if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+  const leftKey = decisionKey(left);
+  const rightKey = decisionKey(right);
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function decisionKey(decision: JevDecision): string {
+  return `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}|${decision.head ?? ""}`;
+}
+
+function isJevMode(value: unknown): value is JevMode {
+  return value === "off" || value === "shadow" || value === "active";
 }
 
 function emptyRepository(): RepositoryRecord {
@@ -488,6 +592,17 @@ function planPhaseStatus(planText: string | null, num: string): PhaseStateStatus
 
 function nonEmpty(s: string | null | undefined): string | null {
   return s && s.trim() ? s.trim() : null;
+}
+
+function latestTimestamp(previous: string | null, incoming: string | null | undefined): string | null {
+  if (!incoming) return previous;
+  return !previous || timestampMillis(incoming) > timestampMillis(previous) ? incoming : previous;
+}
+
+function timestampMillis(value: string | null | undefined): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 function str(v: unknown): string {

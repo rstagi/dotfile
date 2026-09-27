@@ -33,6 +33,152 @@ assert_contains "$INVOCATIONS" 'claude -p --model claude-sonnet-5' "falls back t
 assert_contains "$INVOCATIONS" '--effort high' "uses high Claude effort"
 assert_eq "$([[ "$INVOCATIONS" == *'--fallback-model'* ]] && echo yes || echo no)" "no" "uses the runner's cross-engine fallback"
 
+echo "runner: legacy custom model config still runs correlated tasks"
+cat > "$TMP/legacy-models.conf" <<'EOF'
+CHAIN_TASK=("codex:legacy-model")
+LOOP_BUDGET_USD=1
+LOOP_TIMEOUT_TASK=5
+EOF
+mkdir -p "$TMP/legacy-a1"
+export FAKE_RUN_DIR="$TMP/legacy-a1"
+export FAKE_ENGINE_LOG="$TMP/legacy-engines.log"
+export FAKE_JEV_LOG="$TMP/legacy-jev.log"
+export FAKE_JEV_RESPONSE='{"version":1,"status":"fallback","stage":"route","mode":"off","reason":"missing_credentials"}'
+export LOOP_JEV_CLIENT="$HERE/fake/loop-jev.mjs"
+export FAKE_CODEX_OUTCOME=done
+zsh "$ROOT/loop-runner.sh" \
+  --worktree "$ROOT" \
+  --run-dir "$FAKE_RUN_DIR" \
+  --prompt-file "$TMP/prompt.md" \
+  --models-conf "$TMP/legacy-models.conf" \
+  --run-id legacy --phase 1 --repository rstagi/dotfile \
+  --chain task --timeout 5 > "$TMP/legacy.out" 2>&1
+RC=$?
+assert_exit "$RC" "0" "legacy config reaches the engine"
+assert_contains "$(cat "$FAKE_ENGINE_LOG" 2>/dev/null)" '-m legacy-model' "uses legacy configured chain"
+unset FAKE_JEV_LOG FAKE_JEV_RESPONSE LOOP_JEV_CLIENT FAKE_CODEX_OUTCOME
+
+cat > "$TMP/route-prompt.md" <<'EOF'
+You are a loop-engineering task runner.
+PHASE (from the shared plan):
+### Phase 2 — Cache small reads [lane: A] [status: todo]
+- **Done when:** Cached reads return the same value; rotate postgres://admin:hunter2@db/app and API_TOKEN = private-value-123 before release.
+- **Estimate:** 10–15 min · high confidence · one module
+CONTEXT: The plan goal and steering notes follow.
+EOF
+
+echo "runner: inherited implicit off retains missing-credentials reason"
+mkdir -p "$TMP/implicit-a1"
+(
+  unset TYPESAFE_API_KEY LOOP_JEV_MODE LOOP_JEV_MODE_EXPLICIT LOOP_JEV_CLIENT
+  source "$ROOT/loop-models.conf"
+  export FAKE_RUN_DIR="$TMP/implicit-a1"
+  export FAKE_ENGINE_LOG="$TMP/implicit-engines.log"
+  export FAKE_CODEX_OUTCOME=done
+  zsh "$ROOT/loop-runner.sh" \
+    --worktree "$ROOT" \
+    --run-dir "$FAKE_RUN_DIR" \
+    --prompt-file "$TMP/route-prompt.md" \
+    --run-id implicit --phase 1 --repository rstagi/dotfile \
+    --chain task --timeout 5 > "$TMP/implicit.out" 2>&1
+)
+RC=$?
+assert_exit "$RC" "0" "inherited off reaches the engine"
+assert_eq "$(jq -r '.fallbackReason' "$TMP/implicit-a1/route-decision.json")" "missing_credentials" "persists missing credentials after double source"
+
+run_routed_task() {
+  local name="$1" response="$2" mode="$3" prompt="${4:-$TMP/route-prompt.md}"
+  RUN_DIR="$TMP/$name-a1"
+  mkdir -p "$RUN_DIR"
+  export FAKE_RUN_DIR="$RUN_DIR"
+  export FAKE_ENGINE_LOG="$TMP/$name-engines.log"
+  export FAKE_JEV_LOG="$TMP/$name-jev.log"
+  export FAKE_JEV_RESPONSE="$response"
+  export LOOP_JEV_MODE="$mode"
+  export LOOP_JEV_CLIENT="$HERE/fake/loop-jev.mjs"
+  export FAKE_CODEX_OUTCOME=done
+  : > "$FAKE_ENGINE_LOG"
+  : > "$FAKE_JEV_LOG"
+  zsh "$ROOT/loop-runner.sh" \
+    --worktree "$ROOT" \
+    --run-dir "$RUN_DIR" \
+    --prompt-file "$prompt" \
+    --chain task \
+    --run-id loop-route \
+    --phase "$name" \
+    --repository rstagi/dotfile \
+    --timeout 5 > "$TMP/$name.out" 2>&1
+  RC=$?
+  INVOCATIONS="$(cat "$FAKE_ENGINE_LOG")"
+}
+
+echo "runner: active high-confidence route uses configured light profile"
+run_routed_task active '{"version":1,"status":"ok","stage":"route","mode":"active","model":"jev-test","answers":{"profile":{"type":"choice","choice":"light","probabilities":{"default":0.05,"light":0.95},"confidence":0.95}},"confidence":0.95,"usage":{"inputTokens":5,"outputTokens":1}}' active
+assert_exit "$RC" "0" "active route completes"
+assert_contains "$INVOCATIONS" '-m gpt-5.6-terra' "uses named light chain"
+assert_eq "$(jq -r '.candidate + ":" + .appliedAction' "$RUN_DIR/route-decision.json")" "light:light" "persists proposed and actual profiles"
+assert_eq "$(jq -r '.proposedProfile + ":" + .actualProfile' "$RUN_DIR/meta.json")" "light:light" "copies profiles into attempt metadata"
+assert_eq "$(wc -l < "$FAKE_JEV_LOG" | tr -d ' ')" "1" "calls Jev once before spawn"
+assert_eq "$(jq -r '.stage + ":" + .state.phase + ":" + .state.repository' "$FAKE_JEV_LOG")" "route:active:rstagi/dotfile" "sends bounded route context"
+assert_eq "$(jq -r '.state.task.title' "$FAKE_JEV_LOG")" "Cache small reads" "sends phase title as task evidence"
+assert_contains "$(jq -r '.state.task.doneWhen' "$FAKE_JEV_LOG")" "Cached reads return the same value" "sends acceptance criteria"
+assert_eq "$(jq -r '.state.task.estimate' "$FAKE_JEV_LOG")" "10–15 min · high confidence · one module" "sends phase estimate"
+assert_eq "$(rg -c 'hunter2' "$FAKE_JEV_LOG" 2>/dev/null || echo 0)" "0" "redacts credentials from route evidence"
+assert_eq "$(rg -c 'private-value-123' "$FAKE_JEV_LOG" 2>/dev/null || echo 0)" "0" "redacts spaced credential assignments"
+assert_eq "$(jq -r '(.state.task | tostring | length) < 1200' "$FAKE_JEV_LOG")" "true" "bounds task evidence"
+
+echo "runner: active route without task evidence keeps default"
+run_routed_task no-evidence '{"version":1,"status":"ok","stage":"route","mode":"active","model":"jev-test","answers":{"profile":{"type":"choice","choice":"light","probabilities":{"default":0.05,"light":0.95},"confidence":0.95}},"confidence":0.95}' active "$TMP/prompt.md"
+assert_exit "$RC" "0" "runs even without a phase block"
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "keeps default chain without task evidence"
+assert_eq "$(jq -r '.fallbackReason' "$RUN_DIR/route-decision.json")" "missing-task-evidence" "records why light advice was rejected"
+
+echo "runner: shadow route advises light but keeps default profile"
+run_routed_task shadow '{"version":1,"status":"ok","stage":"route","mode":"shadow","model":"jev-test","answers":{"profile":{"type":"choice","choice":"light","probabilities":{"default":0.1,"light":0.9},"confidence":0.9}},"confidence":0.9,"usage":{"inputTokens":5,"outputTokens":1}}' shadow
+assert_exit "$RC" "0" "shadow route completes"
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "keeps default task chain"
+assert_eq "$(jq -r '.candidate + ":" + .appliedAction + ":" + .fallbackReason' "$RUN_DIR/route-decision.json")" "light:default:shadow-mode" "records advice without applying it"
+
+echo "runner: fallback route keeps default and retry/resume reuses the decision"
+run_routed_task reuse '{"version":1,"status":"fallback","stage":"route","mode":"active","reason":"low_confidence","model":"jev-test","answers":{"profile":{"type":"choice","choice":"light","probabilities":{"default":0.4,"light":0.6},"confidence":0.6}},"confidence":0.6}' active
+assert_exit "$RC" "0" "fallback route completes"
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "fallback uses default task chain"
+RUN_DIR="$TMP/reuse-a2"
+mkdir -p "$RUN_DIR"
+export FAKE_RUN_DIR="$RUN_DIR"
+zsh "$ROOT/loop-runner.sh" \
+  --worktree "$ROOT" \
+  --run-dir "$RUN_DIR" \
+  --prompt-file "$TMP/prompt.md" \
+  --chain task \
+  --resume route-session \
+  --engine codex \
+  --run-id loop-route \
+  --phase reuse \
+  --repository rstagi/dotfile \
+  --timeout 5 > "$TMP/reuse-resume.out" 2>&1
+RC=$?
+assert_exit "$RC" "0" "resume completes"
+assert_eq "$(wc -l < "$FAKE_JEV_LOG" | tr -d ' ')" "1" "resume does not duplicate the Jev call"
+assert_eq "$(jq -r '.fallbackReason + ":" + .appliedAction' "$RUN_DIR/route-decision.json")" "low_confidence:default" "persists fallback and actual profile"
+assert_eq "$(jq -r '.attempt' "$RUN_DIR/route-decision.json")" "2" "correlates reused advice to the resumed attempt"
+assert_eq "$([[ -e "$TMP/state.json" ]] && echo yes || echo no)" "no" "routing does not mutate phase state"
+
+echo "runner: missing credentials, API errors, and unsupported profiles use default"
+run_routed_task missing '{"version":1,"status":"fallback","stage":"route","mode":"active","reason":"missing_credentials"}' active
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "missing credentials use default"
+assert_eq "$(jq -r '.fallbackReason' "$RUN_DIR/route-decision.json")" "missing_credentials" "records missing credentials"
+run_routed_task apierror '{"version":1,"status":"fallback","stage":"route","mode":"active","reason":"api_error"}' active
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "API errors use default"
+assert_eq "$(jq -r '.fallbackReason' "$RUN_DIR/route-decision.json")" "api_error" "records API error"
+run_routed_task unsupported '{"version":1,"status":"ok","stage":"route","mode":"active","model":"jev-test","answers":{"profile":{"type":"choice","choice":"arbitrary-model","probabilities":{"arbitrary-model":0.99},"confidence":0.99}},"confidence":0.99}' active
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "unsupported profile uses default"
+assert_eq "$(jq -r '.fallbackReason + ":" + .appliedAction' "$RUN_DIR/route-decision.json")" "unsupported-profile:default" "records rejected profile"
+
+unset LOOP_JEV_MODE LOOP_JEV_CLIENT FAKE_JEV_LOG FAKE_JEV_RESPONSE FAKE_CODEX_OUTCOME
+export FAKE_ENGINE_LOG="$TMP/engines.log"
+export FAKE_RUN_DIR="$RUN_DIR"
+
 echo "runner: phase deadline returns a checkpoint to the orchestrator"
 mkdir -p "$TMP/slow-bin" "$TMP/checkpoint"
 cat > "$TMP/slow-bin/codex" <<'EOF'

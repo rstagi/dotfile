@@ -17,6 +17,17 @@ loop_emit() {
   return 0
 }
 
+# loop_emit_jev_decision <runId> — wrap the stdin decision record as a typed observational
+# event, preserving every decision field. Best-effort like loop_emit.
+loop_emit_jev_decision() {
+  loop_emit_jev_run_id="$1"
+  [ -n "$loop_emit_jev_run_id" ] || return 0
+  jq -c --arg event "jev.decision" --arg runId "$loop_emit_jev_run_id" \
+    '. + {event:$event, runId:$runId}' 2>/dev/null \
+    | loop_emit "$loop_emit_jev_run_id" event
+  return 0
+}
+
 # loop_ensure_daemon   — make the central daemon reachable: health probe → launchctl
 # kickstart/bootstrap → nohup the installed loop-web.sh --daemon. Best-effort, returns 0.
 loop_ensure_daemon() {

@@ -30,11 +30,16 @@ export function materialize(record: LoopRecord, live: LoopInput | null, opts: Ma
     // Backfill defaults ONLY for a snapshot frozen by a pre-subOrch build (keep the same
     // reference otherwise, so a current snapshot short-circuits untouched).
     const hasCurrentFields = Object.prototype.hasOwnProperty.call(frozen, "subOrch")
-      && Array.isArray(frozen.effort?.repositories);
+      && Array.isArray(frozen.effort?.repositories)
+      && Array.isArray(frozen.decisions);
     return hasCurrentFields
       ? frozen
       : { ...frozen, effort: { ...frozen.effort, repositories: frozen.effort?.repositories ?? [] },
-          subOrch: frozen.subOrch ?? null, pendingHil: frozen.pendingHil ?? 0 };
+          subOrch: frozen.subOrch ?? null, pendingHil: frozen.pendingHil ?? 0,
+          decisions: frozen.decisions ?? [], jev: frozen.jev ?? null,
+          graph: { ...frozen.graph, nodes: (frozen.graph?.nodes ?? []).map((node) => ({
+            ...node, decisions: node.decisions ?? [],
+          })) } };
   }
   return render(record, live, opts);
 }
@@ -86,7 +91,7 @@ function render(record: LoopRecord, live: LoopInput, opts: MaterializeOpts): Sna
   };
   const runtime = parseLoop(loopInput);
   const now = opts.now ?? Date.now();
-  const snap = buildSnapshot(plan, runtime, { now, nowIso: opts.nowIso ?? null });
+  const snap = buildSnapshot(plan, runtime, { now, nowIso: opts.nowIso ?? null, decisions: record.decisions });
   return { ...snap, subOrch: buildSubOrch(record), pendingHil: countHilOpen(record) };
 }
 

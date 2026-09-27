@@ -27,6 +27,9 @@ export interface MetaJson {
   headAfter?: string;
   engineExit?: number;
   timedOut?: boolean;
+  proposedProfile?: string | null;
+  actualProfile?: string | null;
+  routeFallbackReason?: string | null;
 }
 
 export type RunnerOutcome = "done" | "question" | "blocked";
@@ -101,11 +104,60 @@ export interface StateJson {
 
 /** One row of events.jsonl (loop-state.sh log). */
 export interface RawEvent {
+  runId?: string;
   ts?: string;
   event?: string;
   phase?: string;
   repository?: string;
   detail?: string;
+  attempt?: number;
+  stage?: string;
+  mode?: JevMode;
+  candidate?: string | null;
+  confidence?: number | null;
+  probabilities?: Record<string, number>;
+  appliedAction?: string | null;
+  fallbackReason?: string | null;
+  resolvedModel?: string | null;
+  evidenceChecked?: boolean;
+  evidenceSources?: string[];
+  questionRound?: number | null;
+  head?: string | null;
+  requiredGates?: string[];
+  completedGates?: string[];
+  remainingGates?: string[];
+  focus?: string[];
+}
+
+export type JevMode = "off" | "shadow" | "active";
+
+export interface JevDecision {
+  runId: string;
+  phase: string;
+  attempt: number;
+  stage: string;
+  mode: JevMode;
+  candidate: string | null;
+  confidence: number | null;
+  probabilities: Record<string, number>;
+  appliedAction: string | null;
+  fallbackReason: string | null;
+  resolvedModel: string | null;
+  evidenceChecked?: boolean;
+  evidenceSources?: string[];
+  questionRound?: number | null;
+  head?: string | null;
+  requiredGates?: string[];
+  completedGates?: string[];
+  remainingGates?: string[];
+  focus?: string[];
+  ts: string | null;
+}
+
+export interface JevStatus {
+  mode: JevMode;
+  count: number;
+  fallbackCount: number;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -319,6 +371,8 @@ export interface GraphNode {
   /** Derived from note presence and incomplete lifecycle; never trusts file deletion. */
   notePending: boolean;
   noteMarkdown: string | null;
+  /** Jev observations correlated to this phase. Optional on pre-Jev archived snapshots. */
+  decisions?: JevDecision[];
 }
 
 export type EdgeKind = "plan-to-lane" | "depends" | "to-review";
@@ -418,4 +472,8 @@ export interface Snapshot {
   subOrch: SubOrchInfo | null;
   /** Count of phases awaiting a human decision (open HIL). */
   pendingHil: number;
+  /** Typed Jev observations. Absent only on pre-Jev archived snapshots. */
+  decisions?: JevDecision[];
+  /** Latest mode plus aggregate counts. Null/absent for pre-Jev loops. */
+  jev?: JevStatus | null;
 }

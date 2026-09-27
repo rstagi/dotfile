@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 2,
+  "runId": "synthetic-archived",
+  "status": "archived",
+  "decisions": [],
+  "lastSnapshot": {
+    "decisions": [
+      {
+        "runId": "synthetic-archived",
+        "phase": "3",
+        "attempt": 1,
+        "stage": "route",
+        "mode": "off",
+        "candidate": null,
+        "confidence": null,
+        "probabilities": {},
+        "appliedAction": "default",
+        "fallbackReason": "missing_credentials",
+        "resolvedModel": null,
+        "ts": "2026-09-27T11:00:00Z"
+      },
+      {
+        "runId": "synthetic-archived",
+        "phase": "3",
+        "attempt": 2,
+        "stage": "route",
+        "mode": "off",
+        "candidate": null,
+        "confidence": null,
+        "probabilities": {},
+        "appliedAction": "default",
+        "fallbackReason": "disabled",
+        "resolvedModel": null,
+        "ts": "2026-09-27T11:01:00Z"
+      },
+      {
+        "runId": "synthetic-archived",
+        "phase": "5",
+        "attempt": 1,
+        "stage": "merge-risk",
+        "mode": "shadow",
+        "candidate": null,
+        "confidence": null,
+        "probabilities": {},
+        "appliedAction": "full-diff-skim",
+        "fallbackReason": "api_error",
+        "resolvedModel": null,
+        "ts": "2026-09-27T11:02:00Z"
+      }
+    ]
+  }
+}

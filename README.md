@@ -15,6 +15,38 @@ Loop defaults: Opus 5.5 orchestrator; GPT-6-Sol phase executor with Sonnet 5 fal
 
 New Loop plans include an estimate and confidence for each work phase. The planner targets 20–25 minutes of active work per phase, leaving room for the 30-minute runner checkpoint. The terminal review phase runs as nine bounded stages per repository. Retries and queue waits can take longer.
 
+## Jev decisions in Loop
+
+Loop can ask Jev for bounded route, runner-question, and pre-merge-risk recommendations. Set
+`TYPESAFE_API_KEY` in the supervisor environment (prefer `load_secret`; never commit it), then
+choose a mode:
+
+- `LOOP_JEV_MODE=off` disables calls explicitly. With no mode and no key, Loop is also off and
+  records `missing_credentials`; explicit `off` records `disabled`.
+- `LOOP_JEV_MODE=shadow` records advice but preserves the established route and triage behavior.
+- `LOOP_JEV_MODE=active` may apply only allowlisted, above-threshold decisions. Routing remains
+  opt-in until shadow replay supports the configured threshold.
+
+Routing sends bounded phase title, Done when, and Estimate text after redacting common credential
+forms. Without Done when and Estimate evidence, active routing keeps the default task chain.
+Pre-merge risk requests send changed paths, diff totals, Done when, and a bounded verification
+summary; they omit patch contents. The mandatory full diff skim still runs locally.
+
+Verification, full diff review, merge checks, escalation, and human gates remain authoritative in
+every mode. Observatory shows the current mode and fallback count in the header, decision badges on
+phases, and proposal-versus-applied details in the phase drawer. Archived loop snapshots retain the
+same decision history.
+
+Replay one or more stored loop records locally without modifying them:
+
+```bash
+node loop-jev-replay.mjs ~/.loop/loops/<run-id>.json | jq .
+```
+
+The report includes agreement and fallback rates. Latency, runner retries, and cost are shown only
+when present in the records and otherwise read `unavailable`. Synthetic fixtures validate report
+mechanics only; they do not support savings claims.
+
 ## Manual configurations
 
 There are some packages to be configured manually.

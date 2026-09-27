@@ -38,6 +38,24 @@ describe("store serde — round-trip", () => {
     expect(parsed.occupancy).toEqual({ tokens: 151000, percent: null });
   });
 
+  it("round-trips typed Jev decisions across a store reload", () => {
+    const rec = reduceLoop(sampleRecord(), {
+      kind: "event",
+      event: {
+        event: "jev.decision", phase: "2", attempt: 3, stage: "question", mode: "active",
+        candidate: "investigate", confidence: 0.82, probabilities: { investigate: 0.82 },
+        appliedAction: "investigate", fallbackReason: null, resolvedModel: "systemone",
+        evidenceChecked: true, evidenceSources: ["question", "plan", "code"], questionRound: 3,
+        ts: "2026-09-27T10:00:00Z",
+      },
+    } as never);
+    const parsed = parseStoreFile(serializeRecord(rec))!;
+    expect(parsed.decisions).toEqual(rec.decisions);
+    expect(parsed.decisions[0]).toMatchObject({
+      evidenceChecked: true, evidenceSources: ["question", "plan", "code"], questionRound: 3,
+    });
+  });
+
   it("stamps the current schema version", () => {
     const parsed = parseStoreFile(serializeRecord(sampleRecord()))!;
     expect(parsed.schemaVersion).toBe(STORE_SCHEMA_VERSION);
@@ -61,6 +79,7 @@ describe("store serde — corrupt tolerance", () => {
     expect(parsed.status).toBe("active");
     expect(parsed.subRecycles).toBe(0);
     expect(parsed.occupancy).toBeNull();
+    expect(parsed.decisions).toEqual([]);
   });
 
   it("migrates a v1 scalar PR/review record into the primary repository", () => {
@@ -72,7 +91,7 @@ describe("store serde — corrupt tolerance", () => {
       review: { outcome: "done", summary: "ok", reportPath: null, commentUrl: null },
       phases: { "1": { rank: "done", hilOpen: false, problem: null } },
     }))!;
-    expect(STORE_SCHEMA_VERSION).toBe(2);
+    expect(STORE_SCHEMA_VERSION).toBe(3);
     expect(parsed.repositories.primary).toMatchObject({
       integrationBranch: "feat/legacy",
       prUrl: "https://github.com/acme/app/pull/1",
@@ -87,7 +106,9 @@ describe("store serde — corrupt tolerance", () => {
       lastSnapshot: { effort: { name: "Old", integrationBranch: "feat/old", pr: null }, graph: { nodes: [] } },
     }))!;
     expect(parsed.lastSnapshot?.effort.repositories).toEqual([]);
-    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.lastSnapshot?.decisions).toEqual([]);
+    expect(parsed.lastSnapshot?.jev).toBeNull();
+    expect(parsed.schemaVersion).toBe(3);
   });
 });
 

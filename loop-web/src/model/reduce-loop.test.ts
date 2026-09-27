@@ -104,6 +104,118 @@ describe("reduceLoop — planned → active", () => {
     );
     expect(rec.status).toBe("active");
   });
+
+  it("keeps a pre-attempt Jev decision observational and idempotent", () => {
+    const decision: Ingest = {
+      kind: "event",
+      event: {
+        event: "jev.decision",
+        phase: "1",
+        attempt: 1,
+        stage: "route",
+        mode: "shadow",
+        candidate: "light",
+        confidence: 0.91,
+        probabilities: { light: 0.91, default: 0.09 },
+        appliedAction: "default",
+        fallbackReason: "shadow-mode",
+        resolvedModel: "typesafe-systemone",
+        evidenceChecked: true,
+        evidenceSources: ["question", "plan"],
+        questionRound: 2,
+        ts: "2026-09-27T10:00:00Z",
+      },
+    };
+    const once = fold("r", { kind: "register", info: { runId: "r" } }, decision);
+    const twice = reduceLoop(once, decision);
+
+    expect(twice.decisions).toEqual([
+      expect.objectContaining({ runId: "r", phase: "1", attempt: 1, stage: "route",
+        evidenceChecked: true, evidenceSources: ["question", "plan"], questionRound: 2 }),
+    ]);
+    expect(twice.status).toBe("planned");
+    expect(effectivePhaseStatus(twice, "1")).toBe("todo");
+  });
+
+  it("preserves typed Jev fields through idempotent JSONL replay", () => {
+    const jsonl = JSON.stringify({
+      event: "jev.decision", runId: "r", phase: "2", attempt: 2, stage: "merge-risk",
+      mode: "active", candidate: "high", confidence: 0.73, probabilities: { high: 0.73 },
+      appliedAction: "full-review", fallbackReason: null, resolvedModel: "systemone",
+      ts: "2026-09-27T10:00:00Z",
+    });
+    const once = fold("r", { kind: "eventsFile", text: jsonl });
+    const twice = reduceLoop(once, { kind: "eventsFile", text: jsonl });
+    expect(twice.decisions).toEqual([expect.objectContaining({
+      runId: "r", phase: "2", attempt: 2, stage: "merge-risk", candidate: "high",
+      appliedAction: "full-review", confidence: 0.73,
+    })]);
+  });
+
+  it("retains separate merge-risk decisions for changed heads with the same timestamp", () => {
+    const first = {
+      event: "jev.decision", phase: "2", attempt: 2, stage: "merge-risk", mode: "active" as const,
+      appliedAction: "full-diff-skim", head: "abc123", ts: "2026-09-27T10:00:00Z",
+    };
+    const rec = fold("r",
+      { kind: "event", event: first },
+      { kind: "event", event: { ...first, head: "def456" } },
+    );
+
+    expect(rec.decisions.map((decision) => decision.head)).toEqual(["abc123", "def456"]);
+    expect(rec.events.map((event) => event.head)).toEqual(["abc123", "def456"]);
+  });
+
+  it("keeps the latest update time while accepting delayed events after finish", () => {
+    const decision: Ingest = {
+      kind: "event",
+      event: {
+        event: "jev.decision", phase: "2", attempt: 1, stage: "merge-risk", mode: "active",
+        head: "abc123", ts: "2026-09-27T10:00:00Z",
+      },
+    };
+    const finished = fold("r", decision,
+      { kind: "event", event: { event: "phase.attempt.finish", phase: "2", outcome: "done",
+        exitCode: 0, ts: "2026-09-27T10:05:00Z" } },
+      { kind: "finish", info: { finishedAt: "2026-09-27T10:10:00Z" } },
+    );
+    const replayed = reduceLoop(finished, decision);
+    const delayed = reduceLoop(replayed, {
+      kind: "event",
+      event: { event: "review.finish", phase: "2", ts: "2026-09-27T10:02:00Z" },
+    });
+
+    expect(replayed.updatedAt).toBe("2026-09-27T10:10:00Z");
+    expect(replayed.decisions).toHaveLength(1);
+    expect(delayed.updatedAt).toBe("2026-09-27T10:10:00Z");
+    expect(delayed.events.map((event) => event.event)).toContain("review.finish");
+  });
+
+  it("compares update times by instant when timestamps have different precision", () => {
+    const recent = fold("r", {
+      kind: "event", event: { event: "phase.attempt.finish", phase: "2",
+        ts: "2026-09-27T10:00:00.001Z" },
+    });
+    const backfilled = reduceLoop(recent, {
+      kind: "event", event: { event: "jev.decision", phase: "2", attempt: 1,
+        stage: "route", mode: "active", ts: "2026-09-27T10:00:00Z" },
+    });
+
+    expect(backfilled.updatedAt).toBe("2026-09-27T10:00:00.001Z");
+  });
+
+  it("sorts out-of-order decisions chronologically with a deterministic timestamp tie", () => {
+    const event = { event: "jev.decision", phase: "2", attempt: 1,
+      mode: "active" as const };
+    const rec = fold("r",
+      { kind: "event", event: { ...event, stage: "route", ts: "2026-09-27T10:00:00.001Z" } },
+      { kind: "event", event: { ...event, stage: "question", ts: "2026-09-27T10:00:00Z" } },
+      { kind: "event", event: { ...event, stage: "merge-risk", head: "abc123",
+        ts: "2026-09-27T10:00:00Z" } },
+    );
+
+    expect(rec.decisions.map((decision) => decision.stage)).toEqual(["merge-risk", "question", "route"]);
+  });
 });
 
 describe("reduceLoop — promotion lattice (the staleness fix)", () => {
@@ -129,6 +241,24 @@ describe("reduceLoop — promotion lattice (the staleness fix)", () => {
     expect(rec.lastState?.phases?.["3"]?.status).toBe("running");
     expect(rec.phases["3"].rank).toBe("done");
     expect(effectivePhaseStatus(rec, "3")).toBe("done");
+  });
+
+  it("keeps an explicit review phase running when one review-stage attempt finishes", () => {
+    const rec = fold(
+      "r",
+      { kind: "register", info: { runId: "r", planText: APPENDED_PLAN } },
+      stateWith({ "4": { kind: "pr-review", slug: "review-p4", status: "running" } }),
+      {
+        kind: "event",
+        event: { event: "phase.attempt.finish", phase: "4", outcome: "done", exitCode: 0 },
+      },
+    );
+
+    expect(rec.phases["4"].rank).toBe("running");
+    expect(effectivePhaseStatus(rec, "4")).toBe("running");
+    expect(rec.events).toEqual([
+      expect.objectContaining({ event: "phase.attempt.finish", phase: "4" }),
+    ]);
   });
 
   it("promotes to merged and never regresses below it (merged over a later running push)", () => {

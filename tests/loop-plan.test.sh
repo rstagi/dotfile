@@ -118,6 +118,13 @@ EOF
     st="$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$PID" '.[] | select(.runId==$id) | .status')"
     assert_eq "$st" "planned" "a register-only loop shows status planned in /api/loops"
 
+    curl -sf -X POST --data-binary '{"event":"jev.decision","phase":"1","attempt":1,"stage":"route","mode":"shadow","candidate":"light","confidence":0.9,"probabilities":{"light":0.9},"appliedAction":"default","fallbackReason":"shadow-mode","resolvedModel":"systemone","ts":"2026-09-27T10:00:00Z"}' \
+      "$LOOP_DAEMON_URL/api/loops/$PID/event" >/dev/null
+    jev_candidate="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$PID/snapshot" | jq -r '.decisions[0].candidate')"
+    assert_eq "$jev_candidate" "light" "POST event preserves typed Jev decision in snapshot"
+    st="$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$PID" '.[] | select(.runId==$id) | .status')"
+    assert_eq "$st" "planned" "pre-attempt Jev POST does not activate a planned loop"
+
     got="$(plan get --plan-id "$PID")"
     assert_contains "$got" "Demo the loop-plan CLI round-trip." "get round-trips the plan markdown"
 

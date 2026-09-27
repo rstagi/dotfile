@@ -22,11 +22,13 @@ if [[ -r "$SCRIPT_DIR/loop-emit.sh" ]]; then
   source "$SCRIPT_DIR/loop-emit.sh"
 else
   loop_emit() { :; }
+  loop_emit_jev_decision() { cat >/dev/null; }
 fi
 
 WT="" RUN_DIR="" PROMPT_FILE="" CHAIN_NAME="task" TIMEOUT="" VERIFY=""
 RESUME_SID="" RESUME_ENGINE="" MODELS_CONF="$SCRIPT_DIR/loop-models.conf" BUDGET=""
 RUN_ID="" PHASE="" REPOSITORY=""
+ROUTE_PROPOSED_PROFILE="" ROUTE_ACTUAL_PROFILE="" ROUTE_FALLBACK_REASON=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,6 +80,16 @@ trap 'loop_runner_finish $?' EXIT
 source "$MODELS_CONF" || { echo "loop-runner: cannot source $MODELS_CONF" >&2; exit 1; }
 (( ${+CODEX_EXTRA_ARGS} )) || CODEX_EXTRA_ARGS=()
 (( ${+CLAUDE_EXTRA_ARGS} )) || CLAUDE_EXTRA_ARGS=()
+LOOP_TASK_DEFAULT_PROFILE="${LOOP_TASK_DEFAULT_PROFILE:-default}"
+LOOP_TASK_LIGHT_PROFILE="${LOOP_TASK_LIGHT_PROFILE:-light}"
+if [[ -z "${LOOP_JEV_MODE_EXPLICIT:-}" ]]; then
+  [[ -n "${LOOP_JEV_MODE:-}" ]] && LOOP_JEV_MODE_EXPLICIT=1 || LOOP_JEV_MODE_EXPLICIT=0
+fi
+if [[ -z "${LOOP_JEV_MODE:-}" ]]; then
+  [[ -n "${TYPESAFE_API_KEY:-}" ]] && LOOP_JEV_MODE=shadow || LOOP_JEV_MODE=off
+fi
+LOOP_JEV_ROUTE_MIN_CONFIDENCE="${LOOP_JEV_ROUTE_MIN_CONFIDENCE:-0.8}"
+export LOOP_JEV_MODE LOOP_JEV_MODE_EXPLICIT
 BUDGET="${BUDGET:-$LOOP_BUDGET_USD}"
 
 case "$CHAIN_NAME" in
@@ -99,6 +111,112 @@ CHECKPOINT_LIMIT="${LOOP_CHECKPOINT_SEC:-1800}"
 CHECKPOINT_MODE=1
 
 mkdir -p "$RUN_DIR"
+route_task_attempt() {
+  local attempt=1 phase_key cache decision raw request candidate confidence probabilities
+  local mode decision_status fallback model actual threshold_ok tmp task_evidence evidence_ready
+  [[ "$CHAIN_NAME" == "task" && -n "$RUN_ID" && -n "$PHASE" ]] || return 0
+  [[ "${RUN_DIR:t}" =~ '-a([0-9]+)$' ]] && attempt="$match[1]"
+  phase_key="${PHASE//[^A-Za-z0-9._-]/_}"
+  cache="${RUN_DIR:h}/.route-${phase_key}.json"
+  decision="$RUN_DIR/route-decision.json"
+
+  if jq -e '.version == 1 and .stage == "route" and (.actualProfile | type == "string")' \
+      "$decision" >/dev/null 2>&1; then
+    :
+  elif jq -e '.version == 1 and .stage == "route" and (.actualProfile | type == "string")' \
+      "$cache" >/dev/null 2>&1; then
+    tmp="$decision.tmp.$$"
+    jq --argjson attempt "$attempt" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '.attempt=$attempt | .ts=$ts' "$cache" > "$tmp" && mv "$tmp" "$decision"
+  else
+    raw="$RUN_DIR/.route-jev.json"
+    request="$RUN_DIR/.route-request.json"
+    # The phase block starts near the top; never send the full runner prompt.
+    task_evidence="$(head -c 8192 "$PROMPT_FILE" | jq -Rsc '
+      def safe:
+        gsub("(?i)[a-z][a-z0-9+.-]*://[^[:space:]/@:]+:[^[:space:]/@]+@[^[:space:]]+"; "[REDACTED_URL]")
+        | gsub("[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:],;]+"; "[REDACTED]")
+        | gsub("(?i)(password|secret|token|api[_-]?key|credential):[[:space:]]*[^[:space:],;]+"; "[REDACTED]")
+        | .[:300];
+      def field($block; $label):
+        ($block | split("\n") | map(select(startswith("- **" + $label + ":**"))
+          | ltrimstr("- **" + $label + ":**") | gsub("^[[:space:]]+"; "") | safe) | .[0] // null);
+      (split("PHASE (from the shared plan):") | .[1] // "" | split("CONTEXT:")[0]) as $block
+      | {title: ($block | split("\n") | map(select(startswith("### Phase "))
+          | sub("^### Phase [^—]*—[[:space:]]*"; "")
+          | sub("[[:space:]]*\\[lane:.*$"; "") | safe) | .[0] // null),
+         doneWhen: field($block; "Done when"), estimate: field($block; "Estimate")}
+    ')"
+    evidence_ready="$(print -r -- "$task_evidence" | jq -r '(.doneWhen != null) and (.estimate != null)')"
+    jq -cn --arg phase "$PHASE" --arg repository "$REPOSITORY" \
+      --arg default "$LOOP_TASK_DEFAULT_PROFILE" --arg light "$LOOP_TASK_LIGHT_PROFILE" \
+      --argjson task "$task_evidence" \
+      '{stage:"route",state:{phase:$phase,repository:$repository,chain:"task",task:$task},questions:{profile:{type:"choice",instructions:"Choose the bounded task-runner profile for this ready phase using the task evidence.",criteria:{($default):"Established task chain",($light):"Lower-cost chain for a small, low-risk task"}}}}' \
+      > "$request"
+    if ! node "${LOOP_JEV_CLIENT:-$SCRIPT_DIR/loop-jev.mjs}" < "$request" > "$raw" 2>/dev/null; then
+      print -r -- '{}' > "$raw"
+    fi
+
+    mode="$LOOP_JEV_MODE"
+    decision_status="$(jq -r '.status // empty' "$raw" 2>/dev/null)"
+    candidate="$(jq -r '.answers.profile.choice // empty' "$raw" 2>/dev/null)"
+    confidence="$(jq -r 'if (.confidence | type) == "number" then .confidence else empty end' "$raw" 2>/dev/null)"
+    probabilities="$(jq -c '.answers.profile.probabilities // {}' "$raw" 2>/dev/null)"
+    [[ "$probabilities" == \{* ]] || probabilities='{}'
+    model="$(jq -r '.model // empty' "$raw" 2>/dev/null)"
+    fallback="$(jq -r '.reason // empty' "$raw" 2>/dev/null)"
+    actual="$LOOP_TASK_DEFAULT_PROFILE"
+    threshold_ok=false
+    [[ -n "$confidence" ]] && threshold_ok="$(jq -nr --argjson value "$confidence" \
+      --argjson minimum "$LOOP_JEV_ROUTE_MIN_CONFIDENCE" '$value >= $minimum')"
+
+    if [[ "$candidate" != "$LOOP_TASK_DEFAULT_PROFILE" && "$candidate" != "$LOOP_TASK_LIGHT_PROFILE" && -n "$candidate" ]]; then
+      fallback=unsupported-profile
+    elif [[ "$decision_status" != "ok" ]]; then
+      [[ -n "$fallback" ]] || fallback=decision-error
+    elif [[ "$threshold_ok" != true ]]; then
+      fallback=low-confidence
+    elif [[ "$mode" == "shadow" ]]; then
+      fallback=shadow-mode
+    elif [[ "$mode" == "active" && "$candidate" == "$LOOP_TASK_LIGHT_PROFILE" ]]; then
+      if [[ "$evidence_ready" != true ]]; then
+        fallback=missing-task-evidence
+      elif (( ! ${+CHAIN_TASK_LIGHT} )); then
+        fallback=unsupported-profile
+      else
+        actual="$LOOP_TASK_LIGHT_PROFILE"
+        fallback=""
+      fi
+    elif [[ "$mode" == "active" && "$candidate" == "$LOOP_TASK_DEFAULT_PROFILE" ]]; then
+      fallback=""
+    else
+      [[ -n "$fallback" ]] || fallback=disabled
+    fi
+
+    tmp="$decision.tmp.$$"
+    jq -cn --arg phase "$PHASE" --argjson attempt "$attempt" --arg mode "$mode" \
+      --arg candidate "$candidate" --arg confidence "$confidence" --argjson probabilities "$probabilities" \
+      --arg actual "$actual" --arg fallback "$fallback" --arg model "$model" \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{version:1,phase:$phase,attempt:$attempt,stage:"route",mode:$mode,
+        candidate:(if ($candidate|length)>0 then $candidate else null end),
+        confidence:(if ($confidence|length)>0 then ($confidence|tonumber) else null end),
+        probabilities:$probabilities,appliedAction:$actual,
+        fallbackReason:(if ($fallback|length)>0 then $fallback else null end),
+        resolvedModel:(if ($model|length)>0 then $model else null end),
+        proposedProfile:(if ($candidate|length)>0 then $candidate else null end),actualProfile:$actual,ts:$ts}' \
+      > "$tmp" && mv "$tmp" "$decision"
+    cp "$decision" "$cache.tmp.$$" && mv "$cache.tmp.$$" "$cache"
+    rm -f "$raw" "$request"
+  fi
+
+  ROUTE_PROPOSED_PROFILE="$(jq -r '.proposedProfile // empty' "$decision")"
+  ROUTE_ACTUAL_PROFILE="$(jq -r '.actualProfile // empty' "$decision")"
+  ROUTE_FALLBACK_REASON="$(jq -r '.fallbackReason // empty' "$decision")"
+  [[ "$ROUTE_ACTUAL_PROFILE" == "$LOOP_TASK_LIGHT_PROFILE" ]] && chain=("${CHAIN_TASK_LIGHT[@]}")
+  cat "$decision" | loop_emit_jev_decision "$RUN_ID"
+}
+route_task_attempt
 [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" ]] && jq -cn --arg event phase.attempt.start \
   --arg phase "$PHASE" --arg repository "$REPOSITORY" --arg detail "$CHAIN_NAME" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end),
@@ -129,9 +247,15 @@ write_meta() { # $1 = engine exit code
     "$TRANSCRIPT" 2>/dev/null | head -1)"
   jq -n --arg engine "$CUR_ENGINE" --arg model "$CUR_MODEL" --arg sid "${sid:-}" \
     --arg before "$HEAD_BEFORE" --arg after "$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)" \
+    --arg proposedProfile "$ROUTE_PROPOSED_PROFILE" --arg actualProfile "$ROUTE_ACTUAL_PROFILE" \
+    --arg routeFallbackReason "$ROUTE_FALLBACK_REASON" \
     --argjson rc "${1:-0}" --argjson timedOut "$TIMED_OUT" \
     '{engine: $engine, model: $model, sessionId: $sid, headBefore: $before,
-      headAfter: $after, engineExit: $rc, timedOut: ($timedOut == 1)}' > "$RUN_DIR/meta.json"
+      headAfter: $after, engineExit: $rc, timedOut: ($timedOut == 1),
+      proposedProfile:(if ($proposedProfile|length)>0 then $proposedProfile else null end),
+      actualProfile:(if ($actualProfile|length)>0 then $actualProfile else null end),
+      routeFallbackReason:(if ($routeFallbackReason|length)>0 then $routeFallbackReason else null end)}' \
+    > "$RUN_DIR/meta.json"
 }
 
 # --- engine launchers (backgrounded by run_leg; cwd/-C = the worktree) ---

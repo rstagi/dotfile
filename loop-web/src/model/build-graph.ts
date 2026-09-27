@@ -12,6 +12,7 @@ import type {
   PhaseStateStatus,
   ProblemClass,
   PrInfo,
+  JevDecision,
 } from "./types.ts";
 import {
   classifyAttempt,
@@ -36,6 +37,7 @@ interface BuildOpts {
   now?: number;
   pr?: PrInfo | null;
   repositories?: Record<string, PrInfo | null>;
+  decisions?: JevDecision[];
 }
 
 /**
@@ -73,7 +75,10 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     return buildReviewNode(repository.slug, info, note);
   });
 
-  const nodes = [planNode, ...phaseNodes, ...reviewNodes];
+  const nodes = [planNode, ...phaseNodes, ...reviewNodes].map((node) => ({
+    ...node,
+    decisions: node.phase ? (opts.decisions ?? []).filter((decision) => decision.phase === node.phase) : [],
+  }));
   const edges = buildEdges(plan, nodes);
 
   return { nodes, edges, lanes };

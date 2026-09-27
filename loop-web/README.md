@@ -66,8 +66,9 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
   `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{plan,
   snapshot,review,attempt/:slug/:k}` (`review?repository=<owner/repo>` selects a repository;
   bare `review` is the legacy alias; `plan` returns `{runId,effort,status,integrationBranch,
-  planText}` with no worktree needed — how a fresh checkout fetches the plan; `snapshot`/`review`/
-  `attempt` 410 when the worktree is gone), `/api/health`; back-compat `/api/model` ·
+  planText}` with no worktree needed — how a fresh checkout fetches the plan; archived `snapshot`
+  remains available from the frozen store, while live `review`/`attempt` logs and steering are
+  unavailable after the worktree is gone), `/api/health`; back-compat `/api/model` ·
   `/api/snapshot` · bare `/events` resolve to the default loop. A register-only record surfaces
   as status **`planned`** (plan on the daemon, not yet running); the first state/event flips it
   to `active`.
@@ -77,6 +78,22 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
   `src/model/store-serde.ts`; the reducer + materialize are `src/model/{reduce-loop,materialize}.ts`.
 - **`src/ui/`** — Vite + React + TypeScript. React Flow for the DAG, Framer-Motion CSS for the
   three load-bearing motions (heartbeat, flatline, HIL alarm). "Phosphor Bench" oscilloscope theme.
+
+### Jev status and replay
+
+The header shows the latest Jev mode, decision count, and fallback count. Route, question, and
+merge-risk badges identify affected phases; the drawer keeps recommendation, applied action,
+confidence, fallback, and evidence distinct. These fields remain visible in archived snapshots,
+although archived loops have no live logs or steering writes.
+
+To inspect agreement and fallback behavior outside the UI, replay one or more persisted records:
+
+```bash
+node ../loop-jev-replay.mjs ~/.loop/loops/<run-id>.json | jq .
+```
+
+This is read-only. Operational metrics are `unavailable` unless recorded, and synthetic fixture
+reports must not be interpreted as time or cost savings.
 
 ### Derivation is grounded in the real scripts, not the docs
 

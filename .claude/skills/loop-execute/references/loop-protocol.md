@@ -101,6 +101,8 @@ State lives in the launching coordinator checkout (add `.loop/` to
     last.md                  # final assistant message
     status.json              # runner-written result (schema below)
     checkpoint.md            # observable worktree state if the 30m phase deadline fired
+    question-decision.json   # ordinary exit-10 advice + evidence-backed disposition
+    risk-decision-<head>.json # merge-risk advice + actual full-skim disposition/gate evidence
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
   runs/review-p<N>-<owner--repo>-a<1..9>/ # review phase N; see PR review phase pipeline
@@ -137,6 +139,8 @@ crash-resume **source of truth** for code + bookkeeping. A launchd LaunchAgent a
 on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
 `loop_ensure_daemon` as the fallback. Loops **register**, then push clean lifecycle events.
 Emission is **best-effort** — a `curl` failure never fails the caller.
+On startup and reconcile, the daemon recovers persisted route, question, and risk decision files
+after missed POSTs while the coordinator `.loop/` directory still exists.
 The daemon also reads size-capped `notes/*.md` content on each reconcile. NOTE badges are
 file-derived but completion-aware: a numeric phase note is pending only while its phase is
 not `done|merged`; legacy `pr-review.<owner--repo>` is pending only until that review
@@ -176,6 +180,7 @@ completed phase ranks remain monotone.
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto (unlinked) | phase, detail |
+| `jev.decision` | runner (route) or SUB (question/risk) | phase, attempt, stage, mode, candidate, confidence/probabilities, appliedAction, fallbackReason, resolvedModel, evidenceChecked/evidenceSources, questionRound, head, required/completed/remaining gates, focus, ts |
 
 `progress.note` is the unlinked-mode progress narration — kept on the timeline, promotes
 nothing in the lattice.
@@ -189,8 +194,10 @@ so they ride the live daemon POST exclusively.
 
 **Monotone promotion lattice.** The daemon materializes each loop through a monotone rank
 `todo < claimed < running < done < merged`; a `phase.attempt.finish{outcome:done, exit 0}`
-promotes a phase to **done even if state.json bookkeeping lags** (fixes "done phases stuck at
-running/todo"). Ranks never regress — a phase never un-completes in the UI (v1).
+promotes a work phase to **done even if state.json bookkeeping lags** (fixes "done phases stuck
+at running/todo"). Individual review-stage attempts never promote an explicit `pr-review`
+phase; only the aggregate review pipeline does that after every repository finishes. Ranks never
+regress — a phase never un-completes in the UI (v1).
 
 ## state.json schema v2
 
@@ -248,10 +255,16 @@ run/repository-scoped integration worktree from that SHA.
 
 ## Runner spawn (how the orchestrator launches loop-runner.sh)
 
+Resolve `RUNTIME_ROOT` to the repository integration worktree when the effort changes the
+Loop runtime itself; otherwise use `~/dotfile`. The runner resolves its Jev client, model
+config, and emitter from that same directory. Compose later SUB prompts from
+`$RUNTIME_ROOT/.claude/skills/loop-execute/{SKILL.md,references/loop-protocol.md}` too, so
+merged self-hosting changes run without mutating the installed checkout.
+
 Detached, so runners survive orchestrator death:
 
 ```sh
-nohup ~/dotfile/loop-runner.sh <args> > <runDir>/spawn.log 2>&1 &
+nohup "$RUNTIME_ROOT/loop-runner.sh" <args> > <runDir>/spawn.log 2>&1 &
 echo $! > <runDir>/pid; disown
 ```
 
@@ -423,6 +436,7 @@ plan proves there were no accepted findings. Those cases are not stalls.
 
 ```sh
 CHAIN_TASK=("codex:gpt-6-sol" "claude:claude-sonnet-5")
+CHAIN_TASK_LIGHT=("codex:gpt-5.6-terra" "${CHAIN_TASK[@]}")
 CHAIN_ESCALATE=("claude:fable+opus")
 CHAIN_REVIEW_FABLE=("claude:claude-fable-5-1")
 CHAIN_REVIEW_ASTRA=("codex:gpt-6-astra")
@@ -440,6 +454,14 @@ LOOP_TIMEOUT_REMEDIATE=1800
 LOOP_MAX_PARALLEL=3
 LOOP_ORCH_CTX_WINDOW=1000000
 ```
+
+For `--chain task` with run/phase correlation, the runner records one bounded `route`
+decision before engine launch. It caches the decision by phase beside attempt directories
+and materializes `route-decision.json` plus proposed/actual profile fields in each attempt's
+`meta.json`; retries and resumes reuse it. Shadow mode and every fallback use `CHAIN_TASK`.
+Active mode selects `CHAIN_TASK_LIGHT` only for the allowlisted `light` candidate at or
+above `LOOP_JEV_ROUTE_MIN_CONFIDENCE`; that chain falls through to the default chain on
+API/usage failure. Escalation, merge-resolution, remediation, and review chains never route.
 
 Leg grammar: `engine:model[+fallback[,fallback2]]`. The `+` list maps to Claude's native
 `--fallback-model` (comma-separated; CLI retries the primary each turn) — so intra-Claude
@@ -490,6 +512,101 @@ an answer, then `loop-runner.sh --resume <sessionId> --engine <same engine>` wit
 as the prompt — **in a fresh attempt dir** (`-a<K+1>`, answer as its `prompt.md`), never the
 original run dir (rerunning there would clobber the transcript and session id). If resume
 fails, fall back to a fresh attempt with the answer prepended via `answers/<phase-slug>.md`.
+
+### Ordinary question triage
+
+`checkpoint:true` follows the deterministic checkpoint path and never invokes Jev. For any
+other exit 10, enforce `questionRounds < 3` first; an exhausted phase proceeds to L3 without
+another judgment. Increment the round before triage so a crash cannot create a fourth L2 answer.
+
+Call `loop-jev.mjs` at stage `question` with one Choice named `triage` and exactly these
+candidates: `plan-answer`, `code-investigation`, `human-preference`, `uncertain`. Bound state
+to the runner question, phase/attempt/repository, Goal, Done-when, dependencies, and relevant
+plan lines. Never include transcripts, environment values, credentials, or full state.json;
+never persist the request or raw vendor response.
+
+The SUB inspects the actual question and plan, and code where relevant, independently of the
+label. It records the disposition through `loop-jev-question.mjs`. The policy requires
+`question + plan` evidence for every answer or HIL disposition, adds `code` for an answer after
+investigation, and permits `raise-hil` only with a substantive reason at L4. Thus
+`human-preference` is an investigation hint, never an escalation gate. Shadow, error,
+low-confidence, off, and `uncertain` use `current-behavior`. Persist the typed result atomically
+as `<runDir>/question-decision.json`, emit it with `loop_emit_jev_decision`, then act.
+`candidate` is the advice; `appliedAction` is what actually happened.
+
+`loop-jev-question.mjs` reads one JSON object from stdin:
+
+```json
+{
+  "phase": "4", "attempt": 2, "questionRound": 1, "checkpoint": false,
+  "jev": { "...": "structured loop-jev.mjs result" },
+  "action": "answer-from-plan | investigate-code | answer-after-investigation | raise-hil | current-behavior",
+  "evidenceSources": ["question", "plan", "code"],
+  "hilReason": "required for raise-hil", "escalationLevel": 4,
+  "ts": "2026-09-27T10:00:00Z"
+}
+```
+
+Omit the HIL-only fields for other actions. Exit 0 returns the typed decision. Exit 2 returns
+`{"error":"..."}` and forbids the action; investigate the missing evidence and retry the
+policy, never bypass it. A checkpoint or fourth round returns a `bypass:true` disposition and
+must not be emitted as a Jev decision.
+
+### Pre-merge risk judgment
+
+After a phase attempt returns verified exit 0, and before any merge, the SUB executes this
+unconditional order:
+
+1. confirm verified exit 0;
+2. obtain one bounded merge-risk judgment for the attempt's `headAfter`;
+3. skim the **entire** `git diff <base>...HEAD`, using advice only to focus attention;
+4. reject `headBefore == headAfter` as a stall;
+5. require a clean lane worktree;
+6. reread `notes/<phase>.md` and honor it;
+7. run the globally serialized `loop-merge.sh`;
+8. let `loop-merge.sh` Verify the merged repository tree.
+
+Steps 1 and 3–8 are unconditional in off, shadow, active, low-risk, fallback, error,
+low-confidence, and malformed-response paths. A Jev record is observational and never a merge
+permit.
+
+For step 2, call `loop-jev-risk-input.mjs` with repository root, base/head, phase/attempt,
+verbatim *Done when*, and only `{exitCode:0,summary:<bounded success summary>}` for verification.
+It uses `git` directly, includes every changed path plus aggregate additions/deletions, omits
+all patch contents, bounds and redacts the supplied Done when and verification summary, and
+fails closed if the complete path inventory cannot fit its 48 KiB output bound. Pipe its
+output directly into `loop-jev.mjs`; never persist the request, raw API response, transcript,
+verify log, environment values, or credentials. The two Choice questions are `scopeGap`
+(`none|possible|likely`) and `changeRisk` (`low|medium|high`).
+
+After steps 3–6, call `loop-jev-risk.mjs` with the structured Jev result, phase/attempt,
+`headBefore`, `headAfter`, decision head, verification exit, clean/skimming evidence, focus,
+and the completed gate prefix. It accepts only `full-diff-skim` or
+`focused-full-diff-skim`, validates exact gate order and evidence, and returns a versioned
+proposal-versus-disposition record with the immutable required/remaining gate list. Any builder,
+Jev, or policy error uses a typed `merge-risk` fallback and the unfocused full skim; it never
+waives a gate.
+
+Persist the validated record atomically (`tmp` + `mv`) as
+`<runDir>/risk-decision-<head>.json`, then pipe that record to
+`loop_emit_jev_decision <runId>` before starting the merge. If that exact attempt/head record
+already exists and validates, reuse it rather than calling Jev again. A retry or changed head
+must create and emit a new timestamped record. The canonical candidate is
+`scope-gap:<label> · risk:<label>`; `appliedAction` is the actual full-skim disposition.
+
+### Shadow replay and rollout
+
+`loop-jev-replay.mjs <snapshot-or-store.json> [...]` reads persisted live snapshots or archived
+store records and emits one JSON report without writing to the source loops. It compares each
+recorded route, question, and merge-risk proposal with the applied action using stage-specific
+policy mappings, then reports per-stage and overall agreement and fallback rates. Archived records
+use the frozen `lastSnapshot.decisions`, matching Observatory reload behavior.
+
+Latency, runner retries, and cost appear only when those numeric fields were recorded; otherwise
+the report marks each metric `unavailable`. Synthetic fixtures cover the three stages, archive
+reload, explicit off mode, missing credentials, and API failure, but validate mechanics only and
+must never be used to claim savings. Keep routing in shadow unless observed loop data supports the
+configured active threshold; `LOOP_JEV_MODE=active` remains an explicit opt-in.
 
 ## Runner prompt skeleton (orchestrator generates prompt.md per attempt)
 
@@ -622,6 +739,9 @@ phase-scoped completed run artifacts plus git/GitHub evidence over a stale stage
 reruns a live pid, repeats a completed remediation push, or duplicates that phase's final review.
 
 ## Merge policy (loop-merge.sh, serialized — one merge at a time)
+
+Entry requires the persisted merge-risk disposition described above. This adds focus and
+observability only: serialized merge and merged-tree Verify remain unconditional.
 
 `loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --repository <owner/repo> --verify-cmd '<repository verify>'`
 (the script refuses to push unverified without an explicit `--no-verify`):

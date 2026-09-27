@@ -27,6 +27,7 @@ const WATCH_DEBOUNCE_MS = 2000;
 const RECONCILE_MS = 15000;
 const TAIL_BYTES = 64 * 1024;
 const NOTE_BYTES = 16 * 1024;
+const DECISION_FILE_BYTES = 128 * 1024;
 const BODY_LIMIT = 4 * 1024 * 1024; // cap an ingest body (plan md + state) — reject beyond
 const HOST = "127.0.0.1";
 
@@ -188,9 +189,63 @@ function reconcile(entry) {
   const state = safeParse(stateText);
   if (state) entry.record = reduceLoop(entry.record, { kind: "state", state, planText });
   if (eventsText) entry.record = reduceLoop(entry.record, { kind: "eventsFile", text: eventsText });
+  for (const event of readDecisionEvents(dir, entry.record.runId, entry.record.decisions)) {
+    entry.record = reduceLoop(entry.record, { kind: "event", event });
+  }
   rematerialize(entry);
   broadcast(entry);
   if (STORE) STORE.save(entry.record);
+}
+
+function readDecisionEvents(loopDir, runId, knownDecisions) {
+  const runsDir = path.join(loopDir, "runs");
+  const events = [];
+  const known = new Set(knownDecisions.map(decisionIdentity));
+  for (const runName of safeReaddir(runsDir)) {
+    const attempt = Number(/-a([1-9][0-9]*)$/.exec(runName)?.[1]);
+    if (!Number.isSafeInteger(attempt)) continue;
+    const runDir = path.join(runsDir, runName);
+    if (!isDir(runDir)) continue;
+    for (const fileName of safeReaddir(runDir)) {
+      const stage = decisionStage(fileName);
+      if (!stage) continue;
+      const filePath = path.join(runDir, fileName);
+      try {
+        const stat = fs.lstatSync(filePath);
+        if (!stat.isFile() || stat.size > DECISION_FILE_BYTES) continue;
+      } catch {
+        continue;
+      }
+      const decision = safeParse(readText(filePath));
+      if (!decision || Array.isArray(decision) || decision.version !== 1 || decision.stage !== stage
+        || decision.attempt !== attempt || typeof decision.phase !== "string" || !decision.phase.trim()) continue;
+      if (stage === "merge-risk" && decision.head !== fileName.slice("risk-decision-".length, -".json".length)) continue;
+      const event = { ...decision, event: "jev.decision", runId };
+      const identity = decisionIdentity(event);
+      if (known.has(identity)) continue;
+      known.add(identity);
+      events.push(event);
+    }
+  }
+  return events.sort((left, right) => decisionTime(left.ts) - decisionTime(right.ts)
+    || decisionIdentity(left).localeCompare(decisionIdentity(right)));
+}
+
+function decisionIdentity(decision) {
+  return JSON.stringify([decision.runId, decision.phase, decision.attempt, decision.stage,
+    decision.ts ?? "", decision.head ?? ""]);
+}
+
+function decisionTime(ts) {
+  const parsed = typeof ts === "string" ? Date.parse(ts) : NaN;
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function decisionStage(fileName) {
+  if (fileName === "route-decision.json") return "route";
+  if (fileName === "question-decision.json") return "question";
+  if (/^risk-decision-[0-9a-f]{7,64}\.json$/.test(fileName)) return "merge-risk";
+  return null;
 }
 
 // --- SSE broadcast -------------------------------------------------------------------
@@ -666,7 +721,8 @@ function main() {
       entry.record = record;
       entry.seq = ++seqCounter;
       maybeStartWatcher(entry); // reattach a still-live loop; archived loops just carry lastSnapshot
-      rematerialize(entry);
+      if (isDir(entry.record.loopDir)) reconcile(entry);
+      else rematerialize(entry);
     }
     const shutdown = () => {
       try {

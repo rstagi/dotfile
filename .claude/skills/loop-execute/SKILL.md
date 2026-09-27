@@ -187,12 +187,19 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
    `notes/<phaseNumber>.md` verbatim on **every** attempt, including the first. Retry-only
    context (`answers/`, verify.log tails, HIL answers) remains separate.
 3. Spawn detached per the protocol's Runner-spawn section (nohup + pid file):
-   `~/dotfile/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --run-id
+   `<runtime-root>/loop-runner.sh --worktree <wt> --run-dir <abs> --prompt-file <p> --run-id
    <runId> --phase <N> --repository <owner/repo> --chain task --verify-cmd
    '<phase-or-repository verify>'` (it inherits
    `LOOP_DAEMON_URL` via env, so its EXIT-trap `phase.attempt.*` events reach the daemon).
    Record pid + run dir in state; journal the event. A pickup `REFUSED` surfaces as the
    runner's `blocked` status → ladder, keep scheduling other lanes.
+
+   Resolve `<runtime-root>` once during preflight. Normally it is `~/dotfile`. When the
+   effort modifies `rstagi/dotfile` Loop runtime files, use that repository's integration
+   worktree after each lane merge. Read this skill and `references/loop-protocol.md` from
+   the same root when composing later SUB/runner prompts. The runner then resolves
+   `loop-models.conf`, `loop-jev.mjs`, and `loop-emit.sh` beside itself, exercising the
+   merged runtime without copying into or editing the installed checkout.
 
 There are no completion notifications from detached runners — monitor by polling per the
 protocol: `meta.json` appearing means the attempt ended; a `transcript.jsonl` staler than
@@ -203,16 +210,37 @@ preempt the runner's 30-minute phase checkpoint.
 
 Switch on the exit code (protocol table). The extra checks only you can do:
 
-- **exit 0** — before merging, skim `git diff <base>...HEAD` in the lane worktree against
-  the phase's *Done when* (the verify command proves it runs; you prove it's the right
-  work). `headBefore == headAfter` in meta.json → stall: escalate, never accept. Also
-  check the runner didn't push or leave junk (`git -C <wt> status`).
+- **exit 0** — run the pre-merge gates in this exact order; none is conditional on Jev:
+  verified exit 0 → one merge-risk judgment for this attempt/head → **full** diff skim →
+  `headBefore/headAfter` stall check → clean-worktree check → reread steering notes →
+  serialized merge → merged-tree Verify. Build the bounded judgment input with
+  `loop-jev-risk-input.mjs` from *Done when*, every changed path, aggregate diff statistics,
+  and the successful verification summary. It omits all patch contents; pipe it directly to
+  `loop-jev.mjs` without persisting the request or raw vendor response. Ask only `scopeGap`
+  (`none|possible|likely`) and `changeRisk` (`low|medium|high`). In active mode, use valid
+  advice only to focus the mandatory full `git diff <base>...HEAD` skim. Shadow, off, error,
+  malformed, and low-confidence results use the unfocused full skim. After that full skim,
+  the stall/clean checks, and rereading `notes/<N>.md`, validate the evidence and actual
+  disposition with `loop-jev-risk.mjs`. It rejects missing/reordered gates, dirty or stalled
+  attempts, head mismatches, and unverified results. Atomically persist its output as
+  `<runDir>/risk-decision-<head>.json`, then emit it with `loop_emit_jev_decision`. Reuse an
+  existing valid record only for the same attempt and head; a retry or new head gets a new
+  judgment and record. A builder/policy/Jev failure falls back to a typed `full-diff-skim`
+  disposition and never blocks these deterministic checks. Never send transcripts, logs,
+  environment values, credentials, or patch contents to TypeSafe.
 - **exit 10** — read `status.json`'s question. For `checkpoint:true`, read `checkpoint.md`
   when present and inspect the worktree; give a concrete next step from the plan and code.
   If the phase made no meaningful progress over two work blocks, escalate instead of
-  resuming indefinitely. Checkpoints do not consume the three decision-question rounds.
-  For other questions, answer yourself from the plan, Project Brain, and code; cap at 3
-  rounds per phase, then treat as blocked. Resume either kind **in a fresh attempt dir**
+  resuming indefinitely. Checkpoints bypass Jev and do not consume the three decision-question
+  rounds. For other questions, enforce the three-round cap first, increment the round, then
+  ask `loop-jev.mjs` one bounded `question` choice: `plan-answer`, `code-investigation`,
+  `human-preference`, or `uncertain`. Inspect the actual question and relevant plan before
+  acting, and inspect relevant code before a code-backed answer. A `human-preference` label
+  never raises HIL by itself. Shadow, error, low-confidence, and `uncertain` advice use the
+  existing plan/Project Brain/code path. Validate the disposition with
+  `loop-jev-question.mjs`; it rejects evidence-free answers and HIL outside L4. Persist its
+  typed suggestion-versus-action record atomically as `<runDir>/question-decision.json`, emit
+  it with `loop_emit_jev_decision`, and only then act. Resume either kind **in a fresh attempt dir**
   (protocol Q&A-resume): `loop-runner.sh --resume <sessionId> --engine <meta.engine>
   --run-dir <new a<K+1>> ...` with your answer as the prompt. If the session cannot
   resume, start fresh with the answer prepended.
@@ -227,6 +255,10 @@ Immediately before merging phase `<N>`, re-read `notes/<N>.md` and honor it (for
 rebase the lane onto its repository integration tip first). This catches notes dropped after the
 runner started. After the merge is complete and the phase is promoted `done|merged`, run
 `loop-state.sh note --dir .loop --clear <N>` as best-effort housekeeping.
+
+The merge-risk record is advisory proof of the completed pre-merge inspection, not a merge
+permit. Low risk, fallback, policy error, or low confidence cannot skip merge serialization or
+`loop-merge.sh`'s repository Verify. Do not call `loop-merge.sh` until the risk record exists.
 
 Serialize merges globally (one at a time), targeting the phase repository.
 `loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --run-id <runId> --phase <N>
