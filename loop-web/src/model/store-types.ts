@@ -103,6 +103,9 @@ export interface EventInfo {
   appliedAction?: string | null;
   fallbackReason?: string | null;
   resolvedModel?: string | null;
+  evidenceChecked?: boolean | null;
+  evidenceSources?: string[] | null;
+  questionRound?: number | null;
 }
 
 export type Ingest =

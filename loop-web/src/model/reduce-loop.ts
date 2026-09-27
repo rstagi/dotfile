@@ -411,7 +411,8 @@ function toRawEvent(ev: EventInfo): RawEvent {
     stage: ev.stage ?? undefined, mode: ev.mode ?? undefined, candidate: ev.candidate,
     confidence: ev.confidence, probabilities: ev.probabilities ?? undefined,
     appliedAction: ev.appliedAction, fallbackReason: ev.fallbackReason,
-    resolvedModel: ev.resolvedModel,
+    resolvedModel: ev.resolvedModel, evidenceChecked: ev.evidenceChecked ?? undefined,
+    evidenceSources: ev.evidenceSources ?? undefined, questionRound: ev.questionRound ?? undefined,
   };
 }
 
@@ -423,6 +424,8 @@ function rawToEventInfo(raw: RawEvent): EventInfo {
     mode: raw.mode ?? null, candidate: raw.candidate, confidence: raw.confidence,
     probabilities: raw.probabilities, appliedAction: raw.appliedAction,
     fallbackReason: raw.fallbackReason, resolvedModel: raw.resolvedModel,
+    evidenceChecked: raw.evidenceChecked, evidenceSources: raw.evidenceSources,
+    questionRound: raw.questionRound,
   };
 }
 
@@ -441,6 +444,11 @@ function decisionFromEvent(runId: string, ev: EventInfo): JevDecision | null {
     appliedAction: nonEmpty(ev.appliedAction),
     fallbackReason: nonEmpty(ev.fallbackReason),
     resolvedModel: nonEmpty(ev.resolvedModel),
+    evidenceChecked: ev.evidenceChecked === true,
+    evidenceSources: Array.isArray(ev.evidenceSources)
+      ? ev.evidenceSources.filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [],
+    questionRound: Number.isInteger(ev.questionRound) ? Number(ev.questionRound) : null,
     ts: ev.ts ?? null,
   };
 }

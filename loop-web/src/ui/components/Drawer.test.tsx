@@ -33,4 +33,19 @@ describe("Drawer Jev decisions", () => {
     expect(renderToStaticMarkup(<Drawer node={node()} pr={null} plan={null} runId={null} onClose={() => {}} />))
       .not.toContain("Jev decisions");
   });
+
+  it("labels question triage advice, disposition, and checked evidence", () => {
+    const html = renderToStaticMarkup(<Drawer node={node([{
+      runId: "r", phase: "2", attempt: 2, stage: "question", mode: "active",
+      candidate: "human-preference", confidence: 0.88,
+      probabilities: { "human-preference": 0.88, uncertain: 0.12 },
+      appliedAction: "raise-hil", fallbackReason: null, resolvedModel: "systemone",
+      evidenceChecked: true, evidenceSources: ["question", "plan"], ts: "2026-09-27T10:00:00Z",
+    }])} pr={null} plan={null} runId={null} onClose={() => {}} />);
+    expect(html).toContain("triage suggestion");
+    expect(html).toContain("actual action");
+    expect(html).toContain("human-preference");
+    expect(html).toContain("raise-hil");
+    expect(html).toContain("question, plan");
+  });
 });

@@ -217,9 +217,16 @@ Switch on the exit code (protocol table). The extra checks only you can do:
 - **exit 10** — read `status.json`'s question. For `checkpoint:true`, read `checkpoint.md`
   when present and inspect the worktree; give a concrete next step from the plan and code.
   If the phase made no meaningful progress over two work blocks, escalate instead of
-  resuming indefinitely. Checkpoints do not consume the three decision-question rounds.
-  For other questions, answer yourself from the plan, Project Brain, and code; cap at 3
-  rounds per phase, then treat as blocked. Resume either kind **in a fresh attempt dir**
+  resuming indefinitely. Checkpoints bypass Jev and do not consume the three decision-question
+  rounds. For other questions, enforce the three-round cap first, increment the round, then
+  ask `loop-jev.mjs` one bounded `question` choice: `plan-answer`, `code-investigation`,
+  `human-preference`, or `uncertain`. Inspect the actual question and relevant plan before
+  acting, and inspect relevant code before a code-backed answer. A `human-preference` label
+  never raises HIL by itself. Shadow, error, low-confidence, and `uncertain` advice use the
+  existing plan/Project Brain/code path. Validate the disposition with
+  `loop-jev-question.mjs`; it rejects evidence-free answers and HIL outside L4. Persist its
+  typed suggestion-versus-action record atomically as `<runDir>/question-decision.json`, emit
+  it with `loop_emit_jev_decision`, and only then act. Resume either kind **in a fresh attempt dir**
   (protocol Q&A-resume): `loop-runner.sh --resume <sessionId> --engine <meta.engine>
   --run-dir <new a<K+1>> ...` with your answer as the prompt. If the session cannot
   resume, start fresh with the answer prepended.

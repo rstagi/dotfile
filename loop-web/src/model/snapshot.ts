@@ -68,6 +68,9 @@ function decisionsFromRuntime(runtime: Runtime | null): JevDecision[] {
       appliedAction: event.appliedAction ?? null,
       fallbackReason: event.fallbackReason ?? null,
       resolvedModel: event.resolvedModel ?? null,
+      evidenceChecked: event.evidenceChecked === true,
+      evidenceSources: event.evidenceSources ?? [],
+      questionRound: Number.isInteger(event.questionRound) ? event.questionRound! : null,
       ts: event.ts ?? null,
     };
     const key = `${decision.runId}|${decision.phase}|${decision.attempt}|${decision.stage}|${decision.ts ?? ""}`;

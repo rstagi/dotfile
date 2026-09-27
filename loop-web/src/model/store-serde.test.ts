@@ -45,11 +45,15 @@ describe("store serde — round-trip", () => {
         event: "jev.decision", phase: "2", attempt: 3, stage: "question", mode: "active",
         candidate: "investigate", confidence: 0.82, probabilities: { investigate: 0.82 },
         appliedAction: "investigate", fallbackReason: null, resolvedModel: "systemone",
+        evidenceChecked: true, evidenceSources: ["question", "plan", "code"], questionRound: 3,
         ts: "2026-09-27T10:00:00Z",
       },
     } as never);
     const parsed = parseStoreFile(serializeRecord(rec))!;
     expect(parsed.decisions).toEqual(rec.decisions);
+    expect(parsed.decisions[0]).toMatchObject({
+      evidenceChecked: true, evidenceSources: ["question", "plan", "code"], questionRound: 3,
+    });
   });
 
   it("stamps the current schema version", () => {
