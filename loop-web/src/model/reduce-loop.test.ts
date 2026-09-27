@@ -178,6 +178,24 @@ describe("reduceLoop — promotion lattice (the staleness fix)", () => {
     expect(effectivePhaseStatus(rec, "3")).toBe("done");
   });
 
+  it("keeps an explicit review phase running when one review-stage attempt finishes", () => {
+    const rec = fold(
+      "r",
+      { kind: "register", info: { runId: "r", planText: APPENDED_PLAN } },
+      stateWith({ "4": { kind: "pr-review", slug: "review-p4", status: "running" } }),
+      {
+        kind: "event",
+        event: { event: "phase.attempt.finish", phase: "4", outcome: "done", exitCode: 0 },
+      },
+    );
+
+    expect(rec.phases["4"].rank).toBe("running");
+    expect(effectivePhaseStatus(rec, "4")).toBe("running");
+    expect(rec.events).toEqual([
+      expect.objectContaining({ event: "phase.attempt.finish", phase: "4" }),
+    ]);
+  });
+
   it("promotes to merged and never regresses below it (merged over a later running push)", () => {
     const rec = fold(
       "r",

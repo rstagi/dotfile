@@ -4,7 +4,8 @@
 //
 // Contract, in one line: a phase's rank only ever advances (monotone max over
 // `todo<claimed<running<done<merged`), so a `phase.attempt.finish{done,exit0}` event
-// promotes the phase to `done` even while state.json still says `running` — the staleness fix.
+// promotes a work phase to `done` even while state.json still says `running` — the staleness
+// fix. Explicit review phases advance only from their aggregate pipeline state.
 
 import type {
   Ingest,
@@ -237,7 +238,7 @@ function applyEvent(prev: LoopRecord, ev: EventInfo): LoopRecord {
   // the EVENT_CAP. (sub.recycle IS a real milestone and stays in the timeline.)
   const heartbeat = (ev.event ?? "").trim().toLowerCase() === "sub.saturation";
   const events = heartbeat ? prev.events : mergeEvents(prev.events, [toRawEvent(ev)]);
-  const eff = eventSemantics(ev);
+  const eff = eventSemantics(ev, prev.planText);
   const decision = decisionFromEvent(prev.runId, ev);
   const decisions = decision ? mergeDecisions(prev.decisions, [decision]) : prev.decisions;
   let next: LoopRecord = { ...prev, events, decisions, updatedAt: ev.ts ?? prev.updatedAt };
@@ -262,14 +263,19 @@ function applyEventsFile(prev: LoopRecord, text: string): LoopRecord {
   return parseJsonlEvents(text).reduce((rec, raw) => applyEvent(rec, rawToEventInfo(raw)), prev);
 }
 
-function eventSemantics(ev: EventInfo): EventEffect {
+function eventSemantics(ev: EventInfo, planText: string | null): EventEffect {
   const phase = nonEmpty(ev.phase);
   const name = (ev.event ?? "").trim().toLowerCase();
-  if (TYPED_EVENTS.has(name)) return typedSemantics(name, ev, phase);
+  if (TYPED_EVENTS.has(name)) return typedSemantics(name, ev, phase, planText);
   return keywordSemantics(name, phase);
 }
 
-function typedSemantics(name: string, ev: EventInfo, phase: string | null): EventEffect {
+function typedSemantics(
+  name: string,
+  ev: EventInfo,
+  phase: string | null,
+  planText: string | null,
+): EventEffect {
   switch (name) {
     case "phase.attempt.start":
       return { phase, patch: phase ? { rank: "running" } : null };
@@ -278,6 +284,7 @@ function typedSemantics(name: string, ev: EventInfo, phase: string | null): Even
       if (ev.exitCode === 12) return { phase, patch: { problem: "verify-fail" } };
       const outcome = (ev.outcome ?? "").toLowerCase();
       if (outcome === "done" && (ev.exitCode == null || ev.exitCode === 0)) {
+        if (isExplicitReviewPhase(planText, phase)) return { phase, patch: { problem: null } };
         return { phase, patch: { rank: "done", problem: null } };
       }
       const problem = outcome && outcome !== "done" ? outcome : ev.exitCode ? `exit-${ev.exitCode}` : null;
@@ -312,6 +319,13 @@ function typedSemantics(name: string, ev: EventInfo, phase: string | null): Even
       // review.finish and any other typed name: timeline-only (review is owned by state/finish).
       return { phase, patch: null };
   }
+}
+
+function isExplicitReviewPhase(planText: string | null, phase: string): boolean {
+  if (!planText) return false;
+  return parsePlan(planText).phases.some(
+    (plannedPhase) => plannedPhase.phase === phase && plannedPhase.kind === "pr-review",
+  );
 }
 
 /** Legacy fallback: reuse derive.ts EVENT_RULES so a free-form events.jsonl still promotes. */

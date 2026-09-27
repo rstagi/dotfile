@@ -192,8 +192,10 @@ so they ride the live daemon POST exclusively.
 
 **Monotone promotion lattice.** The daemon materializes each loop through a monotone rank
 `todo < claimed < running < done < merged`; a `phase.attempt.finish{outcome:done, exit 0}`
-promotes a phase to **done even if state.json bookkeeping lags** (fixes "done phases stuck at
-running/todo"). Ranks never regress — a phase never un-completes in the UI (v1).
+promotes a work phase to **done even if state.json bookkeeping lags** (fixes "done phases stuck
+at running/todo"). Individual review-stage attempts never promote an explicit `pr-review`
+phase; only the aggregate review pipeline does that after every repository finishes. Ranks never
+regress — a phase never un-completes in the UI (v1).
 
 ## state.json schema v2
 
