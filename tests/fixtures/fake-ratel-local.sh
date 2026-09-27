@@ -10,7 +10,7 @@ case "${1:-} ${2:-} ${3:-}" in
   "skill list --discovered")
     jq -cn --arg root "$FAKE_SKILL_SOURCE" '
       {candidates: [
-        "multiphase-plan", "loop-execute", "loop-pickup", "loop-handoff",
+        "checkpoint-30", "multiphase-plan", "loop-execute", "loop-pickup", "loop-handoff",
         "pr-review", "pr-review-fix-all"
       ] | map({
         candidateId: ("cand-" + .), id: ., source: "claude",

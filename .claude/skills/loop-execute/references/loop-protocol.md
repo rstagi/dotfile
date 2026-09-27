@@ -100,6 +100,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
     transcript.jsonl         # full stream-json/JSONL (kept; mtime doubles as heartbeat)
     last.md                  # final assistant message
     status.json              # runner-written result (schema below)
+    checkpoint.md            # observable worktree state if the 30m phase deadline fired
     stderr.log  verify.log   # wrapper-captured
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
   runs/review-p<N>-<owner--repo>-a<1..9>/ # review phase N; see PR review phase pipeline
@@ -256,8 +257,10 @@ echo $! > <runDir>/pid; disown
 
 There is no completion notification — the orchestrator monitors by polling: `meta.json`
 exists → the attempt ended (read `status.json` + runner exit from spawn.log tail);
-otherwise `transcript.jsonl` mtime is the heartbeat, stale >25 min → kill the pid tree,
-treat as exit 124. The 25-minute threshold lives here only.
+otherwise `transcript.jsonl` mtime is the heartbeat. Phase attempts have their own 30-minute
+watchdog and produce an exit-10 checkpoint; do not kill a quiet phase before that deadline.
+If a runner is still live without `meta.json` 35 minutes after its attempt started, its
+watchdog failed: kill the pid tree and treat as exit 124.
 
 ## Two-tier orchestration (self-recycling SUB)
 
@@ -382,13 +385,17 @@ given in its prompt):
   "outcome": "done | question | blocked",
   "summary": "1-3 lines: what happened / what was built",
   "question": "only when outcome=question — ONE concrete question, with options if useful",
+  "checkpoint": "optional true for a 30-minute phase checkpoint",
   "details": "only when outcome=blocked — what was found, what was tried"
 }
 ```
 
 - `done` — the phase's *Done when* holds, work is committed, local verify passed.
 - `question` — a decision is needed (ambiguity, unexpected finding with options). Stop
-  immediately after writing; the orchestrator answers and resumes the session.
+  immediately after writing; the orchestrator answers and resumes the session. A
+  `checkpoint:true` question also occurs when a phase reaches its 30-minute work limit.
+  The runner adds the deadline to the prompt; if the agent misses it, the wrapper stops the
+  process and writes a fallback `status.json` plus `checkpoint.md` from worktree state.
 - `blocked` — cannot proceed and no question would unblock (missing dep, broken base,
   contradiction in the plan).
 
@@ -399,12 +406,12 @@ No sentinel tags in prose. A process that exits without a valid `status.json` is
 | Code | Meaning | Orchestrator reaction |
 |------|---------|----------------------|
 | 0    | `done`, status.json valid, `--verify-cmd` passed (if given) | merge gate |
-| 10   | `question` | escalation L2: answer + resume |
+| 10   | `question`, including a phase checkpoint | answer + resume; checkpoints do not count toward the three decision-question rounds |
 | 12   | claimed `done` but verify failed (verify.log has output) | retry with failure context; 2nd time → L3 |
 | 20   | `blocked` | escalation L3 |
 | 40   | whole model chain exhausted on API errors | backoff (60s·2ⁿ, cap 15m), retry from top of chain — max 3 per phase, then L3; two or more lanes hitting 40 → pause all scheduling + notify |
 | 50   | crash: process exited without valid status.json | count as failed attempt → L3 after 2 |
-| 124  | watchdog timeout (TERM then KILL) | one retry, then L3 |
+| 124  | review watchdog timeout or failed phase watchdog | one retry, then L3 |
 | 1    | usage/infra error (bad args, missing tools) | fix invocation, not the phase |
 
 Every attempt restarts at the **top** of its chain (no sticky fallback). `meta.json` records
@@ -415,28 +422,30 @@ plan proves there were no accepted findings. Those cases are not stalls.
 ## Model chains (loop-models.conf)
 
 ```sh
-CHAIN_TASK=("codex:gpt-5.6-sol" "claude:opus")
+CHAIN_TASK=("codex:gpt-6-sol" "claude:claude-sonnet-5")
 CHAIN_ESCALATE=("claude:fable+opus")
 CHAIN_REVIEW_FABLE=("claude:claude-fable-5-1")
 CHAIN_REVIEW_ASTRA=("codex:gpt-6-astra")
 CHAIN_REVIEW_FIX=("claude:claude-opus-5")
 CHAIN_REVIEW_FINAL=("claude:claude-opus-5")
-CHAIN_ORCHESTRATE=("claude:claude-fable-5-1+claude-opus-5")
+CHAIN_ORCHESTRATE=("claude:claude-opus-5-5")
 CODEX_EXTRA_ARGS=(-c 'model_reasoning_effort="high"')
 CLAUDE_EXTRA_ARGS=(--effort high)
 LOOP_BUDGET_USD=15        # per attempt, claude legs only (codex has no budget flag)
-LOOP_TIMEOUT_TASK=2700    # 45m
+LOOP_CHECKPOINT_SEC=1800  # hard ceiling across all legs/retries of one phase attempt
+LOOP_TIMEOUT_TASK=1800    # 30m
 LOOP_TIMEOUT_ESCALATE=1800
-LOOP_TIMEOUT_REVIEW=2400
-LOOP_TIMEOUT_REMEDIATE=3600
+LOOP_TIMEOUT_REVIEW=1800
+LOOP_TIMEOUT_REMEDIATE=1800
 LOOP_MAX_PARALLEL=3
+LOOP_ORCH_CTX_WINDOW=1000000
 ```
 
 Leg grammar: `engine:model[+fallback[,fallback2]]`. The `+` list maps to Claude's native
 `--fallback-model` (comma-separated; CLI retries the primary each turn) — so intra-Claude
 fallback is one leg. Codex→Claude hops are the wrapper's job. Task/escalation legs may use
 Claude aliases; review and orchestration roles use full model names to pin Fable 5.1,
-Astra 6, and Opus 5. Each review chain contains exactly one leg: a failed stage stays failed
+Astra 6, Opus 5, and Opus 5.5. Each review chain contains exactly one leg: a failed stage stays failed
 instead of silently becoming a duplicate of another model. The `review-fix` prompt invokes
 `/pr-review-fix-all`; that skill owns Opus 5 subagent delegation.
 
@@ -447,6 +456,10 @@ Claude stream-json, `error` events in Codex JSONL — stderr regex last):
   attempts total, backoff 10/30s;
 - rate/usage (`429|rate.?limit|usage limit|quota`) → advance to next leg immediately;
 - other nonzero → one retry, then next leg.
+
+For every chain, `loop-runner.sh` caps even an explicit `--timeout` at
+`LOOP_CHECKPOINT_SEC`. The deadline covers the entire attempt, including retries, backoff,
+and fallback models. Each review stage has its own attempt and checkpoint.
 
 ## Engine invocations (inside loop-runner.sh)
 
@@ -502,6 +515,11 @@ steering notes: notes/<phaseNumber>.md — fold verbatim on EVERY attempt, inclu
 answers/<phase>.md retry guidance; hil answer — whichever exist>
 
 Read steering notes on every attempt, including the first. Read answers/ only on retries.
+
+The runner appends the actual 30-minute deadline to this prompt at launch. At about 25
+minutes, prepare a status. If unfinished, write `status.json` with outcome "question",
+`checkpoint:true`, concise progress, and one question for the orchestrator, then exit.
+The orchestrator answers in a fresh attempt without stopping other lanes.
 
 WHEN FINISHED (Done when holds and `<verify cmd>` passes locally): run
 `$loop-handoff --auto phase:<N> status:in-progress lane:<X> engine:<engine>` (comment:

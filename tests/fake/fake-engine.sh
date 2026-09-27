@@ -6,6 +6,7 @@
 #   hang   → sleep (never writes status.json) so the stall watchdog must kill it
 #   <word> → status.json {outcome:<word>, tokens, recycleIndex:<instance-n>}
 set -u
+[[ -n "${FAKE_ENGINE_ARGS_LOG:-}" ]] && print -r -- "$*" >> "$FAKE_ENGINE_ARGS_LOG"
 SUB="${LOOP_SUB_DIR:?LOOP_SUB_DIR required}"
 [[ -n "${FAKE_ENGINE_ARGS_LOG:-}" ]] && print -r -- "$*" >> "$FAKE_ENGINE_ARGS_LOG"
 cf="$SUB/.fake-count"

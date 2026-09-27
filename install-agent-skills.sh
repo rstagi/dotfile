@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOURCE_ROOT="$SCRIPT_DIR/.claude/skills"
 USE_RATEL=true
 SHARED_SKILLS=(
+  checkpoint-30
   multiphase-plan
   loop-execute
   loop-pickup

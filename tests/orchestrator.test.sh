@@ -35,8 +35,8 @@ assert_eq "$(count_transcripts)" "2" "spawned two instances (one recycle, one co
 assert_contains "$(cat "$EMIT_LOG")" "sub.recycle" "emitted a sub.recycle event"
 assert_contains "$(cat "$EMIT_LOG")" '"recycleIndex":1' "sub.recycle carries recycleIndex 1"
 assert_contains "$(cat "$EMIT_LOG")" '"tokens":151000' "sub.recycle carries tokens from status.json"
-assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--model claude-fable-5-1' "pins orchestration to Fable 5.1"
-assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--fallback-model claude-opus-5' "keeps Opus 5 orchestration fallback"
+assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--model claude-opus-5-5' "starts the SUB on Opus 5.5"
+assert_contains "$(cat "$SUB/prompt-1.md")" '--window 1000000' "uses Opus 5.5 context for occupancy"
 
 echo "orchestrator: review barrier → hand control to supervise"
 reset

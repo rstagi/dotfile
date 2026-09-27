@@ -13,7 +13,7 @@ set -u -o pipefail
 #     [--resume <sessionId> --engine codex|claude] [--models-conf <f>] [--budget <usd>]
 #
 # Exit: 0 done+verified · 10 question · 12 verify failed · 20 blocked
-#       40 chain exhausted (API) · 50 crash (no valid status.json) · 124 timeout · 1 usage
+#       40 chain exhausted (API) · 50 crash (no valid status.json) · 1 usage
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -93,6 +93,10 @@ review-final) chain=("${CHAIN_REVIEW_FINAL[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIME
 *) echo "loop-runner: unknown chain '$CHAIN_NAME'" >&2; exit 1 ;;
 esac
 [[ "$TIMEOUT" == <-> ]] || { echo "loop-runner: --timeout must be integer seconds" >&2; exit 1; }
+CHECKPOINT_LIMIT="${LOOP_CHECKPOINT_SEC:-1800}"
+[[ "$CHECKPOINT_LIMIT" == <-> ]] || { echo "loop-runner: LOOP_CHECKPOINT_SEC must be integer seconds" >&2; exit 1; }
+(( TIMEOUT > CHECKPOINT_LIMIT )) && TIMEOUT="$CHECKPOINT_LIMIT"
+CHECKPOINT_MODE=1
 
 mkdir -p "$RUN_DIR"
 [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" ]] && jq -cn --arg event phase.attempt.start \
@@ -100,6 +104,20 @@ mkdir -p "$RUN_DIR"
   '{event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end),
     detail:$detail, ts:$ts}' | loop_emit "$RUN_ID" event
 [[ "$PROMPT_FILE" -ef "$RUN_DIR/prompt.md" ]] || cp "$PROMPT_FILE" "$RUN_DIR/prompt.md"
+if (( CHECKPOINT_MODE )); then
+  ATTEMPT_DEADLINE=$(( $(date +%s) + TIMEOUT ))
+  cat >> "$RUN_DIR/prompt.md" <<EOF
+
+30-MINUTE PHASE CHECKPOINT: This attempt ends at Unix time $ATTEMPT_DEADLINE.
+Check \`date +%s\` between steps. About five minutes before the deadline, prepare a
+short status. Before the deadline, if unfinished, write $RUN_DIR/status.json with
+outcome "question", checkpoint true, a 1-3 line summary of work done and remaining,
+and one concrete question for the orchestrator. Then stop. Do not ask the user or
+run loop-handoff for unfinished work. The orchestrator will answer and resume this
+phase or review stage in a fresh attempt; other lanes continue. If complete, use
+the normal done handoff.
+EOF
+fi
 TRANSCRIPT="$RUN_DIR/transcript.jsonl" STDERR="$RUN_DIR/stderr.log"
 STATUS="$RUN_DIR/status.json" LAST="$RUN_DIR/last.md"
 HEAD_BEFORE="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -157,6 +175,14 @@ descendants() { # print pids of the full process tree under $1 (depth-first)
 
 run_leg() { # runs current engine with watchdog; returns engine exit code (200 = timeout)
   rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims"
+  local leg_timeout="$TIMEOUT"
+  if (( CHECKPOINT_MODE )); then
+    leg_timeout=$(( ATTEMPT_DEADLINE - $(date +%s) ))
+    if (( leg_timeout <= 0 )); then
+      TIMED_OUT=1
+      return 200
+    fi
+  fi
   if [[ "$CUR_ENGINE" == "claude" ]]; then
     launch_claude "$CUR_MODEL" "$CUR_FALLBACK" &
   else
@@ -165,7 +191,7 @@ run_leg() { # runs current engine with watchdog; returns engine exit code (200 =
   local child=$!
   # watchdog only marks + TERMs the whole tree; the KILL follow-through happens in the
   # main flow after wait (the watchdog dies with its TERM'd parent otherwise)
-  ( sleep "$TIMEOUT"
+  ( sleep "$leg_timeout"
     kill -0 "$child" 2>/dev/null || exit 0
     { echo "$child"; descendants "$child"; } > "$RUN_DIR/.victims"
     touch "$RUN_DIR/.timeout"
@@ -193,6 +219,39 @@ run_leg() { # runs current engine with watchdog; returns engine exit code (200 =
   return $rc
 }
 
+write_checkpoint() {
+  local head_after change_count
+  head_after="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  change_count="$(git -C "$WT" status --short 2>/dev/null | wc -l | tr -d ' ')"
+  {
+    print -r -- "# Phase checkpoint"
+    print -r -- "HEAD: $HEAD_BEFORE → $head_after"
+    print -r -- "Worktree changes: $change_count"
+    print -r -- ""
+    print -r -- "## Commits in this attempt"
+    git -C "$WT" log --oneline "$HEAD_BEFORE..$head_after" 2>/dev/null | head -20
+    print -r -- ""
+    print -r -- "## Current worktree"
+    git -C "$WT" status --short 2>/dev/null | head -30
+    print -r -- ""
+    print -r -- "## Diff summary"
+    git -C "$WT" diff --stat 2>/dev/null | head -30
+  } > "$RUN_DIR/checkpoint.md"
+  jq -n --arg summary "30-minute checkpoint: HEAD $HEAD_BEFORE → $head_after; $change_count worktree changes. See checkpoint.md." \
+    --arg question "What should this phase prioritize in the next work block?" \
+    '{outcome:"question",checkpoint:true,summary:$summary,question:$question}' > "$STATUS"
+}
+
+pause_retry() {
+  local delay="$1" remaining
+  if (( CHECKPOINT_MODE )); then
+    remaining=$(( ATTEMPT_DEADLINE - $(date +%s) ))
+    (( remaining <= 0 )) && return 0
+    (( delay > remaining )) && delay="$remaining"
+  fi
+  sleep "$delay"
+}
+
 # error classification reads stderr + error-shaped transcript events only (never the
 # whole transcript — code diffs would false-positive the regexes). Materialized to a
 # file: grep -q on a pipe + pipefail returns 141 on match (SIGPIPE upstream).
@@ -216,6 +275,12 @@ fi
 
 final_rc=40
 for leg in "${chain[@]}"; do
+  if (( CHECKPOINT_MODE && $(date +%s) >= ATTEMPT_DEADLINE )); then
+    TIMED_OUT=1
+    write_checkpoint
+    write_meta 124
+    exit 10
+  fi
   CUR_ENGINE="${leg%%:*}"
   rest="${leg#*:}"
   CUR_MODEL="${rest%%+*}"
@@ -227,6 +292,16 @@ for leg in "${chain[@]}"; do
     rm -f "$STATUS"
     run_leg; rc=$?
     if [[ $rc -eq 200 ]]; then
+      if (( CHECKPOINT_MODE )); then
+        if [[ "$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null)" == "done" ]]; then
+          leg_done=1
+          break
+        fi
+        [[ "$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null)" == "question" ]] || write_checkpoint
+        write_meta 124
+        echo "loop-runner: phase checkpoint after ${TIMEOUT}s" >&2
+        exit 10
+      fi
       write_meta 124
       echo "loop-runner: timeout on $leg after ${TIMEOUT}s" >&2
       exit 124
@@ -242,14 +317,14 @@ for leg in "${chain[@]}"; do
     if is_transient || [[ $rc -eq 0 ]]; then
       retries=$((retries + 1))
       echo "loop-runner: transient failure on $leg (rc=$rc), retry $retries" >&2
-      [[ $retries -lt 3 ]] && { sleep "$delay"; delay=$((delay * 3)); }
+      [[ $retries -lt 3 ]] && { pause_retry "$delay"; delay=$((delay * 3)); }
       continue
     fi
     # unknown failure: one retry, then next leg
     if [[ $retries -eq 0 ]]; then
       retries=1
       echo "loop-runner: unknown failure on $leg (rc=$rc), one retry" >&2
-      sleep "$delay"
+      pause_retry "$delay"
       continue
     fi
     echo "loop-runner: giving up on $leg (rc=$rc)" >&2
@@ -257,6 +332,13 @@ for leg in "${chain[@]}"; do
   done
   [[ $leg_done -eq 1 ]] && { final_rc=0; break; }
 done
+
+if (( CHECKPOINT_MODE && final_rc == 40 && $(date +%s) >= ATTEMPT_DEADLINE )); then
+  TIMED_OUT=1
+  write_checkpoint
+  write_meta 124
+  exit 10
+fi
 
 if [[ $final_rc -eq 40 ]]; then
   write_meta 40

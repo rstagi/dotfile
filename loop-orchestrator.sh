@@ -42,7 +42,7 @@ NOTIFY_SH="${LOOP_NOTIFY_SH:-$SCRIPT_DIR/loop-notify.sh}"
 ENGINE_CMD="${ENGINE_CMD:-claude}"
 
 RECYCLE_TOKENS="${_e_recycle:-${LOOP_ORCH_RECYCLE_TOKENS:-150000}}"
-CTX_WINDOW="${_e_window:-${LOOP_ORCH_CTX_WINDOW:-200000}}"
+CTX_WINDOW="${_e_window:-${LOOP_ORCH_CTX_WINDOW:-1000000}}"
 STALL_SEC="${_e_stall:-${LOOP_ORCH_STALL_SEC:-1500}}"
 POLL_SEC="${_e_poll:-${LOOP_ORCH_POLL_SEC:-30}}"
 MAX_RESPAWN="${_e_max:-${LOOP_ORCH_MAX_RESPAWN:-3}}"
@@ -54,8 +54,8 @@ PIDFILE="$SUB/current.pid"
 mkdir -p "$SUB/control"
 
 # First CHAIN_ORCHESTRATE leg → engine:model[+fallback]  (zsh arrays are 1-indexed).
-leg="${CHAIN_ORCHESTRATE[1]:-claude:claude-fable-5-1+claude-opus-5}"
-[[ "$leg" == *:* ]] || leg="claude:claude-fable-5-1+claude-opus-5"  # guard malformed config
+leg="${CHAIN_ORCHESTRATE[1]:-claude:claude-opus-5-5}"
+[[ "$leg" == *:* ]] || leg="claude:claude-opus-5-5"  # guard malformed config
 LEG_MODEL="${leg#*:}"; LEG_MODEL="${LEG_MODEL%%+*}"
 LEG_FALLBACK=""; [[ "${leg#*:}" == *"+"* ]] && LEG_FALLBACK="${leg#*+}"
 
