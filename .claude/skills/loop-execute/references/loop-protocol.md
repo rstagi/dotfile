@@ -590,6 +590,20 @@ already exists and validates, reuse it rather than calling Jev again. A retry or
 must create and emit a new timestamped record. The canonical candidate is
 `scope-gap:<label> · risk:<label>`; `appliedAction` is the actual full-skim disposition.
 
+### Shadow replay and rollout
+
+`loop-jev-replay.mjs <snapshot-or-store.json> [...]` reads persisted live snapshots or archived
+store records and emits one JSON report without writing to the source loops. It compares each
+recorded route, question, and merge-risk proposal with the applied action using stage-specific
+policy mappings, then reports per-stage and overall agreement and fallback rates. Archived records
+use the frozen `lastSnapshot.decisions`, matching Observatory reload behavior.
+
+Latency, runner retries, and cost appear only when those numeric fields were recorded; otherwise
+the report marks each metric `unavailable`. Synthetic fixtures cover the three stages, archive
+reload, explicit off mode, missing credentials, and API failure, but validate mechanics only and
+must never be used to claim savings. Keep routing in shadow unless observed loop data supports the
+configured active threshold; `LOOP_JEV_MODE=active` remains an explicit opt-in.
+
 ## Runner prompt skeleton (orchestrator generates prompt.md per attempt)
 
 ```
