@@ -98,6 +98,13 @@ AskUserQuestion (HIL → files only, keep other lanes running). When the next re
 \`[kind: pr-review]\`, write \`$STATUS\` outcome "review-ready". Use "complete" only for a
 legacy plan with no explicit review phase. On an unrecoverable error, outcome "fatal" or "blocked".
 Your final act MUST be writing \`$STATUS\` (schema: {outcome, summary, tokens, recycleIndex}).
+CRITICAL one-shot runtime: you are a \`claude -p\` process — ending your turn EXITS the
+process; background tasks and "you will be notified" promises die with it and never reach
+you. Ending your turn without having just written \`$STATUS\` is a crash. Wait on runners in
+bounded foreground slices only (one per Bash call, each under ~110s so the harness never
+backgrounds it): \`timeout 100 zsh -c 'until [[ -f <runDir>/meta.json ]]; do sleep 10; done'; true\`
+— then re-check state and issue the next slice. If a tool result says "running in background",
+do NOT end your turn; continue with the next bounded slice.
 EOF
 }
 
@@ -129,7 +136,9 @@ while :; do
   : > "$transcript"
   build_sub_prompt "$k" > "$SUB/prompt-$k.md"
 
-  "${LB[@]}" "$ENGINE_CMD" -p --model "$LEG_MODEL" ${LEG_FALLBACK:+--fallback-model "$LEG_FALLBACK"} \
+  fb_args=()
+  [[ -n "$LEG_FALLBACK" ]] && fb_args=(--fallback-model "$LEG_FALLBACK")
+  "${LB[@]}" "$ENGINE_CMD" -p --model "$LEG_MODEL" "${fb_args[@]}" \
     --output-format stream-json --verbose \
     --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
     --max-budget-usd "$BUDGET" \

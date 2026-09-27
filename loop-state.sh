@@ -119,12 +119,17 @@ get)
 set)
   [[ -f "$STATE" ]] || die "no state.json in $DIR"
   [[ -n "${ARGS[1]:-}" ]] || die "set requires a jq expression"
+  # A dash-leading "expression" (e.g. `set --help`) would reach jq as an OPTION: `jq --help`
+  # prints usage to stdout with exit 0 and the mv below would clobber state.json with it.
+  [[ "${ARGS[1]}" != -* ]] || die "set: expression may not start with '-' (got '${ARGS[1]}')"
   tmp="$(mktemp "$DIR/.state.XXXXXX")"
-  if jq "${ARGS[1]}" "$STATE" > "$tmp"; then
+  # `--` ends option parsing; the output must still be ONE JSON object or we refuse to replace.
+  if jq -- "${ARGS[1]}" "$STATE" > "$tmp" && jq -e 'type == "object"' "$tmp" >/dev/null 2>&1 \
+     && [[ "$(jq -c . "$tmp" | wc -l | tr -d ' ')" == "1" ]]; then
     mv "$tmp" "$STATE"
   else
     rm -f "$tmp"
-    die "jq expression failed"
+    die "jq expression failed or did not yield a single JSON object (state.json unchanged)"
   fi
   emit_state
   ;;
