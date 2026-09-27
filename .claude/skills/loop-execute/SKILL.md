@@ -171,7 +171,8 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
 
 There are no completion notifications from detached runners — monitor by polling per the
 protocol: `meta.json` appearing means the attempt ended; a `transcript.jsonl` staler than
-the protocol's threshold means a hung runner (kill the pid tree, treat as 124).
+the protocol's threshold means a hung runner (kill the pid tree, treat as 124). Do not
+preempt the runner's 30-minute phase checkpoint.
 
 ### 5. Handle a runner exit
 
@@ -181,11 +182,15 @@ Switch on the exit code (protocol table). The extra checks only you can do:
   the phase's *Done when* (the verify command proves it runs; you prove it's the right
   work). `headBefore == headAfter` in meta.json → stall: escalate, never accept. Also
   check the runner didn't push or leave junk (`git -C <wt> status`).
-- **exit 10** — read `status.json`'s question. Answer it yourself from the plan, Project
-  Brain, and the code (this is why the orchestrator is the big model). Resume the session
-  **in a fresh attempt dir** (protocol Q&A-resume): `loop-runner.sh --resume <sessionId>
-  --engine <meta.engine> --run-dir <new a<K+1>> ...` with your answer as the prompt. Cap 3
-  rounds per phase, then treat as blocked.
+- **exit 10** — read `status.json`'s question. For `checkpoint:true`, read `checkpoint.md`
+  when present and inspect the worktree; give a concrete next step from the plan and code.
+  If the phase made no meaningful progress over two work blocks, escalate instead of
+  resuming indefinitely. Checkpoints do not consume the three decision-question rounds.
+  For other questions, answer yourself from the plan, Project Brain, and code; cap at 3
+  rounds per phase, then treat as blocked. Resume either kind **in a fresh attempt dir**
+  (protocol Q&A-resume): `loop-runner.sh --resume <sessionId> --engine <meta.engine>
+  --run-dir <new a<K+1>> ...` with your answer as the prompt. If the session cannot
+  resume, start fresh with the answer prepended.
 - **exit 12** — relaunch once with the verify.log tail in the prompt; second failure →
   L3.
 - **exit 20 / 50×2 / 124×2** — escalate per the ladder. **exit 40** — follow the

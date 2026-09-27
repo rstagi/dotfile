@@ -7,6 +7,14 @@ Run the following command to install everything:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/rstagi/dotfile/master/install.sh)"
 ```
 
+## Agent checkpoints
+
+Invoke `/checkpoint-30` in Claude or `$checkpoint-30` in Codex to request a status report and guidance after 30 minutes on one interactive task. Interactive timing is advisory. Loop phase attempts have a hard 30-minute cutoff and return a checkpoint to the orchestrator; other phases continue.
+
+Loop defaults: Opus 5.5 orchestrator; GPT-6-Sol phase executor with Sonnet 5 fallback. Escalation and review use separate model chains. GPT-6-Sol requires Codex CLI 0.155.0 or newer.
+
+New Loop plans include an estimate and confidence for each phase. The planner targets 20–25 minutes of active work per phase, leaving room for the 30-minute runner checkpoint. Retries and queue waits can take longer.
+
 ## Manual configurations
 
 There are some packages to be configured manually.
@@ -64,4 +72,3 @@ Go to `Settings > General > Login items` and set the following apps to start whe
 - Raycast
 - Rectangle
 - RunCat
-

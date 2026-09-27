@@ -609,6 +609,8 @@ install_claude_config() {
     ln -sfn ~/dotfile/CLAUDE_GLOBAL.md ~/.claude/CLAUDE.md
     mkdir -p ~/.codex
     ln -sfn ~/dotfile/AGENTS_GLOBAL.md ~/.codex/AGENTS.md
+    mkdir -p ~/.codex/skills
+    ln -sfn ~/dotfile/.claude/skills/checkpoint-30 ~/.codex/skills/checkpoint-30
 
     # Let Codex reuse repository-level CLAUDE.md files when AGENTS.md is absent
     local codex_config="$HOME/.codex/config.toml"

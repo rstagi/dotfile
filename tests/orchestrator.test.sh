@@ -20,8 +20,9 @@ export LOOP_ORCH_POLL_SEC=1
 export LOOP_ORCH_STALL_SEC=2
 export EMIT_LOG="$TMP/emit.log"
 export NOTIFY_LOG="$TMP/notify.log"
+export FAKE_ENGINE_ARGS_LOG="$TMP/engine-args.log"
 
-reset() { rm -rf "$SUB"; mkdir -p "$SUB"; : > "$EMIT_LOG"; : > "$NOTIFY_LOG"; }
+reset() { rm -rf "$SUB"; mkdir -p "$SUB"; : > "$EMIT_LOG"; : > "$NOTIFY_LOG"; : > "$FAKE_ENGINE_ARGS_LOG"; }
 orch() { zsh "$ROOT/loop-orchestrator.sh" --dir "$DIR" --run-id "test-run" > "$TMP/orch.out" 2>&1; RC=$?; }
 count_transcripts() { ls "$SUB"/transcript-*.jsonl 2>/dev/null | wc -l | tr -d ' '; }
 
@@ -34,6 +35,8 @@ assert_eq "$(count_transcripts)" "2" "spawned two instances (one recycle, one co
 assert_contains "$(cat "$EMIT_LOG")" "sub.recycle" "emitted a sub.recycle event"
 assert_contains "$(cat "$EMIT_LOG")" '"recycleIndex":1' "sub.recycle carries recycleIndex 1"
 assert_contains "$(cat "$EMIT_LOG")" '"tokens":151000' "sub.recycle carries tokens from status.json"
+assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--model claude-opus-5-5' "starts the SUB on Opus 5.5"
+assert_contains "$(cat "$SUB/prompt-1.md")" '--window 1000000' "uses Opus 5.5 context for occupancy"
 
 echo "orchestrator: crash → respawn, capped at LOOP_ORCH_MAX_RESPAWN"
 reset

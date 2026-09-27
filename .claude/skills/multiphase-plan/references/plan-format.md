@@ -24,6 +24,10 @@ between repositories.
   the daemon always, and to the linked Kestral task when the plan is linked.
 - `Repository:` is mandatory on every phase when `## Repositories` exists and must match one
   declared slug. Repository `Verify:` is mandatory; a phase `Verify:` overrides it.
+- `Estimate:` is required on every phase of a new Loop plan. It is a human-readable range,
+  confidence, and basis; the parser ignores it. Its upper bound should normally be at most
+  25 minutes to leave room before the runner's 30-minute checkpoint. State exceptions
+  openly rather than claiming a bound the evidence cannot support.
 - Legacy plans without `## Repositories` normalize to one synthetic `primary` repository;
   their scalar Loop config `Verify` / `PR` fields remain executable.
 
@@ -84,6 +88,7 @@ between repositories.
 - **Suggested branch:** `feat/oauth-token-refresh`
 - **Touches:** <files / modules / areas — for conflict awareness>
 - **Done when:** <acceptance criteria, testable>
+- **Estimate:** <min–max min · high|medium|low confidence · basis>
 - **Verify:** <optional — runnable acceptance check, exit 0 = pass>
 - **Notes:** <optional>
 
@@ -95,6 +100,7 @@ between repositories.
 - **Suggested branch:** `refactor/invoice-retry-state`
 - **Touches:** <...>
 - **Done when:** <...>
+- **Estimate:** <min–max min · confidence · basis>
 - **Verify:** <optional — runnable acceptance check, exit 0 = pass>
 
 ### Phase 3 — Use refreshed tokens in the API client `[lane: A]` `[status: todo]`
@@ -105,6 +111,7 @@ between repositories.
 - **Suggested branch:** `feat/api-client-token-refresh`
 - **Touches:** <...>
 - **Done when:** <...>
+- **Estimate:** <min–max min · confidence · basis>
 
 ### Phase 4 — Integrate auth + billing paths and run e2e `[lane: integration]` `[status: todo]`
 - **Repository:** `owner/web`
@@ -114,6 +121,7 @@ between repositories.
 - **Suggested branch:** `chore/integrate-auth-billing`
 - **Touches:** <...>
 - **Done when:** <both lanes merged and green>
+- **Estimate:** <min–max min · confidence · basis>
 
 ## Parallel execution guide
 - **Lane A** (worktree 1): Phase 1 → Phase 3. Start immediately.
@@ -165,6 +173,10 @@ daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
 - **Every phase has a testable *Done when*.** A phase without acceptance criteria can't be
   claimed or handed off cleanly. A runnable **Verify:** line (a command, exit 0 = pass) is
   what lets `loop-execute` enforce the *Done when* mechanically.
+- **Bound Loop phases conservatively.** Use an evidence-based `Estimate:` on each phase.
+  Split phases whose likely upper bound exceeds 25 minutes without making artificial
+  parallel lanes. The runner's 30-minute cutoff is a checkpoint, not proof that a phase
+  will finish in one attempt.
 - **One parent effort task per plan; phases are its subtasks.** The plan maps to a single
   Kestral parent task (tag `multiphase-plan`, linked from the doc's `**Effort task:**`
   line); each phase is a subtask of it (`parentTaskId`), never a sibling top-level task.

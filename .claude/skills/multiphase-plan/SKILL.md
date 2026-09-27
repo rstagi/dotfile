@@ -7,7 +7,8 @@ description: >-
   shared source of truth — with an optional, opt-in publish to Kestral. Use when asked to
   "plan this out", "make a multi-phase plan", "break this into parallel phases", "put a
   plan on Kestral" (Kestral publish is opt-in), or before spinning up parallel worktrees
-  for a larger effort.
+  for a larger effort. For Loop plans, estimate and size phases to fit one 30-minute
+  execution attempt where the work can be bounded.
 argument-hint: "<goal, or existing Kestral project name> (optional)"
 ---
 
@@ -69,6 +70,18 @@ Author the plan in the **canonical plan format** (see
   `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
   refresh endpoint"), never "Phase 1" or a vague label — the title seeds the Kestral task
   title and usually the PR title.
+- **Time bounds for Loop plans** — estimate each phase's active work from pickup through
+  implementation, focused verification, handoff, and the expected merge gate. Inspect the
+  touched code and verification commands; use actual durations from comparable Loop
+  attempts when available. Record a range, confidence, and brief basis in `Estimate:`.
+  Use a plausible slow-case upper bound, not an optimistic midpoint. Aim for an upper
+  bound of 20–25 minutes, leaving room before the runner's 30-minute
+  checkpoint. Split larger work into smaller verifiable outcomes while preserving the
+  vertical-slice and lane rules below. Do not invent precision: if uncertainty remains,
+  label it low confidence and state the risk. A verification command that alone exceeds
+  30 minutes, or work that cannot be split coherently, is an explicit exception to report,
+  not a phase to label "30 min". Queue waits, retries, and final review are outside this
+  estimate and can make elapsed wall time longer.
 - **Repositories** — resolve every touched checkout to its GitHub `owner/repo` slug from
   its `origin`; declare it under `## Repositories`, give it a mandatory repository-wide
   `Verify:` command, and put `Repository:` on every phase. One phase belongs to one
@@ -186,7 +199,7 @@ goal keywords.
       = goal summary + lane overview + link to the plan doc. Capture its `id`/`slug`/`url`.
    2. One subtask per phase: `create_task` with `parentTaskId` = the parent's id, `title` =
       phase title, `description` = the phase's *Depends on* / *Parallelizable with* /
-      *Touches* / *Done when* / *Suggested branch* + plan-doc link, `priority`, and
+      *Touches* / *Done when* / *Estimate* / *Suggested branch* + plan-doc link, `priority`, and
       `tags: ["phase:<N>", "lane:<X>"]` (Kestral has no native phase/dependency fields —
       tags + the plan doc carry that structure). Create subtasks individually: the
       `subtasks` param on `create_task` accepts bare title strings only, and
