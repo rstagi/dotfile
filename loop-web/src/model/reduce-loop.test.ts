@@ -104,6 +104,49 @@ describe("reduceLoop — planned → active", () => {
     );
     expect(rec.status).toBe("active");
   });
+
+  it("keeps a pre-attempt Jev decision observational and idempotent", () => {
+    const decision: Ingest = {
+      kind: "event",
+      event: {
+        event: "jev.decision",
+        phase: "1",
+        attempt: 1,
+        stage: "route",
+        mode: "shadow",
+        candidate: "light",
+        confidence: 0.91,
+        probabilities: { light: 0.91, default: 0.09 },
+        appliedAction: "default",
+        fallbackReason: "shadow-mode",
+        resolvedModel: "typesafe-systemone",
+        ts: "2026-09-27T10:00:00Z",
+      },
+    };
+    const once = fold("r", { kind: "register", info: { runId: "r" } }, decision);
+    const twice = reduceLoop(once, decision);
+
+    expect(twice.decisions).toEqual([
+      expect.objectContaining({ runId: "r", phase: "1", attempt: 1, stage: "route" }),
+    ]);
+    expect(twice.status).toBe("planned");
+    expect(effectivePhaseStatus(twice, "1")).toBe("todo");
+  });
+
+  it("preserves typed Jev fields through idempotent JSONL replay", () => {
+    const jsonl = JSON.stringify({
+      event: "jev.decision", runId: "r", phase: "2", attempt: 2, stage: "merge-risk",
+      mode: "active", candidate: "high", confidence: 0.73, probabilities: { high: 0.73 },
+      appliedAction: "full-review", fallbackReason: null, resolvedModel: "systemone",
+      ts: "2026-09-27T10:00:00Z",
+    });
+    const once = fold("r", { kind: "eventsFile", text: jsonl });
+    const twice = reduceLoop(once, { kind: "eventsFile", text: jsonl });
+    expect(twice.decisions).toEqual([expect.objectContaining({
+      runId: "r", phase: "2", attempt: 2, stage: "merge-risk", candidate: "high",
+      appliedAction: "full-review", confidence: 0.73,
+    })]);
+  });
 });
 
 describe("reduceLoop — promotion lattice (the staleness fix)", () => {

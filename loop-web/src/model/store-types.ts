@@ -11,7 +11,7 @@
 // "a phase never un-completes in the UI"); sub-`done` status still tracks the live state
 // (so `blocked → running` after a HIL resolution is honoured — blocked is not a rank).
 
-import type { StateJson, RawEvent, Snapshot, PhaseStateStatus } from "./types.ts";
+import type { StateJson, RawEvent, Snapshot, PhaseStateStatus, JevDecision, JevMode } from "./types.ts";
 
 // ---------------------------------------------------------------------------------------
 // Lattice
@@ -93,6 +93,16 @@ export interface EventInfo {
   tokens?: number | null;
   recycleIndex?: number | null;
   percent?: number | null;
+  runId?: string | null;
+  attempt?: number | null;
+  stage?: string | null;
+  mode?: JevMode | null;
+  candidate?: string | null;
+  confidence?: number | null;
+  probabilities?: Record<string, number> | null;
+  appliedAction?: string | null;
+  fallbackReason?: string | null;
+  resolvedModel?: string | null;
 }
 
 export type Ingest =
@@ -106,7 +116,7 @@ export type Ingest =
 // The record (persisted per loop) & derived summary
 // ---------------------------------------------------------------------------------------
 
-export const STORE_SCHEMA_VERSION = 2;
+export const STORE_SCHEMA_VERSION = 3;
 
 export interface RepositoryRecord {
   sourceRoot: string | null;
@@ -141,6 +151,8 @@ export interface LoopRecord {
   repositories: Record<string, RepositoryRecord>;
   /** Merged, deduped, capped event timeline (raw rows; display shape derived downstream). */
   events: RawEvent[];
+  /** Typed observational decisions, deduped independently of the display timeline. */
+  decisions: JevDecision[];
   review: ReviewInfo | null;
   prUrl: string | null;
   /** Last materialized snapshot — the archived short-circuit reads this. */

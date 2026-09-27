@@ -55,6 +55,7 @@ export function parseStoreFile(text: string): LoopRecord | null {
     repositories,
     lastSnapshot,
     events: Array.isArray(obj.events) ? obj.events : [],
+    decisions: Array.isArray(obj.decisions) ? obj.decisions : [],
     status: obj.status ?? base.status,
   };
 }
@@ -80,8 +81,9 @@ function migrateSnapshot(snapshot: Snapshot): Snapshot {
         nodes: (snapshot.graph.nodes ?? []).map((node) => ({
           ...node,
           repository: node.repository ?? null,
+          decisions: node.decisions ?? [],
         })),
       }
     : snapshot.graph;
-  return { ...snapshot, effort, plan, graph };
+  return { ...snapshot, effort, plan, graph, decisions: snapshot.decisions ?? [], jev: snapshot.jev ?? null };
 }

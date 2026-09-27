@@ -86,6 +86,7 @@ export function Drawer({
         </dl>
 
         {node.kind === "plan" && plan && <PlanSection plan={plan} />}
+        {(node.decisions?.length ?? 0) > 0 && <JevDecisionSection decisions={node.decisions!} />}
         {node.kind === "pr-review" && (
           <ReviewSection
             runId={runId}
@@ -139,6 +140,42 @@ export function Drawer({
       </div>
     </div>
   );
+}
+
+function JevDecisionSection({ decisions }: { decisions: NonNullable<GraphNode["decisions"]> }) {
+  return (
+    <section>
+      <p className="section__title">Jev decisions</p>
+      <div className="jev-decisions">
+        {decisions.slice().reverse().map((decision) => (
+          <div className="jev-decision" key={`${decision.attempt}:${decision.stage}:${decision.ts ?? ""}`}>
+            <div className="jev-decision__head">
+              <b>{decision.stage}</b>
+              <span>{decision.mode} · a{decision.attempt}</span>
+            </div>
+            <dl className="kv">
+              <dt>proposed</dt><dd>{decision.candidate ?? "—"}</dd>
+              <dt>applied</dt><dd>{decision.appliedAction ?? "—"}</dd>
+              <dt>confidence</dt><dd>{formatConfidence(decision.confidence)}</dd>
+              {Object.keys(decision.probabilities).length > 0 && (
+                <><dt>probabilities</dt><dd>{formatProbabilities(decision.probabilities)}</dd></>
+              )}
+              <dt>fallback</dt><dd>{decision.fallbackReason ?? "none"}</dd>
+              <dt>model</dt><dd>{decision.resolvedModel ?? "—"}</dd>
+            </dl>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function formatConfidence(value: number | null): string {
+  return value == null ? "—" : `${Math.round(value * 100)}%`;
+}
+
+function formatProbabilities(values: Record<string, number>): string {
+  return Object.entries(values).map(([key, value]) => `${key} ${Math.round(value * 100)}%`).join(" · ");
 }
 
 function SteeringNote({ node, runId }: { node: GraphNode; runId: string }) {
