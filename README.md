@@ -17,9 +17,10 @@ New Loop plans include an estimate and confidence for each work phase. The plann
 
 ## Jev decisions in Loop
 
-Loop can ask Jev for bounded route, runner-question, and pre-merge-risk recommendations. Set
-`TYPESAFE_API_KEY` in the supervisor environment (prefer `load_secret`; never commit it), then
-choose a mode:
+Loop can ask Jev for bounded route, runner-question, and pre-merge-risk recommendations. Put a
+single-line key in `~/dotfile/.loop-secrets/typesafe-api-key` (gitignored; owner-readable only),
+or set `TYPESAFE_API_KEY` in the supervisor environment. The environment value takes precedence;
+`LOOP_JEV_KEY_FILE` can select another local file. Then choose a mode:
 
 - `LOOP_JEV_MODE=off` disables calls explicitly. With no mode and no key, Loop is also off and
   records `missing_credentials`; explicit `off` records `disabled`.

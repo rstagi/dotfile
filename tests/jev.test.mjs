@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -27,6 +29,50 @@ const VALID_INPUT = {
     proceed: { type: "noul", instructions: "Is the task ready?" },
   },
 };
+
+test("loads a local key file for direct Jev calls and keeps explicit off disabled", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "loop-jev-key-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const keyFile = path.join(dir, "typesafe-api-key");
+  await writeFile(keyFile, "file-key\n", { mode: 0o600 });
+  const authorizations = [];
+  const server = http.createServer(async (request, response) => {
+    authorizations.push(request.headers.authorization);
+    await readBody(request);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      model: "jev-test", answers: { profile: { type: "choice", choice: "light",
+        probabilities: { default: 0.1, light: 0.9 }, confidence: 0.9 } },
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }));
+  });
+  t.after(() => server.close());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const input = { stage: "route", state: { phase: "1" }, questions: {
+    profile: { type: "choice", instructions: "Choose", criteria: { default: "Default", light: "Light" } },
+  } };
+  const env = { LOOP_JEV_KEY_FILE: keyFile,
+    TYPESAFE_API_URL: `http://127.0.0.1:${server.address().port}/v1/systemone` };
+
+  const routed = await runClient(input, env);
+  assert.equal(routed.code, 0, routed.stderr);
+  assert.equal(JSON.parse(routed.stdout).status, "ok");
+  assert.equal(JSON.parse(routed.stdout).mode, "shadow");
+  assert.deepEqual(authorizations, ["Bearer file-key"]);
+
+  const disabled = await runClient(input, { ...env, LOOP_JEV_MODE: "off" });
+  assert.equal(JSON.parse(disabled.stdout).reason, "disabled");
+  assert.deepEqual(authorizations, ["Bearer file-key"]);
+
+  const override = await runClient(input, { ...env, TYPESAFE_API_KEY: "env-key" });
+  assert.equal(JSON.parse(override.stdout).status, "ok");
+  assert.deepEqual(authorizations, ["Bearer file-key", "Bearer env-key"]);
+
+  const newlyAvailable = await runClient(input, { ...env, LOOP_JEV_MODE: "off", LOOP_JEV_MODE_EXPLICIT: "0" });
+  assert.equal(JSON.parse(newlyAvailable.stdout).mode, "shadow");
+  assert.deepEqual(authorizations, ["Bearer file-key", "Bearer env-key", "Bearer file-key"]);
+});
 
 test("returns validated Choice, Score, and Noul answers", async (t) => {
   const server = http.createServer(async (request, response) => {
@@ -346,6 +392,18 @@ test("shell config uses the same mode defaults and bounds", async () => {
   assert.equal(invalid.stdout, "off|0.8|5000");
 });
 
+test("shell config recognizes a local key file without exporting its contents", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "loop-jev-config-key-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const keyFile = path.join(dir, "typesafe-api-key");
+  await writeFile(keyFile, "file-key\n", { mode: 0o600 });
+  const command = "source ./loop-models.conf; source ./loop-models.conf; print -r -- \"$LOOP_JEV_MODE|$LOOP_JEV_MODE_EXPLICIT|${TYPESAFE_API_KEY:-absent}\"";
+  const result = await runProcess("zsh", ["-c", command], { LOOP_JEV_KEY_FILE: keyFile });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "shadow|0|absent");
+});
+
 test("sourced config distinguishes missing credentials from explicit off", async () => {
   const command = "source ./loop-models.conf; node ./loop-jev.mjs";
   const implicit = await runProcess("zsh", ["-c", command], {}, VALID_INPUT);
@@ -402,7 +460,7 @@ function runClient(input, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLIENT], {
       cwd: ROOT,
-      env: { PATH: process.env.PATH, ...extraEnv },
+      env: { PATH: process.env.PATH, LOOP_JEV_KEY_FILE: path.join(ROOT, ".nonexistent-jev-key"), ...extraEnv },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -419,7 +477,7 @@ function runProcess(command, args, extraEnv = {}, input) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: ROOT,
-      env: { PATH: process.env.PATH, ...extraEnv },
+      env: { PATH: process.env.PATH, LOOP_JEV_KEY_FILE: path.join(ROOT, ".nonexistent-jev-key"), ...extraEnv },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
