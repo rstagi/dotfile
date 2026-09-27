@@ -12,6 +12,10 @@ async function run() {
   try {
     input = parseInput(await readStdin());
     validateInput(input);
+    if (process.env.LOOP_JEV_MODE === "off") {
+      writeFallback(input, "disabled");
+      return;
+    }
     if (!process.env.TYPESAFE_API_KEY) {
       writeFallback(input, "missing_credentials");
       return;
