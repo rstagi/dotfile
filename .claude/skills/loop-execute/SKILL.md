@@ -210,10 +210,24 @@ preempt the runner's 30-minute phase checkpoint.
 
 Switch on the exit code (protocol table). The extra checks only you can do:
 
-- **exit 0** — before merging, skim `git diff <base>...HEAD` in the lane worktree against
-  the phase's *Done when* (the verify command proves it runs; you prove it's the right
-  work). `headBefore == headAfter` in meta.json → stall: escalate, never accept. Also
-  check the runner didn't push or leave junk (`git -C <wt> status`).
+- **exit 0** — run the pre-merge gates in this exact order; none is conditional on Jev:
+  verified exit 0 → one merge-risk judgment for this attempt/head → **full** diff skim →
+  `headBefore/headAfter` stall check → clean-worktree check → reread steering notes →
+  serialized merge → merged-tree Verify. Build the bounded judgment input with
+  `loop-jev-risk-input.mjs` from *Done when*, every changed path, diff statistics, bounded
+  redacted patch excerpts, and the successful verification summary; pipe it directly to
+  `loop-jev.mjs` without persisting the request or raw vendor response. Ask only `scopeGap`
+  (`none|possible|likely`) and `changeRisk` (`low|medium|high`). In active mode, use valid
+  advice only to focus the mandatory full `git diff <base>...HEAD` skim. Shadow, off, error,
+  malformed, and low-confidence results use the unfocused full skim. After that full skim,
+  the stall/clean checks, and rereading `notes/<N>.md`, validate the evidence and actual
+  disposition with `loop-jev-risk.mjs`. It rejects missing/reordered gates, dirty or stalled
+  attempts, head mismatches, and unverified results. Atomically persist its output as
+  `<runDir>/risk-decision-<head>.json`, then emit it with `loop_emit_jev_decision`. Reuse an
+  existing valid record only for the same attempt and head; a retry or new head gets a new
+  judgment and record. A builder/policy/Jev failure falls back to a typed `full-diff-skim`
+  disposition and never blocks these deterministic checks. Never send transcripts, logs,
+  environment values, credentials, or unredacted secret-like patches to TypeSafe.
 - **exit 10** — read `status.json`'s question. For `checkpoint:true`, read `checkpoint.md`
   when present and inspect the worktree; give a concrete next step from the plan and code.
   If the phase made no meaningful progress over two work blocks, escalate instead of
@@ -241,6 +255,10 @@ Immediately before merging phase `<N>`, re-read `notes/<N>.md` and honor it (for
 rebase the lane onto its repository integration tip first). This catches notes dropped after the
 runner started. After the merge is complete and the phase is promoted `done|merged`, run
 `loop-state.sh note --dir .loop --clear <N>` as best-effort housekeeping.
+
+The merge-risk record is advisory proof of the completed pre-merge inspection, not a merge
+permit. Low risk, fallback, policy error, or low confidence cannot skip merge serialization or
+`loop-merge.sh`'s repository Verify. Do not call `loop-merge.sh` until the risk record exists.
 
 Serialize merges globally (one at a time), targeting the phase repository.
 `loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --run-id <runId> --phase <N>
