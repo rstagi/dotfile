@@ -31,9 +31,9 @@ function buildRiskInput(input) {
   if (input.verification.exitCode !== 0) throw new Error("verification-not-passed");
   const root = path.resolve(input.repositoryRoot);
   git(root, ["rev-parse", "--show-toplevel"]);
-  const changedPaths = parseChangedPaths(git(root, ["diff", "--name-status", input.base, input.head]));
+  const changedPaths = parseChangedPaths(git(root, ["diff", "--name-status", "-z", input.base, input.head]));
   if (changedPaths.length === 0) throw new Error("empty-diff");
-  const totals = diffTotals(git(root, ["diff", "--numstat", input.base, input.head]));
+  const totals = diffTotals(git(root, ["diff", "--numstat", "-z", input.base, input.head]));
   const patchExcerpts = buildPatchExcerpts(root, input.base, input.head, changedPaths);
   const state = {
     phase: input.phase,
@@ -63,19 +63,31 @@ function buildRiskInput(input) {
 }
 
 function parseChangedPaths(output) {
-  return output.split("\n").filter(Boolean).map((line) => {
-    const [status, ...names] = line.split("\t");
-    const value = names.at(-1);
-    if (!status || !value || Buffer.byteLength(value) > 1_000) throw new Error("invalid-changed-path");
-    return { status: status[0], path: value };
-  });
+  const fields = output.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const paths = [];
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index++];
+    const previousPath = /^[RC]/.test(status) ? fields[index++] : null;
+    const changedPath = fields[index++];
+    if (!status || !changedPath || Buffer.byteLength(changedPath) > 1_000
+      || (previousPath !== null && (!previousPath || Buffer.byteLength(previousPath) > 1_000))) {
+      throw new Error("invalid-changed-path");
+    }
+    paths.push(previousPath === null
+      ? { status: status[0], path: changedPath }
+      : { status: status[0], path: changedPath, previousPath });
+  }
+  return paths;
 }
 
 function diffTotals(output) {
   let additions = 0;
   let deletions = 0;
-  for (const line of output.split("\n").filter(Boolean)) {
-    const [added, deleted] = line.split("\t");
+  for (const field of output.split("\0")) {
+    const match = field.match(/^(-|\d+)\t(-|\d+)\t/);
+    if (!match) continue;
+    const [, added, deleted] = match;
     additions += added === "-" ? 0 : Number.parseInt(added, 10) || 0;
     deletions += deleted === "-" ? 0 : Number.parseInt(deleted, 10) || 0;
   }

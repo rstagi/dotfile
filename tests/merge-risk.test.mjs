@@ -24,8 +24,8 @@ test("builds bounded redacted risk input from every changed path", async () => {
   });
 
   assert.equal(result.code, 0);
-  assert.deepEqual(result.json.state.changedPaths.map(({ path: value }) => value), [".env", "src/app.js", "src/extra.js"]);
-  assert.equal(result.json.state.diff.files, 3);
+  assert.deepEqual(result.json.state.changedPaths.map(({ path: value }) => value), [".env", "src/app.js", "src/extra.js", "src/tab\tname.js"]);
+  assert.equal(result.json.state.diff.files, 4);
   assert.match(JSON.stringify(result.json), /\[REDACTED/);
   assert.doesNotMatch(JSON.stringify(result.json), /super-secret|ghp_1234567890|plan-secret|verify-secret/);
   assert.ok(Buffer.byteLength(JSON.stringify(result.json)) <= 48 * 1024);
@@ -128,6 +128,7 @@ async function fixtureRepo() {
   await writeFile(path.join(dir, ".env"), "TOKEN=super-secret\n");
   await writeFile(path.join(dir, "src", "app.js"), "const token = 'ghp_1234567890';\n");
   await writeFile(path.join(dir, "src", "extra.js"), "export const answer = 42;\n");
+  await writeFile(path.join(dir, "src", "tab\tname.js"), "export const unusual = true;\n");
   await command("git", ["-C", dir, "add", ".env", "src"]);
   await command("git", ["-C", dir, "commit", "-qm", "change"]);
   return dir;
