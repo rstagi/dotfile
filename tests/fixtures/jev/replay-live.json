@@ -1,0 +1,51 @@
+{
+  "runId": "synthetic-live",
+  "decisions": [
+    {
+      "runId": "synthetic-live",
+      "phase": "3",
+      "attempt": 1,
+      "stage": "route",
+      "mode": "shadow",
+      "candidate": "light",
+      "confidence": 0.92,
+      "probabilities": { "default": 0.08, "light": 0.92 },
+      "appliedAction": "default",
+      "fallbackReason": null,
+      "resolvedModel": "jev-fixture",
+      "latencyMs": 100,
+      "runnerRetries": 2,
+      "costUsd": 0.0042,
+      "ts": "2026-09-27T10:00:00Z"
+    },
+    {
+      "runId": "synthetic-live",
+      "phase": "4",
+      "attempt": 1,
+      "stage": "question",
+      "mode": "shadow",
+      "candidate": "code-investigation",
+      "confidence": 0.9,
+      "probabilities": {},
+      "appliedAction": "answer-after-investigation",
+      "fallbackReason": null,
+      "resolvedModel": "jev-fixture",
+      "latencyMs": 200,
+      "ts": "2026-09-27T10:01:00Z"
+    },
+    {
+      "runId": "synthetic-live",
+      "phase": "5",
+      "attempt": 1,
+      "stage": "merge-risk",
+      "mode": "shadow",
+      "candidate": "scope-gap:none · risk:low",
+      "confidence": 0.93,
+      "probabilities": {},
+      "appliedAction": "full-diff-skim",
+      "fallbackReason": null,
+      "resolvedModel": "jev-fixture",
+      "ts": "2026-09-27T10:02:00Z"
+    }
+  ]
+}

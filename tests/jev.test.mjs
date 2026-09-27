@@ -8,6 +8,8 @@ import test from "node:test";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLIENT = path.join(ROOT, "loop-jev.mjs");
+const REPLAY = path.join(ROOT, "loop-jev-replay.mjs");
+const FIXTURES = path.join(ROOT, "tests", "fixtures", "jev");
 const VALID_INPUT = {
   stage: "route",
   state: { phase: "Add bounded client" },
@@ -259,6 +261,59 @@ test("off mode bypasses the vendor even when credentials exist", async () => {
     reason: "disabled",
   });
   assert.equal(result.stderr, "");
+});
+
+test("explicit off mode is disabled without credentials", async () => {
+  const result = await runClient(VALID_INPUT, { LOOP_JEV_MODE: "off" });
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: 1,
+    status: "fallback",
+    stage: "route",
+    mode: "off",
+    reason: "disabled",
+  });
+});
+
+test("replays all stages and reports agreement, fallback, and recorded metrics", async () => {
+  const result = await runProcess(process.execPath, [
+    REPLAY,
+    path.join(FIXTURES, "replay-live.json"),
+    path.join(FIXTURES, "replay-archived.json"),
+  ]);
+
+  assert.equal(result.code, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.stages, {
+    route: { total: 3, comparable: 1, agreements: 0, agreementRate: 0, fallbacks: 2, fallbackRate: 2 / 3 },
+    question: { total: 1, comparable: 1, agreements: 1, agreementRate: 1, fallbacks: 0, fallbackRate: 0 },
+    "merge-risk": { total: 2, comparable: 1, agreements: 1, agreementRate: 1, fallbacks: 1, fallbackRate: 0.5 },
+  });
+  assert.deepEqual(report.overall, {
+    total: 6, comparable: 3, agreements: 2, agreementRate: 2 / 3, fallbacks: 3, fallbackRate: 0.5,
+  });
+  assert.deepEqual(report.metrics, {
+    latency: { recorded: 2, averageMs: 150 },
+    runnerRetries: { recorded: 1, total: 2 },
+    cost: { recorded: 1, totalUsd: 0.0042 },
+  });
+  assert.match(report.notice, /synthetic fixtures.*no savings/i);
+});
+
+test("archive reload replay keeps decisions and marks absent metrics unavailable", async () => {
+  const result = await runProcess(process.execPath, [REPLAY, path.join(FIXTURES, "replay-archived.json")]);
+
+  assert.equal(result.code, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.sourceCount, 1);
+  assert.equal(report.overall.total, 3);
+  assert.deepEqual(report.metrics, {
+    latency: "unavailable",
+    runnerRetries: "unavailable",
+    cost: "unavailable",
+  });
+  assert.deepEqual(report.fallbackReasons, { api_error: 1, disabled: 1, missing_credentials: 1 });
 });
 
 test("rejects stdin larger than the fixed input bound", async () => {
