@@ -163,6 +163,27 @@ assert_eq "$(print -r -- "$rows" | cut -f2 | sed -n '2,$p' | sed 's|.*/worktrees
 "$WS" pin api/orphan
 assert_eq "$("$WS" _rows | cut -f1 | grep -c '📌')" "0" "pin toggles off"
 
+echo "ws pick: collapsed by default; ctrl-s toggles per-session rows; global summary"
+"$WS" add web/zeta --agent codex --detach
+ZWT="$WS_ROOT/web/zeta"
+hook web/zeta "$(slot_window "$ZWT" 2)" working </dev/null
+assert_eq "$("$WS" _rows | grep -cF "$ZWT")" "1" "collapsed: one row per worktree"
+assert_contains "$("$WS" _summary | sed $'s/\e\\[[0-9;]*m//g')" "1 working" "summary counts working sessions"
+assert_contains "$("$WS" _summary | sed $'s/\e\\[[0-9;]*m//g')" "idle" "summary counts idle sessions"
+"$WS" _toggle_sessions
+zrows="$("$WS" _rows | grep -F "$ZWT")"
+zdisp="$(print -r -- "$zrows" | cut -f1 | sed $'s/\e\\[[0-9;]*m//g')"
+assert_eq "$(print -r -- "$zrows" | wc -l | tr -d ' ')" "3" "worktree row + one row per session"
+assert_contains "$(print -r -- "$zdisp" | sed -n 1p)" "2 sessions" "worktree row summarizes session count"
+assert_contains "$(print -r -- "$zdisp" | sed -n 1p)" "◐" "worktree row shows most urgent state"
+assert_contains "$(print -r -- "$zdisp" | grep 'codex#2')" "◐" "working session row shows working"
+assert_contains "$(print -r -- "$zdisp" | grep -v 'codex#2' | sed -n 2p)" "○ claude" "idle session row shows idle"
+assert_eq "$(print -r -- "$zrows" | grep 'codex#2' | cut -f3)" "$(slot_window "$ZWT" 2)" "session row targets its own tab"
+assert_eq "$("$WS" _rows | grep -F "$WS_ROOT/api/orphan" | wc -l | tr -d ' ')" "1" "single-session/stopped worktree: no sub-rows"
+"$WS" _toggle_sessions
+assert_eq "$("$WS" _rows | grep -cF "$ZWT")" "1" "toggling again collapses"
+T kill-window -t "$(slot_window "$ZWT" 2)"
+
 echo "ws pick: first row is actionable (ctrl-a adds a session to it)"
 cat > "$TMP/bin/fzf" <<'EOF'
 #!/bin/sh
@@ -213,6 +234,30 @@ wait_until test -f "$WT3/SETUP-RAN"
 assert_exit "$?" "0" "conductor setup runs"
 "$WS" new --repo "$REPO3" --branch main-ish --detach 2>/dev/null
 assert_exit "$?" "1" "duplicate workspace refused"
+
+echo "ws new: repo picker lists repos found under WS_REPO_ROOTS; typed path accepted"
+mkdir -p "$TMP/dev/org"
+DEVREPO="$(make_repo dev/org/svc)"
+mkdir -p "$TMP/dev/org/svc/node_modules/dep" && git init -q "$TMP/dev/org/svc/node_modules/dep"
+export WS_REPO_ROOTS="$TMP/dev $REPO3"
+# Fake fzf: records its candidates, then prints FAKE_FZF_OUT (as fzf --print-query would).
+cat > "$TMP/bin/fzf" <<'EOF'
+#!/bin/sh
+cat > "$FAKE_FZF_IN"
+printf '%s\n' "$FAKE_FZF_OUT"
+EOF
+chmod +x "$TMP/bin/fzf"
+export FAKE_FZF_IN="$TMP/fzf.in"
+FAKE_FZF_OUT="$DEVREPO" "$WS" new --branch scanned --detach
+assert_contains "$(cat "$FAKE_FZF_IN")" "$DEVREPO" "nested repo under a root listed"
+assert_contains "$(cat "$FAKE_FZF_IN")" "$REPO3" "root that is itself a repo listed"
+assert_eq "$(grep -c node_modules "$FAKE_FZF_IN")" "0" "node_modules repos skipped"
+assert_eq "$([[ -d "$WS_ROOT/svc/scanned" ]] && print yes)" "yes" "picked scanned repo"
+FAKE_FZF_OUT="${REPO3/$HOME/~}" HOME="$HOME" "$WS" new --branch typed --detach
+assert_eq "$([[ -d "$WS_ROOT/shop/typed" ]] && print yes)" "yes" "typed path (no list match) accepted"
+FAKE_FZF_OUT="$TMP/nope" "$WS" new --branch bad --detach 2>/dev/null
+assert_exit "$?" "1" "typed non-repo path refused"
+unset WS_REPO_ROOTS
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach

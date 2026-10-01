@@ -10,7 +10,8 @@ set -u -o pipefail
 #   ws add [name|path] [--agent claude|codex] [--detach]   another agent tab (default: current worktree)
 #   ws open <name|path> [--detach]   focus, or restore every recorded session (resumed by id)
 #   ws pick                    grouped picker: enter open · ctrl-n new · ctrl-o new codex ·
-#                              ctrl-a add claude tab · ctrl-t add codex tab · ctrl-p pin · ctrl-x rm
+#                              ctrl-a add claude tab · ctrl-t add codex tab · ctrl-p pin · ctrl-x rm ·
+#                              ctrl-s show/hide sessions
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
 #   ws list                    TSV: state name path agent window pinned
 #   ws rm <name|path> [--force] [--delete-branch]
@@ -25,7 +26,9 @@ WS_HOME="${WS_HOME:-$HOME/.ws}"
 WS_NOTIFY="${WS_NOTIFY:-1}"
 WS_AGENT_SHELL="${WS_AGENT_SHELL:-zsh -ic}" # interactive: agents need .zshrc (secrets, PATH)
 REGISTRY="${LOOP_REPO_REGISTRY:-$HOME/.loop/repos.json}"
+WS_REPO_ROOTS="${WS_REPO_ROOTS:-$HOME/Dev $HOME/dotfile}" # scanned for repos by `ws new`
 PINS="$WS_HOME/pins"
+SHOW_SESSIONS="$WS_HOME/show-sessions" # exists → picker lists per-session rows (ctrl-s)
 DEFAULT_INCLUDE_GLOBS=(".env*")
 
 main() {
@@ -42,6 +45,8 @@ main() {
   rm) cmd_rm "$@" ;;
   hook) cmd_hook "$@" ;;
   _rows) picker_rows ;;
+  _summary) picker_summary ;;
+  _toggle_sessions) toggle_sessions ;;
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
   -h | --help | help) sed -n '4,20p' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
@@ -128,10 +133,11 @@ cmd_pick() {
   command -v fzf >/dev/null || die "fzf not installed"
   local out key row wt win # never `path`: zsh ties it to $PATH
   out="$(picker_rows | fzf --ansi --delimiter '\t' --with-nth 1 --no-sort --layout reverse \
-    --header 'enter open · ^n new · ^o new codex · ^a add claude · ^t add codex · ^p pin · ^x rm' \
-    --preview "$WS_BIN _preview {2} {3}" --preview-window 'right,60%,follow' \
+    --header-first --bind "start,load:transform-header($WS_BIN _summary)" \
+    --preview "$WS_BIN _preview {2} {3}" --preview-window 'right,50%,follow' \
     --expect ctrl-n,ctrl-o,ctrl-a,ctrl-t \
     --bind "ctrl-p:execute-silent($WS_BIN pin {2})+reload($WS_BIN _rows)" \
+    --bind "ctrl-s:execute-silent($WS_BIN _toggle_sessions)+reload($WS_BIN _rows)" \
     --bind "ctrl-x:execute($WS_BIN rm --interactive {2})+reload($WS_BIN _rows)")" || return 0
   key="${out%%$'\n'*}"
   row=""
@@ -330,26 +336,68 @@ write_claude_settings() {
 # Picker rows (TSV: display, path, window): pinned first, then grouped by repo. No header
 # rows — every row must be actionable (the cursor starts on the first one). The repo name
 # shows on a group's first row and dims on the rest, so grouping stays visible and searchable.
+# A worktree with several sessions gets one indented row per session (enter → that tab).
 picker_rows() {
-  local -a rows=("${(@f)$(workspace_rows | sort -t $'\t' -k2,2)}") # by repo/branch
+  local list
+  list="$(cmd_list)"
+  local -a rows=("${(@f)$(print -r -- "$list" | workspace_rows | sort -t $'\t' -k2,2)}") # by repo/branch
   rows=(${rows:#})
   local -a pinned=(${(M)rows:#*$'\t'1}) unpinned=(${(M)rows:#*$'\t'0})
   local row repo prev=""
-  for row in "${pinned[@]}"; do picker_row "$row" pinned; done
+  for row in "${pinned[@]}"; do
+    picker_row "$row" pinned
+    [[ -e "$SHOW_SESSIONS" ]] && session_rows "$list" "$row"
+  done
   for row in "${unpinned[@]}"; do
     repo="${${row#*$'\t'}%%/*}"
     picker_row "$row" "${${repo:#$prev}:+first}"
+    [[ -e "$SHOW_SESSIONS" ]] && session_rows "$list" "$row"
     prev="$repo"
   done
 }
 
-# cmd_list collapsed to one row per worktree: most urgent state, agents, first window.
+# Picker header: session totals across all workspaces + key help.
+picker_summary() {
+  local -a states=("${(@f)$(cmd_list | cut -f1)}")
+  local st n
+  local -a parts=()
+  for st in waiting working idle stopped; do
+    n=${#${(M)states:#$st}}
+    (( n )) && parts+=("$(state_icon "$st") $n $st")
+  done
+  print -r -- "${(j: · :)parts:-no workspaces}"
+  print -r -- $'\e[2m↵ open · ^s sessions · ^p pin · ^x rm\e[0m'
+  print -r -- $'\e[2m^n/^o new claude/codex · ^a/^t add claude/codex tab\e[0m'
+}
+
+toggle_sessions() {
+  mkdir -p "$WS_HOME"
+  if [[ -e "$SHOW_SESSIONS" ]]; then rm -f "$SHOW_SESSIONS"; else touch "$SHOW_SESSIONS"; fi
+}
+
+# cmd_list rows (stdin) collapsed to one per worktree: most urgent state, agent (or "N
+# sessions"), first window.
 workspace_rows() {
-  cmd_list | awk -F '\t' -v OFS='\t' '
+  awk -F '\t' -v OFS='\t' '
     function rank(s) { return s == "waiting" ? 3 : s == "working" ? 2 : s == "idle" ? 1 : 0 }
-    !($3 in seen) { seen[$3] = 1; order[++n] = $3; st[$3] = $1; nm[$3] = $2; ag[$3] = $4; w[$3] = $5; pin[$3] = $6; sub(/#.*/, "", nm[$3]); next }
-    { if (rank($1) > rank(st[$3])) st[$3] = $1; ag[$3] = ag[$3] "," $4 }
-    END { for (i = 1; i <= n; i++) { p = order[i]; print st[p], nm[p], p, ag[p], w[p], pin[p] } }'
+    !($3 in seen) { seen[$3] = 1; order[++n] = $3; st[$3] = $1; nm[$3] = $2; ag[$3] = $4; w[$3] = $5; pin[$3] = $6; cnt[$3] = 1; sub(/#.*/, "", nm[$3]); next }
+    { if (rank($1) > rank(st[$3])) st[$3] = $1; cnt[$3]++ }
+    END { for (i = 1; i <= n; i++) { p = order[i]; print st[p], nm[p], p, (cnt[p] > 1 ? cnt[p] " sessions" : ag[p]), w[p], pin[p] } }'
+}
+
+# session_rows <cmd_list output> <workspace row> — for a multi-session worktree, one
+# indented row per tab with its own state.
+session_rows() {
+  local list="$1"
+  local -a f=("${(@ps:\t:)2}")
+  [[ "${f[4]}" == *" sessions" ]] || return 0
+  local state name ws_path agent win pinned tab
+  print -r -- "$list" | while IFS=$'\t' read -r state name ws_path agent win pinned; do
+    [[ "$ws_path" == "${f[3]}" ]] || continue
+    tab="$agent"
+    [[ "$name" == *"#"* ]] && tab+="#${name##*#}"
+    printf '%19s└ %s %-22s \e[2m%s\e[0m\t%s\t%s\n' "" "$(state_icon "$state")" "$tab" "$state" "$ws_path" "$win"
+  done
 }
 
 # picker_row <workspace row> <pinned|first|""> — one display line
@@ -361,7 +409,7 @@ picker_row() {
   pinned) mark="📌" repo_style=$'\e[1m' ;;
   first) repo_style=$'\e[1m' ;;
   esac
-  printf '%s %s%-16s\e[0m %-32s %s \e[2m%s\e[0m\t%s\t%s\n' \
+  printf '%s %s%-14s\e[0m %-24s %s \e[2m%s\e[0m\t%s\t%s\n' \
     "$mark" "$repo_style" "$repo" "$branch" "$(state_icon "${f[1]}")" "$detail" "${f[3]}" "${f[5]}"
 }
 
@@ -377,15 +425,34 @@ focus() {
   fi
 }
 
+# Candidates: current repo, ~/.loop/repos.json, then repos found under WS_REPO_ROOTS. Enter
+# with no match takes the typed text as a path (~ expanded); cmd_new validates it.
 pick_repo() {
   command -v fzf >/dev/null || die "fzf not installed (or pass --repo)"
-  local here
+  local here sel
   here="$(main_checkout "$PWD" 2>/dev/null)"
-  {
+  sel="$({
     [[ -n "$here" ]] && print -r -- "$here"
     [[ -f "$REGISTRY" ]] && jq -r '.[]' "$REGISTRY"
+    scan_repos
   } | awk 'NF && !seen[$0]++' | while read -r p; do [[ -d "$p" ]] && print -r -- "$p"; done \
-    | fzf --prompt 'repo> ' --no-sort
+    | fzf --prompt 'repo (or type a path)> ' --no-sort --print-query --bind 'enter:accept-or-print-query')" \
+    || [[ -n "$sel" ]] || return 1
+  local -a lines=("${(@f)sel}") # --print-query: query line, then the match (if any)
+  sel="${lines[-1]}"
+  print -r -- "${sel/#\~/$HOME}"
+}
+
+# Git repos (real .git dirs, so not worktrees) at or under each root, skipping dependency dirs.
+scan_repos() {
+  local root
+  for root in ${(z)WS_REPO_ROOTS}; do
+    root="${~root}"
+    [[ -d "$root" ]] || continue
+    [[ -d "$root/.git" ]] && print -r -- "$root"
+    find "$root" -mindepth 2 -maxdepth 5 \( -name node_modules -o -name .venv -o -name vendor \) -prune \
+      -o -name .git -type d -print -prune 2>/dev/null | sed 's|/\.git$||' | sort
+  done
 }
 
 check_agent() { [[ "$1" == (claude|codex) ]] || die "agent must be claude or codex"; }
