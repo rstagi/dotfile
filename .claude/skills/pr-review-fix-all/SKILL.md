@@ -1,11 +1,12 @@
 ---
 name: pr-review-fix-all
 description: >-
-  Reconcile one Loop PR-review round's independent Astra and Fable reports, plan every
-  disposition, delegate independent accepted fixes to Opus 5 subagents, then integrate,
-  verify, commit, and fast-forward push them. Use only for Loop's a3/a6 remediation runs
-  when both local report paths, RUN_DIR, integration worktree, and verify command are given.
-argument-hint: "astra-report:<path> fable-report:<path> run-dir:<path> worktree:<path> branch:<name> remote:<name> verify:<command>"
+  Reconcile one Loop PR-review round's independent adversarial reports (one in the shallow
+  tier, two otherwise), plan every disposition, fix accepted findings (Opus subagents in
+  medium/max; the coordinator itself in shallow), then integrate, verify, commit, and
+  fast-forward push them. Use only for Loop's `fix<r>` remediation runs when the round's
+  report paths, tier, RUN_DIR, integration worktree, and verify command are given.
+argument-hint: "report:<path> [report:<path>] tier:<shallow|medium|max> run-dir:<path> worktree:<path> branch:<name> remote:<name> verify:<command>"
 allowed-tools:
   - Agent
   - Bash
@@ -19,14 +20,17 @@ disable-model-invocation: true
 
 # PR Review Fix All
 
-You are the Opus 5 remediation coordinator. Reconcile two independent adversarial reviews,
-delegate safe implementation units, and leave the integration branch verified and pushed.
-The caller supplies the Astra report, Fable report, absolute `RUN_DIR`, integration worktree,
-integration branch, remote, and repository verification command. Stay in that worktree.
+You are the remediation coordinator (Opus in medium/max, Sonnet in shallow). Reconcile the
+round's independent adversarial reviews, fix accepted findings — delegating safe implementation
+units in medium/max — and leave the integration branch verified and pushed. The caller supplies
+the round's report paths (two in medium/max, one in shallow), the tier, absolute `RUN_DIR`,
+integration worktree, integration branch, remote, and repository verification command. Stay in
+that worktree.
 
 ## 1. Validate inputs and state
 
-Require both report files, an absolute `RUN_DIR`, the expected integration branch, remote,
+Require every supplied report file (two for medium/max, one for shallow), a valid tier, an
+absolute `RUN_DIR`, the expected integration branch, remote,
 and a non-empty verification command. Confirm the current worktree and branch match. Stop with
 `question` for ambiguous caller input, or `blocked` for unsafe/dirty/unrecoverable state. Do not
 read reports from earlier rounds or GitHub review comments.
@@ -37,7 +41,7 @@ integration branch before remediation begins.
 
 ## 2. Reproduce and reconcile
 
-Read both reports independently, then inspect current code and tests. Reproduce every finding;
+Read each report independently, then inspect current code and tests. Reproduce every finding;
 do not accept a report merely because it sounds plausible. Merge duplicates and resolve
 conflicts from evidence in the current tree.
 
@@ -62,10 +66,13 @@ mutating shared generated state. Schedule groups with overlapping files or depen
 If there are no accepted findings, run the repository verification command, record the no-op in
 the plan, do not create an empty commit or push, then finish with `done`.
 
-## 4. Spawn Opus fixers
+## 4. Implement fixes
 
-Use the Agent tool with the `pr-review-fixer` subagent for each ready independent fix group. Its
-checked-in definition pins `model: claude-opus-5`; do not substitute another subagent or model.
+**shallow:** apply the fix groups yourself, one at a time, test-first where applicable, staying
+within each group's files; do not spawn subagents. Then continue with § 5.
+
+**medium / max — spawn Opus fixers.** Use the Agent tool with the `pr-review-fixer` subagent for each ready independent fix group. Its
+checked-in definition sets `model: opus` (the latest Opus); do not substitute another subagent or model.
 Launch a maximum of 3 concurrent subagents in one batch. Wait for the batch, inspect the shared
 worktree, then launch the next dependency-ready batch.
 
@@ -75,13 +82,13 @@ test-first step, relevant project instructions, and focused verification. Tell e
 - work only in the current integration worktree and assigned files;
 - use TDD where applicable: demonstrate the failing test, then make it pass;
 - do not invoke `pr-review-fix-all` or spawn more subagents;
-- do not inspect sibling assignments or either full review report;
+- do not inspect sibling assignments or any full review report;
 - do not switch branches, stash, reset, revert, clean, or restore files;
 - you may edit and test, but must not commit, push, or post to GitHub;
 - report changed files, tests run, results, and any unresolved issue.
 
-If the Agent tool or `pr-review-fixer` is unavailable, stop with `blocked`; do not silently
-implement delegated groups in the coordinator or substitute another model.
+In medium/max, if the Agent tool or `pr-review-fixer` is unavailable, stop with `blocked`; do not
+silently implement delegated groups in the coordinator or substitute another model.
 
 ## 5. Integrate and verify
 

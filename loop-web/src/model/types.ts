@@ -79,7 +79,8 @@ export type PhaseStateStatus =
   | "running"
   | "merged"
   | "blocked"
-  | "done";
+  | "done"
+  | "paused";
 
 export interface StateJson {
   runId?: string;
@@ -199,6 +200,15 @@ export interface PlanPhase {
   verify: string | null;
   taskUrl: string | null;
   notes: string | null;
+  /** PR-review phases only: `[review: tier]` (default medium) + `[rounds: N]` (null = tier default). */
+  review: ReviewConfig | null;
+}
+
+export type ReviewTier = "shallow" | "medium" | "max";
+
+export interface ReviewConfig {
+  tier: ReviewTier;
+  rounds: number | null;
 }
 
 /** Free-form prose sections of the plan markdown (each nullable). Rendered in the drawer. */
@@ -277,6 +287,19 @@ export interface PhaseRuntime {
   hil: HilState | null;
   /** User-authored steering note for this phase, read from notes/<phase>.md. */
   note: string | null;
+  /** `control/pause-<phase>` present (user paused this phase). */
+  paused: boolean;
+  /** `control/model-<phase>` leg (`engine:model[+fallback]`), or null for the default chain. */
+  modelOverride: string | null;
+}
+
+/** Out-of-band user controls read from `.loop/control/`. */
+export interface LoopControl {
+  /** `control/pause` present — the whole loop is paused. */
+  paused: boolean;
+  pausedPhases: string[];
+  /** phase → leg override. */
+  models: Record<string, string>;
 }
 
 export interface ReviewRun {
@@ -297,6 +320,7 @@ export interface Runtime {
   /** Legacy reserved notes/pr-review.md steering note. */
   reviewNote: string | null;
   reviewNotes: Record<string, string>;
+  control: LoopControl;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -321,7 +345,8 @@ export type NodeUiState =
   | "blocked"
   | "done"
   | "awaiting"
-  | "problem";
+  | "problem"
+  | "paused";
 
 export type Liveness = "live" | "flatline";
 
@@ -373,6 +398,12 @@ export interface GraphNode {
   noteMarkdown: string | null;
   /** Jev observations correlated to this phase. Optional on pre-Jev archived snapshots. */
   decisions?: JevDecision[];
+  /** User paused this phase (control/pause-<N> or state `paused`). Absent on older snapshots. */
+  paused?: boolean;
+  /** User-chosen leg for the next attempt (control/model-<N>). Absent on older snapshots. */
+  modelOverride?: string | null;
+  /** PR-review nodes: tier + rounds from the plan tags. Optional on older snapshots. */
+  review?: ReviewConfig | null;
 }
 
 export type EdgeKind = "plan-to-lane" | "depends" | "to-review";
@@ -476,4 +507,6 @@ export interface Snapshot {
   decisions?: JevDecision[];
   /** Latest mode plus aggregate counts. Null/absent for pre-Jev loops. */
   jev?: JevStatus | null;
+  /** Whole loop paused (control/pause). Absent on older snapshots. */
+  paused?: boolean;
 }

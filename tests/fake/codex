@@ -1,7 +1,21 @@
 #!/bin/zsh
 set -u
 
+# `codex debug models` → the catalog in FAKE_CODEX_MODELS (not logged as an engine run).
+if [[ "${1:-}" == debug && "${2:-}" == models ]]; then
+  if [[ -n "${FAKE_CODEX_MODELS:-}" ]]; then
+    print -r -- "$FAKE_CODEX_MODELS"
+  else
+    cat <<'JSON'
+{"models":[{"slug":"gpt-6-sol","visibility":"list"},{"slug":"gpt-6-astra","visibility":"list"},{"slug":"gpt-5.6-terra","visibility":"list"}]}
+JSON
+  fi
+  exit 0
+fi
 print -r -- "codex $*" >> "${FAKE_ENGINE_LOG:?FAKE_ENGINE_LOG required}"
+# Optional session id (as `codex exec --json` emits) and a mid-run stall on fresh (non-resume) runs.
+[[ -n "${FAKE_CODEX_SESSION:-}" ]] && print -r -- '{"type":"thread.started","thread_id":"'"$FAKE_CODEX_SESSION"'"}'
+[[ -n "${FAKE_CODEX_SLEEP:-}" && "$*" != *"exec resume"* ]] && sleep "$FAKE_CODEX_SLEEP"
 if [[ "${FAKE_CODEX_OUTCOME:-rate-limit}" == "done" ]]; then
   jq -cn '{outcome:"done"}' > "${FAKE_RUN_DIR:?FAKE_RUN_DIR required}/status.json"
   print -r -- '{"type":"result","result":"done"}'

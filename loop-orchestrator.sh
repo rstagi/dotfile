@@ -32,8 +32,10 @@ _e_recycle="${LOOP_ORCH_RECYCLE_TOKENS:-}"
 _e_window="${LOOP_ORCH_CTX_WINDOW:-}"
 _e_stall="${LOOP_ORCH_STALL_SEC:-}"
 _e_poll="${LOOP_ORCH_POLL_SEC:-}"
+_e_pause_poll="${LOOP_ORCH_PAUSE_POLL_SEC:-}"
 _e_max="${LOOP_ORCH_MAX_RESPAWN:-}"
 _e_budget="${LOOP_ORCH_BUDGET_USD:-}"
+_e_effort="${EFFORT_ORCHESTRATE:-}"
 [[ -r "$SCRIPT_DIR/loop-models.conf" ]] && source "$SCRIPT_DIR/loop-models.conf"
 
 EMIT_SH="${LOOP_EMIT_SH:-$SCRIPT_DIR/loop-emit.sh}"
@@ -42,20 +44,26 @@ NOTIFY_SH="${LOOP_NOTIFY_SH:-$SCRIPT_DIR/loop-notify.sh}"
 ENGINE_CMD="${ENGINE_CMD:-claude}"
 
 RECYCLE_TOKENS="${_e_recycle:-${LOOP_ORCH_RECYCLE_TOKENS:-150000}}"
+ORCH_EFFORT="${_e_effort:-${EFFORT_ORCHESTRATE:-high}}"
+[[ "$ORCH_EFFORT" == ultra ]] && ORCH_EFFORT=max  # claude has no ultra
 CTX_WINDOW="${_e_window:-${LOOP_ORCH_CTX_WINDOW:-1000000}}"
 STALL_SEC="${_e_stall:-${LOOP_ORCH_STALL_SEC:-1500}}"
 POLL_SEC="${_e_poll:-${LOOP_ORCH_POLL_SEC:-30}}"
+# Loop-wide pause (loop-top [X] → daemon → .loop/control/pause) is checked at this cadence.
+PAUSE_POLL_SEC="${_e_pause_poll:-${LOOP_ORCH_PAUSE_POLL_SEC:-2}}"
+WATCH_SEC=$(( POLL_SEC < PAUSE_POLL_SEC ? POLL_SEC : PAUSE_POLL_SEC ))
 MAX_RESPAWN="${_e_max:-${LOOP_ORCH_MAX_RESPAWN:-3}}"
 BUDGET="${_e_budget:-${LOOP_ORCH_BUDGET_USD:-15}}"
 
 SUB="$DIR/sub"
 STATUS="$SUB/status.json"
 PIDFILE="$SUB/current.pid"
-mkdir -p "$SUB/control"
+PAUSE_FILE="$DIR/control/pause"
+mkdir -p "$SUB"
 
 # First CHAIN_ORCHESTRATE leg → engine:model[+fallback]  (zsh arrays are 1-indexed).
-leg="${CHAIN_ORCHESTRATE[1]:-claude:claude-opus-5-5}"
-[[ "$leg" == *:* ]] || leg="claude:claude-opus-5-5"  # guard malformed config
+leg="${CHAIN_ORCHESTRATE[1]:-claude:opus}"
+[[ "$leg" == *:* ]] || leg="claude:opus"  # guard malformed config
 LEG_MODEL="${leg#*:}"; LEG_MODEL="${LEG_MODEL%%+*}"
 LEG_FALLBACK=""; [[ "${leg#*:}" == *"+"* ]] && LEG_FALLBACK="${leg#*+}"
 
@@ -73,6 +81,21 @@ kill_tree() {
   { echo "$1"; descendants "$1"; } | xargs kill -TERM 2>/dev/null
   sleep 2
   { echo "$1"; descendants "$1"; } | xargs kill -KILL 2>/dev/null
+}
+
+emit_event() {
+  jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg event "$1" --arg detail "$2" \
+    '{ts: $ts, event: $event, detail: $detail}' | loop_emit "$RUN_ID" event
+}
+
+# Block while the loop is paused; phase runners halt themselves on the same file.
+pause_wait() {
+  emit_event loop.paused "loop paused via control/pause"
+  notify info "loop paused — waiting for control/pause to be removed"
+  echo "loop-orchestrator: paused — waiting for $PAUSE_FILE to be removed" >&2
+  while [[ -f "$PAUSE_FILE" ]]; do sleep "$PAUSE_POLL_SEC"; done
+  emit_event loop.resumed "control/pause removed"
+  echo "loop-orchestrator: resumed" >&2
 }
 
 # --- SUB prompt (instance 1 may use a supervise-supplied file; later instances resume) ------
@@ -105,6 +128,9 @@ bounded foreground slices only (one per Bash call, each under ~110s so the harne
 backgrounds it): \`timeout 100 zsh -c 'until [[ -f <runDir>/meta.json ]]; do sleep 10; done'; true\`
 — then re-check state and issue the next slice. If a tool result says "running in background",
 do NOT end your turn; continue with the next bounded slice.
+Pause controls live in \`$DIR/control/\`: a runner exit 30 means the phase was paused — mark it
+\`paused\`, never retry it; once \`control/pause-<N>\` is gone, resume it with \`--resume <sessionId>
+--engine <e>\` (from its meta.json). Never schedule a phase whose \`control/pause-<N>\` exists.
 EOF
 }
 
@@ -130,15 +156,17 @@ recycles=0
 consecutive_crashes=0
 
 while :; do
+  [[ -f "$PAUSE_FILE" ]] && pause_wait
   transcript="$SUB/transcript-$k.jsonl"
   stall_marker="$SUB/.stalled-$k"
-  rm -f "$STATUS" "$stall_marker"
+  pause_marker="$SUB/.paused-$k"
+  rm -f "$STATUS" "$stall_marker" "$pause_marker"
   : > "$transcript"
   build_sub_prompt "$k" > "$SUB/prompt-$k.md"
 
   fb_args=()
   [[ -n "$LEG_FALLBACK" ]] && fb_args=(--fallback-model "$LEG_FALLBACK")
-  "${LB[@]}" "$ENGINE_CMD" -p --model "$LEG_MODEL" "${fb_args[@]}" \
+  "${LB[@]}" "$ENGINE_CMD" -p --model "$LEG_MODEL" "${fb_args[@]}" --effort "$ORCH_EFFORT" \
     --output-format stream-json --verbose \
     --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
     --max-budget-usd "$BUDGET" \
@@ -146,11 +174,17 @@ while :; do
   child=$!
   echo "$child" > "$PIDFILE"
 
-  # Stall watchdog: kill the SUB pid tree if the transcript mtime goes stale (heartbeat lost).
+  # Stall + pause watchdog: kill the SUB pid tree if the transcript mtime goes stale
+  # (heartbeat lost) or the loop is paused (control/pause).
   (
     while kill -0 "$child" 2>/dev/null; do
-      sleep "$POLL_SEC"
+      sleep "$WATCH_SEC"
       kill -0 "$child" 2>/dev/null || break
+      if [[ -f "$PAUSE_FILE" ]]; then
+        touch "$pause_marker"
+        kill_tree "$child"
+        break
+      fi
       mt=$(stat -f %m "$transcript" 2>/dev/null || echo 0)
       age=$(( $(date +%s) - mt ))
       if [[ "$age" -ge "$STALL_SEC" ]]; then
@@ -165,6 +199,13 @@ while :; do
   wait "$child" 2>/dev/null; rc=$?
   { echo "$watchdog"; descendants "$watchdog"; } | xargs kill 2>/dev/null  # reap the watchdog + its sleep child
   wait "$watchdog" 2>/dev/null
+
+  # A paused kill is neither a crash nor a recycle: wait out the pause, resume as k+1.
+  if [[ -f "$pause_marker" ]]; then
+    pause_wait
+    k=$(( k + 1 ))
+    continue
+  fi
 
   outcome="$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null || true)"
 

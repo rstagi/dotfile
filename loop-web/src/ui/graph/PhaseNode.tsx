@@ -17,6 +17,7 @@ const ACCENT: Record<NodeUiState, string> = {
   done: "var(--green)",
   awaiting: "var(--amber)",
   problem: "var(--red)",
+  paused: "var(--violet)",
 };
 
 export function PhaseNode({ data, selected }: NodeProps) {

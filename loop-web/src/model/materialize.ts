@@ -88,6 +88,7 @@ function render(record: LoopRecord, live: LoopInput, opts: MaterializeOpts): Sna
     runs: live.runs,
     hil: live.hil,
     notes: live.notes,
+    control: live.control,
   };
   const runtime = parseLoop(loopInput);
   const now = opts.now ?? Date.now();

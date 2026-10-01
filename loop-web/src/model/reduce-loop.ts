@@ -24,7 +24,7 @@ import { EVENT_RULES } from "./derive.ts";
 import { parsePlan } from "./parse-plan.ts";
 
 const RANK_INDEX: Record<PhaseRank, number> = { todo: 0, claimed: 1, running: 2, done: 3, merged: 4 };
-const STATE_STATUSES: readonly PhaseStateStatus[] = ["todo", "claimed", "running", "merged", "blocked", "done"];
+const STATE_STATUSES: readonly PhaseStateStatus[] = ["todo", "claimed", "running", "merged", "blocked", "done", "paused"];
 
 /** Event names the reducer folds structurally. Anything else falls to the keyword fallback
  * (EVENT_RULES) so a legacy free-form events.jsonl still drives the overlay. */
@@ -40,6 +40,10 @@ const TYPED_EVENTS = new Set([
   "review.finish",
   "loop.finish",
   "jev.decision",
+  // User controls (POST /control): timeline-only — pause state is read from control/ files.
+  "control.pause",
+  "control.resume",
+  "control.model",
 ]);
 
 /** Effect of one event on the record (all fields optional; `phase`/`patch` drive the overlay). */

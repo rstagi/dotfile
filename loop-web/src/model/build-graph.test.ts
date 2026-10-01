@@ -108,10 +108,11 @@ function attempt(over: Partial<Attempt> & { k: number }): Attempt {
 function runtime(phases: Record<string, Partial<PhaseRuntime>>): Runtime {
   const out: Record<string, PhaseRuntime> = {};
   for (const [k, v] of Object.entries(phases)) {
-    out[k] = { phase: k, state: null, attempts: [], hil: null, note: null, ...v };
+    out[k] = { phase: k, state: null, attempts: [], hil: null, note: null, paused: false, modelOverride: null, ...v };
   }
   return { present: true, state: null, phases: out, events: [], reviewRuns: [],
-    reviewRunsByRepository: {}, reviewNote: null, reviewNotes: {} };
+    reviewRunsByRepository: {}, reviewNote: null, reviewNotes: {},
+    control: { paused: false, pausedPhases: [], models: {} } };
 }
 
 describe("buildGraph — static shape (no runtime)", () => {
@@ -154,6 +155,16 @@ describe("buildGraph — explicit review phases", () => {
     expect(hasEdge(graph, "1", "2")).toBe(true);
     expect(hasEdge(graph, "2", "3")).toBe(true);
     expect(hasEdge(graph, "3", "4")).toBe(true);
+  });
+});
+
+describe("buildGraph — review tier on PR-review nodes", () => {
+  it("carries the parsed tier + rounds onto pr-review nodes only", () => {
+    const tagged = REVIEW_ROUNDS.replace(/(### Phase 4[^\n]*\[kind: pr-review\]`?)/, "$1 `[review: shallow]` `[rounds: 2]`");
+    const graph = buildGraph(parsePlan(tagged), null);
+    expect(node(graph, "4").review).toEqual({ tier: "shallow", rounds: 2 });
+    expect(node(graph, "2").review).toEqual({ tier: "medium", rounds: null });
+    expect(node(graph, "1").review ?? null).toBeNull();
   });
 });
 
@@ -338,5 +349,32 @@ describe("buildGraph — PR Review node", () => {
       pr: pr({ outcome: "done", reviewPresent: true }),
     }), "pr-review");
     expect(finished.notePending).toBe(false);
+  });
+});
+
+describe("buildGraph — control (pause + model override)", () => {
+  const now = 1_000_000;
+  it("a paused, unfinished phase resolves to ui 'paused'; a done phase stays done", () => {
+    const rt = runtime({
+      "1": { paused: true, state: { status: "merged" } },
+      "2": { paused: true, state: { status: "running", attempt: 1 } },
+      "3": { state: { status: "paused", attempt: 1 } },
+    });
+    const g = buildGraph(parsePlan(SINGLE_LANE), rt, { now });
+    expect(node(g, "1").ui).toBe("done");
+    expect(node(g, "1").paused).toBe(true);
+    expect(node(g, "2").ui).toBe("paused");
+    expect(node(g, "2").paused).toBe(true);
+    expect(node(g, "3").status).toBe("paused");
+    expect(node(g, "3").ui).toBe("paused");
+    expect(node(g, "3").paused).toBe(true);
+  });
+  it("carries the model override; nodes without control are unpaused with no override", () => {
+    const rt = runtime({ "3": { modelOverride: "claude:claude-opus-5-5" } });
+    const g = buildGraph(parsePlan(SINGLE_LANE), rt, { now });
+    expect(node(g, "3").modelOverride).toBe("claude:claude-opus-5-5");
+    expect(node(g, "2").modelOverride).toBeNull();
+    expect(node(g, "2").paused).toBe(false);
+    expect(buildGraph(parsePlan(SINGLE_LANE), null).nodes.find((n) => n.id === "1")?.paused).toBe(false);
   });
 });

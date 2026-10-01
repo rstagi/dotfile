@@ -171,3 +171,22 @@ describe("parseLoop — steering notes", () => {
     expect(rt.reviewNote).toBeNull();
   });
 });
+
+describe("parseLoop — control files", () => {
+  it("defaults to an unpaused loop with no overrides when control is absent", () => {
+    const rt = parseLoop(input());
+    expect(rt.control).toEqual({ paused: false, pausedPhases: [], models: {} });
+    expect(rt.phases["2"].paused).toBe(false);
+    expect(rt.phases["2"].modelOverride).toBeNull();
+  });
+  it("maps pause-<N> and model-<N> onto phases, including phases not yet in state.json", () => {
+    const rt = parseLoop(input({
+      control: { paused: true, pausedPhases: ["2", "7"], models: { "3": "claude:claude-opus-5-5" } },
+    }));
+    expect(rt.control.paused).toBe(true);
+    expect(rt.phases["2"].paused).toBe(true);
+    expect(rt.phases["7"].paused).toBe(true);
+    expect(rt.phases["1"].paused).toBe(false);
+    expect(rt.phases["3"].modelOverride).toBe("claude:claude-opus-5-5");
+  });
+});

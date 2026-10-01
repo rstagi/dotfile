@@ -1,6 +1,7 @@
 import type {
   Runtime,
   PhaseRuntime,
+  LoopControl,
   Attempt,
   ReviewRun,
   RawEvent,
@@ -42,12 +43,16 @@ export interface LoopInput {
   runs: RawRunDir[];
   hil: RawHil[];
   notes: RawNote[];
+  /** Parsed `.loop/control/` (pause flags + model overrides); absent → nothing controlled. */
+  control?: LoopControl;
 }
 
 const RUN_NAME = /^(.+)-a(\d+)$/;
 const REVIEW_NAME = /^review-a(\d+)$/;
 const PHASE_REPOSITORY_REVIEW_NAME = /^review-p(\d+)-(.+)-a(\d+)$/;
 const REPOSITORY_REVIEW_NAME = /^review-(.+)-a(\d+)$/;
+
+const NO_CONTROL: LoopControl = { paused: false, pausedPhases: [], models: {} };
 
 const EMPTY: Runtime = {
   present: false,
@@ -58,6 +63,7 @@ const EMPTY: Runtime = {
   reviewRunsByRepository: {},
   reviewNote: null,
   reviewNotes: {},
+  control: NO_CONTROL,
 };
 
 /**
@@ -81,6 +87,7 @@ export function parseLoop(input: LoopInput): Runtime {
   const attemptsByPhase = groupAttempts(attemptDirs, slugToPhase);
   const hilByPhase = groupHil(input.hil, slugToPhase);
   const { notesByPhase, reviewNote, reviewNotes } = groupNotes(input.notes);
+  const control = input.control ?? NO_CONTROL;
 
   const phases: Record<string, PhaseRuntime> = {};
   const phaseNums = new Set<string>([
@@ -88,6 +95,8 @@ export function parseLoop(input: LoopInput): Runtime {
     ...attemptsByPhase.keys(),
     ...hilByPhase.keys(),
     ...notesByPhase.keys(),
+    ...control.pausedPhases,
+    ...Object.keys(control.models),
   ]);
   for (const num of phaseNums) {
     phases[num] = {
@@ -96,11 +105,13 @@ export function parseLoop(input: LoopInput): Runtime {
       attempts: (attemptsByPhase.get(num) ?? []).sort((a, b) => a.k - b.k),
       hil: hilByPhase.get(num) ?? null,
       note: notesByPhase.get(num) ?? null,
+      paused: control.pausedPhases.includes(num),
+      modelOverride: control.models[num] ?? null,
     };
   }
 
   return { present: true, state: state ?? null, phases, events, reviewRuns,
-    reviewRunsByRepository, reviewNote, reviewNotes };
+    reviewRunsByRepository, reviewNote, reviewNotes, control };
 }
 
 // --- run dirs ------------------------------------------------------------------------

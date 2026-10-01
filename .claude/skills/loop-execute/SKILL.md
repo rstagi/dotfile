@@ -5,9 +5,9 @@ description: >-
   daemon; Kestral link optional) end-to-end — spawn a fresh headless runner per phase (Codex
   or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into its
   repository integration branch, escalate stuck work (retry → stronger model → HIL pause),
-  open one effort PR per repository, execute each explicit review phase as three Astra/Fable
-  adversarial passes with Opus remediation between them, post one final Opus verdict, then stop
-  for humans to merge.
+  open one effort PR per repository, execute each explicit review phase as a tiered adversarial
+  pipeline (shallow/medium/max, N rounds) with remediation between rounds, post one final Opus
+  verdict, then stop for humans to merge.
   By default the heavy orchestration runs in a detached, self-recycling sub-orchestrator so
   the interactive chat stays thin. Use when asked to
   "run the loop", "execute the multi-phase plan", "run the published plan autonomously",
@@ -144,7 +144,8 @@ session hands the heavy work to a detached orchestrator and stays thin:
    Do NOT skim diffs, resolve conflicts, or pull the fat daemon snapshot; that heavy work is the
    SUB's, and reading it here defeats the purpose. If `sub/orch.pid` is dead and there is no
    `sub/REVIEW_READY` or legacy `sub/PHASES_DONE`, re-spawn the orchestrator (it `resume`s cleanly — the dead-orchestrator
-   backstop).
+   backstop). While `.loop/control/pause` exists, report "paused" and spawn no
+   review/remediation runners (protocol § Pause & live control).
 4. **HIL asker.** Each poll, scan `hil/*.md` lacking a sibling `.answer.md`. For each: read the
    brief, `AskUserQuestion` (the ONLY user contact besides completion), write the reply to
    `hil/<slug>.answer.md`. The `sub` picks it up and requeues that lane — the human-facing HIL
@@ -193,6 +194,8 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
    `LOOP_DAEMON_URL` via env, so its EXIT-trap `phase.attempt.*` events reach the daemon).
    Record pid + run dir in state; journal the event. A pickup `REFUSED` surfaces as the
    runner's `blocked` status → ladder, keep scheduling other lanes.
+   Never schedule a phase whose `.loop/control/pause-<N>` exists. A `control/model-<N>`
+   override is applied by the runner itself (no extra flag).
 
    Resolve `<runtime-root>` once during preflight. Normally it is `~/dotfile`. When the
    effort modifies `rstagi/dotfile` Loop runtime files, use that repository's integration
@@ -248,6 +251,10 @@ Switch on the exit code (protocol table). The extra checks only you can do:
   L3.
 - **exit 20 / 50×2 / 124×2** — escalate per the ladder. **exit 40** — follow the
   protocol's exit-40 rule (bounded backoff, then L3; multi-lane 40s pause scheduling).
+- **exit 30** — user pause: mark the phase `paused`, never retry/escalate. Each tick, once
+  `control/pause-<N>` (and loop-level `control/pause`) is gone, resume with
+  `loop-runner.sh --resume <sessionId> --engine <meta.engine>` in a new attempt dir (fresh
+  if no `sessionId`).
 
 ### 6. Merge and sync
 
@@ -323,39 +330,44 @@ that repository's phases/task links plus a progress digest. Then record completi
 
 Sweep remaining lane worktrees. Re-read `notes/<reviewPhase>.md` plus legacy repository
 review-note aliases, honor them against each integration worktree throughout this review phase,
-and fold them verbatim into every reviewer/remediator prompt. For each repository run this exact
-pipeline in `runs/review-p<N>-<owner--repo>-a<1..9>/`, passing `--phase <N>` and
-`--repository <owner/repo>`. Different repositories may progress in parallel under Loop
-Concurrency; stages within one repository are ordered:
+and fold them verbatim into every reviewer/remediator prompt.
 
-1. Capture the current PR head SHA. Launch Astra 6 (`review-astra`, `a1`) and Fable 5.1
-   (`review-fable`, `a2`) adversarially against that same SHA. They independently run the full
-   `pr-review` inspection but **never post or mutate GitHub** and never read each other's output.
-2. Launch Opus 5 (`review-fix`, `a3`) on the integration worktree. Its prompt invokes
-   `/pr-review-fix-all` with both report paths, `RUN_DIR`, branch/remote, and repository verify
-   command. That skill reproduces and reconciles every finding, then delegates independent fix
-   groups to Opus 5 subagents (max 3), integrates, verifies, commits, and pushes. Rejected or
-   duplicate findings require evidence; no accepted finding may be silently skipped.
-3. Capture the new PR head. Repeat the independent local-only Astra/Fable reviews as `a4`/`a5`.
-4. Repeat `/pr-review-fix-all` through Opus 5 (`review-fix`, `a6`), then verify/commit/push.
-5. Capture the new PR head. Run the third independent local-only Astra/Fable reviews as
-   `a7`/`a8`.
-6. Launch Opus 5 (`review-final`, `a9`). It reads the two third-pass reports, reconciles them
-   against the current code, and posts the pipeline's **only** GitHub review:
-   `REQUEST_CHANGES` for one or more unresolved `[blocker]` findings; otherwise `COMMENT` for
-   one or more unresolved `[major]` findings; otherwise `APPROVE`. Minor/nit/style findings do
-   not prevent approval. Save the API response URL in `status.json.commentUrl`.
+Read the review phase's tags: `[review: shallow|medium|max]` (default `LOOP_REVIEW_TIER_DEFAULT`,
+medium) and `[rounds: N]` (default per tier, 1/3/3; cap `LOOP_REVIEW_ROUNDS_CAP`). Generate the run
+list once with `loop-review.sh stages --tier <T> --rounds <N>` (TSV `a<k> stage chain`) and
+execute its rows in order for each repository in `runs/review-p<N>-<owner--repo>-a<k>/`, passing
+`--chain <chain> --review-tier <T> --phase <N> --repository <owner/repo>`. Different repositories
+may progress in parallel under Loop Concurrency; rows within one repository are ordered, except
+the two adversaries of one `round<r>`, which run in parallel:
 
-Persist `repositories[slug].reviewPipeline` with this review's `phase` and the **next** `stage`
-(`round1 → fix1 → round2 → fix2 → round3 → final → done`), advancing it only after that stage
-finishes. Initialize it to `{phase:<N>,stage:"round1"}` for a new explicit review phase. The
+- `round<r>` (`review-adv-a`, plus `review-adv-b` outside shallow): capture the current PR head
+  SHA; every adversary of the round reviews that same SHA with the full `pr-review` inspection,
+  **never posts or mutates GitHub**, and never reads another adversary's output.
+- `fix<r>` (`review-fix`): on the integration worktree, its prompt invokes `/pr-review-fix-all`
+  with the round's report paths, the tier, `RUN_DIR`, branch/remote, and repository verify
+  command. That skill reproduces and reconciles every finding, fixes accepted ones (Opus subagents,
+  max 3; in shallow the Sonnet coordinator fixes them itself), integrates, verifies, commits, and
+  pushes. Rejected or duplicate findings require evidence; no accepted finding may be silently
+  skipped.
+- `final` (`review-final`): reads the last round's reports (shallow: none — it performs the
+  `pr-review` inspection itself), reconciles them against the current code, and posts the
+  pipeline's **only** GitHub review: `REQUEST_CHANGES` for one or more unresolved `[blocker]`
+  findings; otherwise `COMMENT` for one or more unresolved `[major]` findings; otherwise
+  `APPROVE`. Minor/nit/style findings do not prevent approval. Save the API response URL in
+  `status.json.commentUrl`.
+
+Persist `repositories[slug].reviewPipeline` as `{phase, stage, tier, rounds}` where `stage` is the
+**next** stage name from the generated list (e.g. medium 3: `round1 → fix1 → round2 → fix2 →
+round3 → final → done`), advancing it only after that stage finishes. Initialize it to the
+list's first stage for a new explicit review phase; resume regenerates the list from the persisted
+`tier`/`rounds`, never from re-read tags. The
 final review body includes the phase-scoped idempotency marker from the protocol; resume searches
 GitHub for it before posting. Any reviewer/remediator infrastructure failure records `blocked`
 without cancelling sibling repositories; do not substitute models or advance that repository.
 For exit 10 with `checkpoint:true`, read the status and checkpoint report, give the
 runner one concrete answer, and resume the same stage against the same PR head.
 Do not count this as a reviewer failure or advance the stage; sibling repositories continue.
-After `a9`, promote its verdict, report path, and comment URL into
+After the `final` run, promote its verdict, report path, and comment URL into
 `state.repositories[slug].review`, clear the review note, and emit one `review.finish`.
 
 Wait for every repository. Aggregate verdict precedence is `blocked > question > done`. If any
@@ -412,6 +424,9 @@ thing left and no lane can progress).
 ## Steering notes
 
 Users may steer work without pausing the loop by writing `.loop/notes/<key>.md`.
+A running attempt picks up edits live: the runner resumes the same session with the updated
+note (same attempt, no retry consumed). Pause and model overrides live in `.loop/control/`
+(protocol § Pause & live control).
 All explicit phase keys, including review phases, are plan numbers (`notes/2.md`). Legacy
 review keys `notes/pr-review.<owner--repo>.md` and `notes/pr-review.md` remain accepted.
 A note persists until that phase or review completes. The `sub` reads phase notes for runner

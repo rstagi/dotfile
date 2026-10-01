@@ -27,6 +27,9 @@ const WATCH_DEBOUNCE_MS = 2000;
 const RECONCILE_MS = 15000;
 const TAIL_BYTES = 64 * 1024;
 const NOTE_BYTES = 16 * 1024;
+const CONTROL_ACTIONS = new Set(["pause", "resume", "model"]);
+/** `engine:model[+fallback[,fallback2]]` — the loop-models.conf leg grammar. */
+const MODEL_LEG = /^(codex|claude):@?[A-Za-z0-9._-]+(\+[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*)?$/;
 const DECISION_FILE_BYTES = 128 * 1024;
 const BODY_LIMIT = 4 * 1024 * 1024; // cap an ingest body (plan md + state) — reject beyond
 const HOST = "127.0.0.1";
@@ -300,6 +303,8 @@ function handle(req, res) {
   if (req.method === "POST") {
     const note = p.match(/^\/api\/loops\/([^/]+)\/note$/);
     if (note) return handleNote(decodeURIComponent(note[1]), req, res);
+    const control = p.match(/^\/api\/loops\/([^/]+)\/control$/);
+    if (control) return handleControl(decodeURIComponent(control[1]), req, res);
     const m = p.match(/^\/api\/loops\/([^/]+)\/(register|state|event|finish)$/);
     if (m) return handleIngest(decodeURIComponent(m[1]), m[2], req, res);
     return json(res, 404, { error: "unknown endpoint" });
@@ -368,6 +373,64 @@ function handleNote(runId, req, res) {
       return json(res, 500, { error: String(e?.message ?? e) });
     }
   });
+}
+
+/**
+ * User controls → `.loop/control/` files the runner, orchestrator and SUB poll:
+ * `pause` (whole loop), `pause-<N>` (phase), `model-<N>` (leg for the next attempt of a
+ * not-yet-started phase). Writes the file, folds a timeline event, and re-materializes.
+ */
+function handleControl(runId, req, res) {
+  const entry = loops.get(runId);
+  if (!entry) return json(res, 404, { error: "no such loop", runId });
+  const loopDir = entry.record.loopDir;
+  if (!loopDir || !isDir(loopDir)) {
+    return json(res, 410, { error: "worktree gone — archived loops are not steerable", runId });
+  }
+  readBody(req, BODY_LIMIT, (err, body) => {
+    if (err) return json(res, 413, { error: "body too large" });
+    const parsed = safeParse(body) ?? {};
+    const { action, phase = null } = parsed;
+    if (!CONTROL_ACTIONS.has(action)) return json(res, 400, { error: "action must be pause|resume|model" });
+    if (phase !== null && (typeof phase !== "string" || !isSafeNoteKey(phase))) {
+      return json(res, 400, { error: "invalid phase" });
+    }
+    if (action === "model" && phase === null) return json(res, 400, { error: "model requires a phase" });
+    const leg = parsed.leg ?? null;
+    if (action === "model" && leg !== null && (typeof leg !== "string" || !MODEL_LEG.test(leg))) {
+      return json(res, 400, { error: "leg must be codex|claude:<model>[+fallback[,fallback]]" });
+    }
+    if (action === "model" && phaseStarted(entry.record, loopDir, phase)) {
+      return json(res, 409, { error: "phase already started — model can only change before its first attempt", phase });
+    }
+
+    const controlDir = path.join(loopDir, "control");
+    const file = path.join(controlDir, action === "model" ? `model-${phase}` : phase ? `pause-${phase}` : "pause");
+    try {
+      if (action === "pause") writeControl(controlDir, file, new Date().toISOString());
+      else if (action === "model" && leg !== null) writeControl(controlDir, file, leg);
+      else fs.rmSync(file, { force: true });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+    const detail = action === "model" ? (leg ?? "default") : phase ? `phase ${phase}` : "loop";
+    ingest(runId, { kind: "event", event: { event: `control.${action}`, phase: phase ?? "", detail, ts: new Date().toISOString() } });
+    reconcile(entry);
+    json(res, 200, { ok: true, runId, action, ...(phase ? { phase } : {}) });
+  });
+}
+
+/** Started = state.json moved past todo, or any attempt was counted. */
+function phaseStarted(record, loopDir, phase) {
+  const live = safeParse(readText(path.join(loopDir, "state.json")));
+  const ph = live?.phases?.[phase] ?? record.lastState?.phases?.[phase] ?? null;
+  if (!ph) return false;
+  return (ph.status != null && ph.status !== "todo") || (ph.attempt ?? 0) > 0;
+}
+
+function writeControl(dir, file, content) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, content + "\n", "utf8");
 }
 
 function handleIngest(runId, kind, req, res) {
@@ -561,7 +624,23 @@ function readLoopInput(loopDir) {
     runs,
     hil,
     notes,
+    control: readControl(loopDir),
   };
+}
+
+/** `.loop/control/` → { paused, pausedPhases, models } (invalid model files are ignored). */
+function readControl(loopDir) {
+  const dir = path.join(loopDir, "control");
+  const control = { paused: false, pausedPhases: [], models: {} };
+  for (const f of safeReaddir(dir)) {
+    if (f === "pause") control.paused = true;
+    else if (f.startsWith("pause-") && isSafeNoteKey(f.slice(6))) control.pausedPhases.push(f.slice(6));
+    else if (f.startsWith("model-") && isSafeNoteKey(f.slice(6))) {
+      const leg = (readText(path.join(dir, f)) ?? "").trim();
+      if (MODEL_LEG.test(leg)) control.models[f.slice(6)] = leg;
+    }
+  }
+  return control;
 }
 
 function isSafeNoteKey(key) {

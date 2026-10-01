@@ -241,3 +241,27 @@ describe("summarize — phase counts + lifecycle", () => {
     expect(summary.reviewOutcome).toBe("blocked");
   });
 });
+
+describe("materialize — control files", () => {
+  it("surfaces whole-loop pause, phase pause and model override from live control", () => {
+    const rec = fold("r", register, stateAll);
+    const snap = materialize(rec, {
+      ...emptyLive,
+      control: { paused: true, pausedPhases: ["3"], models: { "4": "claude:claude-opus-5-5" } },
+    });
+    expect(snap.paused).toBe(true);
+    const n3 = snap.graph.nodes.find((n) => n.id === "3");
+    expect(n3?.paused).toBe(true);
+    expect(n3?.ui).toBe("paused");
+    expect(snap.graph.nodes.find((n) => n.id === "4")?.modelOverride).toBe("claude:claude-opus-5-5");
+  });
+  it("a state.json `paused` status survives the overlay as a paused phase", () => {
+    const rec = fold("r", register, {
+      kind: "state",
+      state: { runId: "r", phases: { "3": { slug: "wire-checkout", status: "paused", attempt: 1 } } as StateJson["phases"] },
+    });
+    const snap = materialize(rec, emptyLive);
+    expect(snap.paused).toBe(false);
+    expect(snap.graph.nodes.find((n) => n.id === "3")?.ui).toBe("paused");
+  });
+});

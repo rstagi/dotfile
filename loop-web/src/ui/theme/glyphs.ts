@@ -42,6 +42,7 @@ export function uiColor(ui: string): string {
     case "running": return "var(--aqua)";
     case "done": return "var(--green)";
     case "awaiting": return "var(--amber)";
+    case "paused": return "var(--violet)";
     case "blocked":
     case "problem": return "var(--red)";
     default: return "var(--steel)";

@@ -23,9 +23,23 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 
 Invoke `/checkpoint-30` in Claude or `$checkpoint-30` in Codex to request a status report and guidance after 30 minutes on one interactive task. Interactive timing is advisory. Loop phase attempts have a hard 30-minute cutoff and return a checkpoint to the orchestrator; other phases continue.
 
-Loop defaults: Opus 5.5 orchestrator; GPT-6-Sol phase executor with Sonnet 5 fallback. Escalation and review use separate model chains. GPT-6-Sol requires Codex CLI 0.155.0 or newer.
+Loop defaults: latest Opus orchestrator; latest GPT Sol phase executor with latest Sonnet fallback. Escalation (Fable, Opus fallback) and review use separate model chains. Effort is per role: implementing `high`, Opus fixes `medium`, orchestrating `high`, reviewing by tier. PR reviews are tiered with `[review: shallow|medium|max]` on the review phase (default medium: Sol + Opus adversaries, Opus fixes, Opus verdict, 3 rounds; shallow: one Opus reviewer, Sonnet fixes, 1 round; max: Astra + Fable adversaries) and `[rounds: N]`. Chains in `loop-models.conf` track the newest model of each family — Claude aliases (`opus`, `sonnet`, `fable`) and Codex `@<family>` legs (`codex:@sol`, resolved at launch from `codex debug models`) — so new releases need no edit; pin a full model name to freeze one.
 
-New Loop plans include an estimate and confidence for each work phase. The planner targets 20–25 minutes of active work per phase, leaving room for the 30-minute runner checkpoint. The terminal review phase runs as nine bounded stages per repository. Retries and queue waits can take longer.
+New Loop plans include an estimate and confidence for each work phase. The planner targets 20–25 minutes of active work per phase, leaving room for the 30-minute runner checkpoint. The terminal review phase runs as bounded stages per repository (medium 3 rounds = nine runs; `loop-review stages` prints the list). Retries and queue waits can take longer.
+
+## Loop dashboard (`loop-top`)
+
+`loop-top` shows the phases of a Loop run in the terminal, live from the central daemon (`:7717`). Run it anywhere: it infers the loop from cwd (coordinator worktree, phase worktree, or git branch + origin) and otherwise opens an fzf picker over active + finished loops. HIL questions are still answered through the orchestrating agent.
+
+- Rows show the model that actually ran (`codex:gpt-6.1-sol`), 📝 on phases with a note, deps (`← 2a, 2b`), and `waiting on 2a` for a todo phase with unmerged deps.
+- `↑↓`/`j k` select a phase, `⏎` opens its details (attempts, heartbeat, HIL text, note), `esc` goes back.
+- `n` edits the phase's steering note in `$EDITOR` (empty = clear). A running phase picks it up within ~2s: the runner interrupts the engine and resumes the same session with the note.
+- `x` pauses/resumes the selected phase; `X` pauses/resumes the whole loop (asks y/n). Pausing halts the runners (and the orchestrator for `X`) within ~2s; resuming continues the same engine session.
+- Review phases show their tier and rounds (`medium review ×3`); change them with `[review: shallow|medium|max]` / `[rounds: N]` in the plan.
+- `m` sets the model for a phase that hasn't started (fzf over `loop-models.conf` legs, or type `engine:model`); the default chain stays as fallback.
+- `p` opens the plan in `$PAGER`; `g` toggles a git-log-style dependency graph; `w` toggles `branch → worktree`; `l` switches loop; `q` quits.
+- `loop-top <runId>` opens a specific loop; `loop-top --once [--worktrees] [--graph]` prints one frame.
+- Daemon down → renders the last stored snapshot from `~/.loop/loops` (`daemon offline · from store`); actions need the daemon.
 
 ## Jev decisions in Loop
 
