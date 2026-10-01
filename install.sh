@@ -416,6 +416,7 @@ PLIST
 
 install_ws() {
   install_pkg_if_needed "jq"
+  install_pkg_if_needed "terminal-notifier" # allow it in System Settings → Notifications
   if ! grep -q "source.*\.zshrc_ws_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
     echo "source $HOME/dotfile/.zshrc_ws_ext" >> "$HOME/.zshrc_ext"
   fi

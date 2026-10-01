@@ -15,6 +15,9 @@ set -u -o pipefail
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
 #   ws list                    TSV: state name path agent window pinned
 #   ws rm <name|path> [--force] [--delete-branch]
+#   ws merge                   in a workspace: merge its PR (gh, $WS_MERGE_METHOD, default
+#                              squash), fast-forward the main checkout, then on confirm
+#                              remove worktree + tabs + local/remote branch (prefix+M)
 #   ws hook <working|idle|waiting>   called by agent hooks inside a session window
 #
 # Sessions live in <worktree git dir>/ws-sessions (slot, agent, resume id). Quitting an agent
@@ -43,6 +46,8 @@ main() {
   pin) cmd_pin "$@" ;;
   list | ls) cmd_list ;;
   rm) cmd_rm "$@" ;;
+  merge) cmd_merge ;;
+  _merge_popup) cmd_merge; print -n "\npress enter to close"; read -r _ ;;
   hook) cmd_hook "$@" ;;
   _rows) picker_rows ;;
   _summary) picker_summary ;;
@@ -196,6 +201,7 @@ cmd_rm() {
     case "$1" in
     --force) force=1; shift ;;
     --delete-branch) delete_branch=1; shift ;;
+    --force-delete-branch) delete_branch=2; shift ;; # e.g. squash-merged: not an ancestor of main
     --interactive) interactive=1; shift ;;
     *) target="$1"; shift ;;
     esac
@@ -223,13 +229,46 @@ cmd_rm() {
   git -C "$repo" worktree remove "${rm_flags[@]}" "$wt" || die "git worktree remove failed: $wt"
   rmdir "${wt:h}" 2>/dev/null
   unpin "$(workspace_name "$wt")"
-  if (( delete_branch )) && [[ -n "$branch" ]]; then
+  if (( delete_branch == 2 )) && [[ -n "$branch" ]]; then
+    git -C "$repo" branch -D "$branch" >/dev/null
+  elif (( delete_branch )) && [[ -n "$branch" ]]; then
     git -C "$repo" branch -d "$branch" >/dev/null || print -u2 "ws: kept unmerged branch $branch (git branch -D to force)"
   fi
   local target
   for target in "${wins[@]}"; do tmux_ kill-window -t "$target" 2>/dev/null; done
   for target in "${sessions[@]}"; do tmux_ kill-session -t "$target" 2>/dev/null; done
   return 0
+}
+
+cmd_merge() {
+  local wt repo branch default ans
+  wt="$(current_workspace)" && wt="$(resolve_workspace "$wt")" || die "merge: not inside a workspace"
+  repo="$(main_checkout "$wt")" || die "cannot find main checkout for $wt"
+  branch="$(git -C "$wt" branch --show-current)"
+  [[ -n "$branch" ]] || die "merge: detached HEAD in $wt"
+
+  print "→ merging PR for $branch (${WS_MERGE_METHOD:-squash})"
+  if ! (cd "$wt" && gh pr merge "$branch" "--${WS_MERGE_METHOD:-squash}"); then
+    [[ "$(cd "$wt" && gh pr view "$branch" --json state -q .state 2>/dev/null)" == MERGED ]] \
+      || die "merge: gh pr merge failed"
+    print "  (already merged)"
+  fi
+
+  default="$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD)"
+  default="${default#origin/}"
+  [[ -n "$default" ]] || default=main
+  print "→ updating $default in ${repo/#$HOME/~}"
+  git -C "$repo" fetch -q origin || die "merge: fetch failed"
+  if [[ "$(git -C "$repo" branch --show-current)" == "$default" ]]; then
+    git -C "$repo" merge -q --ff-only "origin/$default" || die "merge: cannot fast-forward $default"
+  else
+    git -C "$repo" fetch -q origin "$default:$default" || die "merge: cannot fast-forward $default"
+  fi
+
+  read -r "ans?delete $(workspace_name "$wt") (worktree, tabs, local + remote $branch)? [y/N] " || ans=""
+  [[ "$ans" == (y|Y) ]] || { print "kept $(workspace_name "$wt")"; return 0; }
+  git -C "$repo" push -q origin --delete "$branch" 2>/dev/null # GitHub may have auto-deleted it
+  cmd_rm "$wt" --force-delete-branch
 }
 
 # Agent hooks call this from inside a session window: sets the window's state and records
@@ -248,7 +287,7 @@ cmd_hook() {
 }
 
 # prefix+w → ws picker, prefix+N → new workspace, prefix+a / prefix+A → claude / codex tab in
-# the current worktree. Only inside ws sessions (they carry the @ws_path session option);
+# the current worktree, prefix+M → ws merge. Only inside ws sessions (they carry the @ws_path session option);
 # other sessions keep tmux's default choose-tree on prefix+w.
 configure_bindings() {
   tmux_ has-session 2>/dev/null || return 0 # no server yet: bound when the first session is created
@@ -257,6 +296,8 @@ configure_bindings() {
     "display-popup -E -w 90% -h 85% -d '#{pane_current_path}' '$WS_BIN pick'" "choose-tree -Zw"
   tmux_ bind-key N if-shell -F "$in_ws" \
     "display-popup -E -w 60% -h 50% -d '#{pane_current_path}' '$WS_BIN new'"
+  tmux_ bind-key M if-shell -F "$in_ws" \
+    "display-popup -E -w 70% -h 50% -d '#{pane_current_path}' '$WS_BIN _merge_popup'"
   tmux_ bind-key a if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}'\""
   tmux_ bind-key A if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}' --agent codex\""
 }
@@ -612,6 +653,8 @@ sessions_for() {
     | awk -F '\t' -v p="$1" '$2 == p { print $1 }'
 }
 
+# terminal-notifier (sound, click → terminal app to front + tmux on the tab, one notification
+# per tab); osascript fallback when it's missing or not yet allowed by macOS.
 notify_unless_focused() {
   (( WS_NOTIFY )) || return 0
   local focused
@@ -620,8 +663,23 @@ notify_unless_focused() {
   local msg="$WS_WORKSPACE is $1"
   [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
   tmux_ display-message "ws: $msg" 2>/dev/null
+  if command -v terminal-notifier >/dev/null; then
+    local win sess bundle click
+    win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
+    sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
+    bundle="${WS_TERMINAL_BUNDLE:-$(tmux_ show-environment -g __CFBundleIdentifier 2>/dev/null | cut -d= -f2)}"
+    click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
+    { terminal-notifier -title ws -message "$msg" -sound default -group "ws-$win" \
+        ${bundle:+-activate} ${bundle:+$bundle} -execute "$click" >/dev/null 2>&1 \
+        || osascript_notify "$msg"; } &! # fails until macOS allows its notifications
+  else
+    osascript_notify "$msg" &!
+  fi
+}
+
+osascript_notify() {
   osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "ws"' \
-    -e 'end run' "$msg" >/dev/null 2>&1 &!
+    -e 'end run' "$1" >/dev/null 2>&1
 }
 
 state_icon() {

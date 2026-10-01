@@ -259,6 +259,63 @@ FAKE_FZF_OUT="$TMP/nope" "$WS" new --branch bad --detach 2>/dev/null
 assert_exit "$?" "1" "typed non-repo path refused"
 unset WS_REPO_ROOTS
 
+echo "ws hook: notifies via terminal-notifier (sound, click focuses the tab) when unfocused"
+cat > "$TMP/bin/terminal-notifier" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$FAKE_NOTIFIER_OUT"
+EOF
+chmod +x "$TMP/bin/terminal-notifier"
+export FAKE_NOTIFIER_OUT="$TMP/notifier.out"
+NWIN="$(slot_window "$WT" 1)"
+WS_NOTIFY=1 WS_TERMINAL_BUNDLE=com.example.term hook api/feat-login "$NWIN" working </dev/null
+WS_NOTIFY=1 WS_TERMINAL_BUNDLE=com.example.term hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+nout="$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)"
+assert_contains "$nout" "api/feat-login needs input" "message names workspace + state"
+assert_contains "$nout" $'-sound\ndefault' "plays a sound"
+assert_contains "$nout" $'-activate\ncom.example.term' "click activates the terminal app"
+assert_contains "$nout" "switch-client" "click switches tmux to the tab"
+assert_contains "$nout" "$NWIN" "click targets the notifying tab"
+assert_contains "$nout" $'-group\nws-'"$NWIN" "one notification per tab (replaced, not stacked)"
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 hook api/feat-login "$NWIN" working </dev/null
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "no notification for working"
+hook api/feat-login "$NWIN" idle </dev/null
+
+echo "ws merge: merges the PR, fast-forwards the main checkout, removes worktree + branch on confirm"
+MREPO="$(make_repo merge-me)"
+git init -q --bare "$TMP/merge-me.git"
+git -C "$MREPO" remote add origin "$TMP/merge-me.git"
+git -C "$MREPO" push -q origin main
+git --git-dir="$TMP/merge-me.git" symbolic-ref HEAD refs/heads/main
+git -C "$MREPO" fetch -q origin && git -C "$MREPO" remote set-head origin -a >/dev/null
+"$WS" new --repo "$MREPO" --branch feat/ship --detach
+MWT="$WS_ROOT/merge-me/feat-ship"
+git -C "$MWT" commit -q --allow-empty -m "ship it"
+git -C "$MWT" push -q origin feat/ship
+# "GitHub merges the PR": land a commit on origin/main from elsewhere
+UPSTREAM="$TMP/upstream-clone"
+git clone -q "$TMP/merge-me.git" "$UPSTREAM"
+git -C "$UPSTREAM" -c user.email=t@e -c user.name=T commit -q --allow-empty -m "squashed: ship it"
+git -C "$UPSTREAM" push -q origin main
+cat > "$TMP/bin/gh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+EOF
+chmod +x "$TMP/bin/gh"
+export FAKE_GH_LOG="$TMP/gh.log"
+(cd "$MWT" && print n | "$WS" merge) >/dev/null 2>&1
+assert_contains "$(cat "$FAKE_GH_LOG")" "pr merge feat/ship --squash" "squash-merges the branch's PR"
+assert_eq "$(git -C "$MREPO" log -1 --format=%s main)" "squashed: ship it" "main checkout fast-forwarded"
+assert_eq "$([[ -d "$MWT" ]] && print yes)" "yes" "declined: worktree kept"
+assert_eq "$(git -C "$MREPO" branch --list feat/ship | tr -d ' *+')" "feat/ship" "declined: branch kept"
+(cd "$MWT" && print y | "$WS" merge) >/dev/null 2>&1
+assert_eq "$([[ -d "$MWT" ]] && print yes)" "" "confirmed: worktree removed"
+assert_eq "$(git -C "$MREPO" branch --list feat/ship)" "" "confirmed: unmerged-by-ancestry (squashed) branch force-deleted"
+assert_eq "$(git -C "$MREPO" ls-remote --heads origin feat/ship)" "" "confirmed: remote branch deleted"
+(cd "$MREPO" && env -u TMUX "$WS" merge </dev/null 2>/dev/null)
+assert_exit "$?" "1" "merge outside a workspace refused"
+
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach
 print dirty >> "$WT/file.txt"
