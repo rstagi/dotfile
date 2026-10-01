@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -16,6 +16,7 @@ get_dependencies() {
     "python") echo "pyenv pipx" ;;
     "ralph") echo "node" ;;
     "loop-web") echo "node" ;;
+    "ws") echo "tmux fzf neovim" ;;
     "claude-config") echo "claude-code" ;;
     *) echo "" ;;
   esac
@@ -213,6 +214,7 @@ install_package() {
     "claude-code") install_claude_code ;;
     "ralph") install_claude_tools ;;
     "loop-web") install_loop_web ;;
+    "ws") install_ws ;;
     "claude-config") install_claude_config ;;
     *) echo "Unknown package: $package" ;;
   esac
@@ -410,6 +412,14 @@ PLIST
     echo "Configuring loop-web..."
     configure_loop_web
   fi
+}
+
+install_ws() {
+  install_pkg_if_needed "jq"
+  if ! grep -q "source.*\.zshrc_ws_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
+    echo "source $HOME/dotfile/.zshrc_ws_ext" >> "$HOME/.zshrc_ext"
+  fi
+  echo "ws installed — run 'ws' to open the workspace session"
 }
 
 install_gcloud() {

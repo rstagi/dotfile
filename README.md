@@ -7,6 +7,17 @@ Run the following command to install everything:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/rstagi/dotfile/master/install.sh)"
 ```
 
+## ws — terminal workspaces
+
+Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
+
+- Workspace = git worktree under `~/.ws/worktrees/<repo>/<branch>` + its own tmux session (`repo/branch`). Each agent session is a tab in it (`claude`, `claude#2`, `codex#3`). Agents run with permission prompts off (Claude `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`).
+- `ws new [--agent codex]` picks a repo (current repo first, then `~/.loop/repos.json`) + branch, copies `.env*`, runs setup in a `setup` tab (closes on success). Honors `.conductor/settings.toml` (`file_include_globs`, `[scripts] setup`), else an executable `.ws-setup`.
+- Picker: `ws` (attaches from a plain terminal) or `prefix+w` inside a ws session — one row per worktree, pinned first, then grouped by repo. enter open · ^n new · ^o new codex · ^a add claude tab · ^t add codex tab · ^p pin · ^x rm. `prefix+N` = new; `prefix+a` / `prefix+A` = claude / codex tab in the current worktree. CLI: `ws add [repo/branch] [--agent codex]` (defaults to the worktree you're in), `ws open`, `ws rm`, `ws list`.
+- Persistence: sessions + their Claude/Codex session ids are recorded per worktree. After a reboot (or closing tabs), workspaces show as stopped; opening one resumes every session by id. Quitting an agent cleanly forgets its session.
+- Status (○ idle · ◐ working · ● needs input) comes from per-launch agent hooks → tab icons + macOS notification when an unfocused agent stops or needs input.
+- Trust: run `claude` once in `~/.ws/worktrees` and accept (covers all worktrees); Codex asks once per repo.
+
 ## Agent checkpoints
 
 Invoke `/checkpoint-30` in Claude or `$checkpoint-30` in Codex to request a status report and guidance after 30 minutes on one interactive task. Interactive timing is advisory. Loop phase attempts have a hard 30-minute cutoff and return a checkpoint to the orchestrator; other phases continue.

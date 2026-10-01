@@ -1,13 +1,13 @@
 #!/bin/zsh
 # Run every tests/*.test.sh; exit non-zero if any file fails. Also syntax-checks the
-# loop-*.sh scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
+# loop-*.sh + ws.sh scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 fail=0
 
 echo "== zsh -n (syntax) =="
-for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-repo.sh; do
+for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-repo.sh ws.sh; do
   [[ -f "$ROOT/$s" ]] || continue
   if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; fail=1; fi
 done

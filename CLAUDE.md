@@ -26,10 +26,13 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh ws.sh
 
 # Loop engineering shell tests (occupancy + orchestrator; also runs zsh -n over the loop-*.sh)
 zsh tests/run.sh
+
+# ws (terminal workspaces) tests
+zsh tests/ws.test.sh
 
 # Loop Observatory (loop-web) tests + build
 cd loop-web && npm test && npm run build && cd ..
@@ -55,14 +58,15 @@ loop-emit.sh            Loop engineering: best-effort event push to the loop-web
 loop-models.conf        Loop engineering: model chains, budgets, timeouts
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
+ws.sh                   Terminal workspaces: worktree + tmux session per branch, tab per Claude/Codex session (hook-driven status + resume)
 .zshrc                  Main shell config, sources extensions
-.zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph)
+.zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
 ```
 
 **Extension system:** install.sh appends `source ~/dotfile/.zshrc_<tool>_ext` lines to `~/.zshrc_ext`. Main `.zshrc` sources that file if it exists.
 
-**Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx).
+**Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx, ws→tmux+fzf+neovim).
 
 **Loop engineering:** `.claude/skills/loop-execute` orchestrates a plan end-to-end across repositories: one repository per phase and one integration branch/worktree/PR per repository. Each explicit PR-review phase runs three local-only Astra/Fable adversarial rounds, with `.claude/skills/pr-review-fix-all` driving Opus 5 reconciliation and delegated Opus 5 remediation after rounds 1 and 2. Opus 5 alone posts the final GitHub review (`REQUEST_CHANGES`, `COMMENT`, or `APPROVE`, based on unresolved severity). GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. The central **Loop daemon** is always the base backend; **Kestral is opt-in**. On-disk coordinator state stays in flattened `.loop/`; review notes use `notes/<reviewPhase>.md` (legacy `notes/pr-review.*` aliases remain accepted). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`. Two-tier mode keeps scheduling/merges in recyclable SUBs and review-phase pipelines in detached runners. Shell tests live in `tests/` (`zsh tests/run.sh`).
 

@@ -1,0 +1,602 @@
+#!/bin/zsh
+set -u -o pipefail
+
+# ws — bare-minimum terminal Conductor: one git worktree + one tmux session per workspace,
+# one tab (window) per agent session inside it. Status and resume ids come from Claude Code /
+# Codex hooks — no screen scraping.
+#
+#   ws                         picker (attaches when run outside tmux)
+#   ws new [--repo P] [--branch B] [--agent claude|codex] [--detach]
+#   ws add [name|path] [--agent claude|codex] [--detach]   another agent tab (default: current worktree)
+#   ws open <name|path> [--detach]   focus, or restore every recorded session (resumed by id)
+#   ws pick                    grouped picker: enter open · ctrl-n new · ctrl-o new codex ·
+#                              ctrl-a add claude tab · ctrl-t add codex tab · ctrl-p pin · ctrl-x rm
+#   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
+#   ws list                    TSV: state name path agent window pinned
+#   ws rm <name|path> [--force] [--delete-branch]
+#   ws hook <working|idle|waiting>   called by agent hooks inside a session window
+#
+# Sessions live in <worktree git dir>/ws-sessions (slot, agent, resume id). Quitting an agent
+# cleanly forgets its session; a killed one (reboot, kill-window) is resumed on `ws open`.
+
+WS_BIN="${0:A}"
+WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
+WS_HOME="${WS_HOME:-$HOME/.ws}"
+WS_NOTIFY="${WS_NOTIFY:-1}"
+WS_AGENT_SHELL="${WS_AGENT_SHELL:-zsh -ic}" # interactive: agents need .zshrc (secrets, PATH)
+REGISTRY="${LOOP_REPO_REGISTRY:-$HOME/.loop/repos.json}"
+PINS="$WS_HOME/pins"
+DEFAULT_INCLUDE_GLOBS=(".env*")
+
+main() {
+  local cmd="${1:-}"
+  [[ $# -gt 0 ]] && shift
+  case "$cmd" in
+  "") cmd_attach ;;
+  new) cmd_new "$@" ;;
+  add) cmd_add "$@" ;;
+  open) cmd_open "$@" ;;
+  pick) cmd_pick ;;
+  pin) cmd_pin "$@" ;;
+  list | ls) cmd_list ;;
+  rm) cmd_rm "$@" ;;
+  hook) cmd_hook "$@" ;;
+  _rows) picker_rows ;;
+  _preview) preview "$@" ;;
+  _end) session_remove "$@" ;;
+  -h | --help | help) sed -n '4,20p' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $cmd (try: ws help)" ;;
+  esac
+}
+
+cmd_attach() {
+  configure_bindings
+  if [[ -z "$(cmd_list)" ]]; then
+    cmd_new
+  else
+    cmd_pick
+  fi
+}
+
+cmd_new() {
+  local repo="" branch="" agent="claude" detach=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --repo) repo="$2"; shift 2 ;;
+    --branch) branch="$2"; shift 2 ;;
+    --agent) agent="$2"; shift 2 ;;
+    --detach) detach=1; shift ;;
+    *) die "new: unknown arg $1" ;;
+    esac
+  done
+  check_agent "$agent"
+  [[ -n "$repo" ]] || repo="$(pick_repo)" || exit 1
+  repo="$(main_checkout "$repo")" || die "not a git repo: $repo"
+  if [[ -z "$branch" ]]; then
+    read -r "branch?branch (${repo:t}): " </dev/tty || exit 1
+  fi
+  [[ -n "$branch" ]] || die "new: branch required"
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch: $branch"
+
+  local wt="$WS_ROOT/${repo:t}/${branch//\//-}"
+  [[ -e "$wt" ]] && die "workspace exists: $wt (use: ws open ${repo:t}/${wt:t})"
+  add_worktree "$repo" "$branch" "$wt" || die "git worktree add failed"
+  copy_included_files "$repo" "$wt"
+  local win
+  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  run_setup "$wt" "$(setup_script "$repo")"
+  (( detach )) || focus "$win"
+}
+
+cmd_add() {
+  local target="" agent="claude" detach=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --agent) agent="$2"; shift 2 ;;
+    --detach) detach=1; shift ;;
+    *) target="$1"; shift ;;
+    esac
+  done
+  check_agent "$agent"
+  [[ -n "$target" ]] || target="$(current_workspace)" || die "add: not inside a workspace (pass <repo/branch>)"
+  local wt win
+  wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
+  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  (( detach )) || focus "$win"
+}
+
+cmd_open() {
+  local target="" detach=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --detach) detach=1; shift ;;
+    *) target="$1"; shift ;;
+    esac
+  done
+  local wt slot agent resume
+  wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
+  if [[ -z "$(windows_for "$wt")" ]]; then
+    [[ -n "$(sessions_read "$wt")" ]] || session_add "$wt" claude >/dev/null
+    sessions_read "$wt" | while IFS=$'\t' read -r slot agent resume; do
+      open_session "$wt" "$slot" "$agent" "$resume" >/dev/null
+    done
+  fi
+  (( detach )) || focus "$(windows_for "$wt" | head -1)"
+}
+
+cmd_pick() {
+  command -v fzf >/dev/null || die "fzf not installed"
+  local out key row wt win # never `path`: zsh ties it to $PATH
+  out="$(picker_rows | fzf --ansi --delimiter '\t' --with-nth 1 --no-sort --layout reverse \
+    --header 'enter open · ^n new · ^o new codex · ^a add claude · ^t add codex · ^p pin · ^x rm' \
+    --preview "$WS_BIN _preview {2} {3}" --preview-window 'right,60%,follow' \
+    --expect ctrl-n,ctrl-o,ctrl-a,ctrl-t \
+    --bind "ctrl-p:execute-silent($WS_BIN pin {2})+reload($WS_BIN _rows)" \
+    --bind "ctrl-x:execute($WS_BIN rm --interactive {2})+reload($WS_BIN _rows)")" || return 0
+  key="${out%%$'\n'*}"
+  row=""
+  [[ "$out" == *$'\n'* ]] && row="${out#*$'\n'}"
+  wt="$(print -r -- "$row" | cut -f2)"
+  win="$(print -r -- "$row" | cut -f3)"
+  case "$key" in
+  ctrl-n) cmd_new ;;
+  ctrl-o) cmd_new --agent codex ;;
+  ctrl-a) [[ -n "$wt" ]] && cmd_add "$wt" ;;
+  ctrl-t) [[ -n "$wt" ]] && cmd_add "$wt" --agent codex ;;
+  *)
+    if [[ -n "$win" ]]; then
+      focus "$win"
+    elif [[ -n "$wt" ]]; then
+      cmd_open "$wt"
+    fi
+    ;;
+  esac
+}
+
+cmd_pin() {
+  local wt name
+  wt="$(resolve_workspace "${1:-}")" || die "no such workspace: ${1:-}"
+  name="$(workspace_name "$wt")"
+  mkdir -p "$WS_HOME"
+  touch "$PINS"
+  if grep -qxF -- "$name" "$PINS"; then
+    unpin "$name"
+  else
+    print -r -- "$name" >> "$PINS"
+  fi
+}
+
+# One row per session window; a workspace with no window gets one "stopped" row.
+cmd_list() {
+  local wt name pinned win found
+  for wt in "$WS_ROOT"/*/*(N/); do
+    name="$(workspace_name "$wt")"
+    pinned=0
+    [[ -f "$PINS" ]] && grep -qxF -- "$name" "$PINS" && pinned=1
+    found=0
+    for win in ${(f)"$(windows_for "$wt")"}; do
+      found=1
+      local -a o=("${(@ps:\t:)$(tmux_ display -p -t "$win" '#{@ws_state}	#{@ws_slot}	#{@ws_agent}')}")
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${o[1]}" "$name${${o[2]:#1}:+#${o[2]}}" "$wt" "${o[3]}" "$win" "$pinned"
+    done
+    (( found )) || printf 'stopped\t%s\t%s\t-\t\t%s\n' "$name" "$wt" "$pinned"
+  done
+}
+
+cmd_rm() {
+  local target="" force=0 delete_branch=0 interactive=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --force) force=1; shift ;;
+    --delete-branch) delete_branch=1; shift ;;
+    --interactive) interactive=1; shift ;;
+    *) target="$1"; shift ;;
+    esac
+  done
+  local wt repo branch
+  wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
+  repo="$(main_checkout "$wt")" || die "cannot find main checkout for $wt"
+  branch="$(git -C "$wt" branch --show-current)"
+  if (( interactive )); then
+    local ans
+    read -r "ans?remove $(workspace_name "$wt") and all its sessions? [y/N/b=also delete branch] " </dev/tty
+    case "$ans" in
+    y | Y) ;;
+    b | B) delete_branch=1 ;;
+    *) return 0 ;;
+    esac
+  fi
+  if (( ! force )) && [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
+    die "workspace has uncommitted changes: $wt (use --force)"
+  fi
+  # Kill windows last: rm may run from inside one of them (picker popup).
+  local -a sessions=(${(f)"$(sessions_for "$wt")"}) wins=(${(f)"$(windows_for "$wt")"})
+  local -a rm_flags=()
+  (( force )) && rm_flags=(--force --force)
+  git -C "$repo" worktree remove "${rm_flags[@]}" "$wt" || die "git worktree remove failed: $wt"
+  rmdir "${wt:h}" 2>/dev/null
+  unpin "$(workspace_name "$wt")"
+  if (( delete_branch )) && [[ -n "$branch" ]]; then
+    git -C "$repo" branch -d "$branch" >/dev/null || print -u2 "ws: kept unmerged branch $branch (git branch -D to force)"
+  fi
+  local target
+  for target in "${wins[@]}"; do tmux_ kill-window -t "$target" 2>/dev/null; done
+  for target in "${sessions[@]}"; do tmux_ kill-session -t "$target" 2>/dev/null; done
+  return 0
+}
+
+# Agent hooks call this from inside a session window: sets the window's state and records
+# the agent's session id (for resume). Best effort, always exits 0 — never blocks the agent.
+cmd_hook() {
+  local state="${1:-}" payload=""
+  [[ -t 0 ]] || payload="$(cat)"
+  [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || return 0
+  [[ "$state" == (working|idle|waiting) ]] || return 0
+  local prev
+  prev="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_state}' 2>/dev/null)"
+  tmux_ set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
+  record_resume_id "$payload"
+  [[ "$state" != "$prev" && "$state" != working ]] && notify_unless_focused "$state"
+  return 0
+}
+
+# prefix+w → ws picker, prefix+N → new workspace, prefix+a / prefix+A → claude / codex tab in
+# the current worktree. Only inside ws sessions (they carry the @ws_path session option);
+# other sessions keep tmux's default choose-tree on prefix+w.
+configure_bindings() {
+  tmux_ has-session 2>/dev/null || return 0 # no server yet: bound when the first session is created
+  local in_ws="#{!=:#{@ws_path},}"
+  tmux_ bind-key w if-shell -F "$in_ws" \
+    "display-popup -E -w 90% -h 85% -d '#{pane_current_path}' '$WS_BIN pick'" "choose-tree -Zw"
+  tmux_ bind-key N if-shell -F "$in_ws" \
+    "display-popup -E -w 60% -h 50% -d '#{pane_current_path}' '$WS_BIN new'"
+  tmux_ bind-key a if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}'\""
+  tmux_ bind-key A if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}' --agent codex\""
+}
+
+# Opens one agent tab in the worktree's tmux session (creating the session if needed) and
+# prints its window id. The tab closes with the agent; a clean exit (0) forgets the session,
+# anything else (crash, SIGHUP) keeps it for resume.
+open_session() {
+  local wt="$1" slot="$2" agent="$3" resume="$4"
+  local name tab cmd run sess win
+  name="$(workspace_name "$wt")"
+  tab="$agent"
+  (( slot > 1 )) && tab+="#$slot"
+  cmd="$(agent_command "$agent" "$resume")"
+  run="$cmd; s=\$?; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" ${(z)WS_AGENT_SHELL} "$run")
+  sess="$(sessions_for "$wt" | head -1)"
+  if [[ -n "$sess" ]]; then
+    win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")"
+  else
+    win="$(tmux_ new-session -s "${name//[.:]/_}" "${spawn[@]}")"
+    configure_bindings
+    sess="$(tmux_ display -p -t "$win" '#{session_id}')"
+    tmux_ set -t "$sess" @ws_path "$wt"
+    tmux_ set -t "$sess" detach-on-destroy off
+    tmux_ set -t "$sess" status-left-length 60
+    tmux_ set -t "$sess" status-left "#[bold] $name #[default]"
+  fi
+  tmux_ set -w -t "$win" @ws_path "$wt"
+  tmux_ set -w -t "$win" @ws_slot "$slot"
+  tmux_ set -w -t "$win" @ws_agent "$agent"
+  tmux_ set -w -t "$win" @ws_state idle
+  tmux_ set -w -t "$win" automatic-rename off
+  tmux_ set -w -t "$win" window-status-format "#I $(state_format) #W"
+  tmux_ set -w -t "$win" window-status-current-format "#[bold]#I $(state_format) #W#[default]"
+  print -r -- "$win"
+}
+
+agent_command() {
+  local agent="$1" resume="$2"
+  case "$agent" in
+  claude)
+    write_claude_settings
+    local cmd="claude --dangerously-skip-permissions --settings ${(q)WS_HOME}/claude-settings.json"
+    [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
+    print -r -- "$cmd"
+    ;;
+  codex)
+    # Hook-trust bypass: ws hooks are passed per launch, so they'd otherwise need re-trusting.
+    local cmd="codex" ev st
+    [[ -n "$resume" ]] && cmd+=" resume ${(q)resume}"
+    cmd+=" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+    for ev st in UserPromptSubmit working PostToolUse working PermissionRequest waiting Stop idle Interrupt idle; do
+      cmd+=" -c 'hooks.$ev=[{hooks=[{type=\"command\",command=\"$WS_BIN hook $st\"}]}]'"
+    done
+    print -r -- "$cmd"
+    ;;
+  esac
+}
+
+# Per-launch settings (claude --settings) so ws hooks never leak into non-ws sessions.
+# No SessionStart: its id has no conversation yet, and `claude --resume <id>` fails on it.
+write_claude_settings() {
+  mkdir -p "$WS_HOME"
+  jq -n --arg h "$WS_BIN hook" '
+    def run($s): [{hooks: [{type: "command", command: "\($h) \($s)", timeout: 5}]}];
+    {hooks: {
+      UserPromptSubmit: run("working"),
+      PostToolUse: run("working"),
+      Stop: run("idle"),
+      PermissionRequest: run("waiting"),
+      Notification: [{matcher: "permission_prompt|elicitation_dialog",
+                      hooks: [{type: "command", command: "\($h) waiting", timeout: 5}]}]
+    }}' > "$WS_HOME/claude-settings.json"
+}
+
+# Picker rows (TSV: display, path, window): pinned first, then grouped by repo. No header
+# rows — every row must be actionable (the cursor starts on the first one). The repo name
+# shows on a group's first row and dims on the rest, so grouping stays visible and searchable.
+picker_rows() {
+  local -a rows=("${(@f)$(workspace_rows | sort -t $'\t' -k2,2)}") # by repo/branch
+  rows=(${rows:#})
+  local -a pinned=(${(M)rows:#*$'\t'1}) unpinned=(${(M)rows:#*$'\t'0})
+  local row repo prev=""
+  for row in "${pinned[@]}"; do picker_row "$row" pinned; done
+  for row in "${unpinned[@]}"; do
+    repo="${${row#*$'\t'}%%/*}"
+    picker_row "$row" "${${repo:#$prev}:+first}"
+    prev="$repo"
+  done
+}
+
+# cmd_list collapsed to one row per worktree: most urgent state, agents, first window.
+workspace_rows() {
+  cmd_list | awk -F '\t' -v OFS='\t' '
+    function rank(s) { return s == "waiting" ? 3 : s == "working" ? 2 : s == "idle" ? 1 : 0 }
+    !($3 in seen) { seen[$3] = 1; order[++n] = $3; st[$3] = $1; nm[$3] = $2; ag[$3] = $4; w[$3] = $5; pin[$3] = $6; sub(/#.*/, "", nm[$3]); next }
+    { if (rank($1) > rank(st[$3])) st[$3] = $1; ag[$3] = ag[$3] "," $4 }
+    END { for (i = 1; i <= n; i++) { p = order[i]; print st[p], nm[p], p, ag[p], w[p], pin[p] } }'
+}
+
+# picker_row <workspace row> <pinned|first|""> — one display line
+picker_row() {
+  local -a f=("${(@ps:\t:)1}")
+  local repo="${f[2]%%/*}" branch="${f[2]#*/}" detail="${f[4]}" mark="  " repo_style=$'\e[2m'
+  [[ "$detail" == "-" ]] && detail="${f[1]}"
+  case "$2" in
+  pinned) mark="📌" repo_style=$'\e[1m' ;;
+  first) repo_style=$'\e[1m' ;;
+  esac
+  printf '%s %s%-16s\e[0m %-32s %s \e[2m%s\e[0m\t%s\t%s\n' \
+    "$mark" "$repo_style" "$repo" "$branch" "$(state_icon "${f[1]}")" "$detail" "${f[3]}" "${f[5]}"
+}
+
+focus() {
+  local win="$1" sess
+  [[ -n "$win" ]] || return 1
+  sess="$(tmux_ display -p -t "$win" '#{session_id}')" || return 1
+  tmux_ select-window -t "$win"
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux_ switch-client -t "$sess"
+  else
+    exec_tmux attach-session -t "$sess"
+  fi
+}
+
+pick_repo() {
+  command -v fzf >/dev/null || die "fzf not installed (or pass --repo)"
+  local here
+  here="$(main_checkout "$PWD" 2>/dev/null)"
+  {
+    [[ -n "$here" ]] && print -r -- "$here"
+    [[ -f "$REGISTRY" ]] && jq -r '.[]' "$REGISTRY"
+  } | awk 'NF && !seen[$0]++' | while read -r p; do [[ -d "$p" ]] && print -r -- "$p"; done \
+    | fzf --prompt 'repo> ' --no-sort
+}
+
+check_agent() { [[ "$1" == (claude|codex) ]] || die "agent must be claude or codex"; }
+
+# Main checkout of a repo (or of any of its worktrees): parent of the common git dir.
+main_checkout() {
+  local common
+  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  [[ "${common:t}" == ".git" ]] || return 1
+  print -r -- "${common:h}"
+}
+
+# Existing local branch → reuse; remote-only → track it; else branch off the default branch.
+add_worktree() {
+  local repo="$1" branch="$2" wt="$3" base
+  mkdir -p "${wt:h}"
+  git -C "$repo" fetch -q origin 2>/dev/null
+  if git -C "$repo" show-ref -q --verify "refs/heads/$branch"; then
+    git -C "$repo" worktree add -q "$wt" "$branch"
+  elif git -C "$repo" show-ref -q --verify "refs/remotes/origin/$branch"; then
+    git -C "$repo" worktree add -q --track -b "$branch" "$wt" "origin/$branch"
+  else
+    base="$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || base=HEAD
+    git -C "$repo" worktree add -q -b "$branch" "$wt" "$base"
+  fi
+}
+
+# Copy gitignored files (default .env*) from the main checkout. Honors Conductor's
+# .conductor/settings.toml file_include_globs so migrated repos behave the same.
+copy_included_files() {
+  local repo="$1" wt="$2" f pat
+  local -a globs=("${(@f)$(conductor_setting "$repo" file_include_globs)}")
+  globs=(${globs:#})
+  (( ${#globs} )) || globs=("${DEFAULT_INCLUDE_GLOBS[@]}")
+  git -C "$repo" ls-files -z --others --ignored --exclude-standard --directory \
+    | while IFS= read -r -d '' f; do
+      [[ "$f" == */ ]] && continue
+      for pat in "${globs[@]}"; do
+        if [[ "$pat" == */* && "$f" == ${~pat} ]] || [[ "$pat" != */* && "${f:t}" == ${~pat} ]]; then
+          mkdir -p "$wt/${f:h}" && cp -p "$repo/$f" "$wt/$f"
+          break
+        fi
+      done
+    done
+}
+
+# Setup command: .conductor/settings.toml [scripts] setup, else an executable .ws-setup.
+setup_script() {
+  local repo="$1" setup
+  setup="$(conductor_setting "$repo" setup)"
+  if [[ -n "$setup" ]]; then
+    print -r -- "$setup"
+  elif [[ -x "$repo/.ws-setup" ]]; then
+    print -r -- "${(q)repo}/.ws-setup"
+  fi
+}
+
+# Setup runs in its own background window next to the agent: closes on success, stays
+# open on failure so the error is visible.
+run_setup() {
+  local wt="$1" setup="$2"
+  [[ -n "$setup" ]] || return 0
+  tmux_ new-window -d -t "$(sessions_for "$wt" | head -1):" -n setup -c "$wt" \
+    ${(z)WS_AGENT_SHELL} "$setup || { print \"setup failed (\$?) — enter to close\"; read; }"
+}
+
+# Minimal reader for the two Conductor keys ws uses (string or """multiline""" value).
+conductor_setting() {
+  local file="$1/.conductor/settings.toml" key="$2"
+  [[ -f "$file" ]] || return 0
+  awk -v key="$key" '
+    multi { if ($0 ~ /"""/) { sub(/""".*/, ""); if ($0 != "") print; exit } print; next }
+    $0 ~ "^[ \t]*" key "[ \t]*=" {
+      sub(/^[^=]*=[ \t]*/, "")
+      if ($0 ~ /^"""/) { sub(/^"""/, ""); if ($0 ~ /"""/) { sub(/""".*/, ""); print; exit } if ($0 != "") print; multi = 1; next }
+      sub(/^"/, ""); sub(/"[ \t]*(#.*)?$/, ""); print; exit
+    }' "$file"
+}
+
+sessions_file() { print -r -- "$(git -C "$1" rev-parse --absolute-git-dir)/ws-sessions"; }
+
+sessions_read() {
+  local f
+  f="$(sessions_file "$1")"
+  [[ -f "$f" ]] && cat "$f"
+  return 0
+}
+
+# Appends a session on the next free slot and prints the slot.
+session_add() {
+  local wt="$1" agent="$2" f slot
+  f="$(sessions_file "$wt")"
+  slot="$( { [[ -f "$f" ]] && cut -f1 "$f"; print 0; } | sort -n | tail -1)"
+  slot=$((slot + 1))
+  printf '%s\t%s\t\n' "$slot" "$agent" >> "$f"
+  print -r -- "$slot"
+}
+
+session_remove() {
+  local wt="$1" slot="$2" f
+  f="$(sessions_file "$wt")" || return 0
+  [[ -f "$f" ]] || return 0
+  awk -F '\t' -v s="$slot" '$1 != s' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+record_resume_id() {
+  local sid wt slot f
+  sid="$(print -r -- "$1" | jq -r '.session_id // empty' 2>/dev/null)"
+  [[ -n "$sid" ]] || return 0
+  wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}' 2>/dev/null)"
+  slot="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_slot}' 2>/dev/null)"
+  [[ -n "$wt" && -n "$slot" ]] || return 0
+  f="$(sessions_file "$wt")" || return 0
+  [[ -f "$f" ]] || return 0
+  awk -F '\t' -v OFS='\t' -v s="$slot" -v id="$sid" '$1 == s { $3 = id } { print }' "$f" > "$f.tmp" \
+    && mv "$f.tmp" "$f"
+}
+
+unpin() {
+  [[ -f "$PINS" ]] || return 0
+  grep -vxF -- "$1" "$PINS" > "$PINS.tmp"
+  mv "$PINS.tmp" "$PINS"
+}
+
+# The workspace you're in: the current dir's worktree, else the current tmux session's.
+current_workspace() {
+  local top
+  top="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [[ -n "$top" && "${top:A}" == "${WS_ROOT:A}"/*/* ]]; then
+    print -r -- "${top:A}"
+  elif [[ -n "${TMUX:-}" ]]; then
+    top="$(tmux_ display -p '#{@ws_path}' 2>/dev/null)"
+    [[ -n "$top" ]] && print -r -- "$top"
+  else
+    return 1
+  fi
+}
+
+resolve_workspace() {
+  local t="${1:-}"
+  [[ -n "$t" ]] || return 1
+  [[ "$t" == /* ]] || t="$WS_ROOT/$t"
+  [[ -d "$t" && "$t" == "$WS_ROOT"/*/* ]] || return 1
+  print -r -- "${t:A}"
+}
+
+workspace_name() { print -r -- "${1:h:t}/${1:t}"; }
+
+# Agent tabs of a worktree, in any session (so manually moved tabs are still found).
+windows_for() {
+  tmux_ list-windows -a -F '#{window_id}	#{@ws_path}	#{@ws_slot}' 2>/dev/null \
+    | awk -F '\t' -v p="$1" '$2 == p && $3 != "" { print $1 }'
+}
+
+sessions_for() {
+  tmux_ list-sessions -F '#{session_id}	#{@ws_path}' 2>/dev/null \
+    | awk -F '\t' -v p="$1" '$2 == p { print $1 }'
+}
+
+notify_unless_focused() {
+  (( WS_NOTIFY )) || return 0
+  local focused
+  focused="$(tmux_ display -p -t "$TMUX_PANE" '#{&&:#{window_active},#{session_attached}}' 2>/dev/null)"
+  [[ "$focused" == 1 ]] && return 0
+  local msg="$WS_WORKSPACE is $1"
+  [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
+  tmux_ display-message "ws: $msg" 2>/dev/null
+  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "ws"' \
+    -e 'end run' "$msg" >/dev/null 2>&1 &!
+}
+
+state_icon() {
+  case "$1" in
+  waiting) print -n $'\e[31m●\e[0m' ;;
+  working) print -n $'\e[33m◐\e[0m' ;;
+  idle) print -n $'\e[32m○\e[0m' ;;
+  *) print -n $'\e[2m·\e[0m' ;;
+  esac
+}
+
+state_format() {
+  print -rn -- '#{?#{==:#{@ws_state},waiting},#[fg=red]●#[fg=default],#{?#{==:#{@ws_state},working},#[fg=yellow]◐#[fg=default],#[fg=green]○#[fg=default]}}'
+}
+
+preview() {
+  local wt="${1:-}" win="${2:-}"
+  if [[ -n "$win" ]]; then
+    tmux_ capture-pane -e -p -t "$win"
+  elif [[ -d "$wt" ]]; then
+    print -r -- "stopped — enter restores its sessions"
+    git -C "$wt" log --oneline -10 --color=always
+    git -C "$wt" status -s
+  fi
+}
+
+# Replaces the process (attach from a plain terminal); `exec` can't target the tmux_ function.
+exec_tmux() {
+  if [[ -n "${WS_TMUX_SOCKET:-}" ]]; then
+    exec tmux -L "$WS_TMUX_SOCKET" "$@"
+  fi
+  exec tmux "$@"
+}
+
+tmux_() {
+  if [[ -n "${WS_TMUX_SOCKET:-}" ]]; then
+    command tmux -L "$WS_TMUX_SOCKET" "$@"
+  else
+    command tmux "$@"
+  fi
+}
+
+die() { print -u2 "ws: $1"; exit "${2:-1}"; }
+
+main "$@"

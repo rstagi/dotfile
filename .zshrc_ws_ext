@@ -1,0 +1,2 @@
+# ws — terminal workspaces: git worktree + tmux window (agent | editor / shell) per branch.
+alias ws="$HOME/dotfile/ws.sh"
