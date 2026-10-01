@@ -142,12 +142,6 @@ setup_claude_tools() {
   return 0  # don't block claude from starting even if secrets fail
 }
 
-# Claude Code with lazy API key loading
-claude() {
-  setup_claude_tools
-  command claude "$@"
-}
-
 # Non-interactive claude with real-time streaming output
 # Usage: claude_stream [extra-flags...] "prompt"
 # Alias: ccs

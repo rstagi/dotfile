@@ -136,3 +136,6 @@ export PATH="$HOME/.zero/runtime/bin:$PATH"
 
 # opencode
 export PATH=/Users/rstagi/.opencode/bin:$PATH
+
+# kimi-code
+export PATH="/Users/rstagi/.kimi-code/bin:$PATH"
