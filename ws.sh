@@ -27,6 +27,11 @@ WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
 WS_HOME="${WS_HOME:-$HOME/.ws}"
 WS_NOTIFY="${WS_NOTIFY:-1}"
+# Notification sound (/System/Library/Sounds or ~/Library/Sounds) + icon per state.
+WS_NOTIFY_SOUND_DONE="${WS_NOTIFY_SOUND_DONE:-Glass}"
+WS_NOTIFY_SOUND_WAITING="${WS_NOTIFY_SOUND_WAITING:-Ping}"
+WS_NOTIFY_ICON_DONE="${WS_NOTIFY_ICON_DONE:-${WS_BIN:h}/assets/ws/done.png}"
+WS_NOTIFY_ICON_WAITING="${WS_NOTIFY_ICON_WAITING:-${WS_BIN:h}/assets/ws/waiting.png}"
 WS_AGENT_SHELL="${WS_AGENT_SHELL:-zsh -ic}" # interactive: agents need .zshrc (secrets, PATH)
 REGISTRY="${LOOP_REPO_REGISTRY:-$HOME/.loop/repos.json}"
 WS_REPO_ROOTS="${WS_REPO_ROOTS:-$HOME/Dev $HOME/dotfile}" # scanned for repos by `ws new`
@@ -664,12 +669,15 @@ notify_unless_focused() {
   [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
   tmux_ display-message "ws: $msg" 2>/dev/null
   if command -v terminal-notifier >/dev/null; then
-    local win sess bundle click
+    local win sess bundle click sound="$WS_NOTIFY_SOUND_DONE" image="$WS_NOTIFY_ICON_DONE"
+    local -a icon=()
+    [[ "$1" == waiting ]] && sound="$WS_NOTIFY_SOUND_WAITING" image="$WS_NOTIFY_ICON_WAITING"
+    [[ -f "$image" ]] && icon=(-contentImage "$image") # app icon can't be overridden on modern macOS
     win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
     sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
     bundle="${WS_TERMINAL_BUNDLE:-$(tmux_ show-environment -g __CFBundleIdentifier 2>/dev/null | cut -d= -f2)}"
     click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
-    { terminal-notifier -title ws -message "$msg" -sound default -group "ws-$win" \
+    { terminal-notifier -title ws -message "$msg" -sound "$sound" -group "ws-$win" "${icon[@]}" \
         ${bundle:+-activate} ${bundle:+$bundle} -execute "$click" >/dev/null 2>&1 \
         || osascript_notify "$msg"; } &! # fails until macOS allows its notifications
   else

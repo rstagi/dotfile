@@ -272,11 +272,32 @@ WS_NOTIFY=1 WS_TERMINAL_BUNDLE=com.example.term hook api/feat-login "$NWIN" wait
 wait_until test -s "$FAKE_NOTIFIER_OUT"
 nout="$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)"
 assert_contains "$nout" "api/feat-login needs input" "message names workspace + state"
-assert_contains "$nout" $'-sound\ndefault' "plays a sound"
+assert_contains "$nout" $'-sound\n' "plays a sound"
 assert_contains "$nout" $'-activate\ncom.example.term' "click activates the terminal app"
 assert_contains "$nout" "switch-client" "click switches tmux to the tab"
 assert_contains "$nout" "$NWIN" "click targets the notifying tab"
 assert_contains "$nout" $'-group\nws-'"$NWIN" "one notification per tab (replaced, not stacked)"
+rm -f "$FAKE_NOTIFIER_OUT"
+: > "$TMP/icon.png"
+WS_NOTIFY=1 WS_NOTIFY_ICON_DONE="$TMP/icon.png" hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+nout="$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)"
+assert_contains "$nout" $'-sound\nGlass' "done plays Glass by default"
+assert_contains "$nout" $'-contentImage\n'"$TMP/icon.png" "done icon attached (configurable)"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+nout="$(cat "$FAKE_NOTIFIER_OUT")"
+assert_contains "$nout" $'-sound\nPing' "needs input plays Ping by default"
+assert_contains "$nout" $'-contentImage\n'"$ROOT/assets/ws/waiting.png" "needs input uses the bundled waiting icon"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 WS_NOTIFY_SOUND_DONE=Pop hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+nout="$(cat "$FAKE_NOTIFIER_OUT")"
+assert_contains "$nout" $'-sound\nPop' "done sound overridable"
+assert_contains "$nout" $'-contentImage\n'"$ROOT/assets/ws/done.png" "done uses the bundled done icon"
 rm -f "$FAKE_NOTIFIER_OUT"
 WS_NOTIFY=1 hook api/feat-login "$NWIN" working </dev/null
 assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "no notification for working"
