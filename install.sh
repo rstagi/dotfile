@@ -416,7 +416,9 @@ PLIST
 
 install_ws() {
   install_pkg_if_needed "jq"
-  install_pkg_if_needed "terminal-notifier" # allow it in System Settings → Notifications
+  install_pkg_if_needed "terminal-notifier"
+  # Branded copy (own name + icon): allow "ws" in System Settings → Notifications
+  "$HOME/dotfile/ws.sh" _build-notifier || echo "ws: notifier app not built (osascript fallback)"
   if ! grep -q "source.*\.zshrc_ws_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
     echo "source $HOME/dotfile/.zshrc_ws_ext" >> "$HOME/.zshrc_ext"
   fi

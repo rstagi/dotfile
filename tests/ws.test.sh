@@ -303,6 +303,38 @@ WS_NOTIFY=1 hook api/feat-login "$NWIN" working </dev/null
 assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "no notification for working"
 hook api/feat-login "$NWIN" idle </dev/null
 
+echo "ws _build-notifier: own-branded notifier app (name, bundle id, icon); used when present"
+SRCAPP="$TMP/src/terminal-notifier.app"
+mkdir -p "$SRCAPP/Contents/MacOS" "$SRCAPP/Contents/Resources"
+cat > "$SRCAPP/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>fr.julienxx.oss.terminal-notifier</string>
+<key>CFBundleName</key><string>terminal-notifier</string>
+<key>CFBundleExecutable</key><string>terminal-notifier</string>
+<key>CFBundleIconFile</key><string>Terminal</string>
+</dict></plist>
+EOF
+cat > "$SRCAPP/Contents/MacOS/terminal-notifier" <<'EOF'
+#!/bin/sh
+{ echo "BRANDED"; printf '%s\n' "$@"; } > "$FAKE_NOTIFIER_OUT"
+EOF
+chmod +x "$SRCAPP/Contents/MacOS/terminal-notifier"
+WS_NOTIFIER_SOURCE="$SRCAPP" "$WS" _build-notifier >/dev/null 2>&1
+assert_exit "$?" "0" "builds the notifier app"
+APP="$WS_HOME/ws.app"
+assert_eq "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null)" "sh.ratel.ws.notifier" "own bundle id"
+assert_eq "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$APP/Contents/Info.plist" 2>/dev/null)" "ws" "named ws"
+assert_eq "$([[ -s "$APP/Contents/Resources/Terminal.icns" ]] && file -b "$APP/Contents/Resources/Terminal.icns" | grep -c 'icon')" "1" "icon replaced with a real .icns"
+assert_eq "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$SRCAPP/Contents/Info.plist")" "fr.julienxx.oss.terminal-notifier" "source app untouched"
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 hook api/feat-login "$(slot_window "$WT" 1)" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_eq "$(head -1 "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "BRANDED" "notifications sent through ws.app when built"
+hook api/feat-login "$(slot_window "$WT" 1)" working </dev/null
+rm -rf "$APP"
+
 echo "ws merge: merges the PR, fast-forwards the main checkout, removes worktree + branch on confirm"
 MREPO="$(make_repo merge-me)"
 git init -q --bare "$TMP/merge-me.git"

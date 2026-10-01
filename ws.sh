@@ -32,6 +32,10 @@ WS_NOTIFY_SOUND_DONE="${WS_NOTIFY_SOUND_DONE:-Glass}"
 WS_NOTIFY_SOUND_WAITING="${WS_NOTIFY_SOUND_WAITING:-Ping}"
 WS_NOTIFY_ICON_DONE="${WS_NOTIFY_ICON_DONE:-${WS_BIN:h}/assets/ws/done.png}"
 WS_NOTIFY_ICON_WAITING="${WS_NOTIFY_ICON_WAITING:-${WS_BIN:h}/assets/ws/waiting.png}"
+# Branded copy of terminal-notifier (macOS takes a notification's icon from the sending app).
+WS_NOTIFIER_APP="$WS_HOME/ws.app"
+WS_NOTIFIER_SOURCE="${WS_NOTIFIER_SOURCE:-/opt/homebrew/opt/terminal-notifier/terminal-notifier.app}"
+WS_APP_ICON="${WS_BIN:h}/assets/ws/app.png"
 WS_AGENT_SHELL="${WS_AGENT_SHELL:-zsh -ic}" # interactive: agents need .zshrc (secrets, PATH)
 REGISTRY="${LOOP_REPO_REGISTRY:-$HOME/.loop/repos.json}"
 WS_REPO_ROOTS="${WS_REPO_ROOTS:-$HOME/Dev $HOME/dotfile}" # scanned for repos by `ws new`
@@ -59,6 +63,7 @@ main() {
   _toggle_sessions) toggle_sessions ;;
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
+  _build-notifier) build_notifier ;;
   -h | --help | help) sed -n '4,20p' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
   esac
@@ -668,7 +673,9 @@ notify_unless_focused() {
   local msg="$WS_WORKSPACE is $1"
   [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
   tmux_ display-message "ws: $msg" 2>/dev/null
-  if command -v terminal-notifier >/dev/null; then
+  local notifier="$WS_NOTIFIER_APP/Contents/MacOS/terminal-notifier"
+  [[ -x "$notifier" ]] || notifier="$(command -v terminal-notifier)"
+  if [[ -n "$notifier" ]]; then
     local win sess bundle click sound="$WS_NOTIFY_SOUND_DONE" image="$WS_NOTIFY_ICON_DONE"
     local -a icon=()
     [[ "$1" == waiting ]] && sound="$WS_NOTIFY_SOUND_WAITING" image="$WS_NOTIFY_ICON_WAITING"
@@ -677,12 +684,37 @@ notify_unless_focused() {
     sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
     bundle="${WS_TERMINAL_BUNDLE:-$(tmux_ show-environment -g __CFBundleIdentifier 2>/dev/null | cut -d= -f2)}"
     click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
-    { terminal-notifier -title ws -message "$msg" -sound "$sound" -group "ws-$win" "${icon[@]}" \
+    { "$notifier" -title ws -message "$msg" -sound "$sound" -group "ws-$win" "${icon[@]}" \
         ${bundle:+-activate} ${bundle:+$bundle} -execute "$click" >/dev/null 2>&1 \
         || osascript_notify "$msg"; } &! # fails until macOS allows its notifications
   else
     osascript_notify "$msg" &!
   fi
+}
+
+# Copies terminal-notifier.app to $WS_HOME/ws.app with its own name, bundle id and icon, so
+# notifications come from "ws" (own entry in System Settings → Notifications: allow it there,
+# pick Alerts to keep them on screen). Re-run after `brew upgrade terminal-notifier`.
+build_notifier() {
+  [[ -d "$WS_NOTIFIER_SOURCE" ]] || die "terminal-notifier.app not found: $WS_NOTIFIER_SOURCE (brew install terminal-notifier)"
+  local app="$WS_NOTIFIER_APP" plist="$WS_NOTIFIER_APP/Contents/Info.plist" iconset size
+  rm -rf "$app"
+  mkdir -p "$WS_HOME"
+  cp -R "$WS_NOTIFIER_SOURCE" "$app" || die "copy failed"
+  chmod -R u+w "$app"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier sh.ratel.ws.notifier" \
+    -c "Set :CFBundleName ws" "$plist" || die "cannot edit $plist"
+  iconset="$(mktemp -d)/ws.iconset"
+  mkdir -p "$iconset"
+  for size in 16 32 128 256 512; do
+    sips -z $size $size "$WS_APP_ICON" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    sips -z $((size * 2)) $((size * 2)) "$WS_APP_ICON" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$iconset" -o "$app/Contents/Resources/Terminal.icns" || die "iconutil failed"
+  rm -rf "${iconset:h}"
+  codesign --force --deep --sign - "$app" >/dev/null 2>&1 || print -u2 "ws: codesign failed (notifications may be blocked)"
+  touch "$app" # nudge LaunchServices to pick up the new icon
+  print -r -- "built $app"
 }
 
 osascript_notify() {
