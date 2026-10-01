@@ -31,6 +31,7 @@ const STATE_STATUSES: readonly PhaseStateStatus[] = [
   "merged",
   "blocked",
   "done",
+  "paused",
 ];
 
 interface BuildOpts {
@@ -62,6 +63,8 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     runtime: null,
     notePending: false,
     noteMarkdown: null,
+    paused: false,
+    modelOverride: null,
   };
 
   const explicitReviews = plan.phases.some((phase) => phase.kind === "pr-review");
@@ -111,6 +114,8 @@ function buildPhaseNode(
       runtime: null,
       notePending: false,
       noteMarkdown: null,
+      paused: false,
+      modelOverride: null,
     };
   }
   return { ...base, ...resolveRuntime(phase, pr, now) };
@@ -121,7 +126,7 @@ function resolveRuntime(
   phase: PlanPhase,
   pr: PhaseRuntime,
   now: number,
-): Pick<GraphNode, "status" | "ui" | "pulse" | "runtime" | "notePending" | "noteMarkdown"> {
+): Pick<GraphNode, "status" | "ui" | "pulse" | "runtime" | "notePending" | "noteMarkdown" | "paused" | "modelOverride"> {
   const attempts = [...pr.attempts].sort((a, b) => a.k - b.k);
   const ended = attempts.filter((a) => a.meta).sort((a, b) => b.k - a.k);
   const inFlight = attempts.filter((a) => !a.meta).sort((a, b) => b.k - a.k)[0] ?? null;
@@ -157,13 +162,16 @@ function resolveRuntime(
     slug: pr.state?.slug ?? slugFromRunDir(ended[0]?.runDir ?? inFlight?.runDir ?? null),
   };
 
+  const paused = pr.paused || lifecycle === "paused";
   return {
     status: lifecycle,
-    ui: resolveUi(lifecycle, problem, awaiting),
+    ui: resolveUi(lifecycle, problem, awaiting, paused),
     pulse,
     runtime,
     notePending: pr.note != null && lifecycle !== "done" && lifecycle !== "merged",
     noteMarkdown: pr.note,
+    paused,
+    modelOverride: pr.modelOverride,
   };
 }
 
@@ -171,7 +179,9 @@ function resolveUi(
   lifecycle: PhaseStateStatus,
   problem: ProblemClass | null,
   awaiting: boolean,
+  paused = false,
 ): NodeUiState {
+  if (paused && lifecycle !== "done" && lifecycle !== "merged") return "paused";
   if (awaiting) return "awaiting";
   if (problem && problem !== "blocked") return "problem"; // crash/timeout/verify-fail/chain-exhausted
   if (problem === "blocked" || lifecycle === "blocked") return "blocked";
@@ -182,6 +192,7 @@ function resolveUi(
 
 function buildExplicitReviewNode(phase: PlanPhase, runtime: PhaseRuntime | undefined): GraphNode {
   const status = validStateStatus(runtime?.state?.status) ?? mapPlanStatus(phase.status);
+  const paused = (runtime?.paused ?? false) || status === "paused";
   return {
     id: phase.phase,
     kind: "pr-review",
@@ -190,11 +201,14 @@ function buildExplicitReviewNode(phase: PlanPhase, runtime: PhaseRuntime | undef
     lane: phase.lane,
     repository: null,
     status,
-    ui: status === "blocked" ? "problem" : resolveUi(status, null, false),
+    ui: status === "blocked" ? "problem" : resolveUi(status, null, false, paused),
     pulse: null,
     runtime: null,
     notePending: runtime?.note != null && status !== "done" && status !== "merged",
     noteMarkdown: runtime?.note ?? null,
+    paused,
+    modelOverride: runtime?.modelOverride ?? null,
+    review: phase.review,
   };
 }
 
@@ -229,6 +243,8 @@ function buildReviewNode(repository: string, pr: PrInfo | null, noteMarkdown: st
     runtime: null,
     notePending: noteMarkdown != null && pr?.outcome == null,
     noteMarkdown,
+    paused: false,
+    modelOverride: null,
   };
 }
 

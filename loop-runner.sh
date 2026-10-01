@@ -8,11 +8,19 @@ set -u -o pipefail
 #
 # Usage:
 #   loop-runner.sh --worktree <path> --run-dir <abs path> --prompt-file <f>
-#     [--chain task|escalate|review-fable|review-astra|review-fix|review-final]
+#     [--chain task|escalate|review-adv-a|review-adv-b|review-fix|review-final]
+#     [--review-tier shallow|medium|max]   (review chains; default LOOP_REVIEW_TIER_DEFAULT)
 #     [--timeout <s>] [--verify-cmd <cmd>]
 #     [--resume <sessionId> --engine codex|claude] [--models-conf <f>] [--budget <usd>]
+#     [--loop-dir <d>]   (default: RUN_DIR/../.. — the coordinator .loop/)
 #
-# Exit: 0 done+verified · 10 question · 12 verify failed · 20 blocked
+# Live controls (polled every LOOP_CONTROL_POLL_SEC, default 2s, while the engine runs):
+#   <loopDir>/control/pause | control/pause-<phase>  → kill the engine, exit 30 (resumable)
+#   <loopDir>/control/model-<phase> (read once, task chain, non-resume) → that leg runs first
+#   <loopDir>/notes/<phase>.md changed                → kill the engine, resume the same
+#                                                       session with the new note (same attempt)
+#
+# Exit: 0 done+verified · 10 question · 12 verify failed · 20 blocked · 30 paused
 #       40 chain exhausted (API) · 50 crash (no valid status.json) · 1 usage
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,7 +35,7 @@ fi
 
 WT="" RUN_DIR="" PROMPT_FILE="" CHAIN_NAME="task" TIMEOUT="" VERIFY=""
 RESUME_SID="" RESUME_ENGINE="" MODELS_CONF="$SCRIPT_DIR/loop-models.conf" BUDGET=""
-RUN_ID="" PHASE="" REPOSITORY=""
+RUN_ID="" PHASE="" REPOSITORY="" LOOP_DIR="" REVIEW_TIER=""
 ROUTE_PROPOSED_PROFILE="" ROUTE_ACTUAL_PROFILE="" ROUTE_FALLBACK_REASON=""
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +53,8 @@ while [[ $# -gt 0 ]]; do
   --run-id) RUN_ID="$2"; shift 2 ;;
   --phase) PHASE="$2"; shift 2 ;;
   --repository) REPOSITORY="$2"; shift 2 ;;
+  --loop-dir) LOOP_DIR="$2"; shift 2 ;;
+  --review-tier) REVIEW_TIER="$2"; shift 2 ;;
   *) echo "loop-runner: unknown arg $1" >&2; exit 1 ;;
   esac
 done
@@ -59,6 +69,7 @@ loop_runner_finish() {
   10) outcome=question ;;
   12) outcome=verify-fail ;;
   20) outcome=blocked ;;
+  30) outcome=paused ;;
   40) outcome=chain-exhausted ;;
   50) outcome=crash ;;
   124) outcome=timeout ;;
@@ -93,16 +104,35 @@ LOOP_JEV_ROUTE_MIN_CONFIDENCE="${LOOP_JEV_ROUTE_MIN_CONFIDENCE:-0.8}"
 export LOOP_JEV_KEY_FILE LOOP_JEV_MODE LOOP_JEV_MODE_EXPLICIT
 BUDGET="${BUDGET:-$LOOP_BUDGET_USD}"
 
+# Legacy review chain names (in-flight loops) map onto the max tier's adversaries.
 case "$CHAIN_NAME" in
-task) chain=("${CHAIN_TASK[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_TASK}" ;;
-escalate) chain=("${CHAIN_ESCALATE[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_ESCALATE}" ;;
-review-fable) chain=("${CHAIN_REVIEW_FABLE[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
-review-astra) chain=("${CHAIN_REVIEW_ASTRA[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
-review-fix)
-  chain=("${CHAIN_REVIEW_FIX[@]}")
-  TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REMEDIATE}"
+review-astra) CHAIN_NAME=review-adv-a REVIEW_TIER=max ;;
+review-fable) CHAIN_NAME=review-adv-b REVIEW_TIER=max ;;
+esac
+
+EFFORT=""
+case "$CHAIN_NAME" in
+task) chain=("${CHAIN_TASK[@]}"); EFFORT="${EFFORT_TASK:-}"; TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_TASK}" ;;
+escalate) chain=("${CHAIN_ESCALATE[@]}"); EFFORT="${EFFORT_ESCALATE:-}"; TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_ESCALATE}" ;;
+review-adv-a|review-adv-b|review-fix|review-final)
+  REVIEW_TIER="${REVIEW_TIER:-${LOOP_REVIEW_TIER_DEFAULT:-medium}}"
+  [[ "$REVIEW_TIER" == (shallow|medium|max) ]] || {
+    echo "loop-runner: unknown review tier '$REVIEW_TIER' (shallow|medium|max)" >&2; exit 1
+  }
+  review_role="${${CHAIN_NAME#review-}//-/_}"   # adv_a | adv_b | fix | final
+  review_var="REVIEW_${(U)REVIEW_TIER}_${(U)review_role}"
+  chain_var="CHAIN_$review_var" effort_var="EFFORT_$review_var"
+  (( ${(P)+chain_var} )) && (( ${#${(P)chain_var}} )) || {
+    echo "loop-runner: tier '$REVIEW_TIER' has no ${CHAIN_NAME#review-} reviewer ($chain_var)" >&2; exit 1
+  }
+  chain=("${(@P)chain_var}")
+  EFFORT="${(P)effort_var:-}"
+  if [[ "$CHAIN_NAME" == review-fix ]]; then
+    TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REMEDIATE}"
+  else
+    TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}"
+  fi
   ;;
-review-final) chain=("${CHAIN_REVIEW_FINAL[@]}"); TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}" ;;
 *) echo "loop-runner: unknown chain '$CHAIN_NAME'" >&2; exit 1 ;;
 esac
 [[ "$TIMEOUT" == <-> ]] || { echo "loop-runner: --timeout must be integer seconds" >&2; exit 1; }
@@ -112,10 +142,37 @@ CHECKPOINT_LIMIT="${LOOP_CHECKPOINT_SEC:-1800}"
 CHECKPOINT_MODE=1
 
 mkdir -p "$RUN_DIR"
+LOOP_DIR="${LOOP_DIR:-${RUN_DIR:A:h:h}}"
+CONTROL_DIR="$LOOP_DIR/control"
+CONTROL_POLL="${LOOP_CONTROL_POLL_SEC:-2}"
+
+# User model override (loop-top [m] / daemon POST control): one leg, default chain behind it.
+MODEL_OVERRIDE=""
+if [[ "$CHAIN_NAME" == task && -n "$PHASE" && -z "$RESUME_SID" && -f "$CONTROL_DIR/model-$PHASE" ]]; then
+  override_leg="$(head -n 1 "$CONTROL_DIR/model-$PHASE" | tr -d '[:space:]')"
+  if [[ "$override_leg" =~ '^(codex|claude):@?[A-Za-z0-9._-]+(\+[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*)?$' ]]; then
+    MODEL_OVERRIDE="$override_leg"
+    chain=("$MODEL_OVERRIDE" ${CHAIN_TASK:#$MODEL_OVERRIDE})
+    ROUTE_FALLBACK_REASON="user-override"
+  else
+    echo "loop-runner: ignoring invalid model override '$override_leg' in $CONTROL_DIR/model-$PHASE" >&2
+  fi
+fi
+
+NOTE_FILE=""
+[[ -n "$PHASE" ]] && NOTE_FILE="$LOOP_DIR/notes/$PHASE.md"
+note_sig() { # "0" = no note; otherwise a content checksum
+  if [[ -n "$NOTE_FILE" && -f "$NOTE_FILE" ]]; then echo "1:$(cksum < "$NOTE_FILE")"; else echo 0; fi
+}
+NOTE_SIG="$(note_sig)" NOTE_ROUND=0 NOTE_SID=""
+
+is_paused() {
+  [[ -e "$CONTROL_DIR/pause" ]] || [[ -n "$PHASE" && -e "$CONTROL_DIR/pause-$PHASE" ]]
+}
 route_task_attempt() {
   local attempt=1 phase_key cache decision raw request candidate confidence probabilities
   local mode decision_status fallback model actual threshold_ok tmp task_evidence evidence_ready
-  [[ "$CHAIN_NAME" == "task" && -n "$RUN_ID" && -n "$PHASE" ]] || return 0
+  [[ "$CHAIN_NAME" == "task" && -n "$RUN_ID" && -n "$PHASE" && -z "$MODEL_OVERRIDE" ]] || return 0
   [[ "${RUN_DIR:t}" =~ '-a([0-9]+)$' ]] && attempt="$match[1]"
   phase_key="${PHASE//[^A-Za-z0-9._-]/_}"
   cache="${RUN_DIR:h}/.route-${phase_key}.json"
@@ -241,52 +298,72 @@ TRANSCRIPT="$RUN_DIR/transcript.jsonl" STDERR="$RUN_DIR/stderr.log"
 STATUS="$RUN_DIR/status.json" LAST="$RUN_DIR/last.md"
 HEAD_BEFORE="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)"
 CUR_ENGINE="" CUR_MODEL="" TIMED_OUT=0
+ORIG_RESUME_SID="$RESUME_SID" PROMPT_IN="$RUN_DIR/prompt.md"
 
 write_meta() { # $1 = engine exit code
-  local sid
+  local sid model="$CUR_MODEL" init_model
+  # claude aliases (opus, sonnet, fable, resume) → the concrete model from the init event
+  if [[ "$CUR_ENGINE" == claude ]]; then
+    init_model="$(jq -r 'select(.type == "system" and .subtype == "init") | .model // empty' \
+      "$TRANSCRIPT" 2>/dev/null | head -1)"
+    [[ -n "$init_model" ]] && model="$init_model"
+  fi
   sid="$(jq -r '.session_id // .sessionId // .thread_id // (.msg.session_id? // empty) // empty' \
     "$TRANSCRIPT" 2>/dev/null | head -1)"
-  jq -n --arg engine "$CUR_ENGINE" --arg model "$CUR_MODEL" --arg sid "${sid:-}" \
+  jq -n --arg engine "$CUR_ENGINE" --arg model "$model" --arg effort "$(leg_effort)" --arg sid "${sid:-$NOTE_SID}" \
     --arg before "$HEAD_BEFORE" --arg after "$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)" \
     --arg proposedProfile "$ROUTE_PROPOSED_PROFILE" --arg actualProfile "$ROUTE_ACTUAL_PROFILE" \
-    --arg routeFallbackReason "$ROUTE_FALLBACK_REASON" \
+    --arg routeFallbackReason "$ROUTE_FALLBACK_REASON" --arg modelOverride "$MODEL_OVERRIDE" \
     --argjson rc "${1:-0}" --argjson timedOut "$TIMED_OUT" \
-    '{engine: $engine, model: $model, sessionId: $sid, headBefore: $before,
+    '{engine: $engine, model: $model, effort:(if ($effort|length)>0 then $effort else null end),
+      sessionId: $sid, headBefore: $before,
       headAfter: $after, engineExit: $rc, timedOut: ($timedOut == 1),
       proposedProfile:(if ($proposedProfile|length)>0 then $proposedProfile else null end),
       actualProfile:(if ($actualProfile|length)>0 then $actualProfile else null end),
-      routeFallbackReason:(if ($routeFallbackReason|length)>0 then $routeFallbackReason else null end)}' \
+      routeFallbackReason:(if ($routeFallbackReason|length)>0 then $routeFallbackReason else null end),
+      modelOverride:(if ($modelOverride|length)>0 then $modelOverride else null end)}' \
     > "$RUN_DIR/meta.json"
 }
 
 # --- engine launchers (backgrounded by run_leg; cwd/-C = the worktree) ---
 
+# Effort actually passed for the current leg: claude has no `ultra`, so it clamps to max.
+leg_effort() {
+  [[ -n "$EFFORT" ]] || return 0
+  if [[ "$CUR_ENGINE" == claude && "$EFFORT" == ultra ]]; then print -r -- max; else print -r -- "$EFFORT"; fi
+}
+
 launch_claude() { # $1 model, $2 fallback (may be empty)
-  local fb_args=()
+  local fb_args=() effort_args=() effort
   [[ -n "$2" ]] && fb_args=(--fallback-model "$2")
+  effort="$(leg_effort)"
+  [[ -n "$effort" ]] && effort_args=(--effort "$effort")
   if [[ -n "$RESUME_SID" ]]; then
-    ( cd "$WT" && command claude -p --resume "$RESUME_SID" "${fb_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && command claude -p --resume "$RESUME_SID" "${fb_args[@]}" "${effort_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
-        --max-budget-usd "$BUDGET" < "$RUN_DIR/prompt.md" > "$TRANSCRIPT" 2> "$STDERR" )
+        --max-budget-usd "$BUDGET" < "$PROMPT_IN" > "$TRANSCRIPT" 2> "$STDERR" )
   else
-    ( cd "$WT" && command claude -p --model "$1" "${fb_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && command claude -p --model "$1" "${fb_args[@]}" "${effort_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
-        --max-budget-usd "$BUDGET" < "$RUN_DIR/prompt.md" > "$TRANSCRIPT" 2> "$STDERR" )
+        --max-budget-usd "$BUDGET" < "$PROMPT_IN" > "$TRANSCRIPT" 2> "$STDERR" )
   fi
 }
 
 launch_codex() { # $1 model
+  local effort_args=() effort
+  effort="$(leg_effort)"
+  [[ -n "$effort" ]] && effort_args=(-c "model_reasoning_effort=\"$effort\"")
   # `codex exec resume` has no -C flag and filters sessions by cwd — cd is load-bearing
   if [[ -n "$RESUME_SID" ]]; then
-    ( cd "$WT" && codex exec resume "$RESUME_SID" --json "${CODEX_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && codex exec resume "$RESUME_SID" --json "${effort_args[@]}" "${CODEX_EXTRA_ARGS[@]}" \
         --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-        -o "$LAST" "$(cat "$RUN_DIR/prompt.md")" > "$TRANSCRIPT" 2> "$STDERR" )
+        -o "$LAST" "$(cat "$PROMPT_IN")" > "$TRANSCRIPT" 2> "$STDERR" )
   else
-    codex exec --json -C "$WT" -m "$1" "${CODEX_EXTRA_ARGS[@]}" \
+    codex exec --json -C "$WT" -m "$1" "${effort_args[@]}" "${CODEX_EXTRA_ARGS[@]}" \
       --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-      -o "$LAST" - < "$RUN_DIR/prompt.md" > "$TRANSCRIPT" 2> "$STDERR"
+      -o "$LAST" - < "$PROMPT_IN" > "$TRANSCRIPT" 2> "$STDERR"
   fi
 }
 
@@ -298,8 +375,8 @@ descendants() { # print pids of the full process tree under $1 (depth-first)
   done
 }
 
-run_leg() { # runs current engine with watchdog; returns engine exit code (200 = timeout)
-  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims"
+run_leg() { # runs current engine with watchdogs; returns engine exit code (200 = timeout, 201 = paused, 202 = note changed)
+  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims" "$RUN_DIR/.paused" "$RUN_DIR/.note-changed" "$RUN_DIR/.ctl-victims"
   local leg_timeout="$TIMEOUT"
   if (( CHECKPOINT_MODE )); then
     leg_timeout=$(( ATTEMPT_DEADLINE - $(date +%s) ))
@@ -323,8 +400,33 @@ run_leg() { # runs current engine with watchdog; returns engine exit code (200 =
     xargs kill -TERM 2>/dev/null < "$RUN_DIR/.victims"
   ) &
   local watchdog=$!
+  # control watcher: a pause file or a note edit halts the engine within one poll
+  ( while kill -0 "$child" 2>/dev/null; do
+      sleep "$CONTROL_POLL"
+      local marker=""
+      if is_paused; then marker=.paused
+      elif [[ "$(note_sig)" != "$NOTE_SIG" ]]; then marker=.note-changed
+      fi
+      if [[ -n "$marker" ]]; then
+        { echo "$child"; descendants "$child"; } > "$RUN_DIR/.ctl-victims"
+        touch "$RUN_DIR/$marker"
+        xargs kill -TERM 2>/dev/null < "$RUN_DIR/.ctl-victims"
+        exit 0
+      fi
+    done
+  ) &
+  local watcher=$!
   wait "$child"; local rc=$?
   kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+  { echo "$watcher"; descendants "$watcher"; } | xargs kill 2>/dev/null; wait "$watcher" 2>/dev/null
+  if [[ -f "$RUN_DIR/.paused" ]]; then
+    reap_victims "$RUN_DIR/.ctl-victims"
+    return 201
+  fi
+  if [[ -f "$RUN_DIR/.note-changed" ]]; then
+    reap_victims "$RUN_DIR/.ctl-victims"
+    return 202
+  fi
   if [[ -f "$RUN_DIR/.timeout" ]]; then
     # engine finished successfully right at the boundary — prefer its real result
     if [[ $rc -eq 0 ]] && jq -e '.outcome' "$STATUS" >/dev/null 2>&1; then
@@ -342,6 +444,55 @@ run_leg() { # runs current engine with watchdog; returns engine exit code (200 =
     fi
   fi
   return $rc
+}
+
+apply_note_change() { # resume the interrupted session with the new note (same attempt, no retry used)
+  local sid content prompt="$RUN_DIR/note-$(( NOTE_ROUND + 1 )).md"
+  sid="$(jq -r '.session_id // .sessionId // .thread_id // (.msg.session_id? // empty) // empty' \
+    "$TRANSCRIPT" 2>/dev/null | head -1)"
+  sid="${sid:-$NOTE_SID}"
+  NOTE_ROUND=$(( NOTE_ROUND + 1 ))
+  NOTE_SIG="$(note_sig)"
+  if [[ "$NOTE_SIG" == 0 ]]; then
+    content="Steering note removed by the user (notes/$PHASE.md): note removed. Disregard the previous steering note and continue the phase from where you stopped."
+  else
+    content="Steering note updated by the user (notes/$PHASE.md):
+
+$(cat "$NOTE_FILE")
+
+Incorporate it and continue the phase from where you stopped."
+  fi
+  [[ -f "$TRANSCRIPT" ]] && mv "$TRANSCRIPT" "$RUN_DIR/transcript.pre-note-$NOTE_ROUND.jsonl"
+  if [[ -n "$sid" ]]; then
+    NOTE_SID="$sid" RESUME_SID="$sid"
+    print -r -- "$content" > "$prompt"
+  else # nothing to resume yet: restart the leg with the note appended
+    { cat "$RUN_DIR/prompt.md"; print -r -- ""; print -r -- "$content"; } > "$prompt"
+  fi
+  PROMPT_IN="$prompt"
+  [[ -n "${RUN_ID:-}" ]] && jq -cn --arg event note.applied --arg phase "$PHASE" \
+    --arg detail "${${content%%$'\n'*}}" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{event:$event, phase:$phase, detail:$detail, ts:$ts}' | loop_emit "$RUN_ID" event
+  echo "loop-runner: note changed — resuming ${sid:-a fresh run} with the update" >&2
+}
+
+# codex has no "latest" aliases: `codex:@sol` → the highest-versioned *listed* gpt-<v>-sol in
+# codex's live catalog (`codex debug models`, else its on-disk cache). Empty = not found.
+resolve_codex_family() { # $1 = family (sol, astra, terra, …)
+  # bounded (perl alarm): a hung catalog call must never eat the phase deadline
+  { perl -e 'alarm shift; exec @ARGV' 15 codex debug models 2>/dev/null ||
+      cat "$HOME/.codex/models_cache.json" 2>/dev/null; } |
+    jq -r --arg fam "$1" '[.models[]? | select((.visibility // "list") == "list") | .slug
+        | select(test("^gpt-[0-9]+(\\.[0-9]+)*-" + $fam + "$"))]
+      | sort_by(split("-")[1] | split(".") | map(tonumber)) | last // empty' 2>/dev/null
+}
+
+reap_victims() { # $1 = pid list file; KILL anything that ignored the TERM
+  local survivors
+  sleep 0.5
+  survivors="$(xargs -n1 sh -c 'kill -0 "$0" 2>/dev/null && echo "$0"' < "$1" 2>/dev/null)"
+  [[ -n "$survivors" ]] && echo "$survivors" | xargs kill -KILL 2>/dev/null
+  return 0
 }
 
 write_checkpoint() {
@@ -411,11 +562,41 @@ for leg in "${chain[@]}"; do
   CUR_MODEL="${rest%%+*}"
   CUR_FALLBACK=""
   [[ "$rest" == *"+"* ]] && CUR_FALLBACK="${rest#*+}"
+  if [[ "$CUR_ENGINE" == codex && "$CUR_MODEL" == @* ]]; then
+    resolved="$(resolve_codex_family "${CUR_MODEL#@}")"
+    if [[ -z "$resolved" ]]; then
+      echo "loop-runner: no codex model for family $CUR_MODEL in the catalog — skipping leg" >&2
+      continue
+    fi
+    CUR_MODEL="$resolved"
+  fi
+  # a note-driven resume belongs to the leg that was interrupted; the next leg starts fresh,
+  # carrying the latest note if one was applied mid-attempt
+  RESUME_SID="$ORIG_RESUME_SID" PROMPT_IN="$RUN_DIR/prompt.md"
+  if (( NOTE_ROUND > 0 )) && [[ "$NOTE_SIG" != 0 ]]; then
+    { cat "$RUN_DIR/prompt.md"; print -r -- ""; print -r -- "Latest steering note (notes/$PHASE.md):"; cat "$NOTE_FILE"; } > "$RUN_DIR/note-fresh.md"
+    PROMPT_IN="$RUN_DIR/note-fresh.md"
+  fi
 
   retries=0 delay=10 leg_done=0
   while [[ $retries -lt 3 ]]; do
+    if is_paused; then
+      write_meta 30
+      echo "loop-runner: paused before spawning $leg" >&2
+      exit 30
+    fi
     rm -f "$STATUS"
     run_leg; rc=$?
+    if [[ $rc -eq 201 ]]; then
+      rm -f "$STATUS"
+      write_meta 30
+      echo "loop-runner: paused — engine halted on $leg" >&2
+      exit 30
+    fi
+    if [[ $rc -eq 202 ]]; then
+      apply_note_change
+      continue
+    fi
     if [[ $rc -eq 200 ]]; then
       if (( CHECKPOINT_MODE )); then
         if [[ "$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null)" == "done" ]]; then

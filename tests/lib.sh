@@ -3,6 +3,10 @@
 # end with test_summary (exits 0 all-pass / 1 any-fail). tests/run.sh aggregates files.
 set -u
 
+# Never let tests push events to the user's real daemon (:7717); tests that need one
+# start their own and override this.
+export LOOP_DAEMON_URL="http://127.0.0.1:9"
+
 TESTS_RUN=0
 TESTS_FAIL=0
 

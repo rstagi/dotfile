@@ -73,8 +73,13 @@ Author the plan in the **canonical plan format** (see
 - **Terminal review phase** — every executable plan ends with one explicit
   `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
   It represents the bounded per-repository reviews run by `loop-execute`; it has no
-  `Repository:`, branch, or Verify command. The plan remains editable during execution and
-  after review; follow the insertion rules in `references/plan-format.md`.
+  `Repository:`, branch, or Verify command. Propose its depth with
+  `` `[review: shallow|medium|max]` `` from the effort's size and risk: `shallow` for small,
+  low-risk changes; `medium` (the default — omit the tag) for normal work; `max` for large
+  efforts or anything touching security, auth, money, or data integrity. Add
+  `` `[rounds: N]` `` only to deviate from the tier default (1/3/3, max 5). State the chosen
+  tier and why in the plan so the user can override it. The plan remains editable during
+  execution and after review; follow the insertion rules in `references/plan-format.md`.
 - **Time bounds for Loop plans** — estimate each phase's active work from pickup through
   implementation, focused verification, handoff, and the expected merge gate. Inspect the
   touched code and verification commands; use actual durations from comparable Loop

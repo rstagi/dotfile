@@ -184,6 +184,57 @@ EOF
       "active" "pushing appended phases reopens the same loop"
     ids="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$EDIT_PID/snapshot" | jq -r '[.graph.nodes[].id] | join(",")')"
     assert_eq "$ids" "plan,1,2,3,4" "snapshot keeps the prior review inline and adds a terminal review"
+
+    echo "loop-plan: control — pause/resume (loop + phase) and model override via POST /control"
+    CTL="$TMP/control/.loop"; mkdir -p "$CTL"
+    cat > "$CTL/plan.md" <<'EOF'
+<!-- loop-plan
+planId: loop-control-e2e
+daemon: http://localhost:7717
+-->
+# Control — Multi-Phase Plan
+## Phases
+### Phase 1 — Started work `[lane: A]` `[status: in-progress]`
+- **Depends on:** none
+### Phase 2 — Later work `[lane: A]` `[status: todo]`
+- **Depends on:** Phase 1
+EOF
+    CTL_PID="$(plan register --dir "$CTL")"
+    curl -sf -X POST --data-binary '{"phases":{"1":{"slug":"p1-started","status":"running","attempt":1},"2":{"slug":"p2-later","status":"todo"}}}' \
+      "$LOOP_DAEMON_URL/api/loops/$CTL_PID/state" >/dev/null
+    ctl() { curl -s -o "$TMP/ctl.out" -w '%{http_code}' -X POST --data-binary "$2" "$LOOP_DAEMON_URL/api/loops/$1/control"; }
+    snap() { curl -sf "$LOOP_DAEMON_URL/api/loops/$CTL_PID/snapshot" | jq -r "$1"; }
+
+    assert_eq "$(ctl "$CTL_PID" '{"action":"pause"}')" "200" "pause loop → 200"
+    assert_eq "$([[ -f "$CTL/control/pause" ]] && echo yes)" "yes" "pause loop writes control/pause"
+    assert_eq "$(snap '.paused')" "true" "snapshot.paused true while control/pause exists"
+    assert_eq "$(snap '[.events[] | select(.event=="control.pause")] | length')" "1" "control.pause lands on the timeline"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"resume"}')" "200" "resume loop → 200"
+    assert_eq "$([[ -e "$CTL/control/pause" ]] && echo yes || echo no)" "no" "resume loop removes control/pause"
+    assert_eq "$(snap '.paused')" "false" "snapshot.paused false after resume"
+
+    assert_eq "$(ctl "$CTL_PID" '{"action":"pause","phase":"2"}')" "200" "pause phase → 200"
+    assert_eq "$([[ -f "$CTL/control/pause-2" ]] && echo yes)" "yes" "pause phase writes control/pause-2"
+    assert_eq "$(snap '.graph.nodes[] | select(.id=="2") | "\(.paused) \(.ui)"')" "true paused" "paused phase node is paused/ui paused"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"resume","phase":"2"}')" "200" "resume phase → 200"
+    assert_eq "$(snap '.graph.nodes[] | select(.id=="2") | .paused')" "false" "resumed phase node is unpaused"
+
+    assert_eq "$(ctl "$CTL_PID" '{"action":"model","phase":"2","leg":"claude:claude-opus-5-5+sonnet"}')" "200" "model override on a todo phase → 200"
+    assert_eq "$(cat "$CTL/control/model-2")" "claude:claude-opus-5-5+sonnet" "model override written to control/model-2"
+    assert_eq "$(snap '.graph.nodes[] | select(.id=="2") | .modelOverride')" "claude:claude-opus-5-5+sonnet" "snapshot carries modelOverride"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"model","phase":"2","leg":"codex:@sol"}')" "200" "a latest-of-family leg (codex:@sol) is accepted"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"model","phase":"2","leg":"codex:@@sol"}')" "400" "a malformed family leg → 400"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"model","phase":"2","leg":null}')" "200" "clearing the model override → 200"
+    assert_eq "$([[ -e "$CTL/control/model-2" ]] && echo yes || echo no)" "no" "clear removes control/model-2"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"model","phase":"1","leg":"codex:gpt-6-sol"}')" "409" "model override on a started phase → 409"
+
+    assert_eq "$(ctl "$CTL_PID" '{"action":"model","phase":"2","leg":"gpt:foo"}')" "400" "unknown engine → 400"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"model","phase":"2","leg":"codex:bad model"}')" "400" "bad model charset → 400"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"explode"}')" "400" "unknown action → 400"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"pause","phase":"../x"}')" "400" "unsafe phase key → 400"
+    assert_eq "$(ctl "loop-nope" '{"action":"pause"}')" "404" "unknown loop → 404"
+    rm -rf "$CTL"
+    assert_eq "$(ctl "$CTL_PID" '{"action":"pause"}')" "410" "archived loop (dir gone) → 410"
   fi
 fi
 

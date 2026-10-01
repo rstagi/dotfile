@@ -247,6 +247,24 @@ describe("parsePlan — phases", () => {
     expect(plan.warnings.join("\n")).not.toMatch(/Phase 3.*Repository/i);
   });
 
+  it("parses review tier + rounds tags on a PR-review phase (defaults: medium, tier rounds)", () => {
+    const tagged = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\` \`[review: max]\` \`[rounds: 2]\`\n- **Depends on:** Phase 2\n`);
+    const review = tagged.phases.at(-1)!;
+    expect(review.title).toBe("Review pull requests");
+    expect(review.review).toEqual({ tier: "max", rounds: 2 });
+
+    const plain = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`\n- **Depends on:** Phase 2\n`);
+    expect(plain.phases.at(-1)!.review).toEqual({ tier: "medium", rounds: null });
+    expect(plain.phases[0].review).toBeNull();
+  });
+
+  it("warns on an unknown review tier or out-of-range rounds and falls back to defaults", () => {
+    const bad = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review \`[lane: review]\` \`[kind: pr-review]\` \`[review: huge]\` \`[rounds: 9]\`\n- **Depends on:** Phase 2\n`);
+    expect(bad.phases.at(-1)!.review).toEqual({ tier: "medium", rounds: null });
+    expect(bad.warnings.join("\n")).toMatch(/Phase 3.*review tier/i);
+    expect(bad.warnings.join("\n")).toMatch(/Phase 3.*rounds/i);
+  });
+
   it("warns when work appears after the last explicit PR-review phase", () => {
     const invalid = EDITABLE_WITH_REVIEW.replace(
       /### Phase 3[\s\S]*?(?=### Phase 2)/,

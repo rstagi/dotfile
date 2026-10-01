@@ -48,6 +48,7 @@ export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: Snapsho
     pendingHil: 0,
     decisions,
     jev: summarizeJev(decisions),
+    paused: runtime?.control?.paused ?? false,
   };
 }
 

@@ -2,5 +2,6 @@
 set -u
 
 print -r -- "claude $*" >> "${FAKE_ENGINE_LOG:?FAKE_ENGINE_LOG required}"
+[[ -n "${FAKE_CLAUDE_MODEL:-}" ]] && print -r -- '{"type":"system","subtype":"init","session_id":"s-claude","model":"'"$FAKE_CLAUDE_MODEL"'"}'
 jq -cn '{outcome:"done"}' > "${FAKE_RUN_DIR:?FAKE_RUN_DIR required}/status.json"
 print -r -- '{"type":"result","result":"done"}'

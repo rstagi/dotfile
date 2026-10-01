@@ -35,8 +35,15 @@ assert_eq "$(count_transcripts)" "2" "spawned two instances (one recycle, one co
 assert_contains "$(cat "$EMIT_LOG")" "sub.recycle" "emitted a sub.recycle event"
 assert_contains "$(cat "$EMIT_LOG")" '"recycleIndex":1' "sub.recycle carries recycleIndex 1"
 assert_contains "$(cat "$EMIT_LOG")" '"tokens":151000' "sub.recycle carries tokens from status.json"
-assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--model claude-opus-5-5' "starts the SUB on Opus 5.5"
+assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--model opus ' "starts the SUB on the latest Opus"
+assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--effort high' "SUB runs at EFFORT_ORCHESTRATE (high)"
 assert_contains "$(cat "$SUB/prompt-1.md")" '--window 1000000' "uses Opus 5.5 context for occupancy"
+
+echo "orchestrator: EFFORT_ORCHESTRATE=ultra is clamped to claude's max"
+reset
+EFFORT_ORCHESTRATE=ultra FAKE_OUTCOMES="complete" orch
+assert_exit "$RC" "0" "exits 0 on complete"
+assert_contains "$(cat "$FAKE_ENGINE_ARGS_LOG")" '--effort max' "ultra → --effort max"
 
 echo "orchestrator: review barrier → hand control to supervise"
 reset
@@ -92,5 +99,43 @@ LOOP_ORCH_MAX_RESPAWN=1 FAKE_OUTCOMES="hang" orch
 elapsed=$(( $(date +%s) - start ))
 assert_exit "$RC" "1" "hung SUB → stall-kill → crash → give up at cap 1"
 assert_eq "$([[ $elapsed -lt 15 ]] && echo fast)" "fast" "killed at ~STALL_SEC, not the 20s self-exit (elapsed=${elapsed}s)"
+
+# --- loop-wide pause via .loop/control/pause (loop-top [X]) ---------------------------------
+orch_bg() { zsh "$ROOT/loop-orchestrator.sh" --dir "$DIR" --run-id "test-run" > "$TMP/orch.out" 2>&1 & ORCH_PID=$!; }
+orch_wait() { wait "$ORCH_PID"; RC=$?; }
+wait_for() { local i=0; while (( i < 50 )); do eval "$1" && return 0; sleep 0.2; i=$((i + 1)); done; return 1; }
+export LOOP_ORCH_PAUSE_POLL_SEC=1
+
+echo "orchestrator: pause mid-SUB → SUB killed (not a crash) → waits → unpause respawns with resume prompt"
+reset; rm -rf "$DIR/control"
+LOOP_ORCH_STALL_SEC=60 LOOP_ORCH_MAX_RESPAWN=1 FAKE_OUTCOMES="hang complete" orch_bg
+wait_for '[[ -f "$SUB/transcript-1.jsonl" ]]'
+mkdir -p "$DIR/control"; touch "$DIR/control/pause"
+wait_for '[[ -f "$SUB/.paused-1" ]]'
+assert_eq "$([[ -f "$SUB/.paused-1" ]] && echo yes)" "yes" "watchdog marks instance 1 paused"
+sleep 2
+assert_eq "$(kill -0 "$ORCH_PID" 2>/dev/null && echo alive)" "alive" "orchestrator keeps waiting while paused"
+assert_eq "$(count_transcripts)" "1" "no new SUB spawned while paused"
+assert_contains "$(cat "$EMIT_LOG")" "loop.paused" "emits loop.paused"
+rm -f "$DIR/control/pause"
+orch_wait
+assert_exit "$RC" "0" "unpause → respawn → complete (a paused kill does not count as a crash)"
+assert_eq "$(count_transcripts)" "2" "exactly one more SUB instance after unpause"
+assert_contains "$(cat "$SUB/prompt-2.md")" "instance 2" "respawned SUB gets the resume prompt"
+assert_contains "$(cat "$EMIT_LOG")" "loop.resumed" "emits loop.resumed"
+assert_eq "$([[ -f "$SUB/PHASES_DONE" ]] && echo yes)" "yes" "loop completes normally after resume"
+
+echo "orchestrator: pause present before start → no SUB until cleared"
+reset; mkdir -p "$DIR/control"; touch "$DIR/control/pause"
+FAKE_OUTCOMES="complete" orch_bg
+sleep 2
+assert_eq "$(count_transcripts)" "0" "no SUB spawned while paused at start"
+rm -f "$DIR/control/pause"
+orch_wait
+assert_exit "$RC" "0" "starts and completes once unpaused"
+assert_eq "$(count_transcripts)" "1" "one SUB instance after unpause"
+assert_contains "$(cat "$SUB/prompt-1.md")" "control/pause-<N>" "SUB prompt explains per-phase pause files"
+assert_contains "$(cat "$SUB/prompt-1.md")" "exit 30" "SUB prompt explains runner exit 30 = paused"
+rm -rf "$DIR/control"
 
 test_summary

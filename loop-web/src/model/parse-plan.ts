@@ -6,6 +6,8 @@ import type {
   LoopConfig,
   PlanProse,
   PlanRepository,
+  ReviewConfig,
+  ReviewTier,
 } from "./types.ts";
 
 const PLAN_STATUSES: readonly PlanPhaseStatus[] = [
@@ -19,6 +21,11 @@ const PHASE_HEADING = /^###\s+Phase\s+(\d+)\s*(.*)$/;
 const LANE_TAG = /\[lane:\s*([^\]]+?)\s*\]/i;
 const STATUS_TAG = /\[status:\s*([^\]]+?)\s*\]/i;
 const KIND_TAG = /\[kind:\s*([^\]]+?)\s*\]/i;
+const REVIEW_TAG = /\[review:\s*([^\]]+?)\s*\]/i;
+const ROUNDS_TAG = /\[rounds:\s*([^\]]+?)\s*\]/i;
+const REVIEW_TIERS: ReviewTier[] = ["shallow", "medium", "max"];
+/** Mirrors LOOP_REVIEW_ROUNDS_CAP in loop-models.conf. */
+const REVIEW_ROUNDS_CAP = 5;
 
 /**
  * Parse the canonical multi-phase plan markdown into a normalized `Plan`.
@@ -216,6 +223,8 @@ function buildPhase(
     .replace(/`?\[lane:[^\]]*\]`?/i, "")
     .replace(/`?\[status:[^\]]*\]`?/i, "")
     .replace(/`?\[kind:[^\]]*\]`?/i, "")
+    .replace(/`?\[review:[^\]]*\]`?/i, "")
+    .replace(/`?\[rounds:[^\]]*\]`?/i, "")
     .replace(/^\s*[—–-]\s*/, "")
     .replace(/`/g, "")
     .trim();
@@ -245,7 +254,25 @@ function buildPhase(
     verify: stripBackticks(bulletValue(raw.body, "Verify")),
     taskUrl: extractUrl(bulletValue(raw.body, "Task")),
     notes: bulletValue(raw.body, "Notes"),
+    review: kind === "pr-review" ? parseReviewConfig(raw.heading, raw.num, warnings) : null,
   };
+}
+
+/** `[review: shallow|medium|max]` + `[rounds: 1..cap]`; bad values warn and fall back. */
+function parseReviewConfig(heading: string, phaseNum: string, warnings: string[]): ReviewConfig {
+  const rawTier = heading.match(REVIEW_TAG)?.[1]?.toLowerCase();
+  let tier: ReviewTier = "medium";
+  if (rawTier && (REVIEW_TIERS as string[]).includes(rawTier)) tier = rawTier as ReviewTier;
+  else if (rawTier) warnings.push(`Phase ${phaseNum}: unknown review tier "${rawTier}" (shallow|medium|max) — using medium`);
+
+  const rawRounds = heading.match(ROUNDS_TAG)?.[1];
+  let rounds: number | null = null;
+  if (rawRounds != null) {
+    const n = Number(rawRounds);
+    if (Number.isInteger(n) && n >= 1 && n <= REVIEW_ROUNDS_CAP) rounds = n;
+    else warnings.push(`Phase ${phaseNum}: rounds must be 1..${REVIEW_ROUNDS_CAP} — using the tier default`);
+  }
+  return { tier, rounds };
 }
 
 function normalizeKind(

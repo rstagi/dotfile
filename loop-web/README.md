@@ -62,7 +62,10 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
   `127.0.0.1`. Does all I/O, then folds each ingest through the pure model (`reduce-loop.ts`) and
   renders it (`materialize.ts`). Per live loop: `fs.watch` (2s debounce) **plus a 15s reconcile**
   that self-heals missed POSTs — a hung runner emits no fs event, yet its stale heartbeat must
-  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish,note}`,
+  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish,note,control}`
+  (`control` takes `{action:"pause"|"resume", phase?}` or `{action:"model", phase, leg|null}` and
+  writes `.loop/control/{pause,pause-<N>,model-<N>}`; model is 409 once the phase has started;
+  snapshots expose `paused` + per-node `paused`/`modelOverride`, ui `paused`),
   `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{plan,
   snapshot,review,attempt/:slug/:k}` (`review?repository=<owner/repo>` selects a repository;
   bare `review` is the legacy alias; `plan` returns `{runId,effort,status,integrationBranch,

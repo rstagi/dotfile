@@ -26,10 +26,16 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh ws.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh loop-review.sh ws.sh
 
-# Loop engineering shell tests (occupancy + orchestrator; also runs zsh -n over the loop-*.sh)
+# Loop engineering shell tests (occupancy + orchestrator + loop-top; also runs zsh -n over the loop-*.sh)
 zsh tests/run.sh
+
+# Review pipeline stages only
+zsh tests/review-stages.test.sh
+
+# loop-top only
+node --test tests/loop-top.test.mjs
 
 # ws (terminal workspaces) tests
 zsh tests/ws.test.sh
@@ -54,8 +60,10 @@ loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-i
 loop-state.sh           Loop engineering: state/lock/journal/daemon + note/notes steering ops
 loop-plan.sh            Loop engineering: register/push a plan on the daemon + progress notes (local backend, Kestral-free)
 loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap
+loop-review.sh          Loop engineering: review tier + rounds → ordered review runs (a<k>, stage, chain)
 loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)
 loop-models.conf        Loop engineering: model chains, budgets, timeouts
+loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model controls)
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
 ws.sh                   Terminal workspaces: worktree + tmux session per branch, tab per Claude/Codex session (hook-driven status + resume)
@@ -68,7 +76,7 @@ ws.sh                   Terminal workspaces: worktree + tmux session per branch,
 
 **Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx, ws→tmux+fzf+neovim).
 
-**Loop engineering:** `.claude/skills/loop-execute` orchestrates a plan end-to-end across repositories: one repository per phase and one integration branch/worktree/PR per repository. Each explicit PR-review phase runs three local-only Astra/Fable adversarial rounds, with `.claude/skills/pr-review-fix-all` driving Opus 5 reconciliation and delegated Opus 5 remediation after rounds 1 and 2. Opus 5 alone posts the final GitHub review (`REQUEST_CHANGES`, `COMMENT`, or `APPROVE`, based on unresolved severity). GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. The central **Loop daemon** is always the base backend; **Kestral is opt-in**. On-disk coordinator state stays in flattened `.loop/`; review notes use `notes/<reviewPhase>.md` (legacy `notes/pr-review.*` aliases remain accepted). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`. Two-tier mode keeps scheduling/merges in recyclable SUBs and review-phase pipelines in detached runners. Shell tests live in `tests/` (`zsh tests/run.sh`).
+**Loop engineering:** `.claude/skills/loop-execute` orchestrates a plan end-to-end across repositories: one repository per phase and one integration branch/worktree/PR per repository. Each explicit PR-review phase runs a tiered pipeline (`[review: shallow|medium|max]`, default medium; `[rounds: N]`, default 1/3/3) whose run list comes from `loop-review.sh stages`: local-only adversarial rounds (shallow: one Opus reviewer; medium: Sol + Opus; max: Astra + Fable), with `.claude/skills/pr-review-fix-all` reconciling and fixing between rounds (Sonnet in shallow, Opus otherwise). An Opus final reviewer alone posts the GitHub review (`REQUEST_CHANGES`, `COMMENT`, or `APPROVE`, based on unresolved severity). Effort is set per role in `loop-models.conf`. GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. The central **Loop daemon** is always the base backend; **Kestral is opt-in**. On-disk coordinator state stays in flattened `.loop/`; review notes use `notes/<reviewPhase>.md` (legacy `notes/pr-review.*` aliases remain accepted). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`. Two-tier mode keeps scheduling/merges in recyclable SUBs and review-phase pipelines in detached runners. Shell tests live in `tests/` (`zsh tests/run.sh`).
 
 **Loop Observatory (`loop-web`):** a perpetual central daemon (launchd LaunchAgent, `127.0.0.1:7717`) that is the base backend for every plan and renders every loop as a live L→R graph. `multiphase-plan` registers a plan on it (status `planned`) before any run; loops then register + push lifecycle events (`loop-emit.sh`/`loop-plan.sh`, sourced by/talking to the daemon) so status is authoritative via a monotone promotion lattice — never stale. Each loop is kept forever in `~/.loop/loops/<runId>.json`; a header selector switches between loops. Daemon/event contract lives in `loop-protocol.md` → Daemon & events.
 

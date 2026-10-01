@@ -19,6 +19,11 @@ between repositories.
 - Each work-phase heading ends with `` `[lane: X]` `` and
   `` `[status: todo|in-progress|blocked|done]` ``. A review phase adds
   `` `[kind: pr-review]` ``; phases without `kind:` are work phases.
+- A review phase may add `` `[review: shallow|medium|max]` `` (default `medium`) and
+  `` `[rounds: N]` `` (default per tier: shallow 1, medium 3, max 3; `1 ≤ N ≤ 5`). shallow = one
+  Opus reviewer, Sonnet fixes; medium = Sol + Opus adversaries, Opus fixes; max = Astra + Fable
+  adversaries, Opus fixes; every tier ends with one Opus verdict. `loop-review.sh stages` turns
+  the pair into the run list.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.
 - `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
@@ -125,7 +130,7 @@ between repositories.
 - **Done when:** <both lanes merged and green>
 - **Estimate:** <min–max min · confidence · basis>
 
-### Phase 5 — Review pull requests `[lane: review]` `[status: todo]` `[kind: pr-review]`
+### Phase 5 — Review pull requests `[lane: review]` `[status: todo]` `[kind: pr-review]` `[review: medium]`
 - **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 4
 - **Parallelizable with:** none — review barrier

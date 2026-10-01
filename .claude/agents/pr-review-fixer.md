@@ -2,7 +2,7 @@
 name: pr-review-fixer
 description: Implements one isolated fix group assigned by the pr-review-fix-all coordinator.
 tools: Read, Edit, Write, Bash, Grep, Glob
-model: claude-opus-5
+model: opus
 effort: high
 ---
 
