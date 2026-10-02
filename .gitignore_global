@@ -1,0 +1,2 @@
+# Global gitignore (core.excludesFile in .gitconfig)
+.DS_Store

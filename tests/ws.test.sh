@@ -372,6 +372,17 @@ assert_eq "$(git -C "$MREPO" branch --list feat/ship | tr -d ' *+')" "feat/ship"
 assert_eq "$([[ -d "$MWT" ]] && print yes)" "" "confirmed: worktree removed"
 assert_eq "$(git -C "$MREPO" branch --list feat/ship)" "" "confirmed: unmerged-by-ancestry (squashed) branch force-deleted"
 assert_eq "$(git -C "$MREPO" ls-remote --heads origin feat/ship)" "" "confirmed: remote branch deleted"
+"$WS" new --repo "$MREPO" --branch feat/dirty --detach
+DWT="$WS_ROOT/merge-me/feat-dirty"
+git -C "$DWT" push -q origin feat/dirty
+print junk > "$DWT/stray.txt"
+out="$(cd "$DWT" && printf 'y\ny\nn\n' | "$WS" merge 2>&1)"
+assert_contains "$out" "stray.txt" "dirty after merge: lists the offending files"
+assert_contains "$out" "force delete" "dirty after merge: asks to force delete"
+assert_eq "$([[ -d "$DWT" ]] && print yes)" "yes" "dirty, force declined: worktree kept"
+(cd "$DWT" && printf 'y\ny\ny\n' | "$WS" merge) >/dev/null 2>&1
+assert_eq "$([[ -d "$DWT" ]] && print yes)" "" "dirty, force confirmed: worktree removed"
+assert_eq "$(git -C "$MREPO" branch --list feat/dirty)" "" "dirty, force confirmed: branch deleted"
 (cd "$MREPO" && env -u TMUX "$WS" merge </dev/null 2>/dev/null)
 assert_exit "$?" "1" "merge outside a workspace refused"
 

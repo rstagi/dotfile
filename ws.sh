@@ -17,7 +17,8 @@ set -u -o pipefail
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
-#                              remove worktree + tabs + local/remote branch (prefix+M)
+#                              remove worktree + tabs + local/remote branch (prefix+M); if
+#                              dirty, lists the files and asks to force delete
 #   ws hook <working|idle|waiting>   called by agent hooks inside a session window
 #
 # Sessions live in <worktree git dir>/ws-sessions (slot, agent, resume id). Quitting an agent
@@ -283,8 +284,17 @@ cmd_merge() {
 
   confirm "delete $(workspace_name "$wt") (worktree, tabs, local + remote $branch)?" \
     || { print "kept $(workspace_name "$wt")"; return 0; }
+  local dirty
+  local -a rm_flags=(--force-delete-branch)
+  dirty="$(git -C "$wt" status --short 2>/dev/null)"
+  if [[ -n "$dirty" ]]; then
+    print "can't delete $(workspace_name "$wt"): uncommitted/untracked files:"
+    print -r -- "$dirty" | sed 's/^/  /'
+    confirm "force delete anyway (these are lost)?" || { print "kept $(workspace_name "$wt")"; return 0; }
+    rm_flags+=(--force)
+  fi
   git -C "$repo" push -q origin --delete "$branch" 2>/dev/null # GitHub may have auto-deleted it
-  cmd_rm "$wt" --force-delete-branch
+  cmd_rm "$wt" "${rm_flags[@]}"
 }
 
 # confirm <question> — y/N from stdin; the prompt is printed explicitly (zsh's `read "?p"`
