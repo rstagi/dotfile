@@ -318,6 +318,29 @@ export interface ReviewRun {
   status: StatusJson | null;
   phase: string | null;
   repository: string | null;
+  /** Present once the run ended (same contract as Attempt.meta). */
+  meta?: MetaJson | null;
+  /** The leg running right now — engine/model while in flight. */
+  leg?: LegJson | null;
+}
+
+/** loop-review.sh chain names — one run of a review pipeline uses exactly one. */
+export type ReviewChain = "review-adv-a" | "review-adv-b" | "review-fix" | "review-final";
+
+export type ReviewRunState = "todo" | "running" | "done" | "question" | "blocked" | "failed";
+
+/** One run (`a<k>`) of an explicit review phase's pipeline for one repository: the planned
+ * stage from tier + rounds, folded with its run dir when one exists. */
+export interface ReviewStageRun {
+  repository: string;
+  k: number;
+  /** `round<r>` | `fix<r>` | `final`. */
+  stage: string;
+  chain: ReviewChain;
+  state: ReviewRunState;
+  engine: string | null;
+  model: string | null;
+  summary: string | null;
 }
 
 export interface Runtime {
@@ -414,6 +437,8 @@ export interface GraphNode {
   modelOverride?: string | null;
   /** PR-review nodes: tier + rounds from the plan tags. Optional on older snapshots. */
   review?: ReviewConfig | null;
+  /** Explicit PR-review nodes: every pipeline run per repository, in order. Optional on older snapshots. */
+  reviewStages?: ReviewStageRun[];
 }
 
 export type EdgeKind = "plan-to-lane" | "depends" | "to-review";

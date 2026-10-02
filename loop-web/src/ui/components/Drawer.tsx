@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { GraphNode, PrInfo, PlanOverview, AttemptSummary } from "../../model/types.ts";
+import type { GraphNode, PrInfo, PlanOverview, AttemptSummary, ReviewStageRun } from "../../model/types.ts";
 import { problemStyle, uiColor, reviewPill } from "../theme/glyphs.ts";
 import { useReview } from "../hooks/useReview.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -95,6 +95,7 @@ export function Drawer({
             currentRound={node.phase == null || node.status === "done" || node.status === "blocked"}
           />
         )}
+        {(node.reviewStages?.length ?? 0) > 0 && <ReviewPipelineSection stages={node.reviewStages!} />}
         {canSteer && <SteeringNote node={node} runId={runId} />}
 
         {rt?.hilOpen && rt.hilMarkdown && (
@@ -140,6 +141,36 @@ export function Drawer({
       </div>
     </div>
   );
+}
+
+/** Every run of the review pipeline (rounds → fixes → final), per repository. */
+function ReviewPipelineSection({ stages }: { stages: ReviewStageRun[] }) {
+  const repositories = [...new Set(stages.map((s) => s.repository))];
+  return (
+    <section>
+      <p className="section__title">Review pipeline</p>
+      {repositories.map((repository) => (
+        <div className="review-pipeline" key={repository}>
+          {repositories.length > 1 && <div className="review-pipeline__repo">{repository}</div>}
+          {stages.filter((s) => s.repository === repository).map((s) => (
+            <div className="review-pipeline__run" key={s.k} title={s.summary ?? undefined}>
+              <span className="review-pipeline__k">a{s.k}</span>
+              <span>{s.stage}</span>
+              <span className="review-pipeline__chain">{s.chain.replace("review-", "")}</span>
+              <span style={{ color: runColor(s.state) }}>{s.state}</span>
+              <span className="review-pipeline__chain">{s.engine ? [s.engine, s.model].filter(Boolean).join(":") : "—"}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function runColor(state: ReviewStageRun["state"]): string {
+  if (state === "question") return uiColor("awaiting");
+  if (state === "failed" || state === "blocked") return uiColor("problem");
+  return uiColor(state);
 }
 
 function JevDecisionSection({ decisions }: { decisions: NonNullable<GraphNode["decisions"]> }) {

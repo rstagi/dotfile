@@ -13,6 +13,7 @@ import type {
   ProblemClass,
   PrInfo,
   JevDecision,
+  ReviewRun,
 } from "./types.ts";
 import {
   classifyAttempt,
@@ -20,6 +21,7 @@ import {
   lastWorkedBy,
   summarizeAttempt,
 } from "./derive.ts";
+import { reviewStageRuns } from "./review-stages.ts";
 
 export const PLAN_ID = "plan";
 export const REVIEW_ID = "pr-review";
@@ -69,7 +71,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
 
   const explicitReviews = plan.phases.some((phase) => phase.kind === "pr-review");
   const phaseNodes = plan.phases.map((phase) => phase.kind === "pr-review"
-    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase])
+    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], plan.repositories.map((r) => r.slug), runtime?.reviewRunsByRepository ?? {})
     : buildPhaseNode(phase, runtime?.phases[phase.phase], now));
   const reviewNodes = explicitReviews ? [] : plan.repositories.map((repository) => {
     const legacy = repository.slug === "primary";
@@ -190,7 +192,12 @@ function resolveUi(
   return "todo";
 }
 
-function buildExplicitReviewNode(phase: PlanPhase, runtime: PhaseRuntime | undefined): GraphNode {
+function buildExplicitReviewNode(
+  phase: PlanPhase,
+  runtime: PhaseRuntime | undefined,
+  repositories: string[],
+  reviewRuns: Record<string, ReviewRun[]>,
+): GraphNode {
   const status = validStateStatus(runtime?.state?.status) ?? mapPlanStatus(phase.status);
   const paused = (runtime?.paused ?? false) || status === "paused";
   return {
@@ -209,6 +216,7 @@ function buildExplicitReviewNode(phase: PlanPhase, runtime: PhaseRuntime | undef
     paused,
     modelOverride: runtime?.modelOverride ?? null,
     review: phase.review,
+    reviewStages: phase.review ? reviewStageRuns(phase.review, phase.phase, repositories, reviewRuns) : [],
   };
 }
 
