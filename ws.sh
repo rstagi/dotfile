@@ -57,7 +57,7 @@ main() {
   list | ls) cmd_list ;;
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
-  _merge_popup) cmd_merge; print -n "\npress enter to close"; read -r _ ;;
+  _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause
   hook) cmd_hook "$@" ;;
   _rows) picker_rows ;;
   _summary) picker_summary ;;
