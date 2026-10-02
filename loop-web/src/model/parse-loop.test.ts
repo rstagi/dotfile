@@ -111,6 +111,18 @@ describe("parseLoop — state & phase mapping", () => {
       repository: "acme--api",
     });
   });
+
+  it("keeps the engine/model of review runs (leg in flight, meta once ended)", () => {
+    const rt = parseLoop(input({
+      runs: [
+        run({ name: "review-p5-acme--api-a1", meta: JSON.stringify({ engine: "claude", model: "opus" }) }),
+        run({ name: "review-p5-acme--api-a2", leg: JSON.stringify({ engine: "codex", model: "@sol" }) }),
+      ],
+    }));
+    const [a1, a2] = rt.reviewRunsByRepository["acme--api"];
+    expect(a1.meta).toMatchObject({ engine: "claude", model: "opus" });
+    expect(a2.leg).toMatchObject({ engine: "codex", model: "@sol" });
+  });
 });
 
 describe("parseLoop — events.jsonl", () => {

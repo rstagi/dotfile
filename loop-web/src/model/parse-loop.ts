@@ -135,7 +135,10 @@ function splitRuns(runs: RawRunDir[]): {
       const match = r.name.match(PHASE_REPOSITORY_REVIEW_NAME)!;
       const repository = match[2];
       const list = reviewRunsByRepository[repository] ?? [];
-      list.push({ k: Number(match[3]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), phase: match[1], repository });
+      list.push({
+        k: Number(match[3]), runDir: `runs/${r.name}`, status: safeJson<StatusJson>(r.status), phase: match[1], repository,
+        meta: safeJson<MetaJson>(r.meta), leg: safeJson<LegJson>(r.leg ?? null),
+      });
       reviewRunsByRepository[repository] = list;
     } else if (r.name.match(REPOSITORY_REVIEW_NAME)) {
       const match = r.name.match(REPOSITORY_REVIEW_NAME)!;

@@ -28,6 +28,9 @@ const DEFAULT_CHAIN = "default (loop-models.conf chain)";
 const LIST_HINTS = "↑↓ select · ⏎ details · n note · x pause · X pause loop · m model · p plan · g graph · w worktrees · l loops · q quit";
 const DETAIL_HINTS = "esc back · ↑↓ prev/next · n note · x pause · X pause loop · m model · p plan";
 const ICONS = { done: "✓", running: "◐", awaiting: "⏸", paused: "‖", problem: "✗", blocked: "✗", todo: "·" };
+/** Review pipeline run state (snapshot `reviewStages[].state`) → glyph. */
+const RUN_ICONS = { done: "✓", running: "◐", todo: "·", question: "⏸", blocked: "✗", failed: "✗" };
+const CHAIN_KEYS = { "review-adv-a": "ADV_A", "review-adv-b": "ADV_B", "review-fix": "FIX", "review-final": "FINAL" };
 const WAITING_TEXT = "waiting on you (orchestrator)";
 const ESC = "\x1b[";
 const STYLE = { dim: "2", bold: "1", green: "32", yellow: "33", red: "31", cyan: "36" };
@@ -129,14 +132,24 @@ export function phaseRows(snapshot, state) {
         paused: n.paused === true,
         noted: Boolean(n.noteMarkdown?.trim()),
         review: n.kind === "pr-review" ? (n.review ?? null) : null,
+        stages: n.kind === "pr-review" ? (n.reviewStages ?? []) : [],
         started: (n.status != null && n.status !== "todo") || (n.runtime?.attempt ?? 0) > 0,
         deps: incoming.map(label).sort(comparePhase),
         icon: waiting ? ICONS.awaiting : n.paused && n.ui !== "done" ? ICONS.paused : (ICONS[n.ui] ?? ICONS.todo),
-        state: waiting ? WAITING_TEXT : n.ui === "todo" && pending.length ? `waiting on ${pending.join(", ")}` : stateText(n),
+        state: waiting ? WAITING_TEXT : n.ui === "todo" && pending.length ? `waiting on ${pending.join(", ")}` : (reviewProgress(n) ?? stateText(n)),
         branch: ps.branch ?? n.runtime?.branch ?? null,
         worktree: ps.worktree ?? null,
       };
     });
+}
+
+/** Review sub-stages as one line per repository: consecutive runs of a stage share its name,
+ * e.g. `round1 ✓✓ › fix1 ◐ › round2 ·· › final ·`. */
+export function pipelineSummary(stages) {
+  return chunkBy(stages, (s) => s.repository).map(([repository, runs]) => ({
+    repository,
+    text: chunkBy(runs, (s) => s.stage).map(([stage, rs]) => `${stage} ${rs.map((r) => RUN_ICONS[r.state] ?? "·").join("")}`).join(" › "),
+  }));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -308,7 +321,7 @@ function pickTier(row) {
 
 /** One picker line per review tier: `tier ×rounds review <adversaries> · fix <m> · final <m>`. */
 export function tierChoices(confText, current = null) {
-  const first = (key) => confText.match(new RegExp(`^CHAIN_REVIEW_${key}=\\(\\s*"([^"]+)"`, "m"))?.[1] ?? null;
+  const first = (key) => chainHead(confText, `REVIEW_${key}`);
   return ["shallow", "medium", "max"].map((tier) => {
     const T = tier.toUpperCase();
     const rounds = confText.match(new RegExp(`^LOOP_REVIEW_ROUNDS_${T}=(\\d+)`, "m"))?.[1] ?? { shallow: 1, medium: 3, max: 3 }[tier];
@@ -681,6 +694,15 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
     } else {
       lines.push(`${cursor}${paint(ICON_STYLE[r.icon], r.icon)} ${cols.join("  ")}`);
     }
+    if (r.icon !== ICONS.done && r.stages.some((st) => st.state !== "todo")) {
+      const pipeline = pipelineSummary(r.stages);
+      const repoW = pipeline.length > 1 ? Math.max(...pipeline.map((l) => l.repository.length)) + 2 : 0;
+      const lead = `  ${entry ? entry.mid.padEnd(railW) : "    "}  `;
+      for (const l of pipeline) {
+        const text = truncate((repoW ? l.repository.padEnd(repoW) : "") + l.text, width - lead.length);
+        lines.push(paint(STYLE.dim, lead) + text.replace(/[✓◐⏸✗·]/g, (g) => paint(ICON_STYLE[g], g)));
+      }
+    }
     if (showWorktrees && (r.branch || r.worktree)) {
       const wt = r.worktree ? r.worktree.replace(os.homedir(), "~") : "—";
       const lead = `${entry ? entry.mid.padEnd(railW) : "    "}  ${r.branch ?? "—"} → `;
@@ -721,6 +743,20 @@ function renderDetails(frame, id, { width, height, color, banner }) {
     field("attempt", rt.attempt);
     field("heartbeat", rt.lastHeartbeatAgeSec != null ? `${formatAge(rt.lastHeartbeatAgeSec)} ago` : null);
     field("run dir", rt.runDir);
+    if (row.stages.length) {
+      out.push("", paint(STYLE.dim, "  review pipeline"));
+      const conf = readFileSafe(MODELS_CONF);
+      const multi = new Set(row.stages.map((st) => st.repository)).size > 1;
+      for (const [repository, runs] of chunkBy(row.stages, (st) => st.repository)) {
+        if (multi) out.push(`    ${repository}`);
+        for (const st of runs) {
+          const leg = st.engine ? [st.engine, st.model].filter(Boolean).join(":") : `(${chainHead(conf, `REVIEW_${row.review?.tier?.toUpperCase()}_${CHAIN_KEYS[st.chain]}`) ?? "—"})`;
+          const glyph = RUN_ICONS[st.state] ?? "·";
+          const head = `${multi ? "  " : ""}    a${String(st.k).padEnd(3)}${st.stage.padEnd(8)}${st.chain.replace("review-", "").padEnd(7)}`;
+          out.push(truncate(`${head}${paint(ICON_STYLE[glyph], glyph)} ${st.state.padEnd(9)}${leg.padEnd(20)}${st.summary ? ` ${st.summary}` : ""}`.trimEnd(), width + (color ? 12 : 0)));
+        }
+      }
+    }
     if (rt.attempts?.length) {
       out.push("", paint(STYLE.dim, "  attempts"));
       for (const a of rt.attempts) {
@@ -946,6 +982,18 @@ function stateText(n) {
   return n.ui;
 }
 
+/** A started review phase's state: its failed/asked run, else each repository's current
+ * sub-stage + overall progress ("fix1 · 3/9"). null when nothing ran yet or the phase is done. */
+function reviewProgress(n) {
+  const stages = n.reviewStages ?? [];
+  if (n.ui === "done" || !stages.some((s) => s.state !== "todo")) return null;
+  const stuck = stages.find((s) => s.state === "failed" || s.state === "blocked" || s.state === "question");
+  if (stuck) return `${stuck.stage} ${stuck.state}`;
+  const current = [...new Set(chunkBy(stages, (s) => s.repository).map(([, runs]) => runs.find((s) => s.state !== "done")?.stage).filter(Boolean))];
+  const progress = `${stages.filter((s) => s.state === "done").length}/${stages.length}`;
+  return current.length ? `${current.join(", ")} · ${progress}` : progress;
+}
+
 // ---------------------------------------------------------------------------------------
 // Terminal + small helpers
 // ---------------------------------------------------------------------------------------
@@ -1002,6 +1050,23 @@ function truncate(s, n) {
 /** Keeps the tail (the informative end of a path): "…/acme--api/lane-a". */
 function truncateLeft(s, n) {
   return s.length <= n ? s : "…" + s.slice(s.length - Math.max(0, n - 1));
+}
+
+/** First leg of `CHAIN_<key>=("…" …)` in loop-models.conf, or null. */
+function chainHead(confText, key) {
+  return confText.match(new RegExp(`^CHAIN_${key}=\\(\\s*"([^"]+)"`, "m"))?.[1] ?? null;
+}
+
+/** Consecutive-run grouping that keeps first-seen order: [[key, items], …]. */
+function chunkBy(items, keyOf) {
+  const out = [];
+  for (const item of items) {
+    const key = keyOf(item);
+    const last = out[out.length - 1];
+    if (last && last[0] === key) last[1].push(item);
+    else out.push([key, [item]]);
+  }
+  return out;
 }
 
 function readFileSafe(file) {

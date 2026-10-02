@@ -381,6 +381,25 @@
   font-size: 11px;
   text-transform: uppercase;
 }
+.review-pipeline {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.review-pipeline__repo {
+  color: var(--ink-muted);
+  margin-bottom: 3px;
+}
+.review-pipeline__run {
+  display: grid;
+  grid-template-columns: 30px 56px 48px 64px 1fr;
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.review-pipeline__k,
+.review-pipeline__chain {
+  color: var(--ink-muted);
+}
 .attempt {
   display: grid;
   grid-template-columns: 34px 1fr auto;

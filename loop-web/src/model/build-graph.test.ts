@@ -73,6 +73,13 @@ const MULTI_REPO = `# Split — Multi-Phase Plan
 - **Depends on:** Phase 1
 `;
 
+const MULTI_REPO_REVIEW = MULTI_REPO.replace(/### Phase 3[\s\S]*$/, `### Phase 3 — Web \`[lane: A]\` \`[status: done]\`
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 1
+### Phase 4 — Review \`[lane: review]\` \`[status: in-progress]\` \`[kind: pr-review]\`
+- **Depends on:** Phase 2, Phase 3
+`);
+
 const REVIEW_ROUNDS = `# Editable — Multi-Phase Plan
 
 ## Phases
@@ -165,6 +172,21 @@ describe("buildGraph — review tier on PR-review nodes", () => {
     expect(node(graph, "4").review).toEqual({ tier: "shallow", rounds: 2 });
     expect(node(graph, "2").review).toEqual({ tier: "medium", rounds: null });
     expect(node(graph, "1").review ?? null).toBeNull();
+  });
+});
+
+describe("buildGraph — review pipeline sub-stages", () => {
+  it("lists the phase's pipeline runs with their live state", () => {
+    const rt = runtime({});
+    rt.reviewRunsByRepository = {
+      "acme--api": [{ k: 1, runDir: "runs/review-p4-acme--api-a1", phase: "4", repository: "acme--api", status: null, leg: { engine: "codex", model: "@sol" } }],
+    };
+    const graph = buildGraph(parsePlan(MULTI_REPO_REVIEW), rt);
+    const stages = node(graph, "4").reviewStages ?? [];
+    expect(stages).toHaveLength(18); // medium ×3 = 9 runs × 2 repositories
+    expect(stages[0]).toMatchObject({ repository: "acme/api", k: 1, stage: "round1", state: "running", model: "@sol" });
+    expect(stages[9]).toMatchObject({ repository: "acme/web", k: 1, state: "todo" });
+    expect(node(graph, "2").reviewStages).toBeUndefined();
   });
 });
 

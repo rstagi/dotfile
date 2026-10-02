@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { inferLoop, phaseRows, pickerRows, tierChoices } from "../loop-top.mjs";
+import { inferLoop, phaseRows, pickerRows, pipelineSummary, tierChoices } from "../loop-top.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "loop-top.mjs");
 
@@ -86,7 +86,7 @@ test("phaseRows: phases in natural order (2a < 2b < 10), plan node dropped, work
   const rows = phaseRows(snapshot, state);
   assert.deepEqual(rows.map((r) => r.label), ["2a", "2b", "10"]);
   assert.deepEqual(rows[0], {
-    id: "2a", label: "2a", title: "Two a", lane: "A", model: "codex", modelOverride: null, planned: null, paused: false, noted: false, review: null, started: true, deps: [],
+    id: "2a", label: "2a", title: "Two a", lane: "A", model: "codex", modelOverride: null, planned: null, paused: false, noted: false, review: null, stages: [], started: true, deps: [],
     icon: "✓", state: "done", branch: "feat/two-a", worktree: "/wt/lane-a",
   });
   assert.equal(rows[1].icon, "·");
@@ -326,6 +326,55 @@ test("phaseRows + --once: review phases carry their tier; the model column shows
   const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
   assert.match(out.stdout, /2 +Deep review +review +max review ×2 /);
   assert.match(out.stdout, /3 +Default review +review +medium review ×3 /); // tier default from loop-models.conf
+});
+
+const stage = (k, stg, chain, state, repository = "acme/api", over = {}) =>
+  ({ repository, k, stage: stg, chain, state, engine: null, model: null, summary: null, ...over });
+const SHALLOW2 = (s1, s2, s3, repository) => [
+  stage(1, "round1", "review-adv-a", s1, repository),
+  stage(2, "fix1", "review-fix", s2, repository),
+  stage(3, "final", "review-final", s3, repository),
+];
+
+test("phaseRows: a started review phase's state names its current sub-stage + progress", () => {
+  const review = (id, ui, reviewStages) => node({ id, phase: id, kind: "pr-review", lane: "review", title: "R", ui, status: "running", review: { tier: "shallow", rounds: 2 }, reviewStages });
+  const snapshot = { graph: { nodes: [
+    review("1", "running", SHALLOW2("done", "running", "todo")),
+    review("2", "running", [...SHALLOW2("done", "done", "todo"), ...SHALLOW2("running", "todo", "todo", "acme/web")]),
+    review("3", "running", SHALLOW2("failed", "todo", "todo")),
+    review("4", "todo", SHALLOW2("todo", "todo", "todo")),
+    review("5", "done", SHALLOW2("done", "done", "done")),
+  ] } };
+  const rows = phaseRows(snapshot, null);
+  assert.deepEqual(rows.map((r) => r.state), ["fix1 · 1/3", "final, round1 · 2/6", "round1 failed", "todo", "done"]);
+  assert.equal(rows[0].stages.length, 3);
+});
+
+test("pipelineSummary: one line per repository, runs grouped by sub-stage", () => {
+  assert.deepEqual(pipelineSummary(SHALLOW2("done", "running", "todo")), [
+    { repository: "acme/api", text: "round1 ✓ › fix1 ◐ › final ·" },
+  ]);
+  const medium = [
+    stage(1, "round1", "review-adv-a", "done"), stage(2, "round1", "review-adv-b", "failed"),
+    stage(3, "final", "review-final", "todo"),
+  ];
+  assert.deepEqual(pipelineSummary([...medium, ...SHALLOW2("question", "todo", "todo", "acme/web")]).map((l) => l.text), [
+    "round1 ✓✗ › final ·",
+    "round1 ⏸ › fix1 · › final ·",
+  ]);
+});
+
+test("--once: a running review phase shows its sub-stage pipeline under the row", async (t) => {
+  const snapshot = { graph: { nodes: [
+    node({ id: "1", phase: "1", title: "Work", ui: "done" }),
+    node({ id: "2", phase: "2", kind: "pr-review", lane: "review", title: "Review", ui: "running", status: "running",
+      review: { tier: "shallow", rounds: 2 }, reviewStages: SHALLOW2("done", "running", "todo") }),
+  ] } };
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.match(out.stdout, /2 +Review .* fix1 · 1\/3/);
+  assert.match(out.stdout, /\n +round1 ✓ › fix1 ◐ › final ·\n/);
 });
 
 // ---- archive / unarchive: a manual flag on the daemon record (worktrees untouched) ----

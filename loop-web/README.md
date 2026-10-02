@@ -121,7 +121,9 @@ Layout is a deterministic longest-path layered layout with horizontal swimlane b
 horizontal lanes as a first-class concept, and our DAGs are tiny, so a deterministic layout gives
   guaranteed clean bands with a synthetic Plan root. New plans render explicit PR-review
   phases inline, including repeated review rounds after late-added work; legacy plans retain
-  stacked synthetic repository review terminals.
+  stacked synthetic repository review terminals. Explicit review nodes carry `reviewStages`:
+  the `loop-review.sh stages` run list (mirrored in `src/model/review-stages.ts`, parity-tested)
+  folded with each `runs/review-p<N>-<owner--repo>-a<k>` dir's live state and engine/model.
 
 Plans declare GitHub `owner/repo` slugs and assign one repository to every work phase;
 explicit review phases cover all repositories. Re-registering edited plan text preserves
