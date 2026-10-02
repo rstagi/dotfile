@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { inferLoop, phaseRows } from "../loop-top.mjs";
+import { inferLoop, phaseRows, pickerRows, tierChoices } from "../loop-top.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "loop-top.mjs");
 
@@ -408,4 +408,76 @@ test("loop-top --once: phases without a model yet show the planned leg (override
   assert.equal(out.code, 0, out.stderr);
   assert.match(out.stdout, /✓ 1 +Stored title +A +codex +done/, "actual model unchanged");
   assert.match(out.stdout, /· 2 +Second +A +\(claude:planned-model\)/);
+});
+
+test("pickerRows: active first, archived hidden, runId in the 2nd field (fzf {2})", () => {
+  const rows = pickerRows([
+    { runId: "fin", status: "finished", updatedAt: "2026-09-02T00:00:00Z" },
+    { runId: "gone", status: "archived", updatedAt: "2026-09-03T00:00:00Z" },
+    { runId: "live", status: "active", updatedAt: "2026-09-01T00:00:00Z" },
+  ]);
+  assert.deepEqual(rows.map((r) => r.split(/\s+/)[1]), ["live", "fin"]);
+});
+
+test("loop-top --picker-rows: lists pickable loops; an archived one drops out (picker reload after `a`)", async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const env = { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store };
+  const before = await runCli(["--picker-rows"], { cwd: fx.root, env });
+  assert.equal(before.code, 0, before.stderr);
+  assert.match(before.stdout, /^active +loop-demo /m);
+  await runCli(["archive", "loop-demo", "--yes"], { cwd: fx.root, env });
+  const after = await runCli(["--picker-rows"], { cwd: fx.root, env });
+  assert.doesNotMatch(after.stdout, /loop-demo/);
+});
+
+// ---- review tier: `m` on a review phase picks a tier; the daemon rewrites the plan tag ----
+
+test("control review: rewrites the review phase's [review:] tag in plan.md; guards bad input + started phases", async (t) => {
+  const fx = fixture();
+  const loopDir = path.join(fx.coord, ".loop");
+  const planFile = path.join(loopDir, "plan.md");
+  fs.writeFileSync(planFile, [
+    "# Demo — Multi-Phase Plan", "",
+    "### Phase 1 — Build `[lane: A]` `[status: done]`", "Build it.", "",
+    "### Phase 2 — Review pull requests `[lane: review]` `[status: todo]` `[kind: pr-review]` `[review: medium]` `[rounds: 2]`",
+    "Review it.", "",
+  ].join("\n"));
+  const rec = JSON.parse(fs.readFileSync(path.join(fx.store, "loop-demo.json"), "utf8"));
+  fs.writeFileSync(path.join(fx.store, "loop-demo.json"), JSON.stringify({ ...rec, planFile }));
+  const daemon = await realDaemon(fx.store);
+  t.after(async () => { await daemon.stop(); fs.rmSync(fx.root, { recursive: true, force: true }); });
+  const control = (body) => fetch(`${daemon.url}/api/loops/loop-demo/control`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+
+  const ok = await control({ action: "review", phase: "2", tier: "max" });
+  assert.equal(ok.status, 200, await ok.text());
+  const header = fs.readFileSync(planFile, "utf8").split("\n").find((l) => l.startsWith("### Phase 2"));
+  assert.match(header, /`\[review: max\]`$/);
+  assert.doesNotMatch(header, /medium|rounds/, "old tier + rounds replaced (rounds back to the tier default)");
+  assert.match(header, /`\[kind: pr-review\]`/, "other tags kept");
+
+  assert.equal((await control({ action: "review", phase: "2", tier: "huge" })).status, 400);
+  assert.equal((await control({ action: "review", phase: "1", tier: "max" })).status, 400, "not a review phase");
+  fs.writeFileSync(planFile, fs.readFileSync(planFile, "utf8").replace("`[status: todo]` `[kind: pr-review]`", "`[status: running]` `[kind: pr-review]`"));
+  assert.equal((await control({ action: "review", phase: "2", tier: "shallow" })).status, 409, "already started");
+});
+
+test("tierChoices: one line per tier with default rounds + models, current tier marked", () => {
+  const conf = [
+    "LOOP_REVIEW_ROUNDS_SHALLOW=1", "LOOP_REVIEW_ROUNDS_MEDIUM=3", "LOOP_REVIEW_ROUNDS_MAX=2",
+    'CHAIN_REVIEW_SHALLOW_ADV_A=("claude:opus");  EFFORT_REVIEW_SHALLOW_ADV_A=high',
+    'CHAIN_REVIEW_SHALLOW_FIX=("claude:sonnet")',
+    'CHAIN_REVIEW_SHALLOW_FINAL=("claude:opus")',
+    'CHAIN_REVIEW_MEDIUM_ADV_A=("codex:@sol")', 'CHAIN_REVIEW_MEDIUM_ADV_B=("claude:opus")',
+    'CHAIN_REVIEW_MEDIUM_FIX=("claude:opus")', 'CHAIN_REVIEW_MEDIUM_FINAL=("claude:opus")',
+    'CHAIN_REVIEW_MAX_ADV_A=("codex:@astra")', 'CHAIN_REVIEW_MAX_ADV_B=("claude:fable")',
+    'CHAIN_REVIEW_MAX_FIX=("claude:opus")', 'CHAIN_REVIEW_MAX_FINAL=("claude:opus")',
+  ].join("\n");
+  const lines = tierChoices(conf, "medium");
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /^shallow +×1 +review claude:opus · fix claude:sonnet · final claude:opus$/);
+  assert.match(lines[1], /^medium +×3 +review codex:@sol \+ claude:opus · fix claude:opus · final claude:opus +\(current\)$/);
+  assert.match(lines[2], /^max +×2 +review codex:@astra \+ claude:fable/);
 });

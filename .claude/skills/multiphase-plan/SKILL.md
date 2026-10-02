@@ -73,7 +73,10 @@ Author the plan in the **canonical plan format** (see
 - **Terminal review phase** — every executable plan ends with one explicit
   `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
   It represents the bounded per-repository reviews run by `loop-execute`; it has no
-  `Repository:`, branch, or Verify command. Propose its depth with
+  `Repository:`, branch, or Verify command. **If the request already names a review tier**
+  (e.g. "review: max", "shallow review", "max review, 2 rounds" — from the user or a calling
+  agent's args), use it verbatim (with `[rounds: N]` if given) and skip the heuristic below.
+  Otherwise propose its depth with
   `` `[review: shallow|medium|max]` `` from the effort's size and risk: `shallow` for small,
   low-risk changes; `medium` (the default — omit the tag) for normal work; `max` for large
   efforts or anything touching security, auth, money, or data integrity. Add
@@ -176,8 +179,15 @@ immediately and lets `loop-handoff` repush from here. Mention the user can add `
 The plan is now live locally. One gate before any Kestral write:
 
 > Plan registered on the local daemon · planId **`<id>`**.
+> Review tier: **`<tier>` ×`<rounds>`** — `<one-line why>`. Change it? (`shallow` ×1 ·
+> `medium` ×3 · `max` ×3, optionally with rounds)
 > Link this plan to **Kestral** too (creates a project + plan doc + phase tasks)?
 > (default: **no** — local-only)
+
+Skip the review-tier line when the request already named a tier. If the user picks another
+tier, rewrite the review phase's `` `[review: …]` `` / `` `[rounds: …]` `` tags in
+`.loop/plan.md` and repush with `loop-plan.sh push` (it stays changeable later — before the review
+phase starts — from `loop-top`: `m` on the review phase).
 
 Link to Kestral **only** if the user says yes, or already asked for Kestral in the original
 request (e.g. "put a plan on Kestral"). Otherwise stop here and go to **Report** — the

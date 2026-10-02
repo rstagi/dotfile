@@ -22,6 +22,7 @@ const DAEMON_URL = process.env.LOOP_DAEMON_URL || "http://localhost:7717";
 const STORE_DIR = process.env.LOOP_STORE_DIR || path.join(os.homedir(), ".loop", "loops");
 const HTTP_TIMEOUT_MS = 1500;
 const POLL_MS = 2000;
+const SELF = new URL(import.meta.url).pathname;
 const MODELS_CONF = process.env.LOOP_MODELS_CONF || path.join(path.dirname(new URL(import.meta.url).pathname), "loop-models.conf");
 const DEFAULT_CHAIN = "default (loop-models.conf chain)";
 const LIST_HINTS = "↑↓ select · ⏎ details · n note · x pause · X pause loop · m model · p plan · g graph · w worktrees · l loops · q quit";
@@ -41,6 +42,7 @@ if (isMain()) {
 }
 
 async function main(argv) {
+  if (argv.includes("--picker-rows")) return console.log(pickerRows((await loadLoops()).loops).join("\n"));
   if (argv[0] === "archive" || argv[0] === "unarchive") return archiveCommand(argv[0] === "archive", argv.slice(1));
   const once = argv.includes("--once");
   const showWorktrees = argv.includes("--worktrees");
@@ -254,8 +256,13 @@ async function interactive(initialRunId, initialLoops, { showWorktrees, graph })
     m: async () => {
       const row = selectedRow();
       if (!row) return;
-      if (row.review) return say(`review phases use their tier's models — set [review: shallow|medium|max] in the plan`);
-      if (row.started) return say(`phase ${row.label} already started — model can only change before it starts`);
+      if (row.started) return say(`phase ${row.label} already started — ${row.review ? "tier" : "model"} can only change before it starts`);
+      if (row.review) {
+        const tier = handOver(() => pickTier(row));
+        if (!tier) return;
+        const res = await postJson(`/api/loops/${encodeURIComponent(ui.runId)}/control`, { action: "review", phase: row.id, tier });
+        return say(res.ok ? `phase ${row.label} will review at ${tier}` : `tier failed: ${res.error}`);
+      }
       const leg = handOver(() => pickModel(row));
       if (leg === undefined) return;
       const res = await postJson(`/api/loops/${encodeURIComponent(ui.runId)}/control`, { action: "model", phase: row.id, leg });
@@ -289,6 +296,28 @@ async function interactive(initialRunId, initialLoops, { showWorktrees, graph })
 
 /** fzf over the model legs in loop-models.conf; typed text is accepted as a custom leg.
  * Returns a leg, null (back to default chain), or undefined (cancelled). */
+/** fzf over the review tiers (rounds + models from loop-models.conf) → tier, or null. */
+function pickTier(row) {
+  const res = spawnSync("fzf", ["--prompt", `phase ${row.label} review tier> `, "--height", "40%", "--reverse", "--no-sort"], {
+    input: tierChoices(readFileSafe(MODELS_CONF), row.review?.tier).join("\n"),
+    encoding: "utf8", stdio: ["pipe", "pipe", "inherit"],
+  });
+  if (res.error || res.status !== 0) return null;
+  return res.stdout.trim().split(/\s+/)[0] || null;
+}
+
+/** One picker line per review tier: `tier ×rounds review <adversaries> · fix <m> · final <m>`. */
+export function tierChoices(confText, current = null) {
+  const first = (key) => confText.match(new RegExp(`^CHAIN_REVIEW_${key}=\\(\\s*"([^"]+)"`, "m"))?.[1] ?? null;
+  return ["shallow", "medium", "max"].map((tier) => {
+    const T = tier.toUpperCase();
+    const rounds = confText.match(new RegExp(`^LOOP_REVIEW_ROUNDS_${T}=(\\d+)`, "m"))?.[1] ?? { shallow: 1, medium: 3, max: 3 }[tier];
+    const reviewers = [first(`${T}_ADV_A`), first(`${T}_ADV_B`)].filter(Boolean).join(" + ");
+    const line = `${tier.padEnd(8)} ×${rounds}  review ${reviewers} · fix ${first(`${T}_FIX`)} · final ${first(`${T}_FINAL`)}`;
+    return tier === current ? `${line}  (current)` : line;
+  });
+}
+
 function pickModel(row) {
   const legs = [...new Set([...readFileSafe(MODELS_CONF).matchAll(/"((?:codex|claude):[^"\s]+)"/g)].map((m) => m[1]))];
   const input = [DEFAULT_CHAIN, ...legs].join("\n");
@@ -368,25 +397,42 @@ function followLoop(runId, getLoops, onFrame) {
   };
 }
 
-/** fzf over non-archived loops; returns the chosen runId or null. */
+/** fzf over non-archived loops; returns the chosen runId or null. Opens in navigation mode
+ * (no search box): letters are commands (`a` archives + reloads, `q` quits, j/k move) until
+ * `/` shows the search box; esc then clears + hides it again. */
 function pickLoop(loops) {
-  const rank = (l) => (l.status === "active" ? 0 : 1);
-  const visible = loops.filter((l) => l.status !== "archived").sort((a, b) => rank(a) - rank(b));
-  if (visible.length === 0) {
+  const rows = pickerRows(loops);
+  if (rows.length === 0) {
     console.error("loop-top: no active or finished loops");
     return null;
   }
-  const input = visible.map((l) => `${l.status.padEnd(9)}  ${l.runId}  ${l.updatedAt ?? ""}`).join("\n");
-  const res = spawnSync("fzf", ["--prompt", "loop> ", "--height", "40%", "--reverse", "--no-sort"], {
-    input,
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "inherit"],
-  });
+  const self = `${shq(process.execPath)} ${shq(SELF)}`;
+  // a letter types into the search box when it's shown, else runs its command
+  const key = (k, cmd) => `${k}:transform:[ "$FZF_INPUT_STATE" = enabled ] && echo put:${k} || echo ${shq(cmd)}`;
+  const res = spawnSync("fzf", [
+    "--prompt", "loop> ", "--height", "40%", "--reverse", "--no-sort", "--no-input",
+    "--header", "⏎ open · a archive · / search · q quit",
+    "--bind", "/:show-input",
+    "--bind", `esc:transform:[ "$FZF_INPUT_STATE" = enabled ] && echo clear-query+hide-input || echo abort`,
+    "--bind", key("a", `execute-silent(${self} archive {2} --yes)+reload(${self} --picker-rows)`),
+    "--bind", key("q", "abort"),
+    "--bind", key("j", "down"),
+    "--bind", key("k", "up"),
+  ], { input: rows.join("\n"), encoding: "utf8", stdio: ["pipe", "pipe", "inherit"] });
   if (res.error) {
     console.error("loop-top: fzf not found — pass a runId instead");
     return null;
   }
   return res.stdout.trim().split(/\s+/)[1] ?? null;
+}
+
+/** Picker lines: `status  runId  updatedAt`, active first, archived hidden. */
+export function pickerRows(loops) {
+  const rank = (l) => (l.status === "active" ? 0 : 1);
+  return loops
+    .filter((l) => l.status !== "archived")
+    .sort((a, b) => rank(a) - rank(b))
+    .map((l) => `${l.status.padEnd(9)}  ${l.runId}  ${l.updatedAt ?? ""}`);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -942,6 +988,11 @@ function formatAge(sec) {
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
   return h < 24 ? `${h}h${String(m % 60).padStart(2, "0")}m` : `${Math.floor(h / 24)}d${h % 24}h`;
+}
+
+/** POSIX single-quote for a shell word (fzf runs bind commands through $SHELL). */
+function shq(s) {
+  return `'${String(s).replaceAll("'", `'\\''`)}'`;
 }
 
 function truncate(s, n) {

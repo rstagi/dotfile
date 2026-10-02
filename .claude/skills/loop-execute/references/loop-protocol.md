@@ -161,7 +161,7 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 - `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, planText }` — how a fresh checkout fetches the plan with **no worktree needed**.
 - `POST /api/loops/:runId/note` `{ key, markdown }` to write or `{ key, clear:true }` to delete a steering note; rejects archived loops.
 - `POST /api/loops/:runId/archive` · `/unarchive` — manual archive flag on the store record (`loop-top archive [runId]`): listed as `archived` regardless of the worktree; worktrees untouched.
-- `POST /api/loops/:runId/control` `{ action:"pause"|"resume", phase? }` writes/removes `control/pause[-<N>]`; `{ action:"model", phase, leg|null }` writes/removes `control/model-<N>` (409 once the phase has started; invalid leg → 400). Rejects archived loops (410). The snapshot gains loop-level `paused` and per-node `paused`, `modelOverride`; UI state `paused`.
+- `POST /api/loops/:runId/control` `{ action:"pause"|"resume", phase? }` writes/removes `control/pause[-<N>]`; `{ action:"model", phase, leg|null }` writes/removes `control/model-<N>` (409 once the phase has started; invalid leg → 400). Rejects archived loops (410). The snapshot gains loop-level `paused` and per-node `paused`, `modelOverride`; UI state `paused`. `{ action:"review", phase, tier }` rewrites a not-yet-started review phase's `[review: …]` tag in plan.md (drops `[rounds: …]` → tier default).
 - `GET /api/loops` (plural repository summaries) · `GET /events?runId=` ·
   `/api/loops/:runId/review?repository=<owner/repo>`; bare `/review` is the legacy alias ·
   `/api/loops/:runId/{snapshot,attempt/:slug/:k}` · `/api/health`.

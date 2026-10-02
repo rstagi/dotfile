@@ -2,6 +2,7 @@
 alias loop-web="$HOME/dotfile/loop-web.sh"
 # Terminal dashboard + controls for the loop inferred from cwd (picker via fzf otherwise).
 alias loop-top="$HOME/dotfile/loop-top.mjs"
+alias ltop="loop-top"
 # Plan helper: register/push a plan on the daemon + post progress notes (the local backend).
 alias loop-plan="$HOME/dotfile/loop-plan.sh"
 # Global owner/repo → checkout registry + fresh-remote integration bootstrap.
