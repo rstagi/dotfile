@@ -15,8 +15,8 @@ set -u -o pipefail
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
 #   ws list                    TSV: state name path agent window pinned
 #   ws rm <name|path> [--force] [--delete-branch]
-#   ws merge                   in a workspace: merge its PR (gh, $WS_MERGE_METHOD, default
-#                              squash), fast-forward the main checkout, then on confirm
+#   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
+#                              default squash), fast-forward the main checkout, then on confirm
 #                              remove worktree + tabs + local/remote branch (prefix+M)
 #   ws hook <working|idle|waiting>   called by agent hooks inside a session window
 #
@@ -251,11 +251,17 @@ cmd_rm() {
 }
 
 cmd_merge() {
-  local wt repo branch default ans
+  local wt repo branch default
   wt="$(current_workspace)" && wt="$(resolve_workspace "$wt")" || die "merge: not inside a workspace"
   repo="$(main_checkout "$wt")" || die "cannot find main checkout for $wt"
   branch="$(git -C "$wt" branch --show-current)"
   [[ -n "$branch" ]] || die "merge: detached HEAD in $wt"
+
+  local pr
+  pr="$(cd "$wt" && gh pr view "$branch" --json number,title,url \
+    --jq '"#\(.number) \(.title) (\(.url))"' 2>/dev/null)"
+  [[ -n "$pr" ]] || die "merge: no PR found for $branch"
+  confirm "merge PR $pr (${WS_MERGE_METHOD:-squash})?" || { print "not merged"; return 0; }
 
   print "→ merging PR for $branch (${WS_MERGE_METHOD:-squash})"
   if ! (cd "$wt" && gh pr merge "$branch" "--${WS_MERGE_METHOD:-squash}"); then
@@ -275,10 +281,19 @@ cmd_merge() {
     git -C "$repo" fetch -q origin "$default:$default" || die "merge: cannot fast-forward $default"
   fi
 
-  read -r "ans?delete $(workspace_name "$wt") (worktree, tabs, local + remote $branch)? [y/N] " || ans=""
-  [[ "$ans" == (y|Y) ]] || { print "kept $(workspace_name "$wt")"; return 0; }
+  confirm "delete $(workspace_name "$wt") (worktree, tabs, local + remote $branch)?" \
+    || { print "kept $(workspace_name "$wt")"; return 0; }
   git -C "$repo" push -q origin --delete "$branch" 2>/dev/null # GitHub may have auto-deleted it
   cmd_rm "$wt" --force-delete-branch
+}
+
+# confirm <question> — y/N from stdin; the prompt is printed explicitly (zsh's `read "?p"`
+# stays silent when stdin isn't a terminal).
+confirm() {
+  local ans
+  print -rn -- "$1 [y/N] "
+  read -r ans || ans=""
+  [[ "$ans" == (y|Y) ]]
 }
 
 # Agent hooks call this from inside a session window: sets the window's state and records

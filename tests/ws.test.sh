@@ -354,15 +354,21 @@ git -C "$UPSTREAM" push -q origin main
 cat > "$TMP/bin/gh" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+[ "$1 $2" = "pr view" ] && echo "#7 Ship it (https://github.com/acme/merge-me/pull/7)"
+exit 0
 EOF
 chmod +x "$TMP/bin/gh"
 export FAKE_GH_LOG="$TMP/gh.log"
-(cd "$MWT" && print n | "$WS" merge) >/dev/null 2>&1
+out="$(cd "$MWT" && print n | "$WS" merge 2>&1)"
+assert_contains "$out" "merge PR #7 Ship it (https://github.com/acme/merge-me/pull/7)" "asks to confirm, naming the PR"
+assert_eq "$(grep -c 'pr merge' "$FAKE_GH_LOG")" "0" "declined merge: PR not merged"
+assert_eq "$(git -C "$MREPO" log -1 --format=%s main)" "initial" "declined merge: main untouched"
+(cd "$MWT" && printf 'y\nn\n' | "$WS" merge) >/dev/null 2>&1
 assert_contains "$(cat "$FAKE_GH_LOG")" "pr merge feat/ship --squash" "squash-merges the branch's PR"
 assert_eq "$(git -C "$MREPO" log -1 --format=%s main)" "squashed: ship it" "main checkout fast-forwarded"
 assert_eq "$([[ -d "$MWT" ]] && print yes)" "yes" "declined: worktree kept"
 assert_eq "$(git -C "$MREPO" branch --list feat/ship | tr -d ' *+')" "feat/ship" "declined: branch kept"
-(cd "$MWT" && print y | "$WS" merge) >/dev/null 2>&1
+(cd "$MWT" && printf 'y\ny\n' | "$WS" merge) >/dev/null 2>&1
 assert_eq "$([[ -d "$MWT" ]] && print yes)" "" "confirmed: worktree removed"
 assert_eq "$(git -C "$MREPO" branch --list feat/ship)" "" "confirmed: unmerged-by-ancestry (squashed) branch force-deleted"
 assert_eq "$(git -C "$MREPO" ls-remote --heads origin feat/ship)" "" "confirmed: remote branch deleted"
