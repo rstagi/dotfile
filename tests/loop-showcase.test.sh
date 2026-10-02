@@ -1,19 +1,23 @@
 #!/bin/zsh
 # Throwaway demo test for the Loop showcase; delete after the demo.
 
+typeset -i passed=0
+
 showcase_greet() {
   printf 'hello, %s\n' "$1"
 }
 
-(( 1 + 1 == 2 )) || {
-  print -u2 -- 'FAIL: 1 + 1 must equal 2'
-  exit 1
+assert_eq() {
+  [[ "$1" == "$2" ]] || {
+    print -u2 -- "FAIL: $3 (expected '$2', got '$1')"
+    exit 1
+  }
+  (( ++passed ))
 }
 
-[[ "$(showcase_greet 'Loop User')" == 'hello, Loop User' ]] || {
-  print -u2 -- 'FAIL: showcase_greet must greet the supplied name'
-  exit 1
-}
+assert_eq "$(( 1 + 1 ))" '2' '1 + 1 must equal 2'
+assert_eq "$(showcase_greet 'Loop User')" 'hello, Loop User' \
+  'showcase_greet must greet the supplied name'
 
-print -- 'ok'
+print -- "showcase: $passed passed"
 exit 0
