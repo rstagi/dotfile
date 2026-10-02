@@ -16,6 +16,7 @@ function attempt(over: Partial<Attempt> & { k?: number } = {}): Attempt {
     k: over.k ?? 1,
     runDir: over.runDir ?? `.loop/runs/slug-a${over.k ?? 1}`,
     meta: over.meta ?? null,
+    leg: over.leg ?? null,
     status: over.status ?? null,
     spawnLog: over.spawnLog ?? null,
     transcriptMtime: over.transcriptMtime ?? null,
@@ -198,7 +199,28 @@ describe("lastWorkedBy — model is the last leg only", () => {
   });
 });
 
+describe("lastWorkedBy — an in-flight attempt shows the leg it is running", () => {
+  it("uses leg.json of the newest attempt while it has no meta yet", () => {
+    const a = [
+      attempt({ k: 1, meta: meta({ engine: "codex", model: "gpt-5.6-sol" }) }),
+      attempt({ k: 2, meta: null, leg: { engine: "claude", model: "sonnet" } }),
+    ];
+    expect(lastWorkedBy(a)).toEqual({ engine: "claude", model: "sonnet" });
+  });
+  it("meta wins once the attempt ends (concrete model, not the alias)", () => {
+    const a = [attempt({ k: 1, meta: meta({ engine: "claude", model: "claude-sonnet-5" }), leg: { engine: "claude", model: "sonnet" } })];
+    expect(lastWorkedBy(a)).toEqual({ engine: "claude", model: "claude-sonnet-5" });
+  });
+  it("first attempt still launching (no leg yet) → nulls", () => {
+    expect(lastWorkedBy([attempt({ k: 1, meta: null, leg: null })])).toEqual({ engine: null, model: null });
+  });
+});
+
 describe("summarizeAttempt", () => {
+  it("an in-flight attempt reports its running leg", () => {
+    const s = summarizeAttempt(attempt({ k: 1, meta: null, leg: { engine: "codex", model: "@sol" } }));
+    expect([s.engine, s.model, s.ended]).toEqual(["codex", "@sol", false]);
+  });
   it("captures per-attempt engine/model/outcome/problem", () => {
     const s = summarizeAttempt(
       attempt({ k: 2, meta: meta({ engine: "claude", model: "opus", engineExit: 124, timedOut: true }) }),

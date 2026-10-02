@@ -36,9 +36,11 @@ New Loop plans include an estimate and confidence for each work phase. The plann
 - `n` edits the phase's steering note in `$EDITOR` (empty = clear). A running phase picks it up within ~2s: the runner interrupts the engine and resumes the same session with the note.
 - `x` pauses/resumes the selected phase; `X` pauses/resumes the whole loop (asks y/n). Pausing halts the runners (and the orchestrator for `X`) within ~2s; resuming continues the same engine session.
 - Review phases show their tier and rounds (`medium review ×3`); change them with `[review: shallow|medium|max]` / `[rounds: N]` in the plan.
+- Model column: `codex:gpt-6.1-sol` = what ran / is running now (live from the runner's `leg.json`), `→ claude:opus` = your override, `(codex:@sol)` = planned (first `CHAIN_TASK` leg; the light/default route is decided at launch), `medium review ×3` = review tier (untagged review phases use the default tier).
 - `m` sets the model for a phase that hasn't started (fzf over `loop-models.conf` legs, or type `engine:model`); the default chain stays as fallback.
 - `p` opens the plan in `$PAGER`; `g` toggles a git-log-style dependency graph; `w` toggles `branch → worktree`; `l` switches loop; `q` quits.
 - `loop-top <runId>` opens a specific loop; `loop-top --once [--worktrees] [--graph]` prints one frame.
+- `loop-top archive [runId]` hides a loop from the picker (default: the one inferred from cwd; asks first, `--yes` skips) without touching its worktree; `loop-top unarchive <runId>` brings it back. Loops whose coordinator worktree is gone are archived automatically.
 - Daemon down → renders the last stored snapshot from `~/.loop/loops` (`daemon offline · from store`); actions need the daemon.
 
 ## Jev decisions in Loop

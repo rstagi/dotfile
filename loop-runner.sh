@@ -325,6 +325,15 @@ write_meta() { # $1 = engine exit code
     > "$RUN_DIR/meta.json"
 }
 
+# The leg about to run, so observers show the live model before meta.json (written only when
+# the attempt ends) exists. Rewritten on every fallback to the next leg.
+write_leg() {
+  jq -n --arg engine "$CUR_ENGINE" --arg model "$CUR_MODEL" --arg effort "$(leg_effort)" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{engine: $engine, model: $model, effort: (if ($effort|length) > 0 then $effort else null end), startedAt: $at}' \
+    > "$RUN_DIR/leg.json"
+}
+
 # --- engine launchers (backgrounded by run_leg; cwd/-C = the worktree) ---
 
 # Effort actually passed for the current leg: claude has no `ultra`, so it clamps to max.
@@ -578,6 +587,7 @@ for leg in "${chain[@]}"; do
     PROMPT_IN="$RUN_DIR/note-fresh.md"
   fi
 
+  write_leg
   retries=0 delay=10 leg_done=0
   while [[ $retries -lt 3 ]]; do
     if is_paused; then

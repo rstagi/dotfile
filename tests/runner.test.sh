@@ -119,6 +119,8 @@ run_routed_task() {
   export LOOP_JEV_MODE="$mode"
   export LOOP_JEV_CLIENT="$HERE/fake/loop-jev.mjs"
   export FAKE_CODEX_OUTCOME=done
+  export FAKE_LEG_SNAPSHOT="$TMP/leg-seen.json"
+  rm -f "$FAKE_LEG_SNAPSHOT"
   : > "$FAKE_ENGINE_LOG"
   : > "$FAKE_JEV_LOG"
   zsh "$ROOT/loop-runner.sh" \
@@ -138,6 +140,7 @@ echo "runner: active high-confidence route uses configured light profile"
 run_routed_task active '{"version":1,"status":"ok","stage":"route","mode":"active","model":"jev-test","answers":{"profile":{"type":"choice","choice":"light","probabilities":{"default":0.05,"light":0.95},"confidence":0.95}},"confidence":0.95,"usage":{"inputTokens":5,"outputTokens":1}}' active
 assert_exit "$RC" "0" "active route completes"
 assert_contains "$INVOCATIONS" '-m gpt-5.6-terra' "uses named light chain"
+assert_eq "$(jq -r '.engine + ":" + .model' "$FAKE_LEG_SNAPSHOT" 2>/dev/null)" "codex:gpt-5.6-terra" "leg.json names the running leg before the attempt ends"
 assert_eq "$(jq -r '.candidate + ":" + .appliedAction' "$RUN_DIR/route-decision.json")" "light:light" "persists proposed and actual profiles"
 assert_eq "$(jq -r '.proposedProfile + ":" + .actualProfile' "$RUN_DIR/meta.json")" "light:light" "copies profiles into attempt metadata"
 assert_eq "$(wc -l < "$FAKE_JEV_LOG" | tr -d ' ')" "1" "calls Jev once before spawn"

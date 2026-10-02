@@ -13,6 +13,8 @@ JSON
   exit 0
 fi
 print -r -- "codex $*" >> "${FAKE_ENGINE_LOG:?FAKE_ENGINE_LOG required}"
+# Snapshot the runner's leg.json while "running" (proves it exists before the attempt ends).
+[[ -n "${FAKE_LEG_SNAPSHOT:-}" ]] && cp "${FAKE_RUN_DIR:?}/leg.json" "$FAKE_LEG_SNAPSHOT" 2>/dev/null
 # Optional session id (as `codex exec --json` emits) and a mid-run stall on fresh (non-resume) runs.
 [[ -n "${FAKE_CODEX_SESSION:-}" ]] && print -r -- '{"type":"thread.started","thread_id":"'"$FAKE_CODEX_SESSION"'"}'
 [[ -n "${FAKE_CODEX_SLEEP:-}" && "$*" != *"exec resume"* ]] && sleep "$FAKE_CODEX_SLEEP"

@@ -6,6 +6,8 @@
 //
 //   loop-top [runId]                 interactive (alt screen); keys in LIST_HINTS
 //   loop-top --once [--worktrees] [--graph]   print one frame to stdout and exit
+//   loop-top archive [runId] [--yes] hide a loop from selectors (default: the inferred one;
+//                                    worktrees untouched) · loop-top unarchive <runId>
 //
 // Status comes from the daemon's materialized snapshot (never re-derived here). Phase worktree
 // paths aren't in the snapshot, so they're read from the coordinator's .loop/state.json, else
@@ -20,7 +22,7 @@ const DAEMON_URL = process.env.LOOP_DAEMON_URL || "http://localhost:7717";
 const STORE_DIR = process.env.LOOP_STORE_DIR || path.join(os.homedir(), ".loop", "loops");
 const HTTP_TIMEOUT_MS = 1500;
 const POLL_MS = 2000;
-const MODELS_CONF = path.join(path.dirname(new URL(import.meta.url).pathname), "loop-models.conf");
+const MODELS_CONF = process.env.LOOP_MODELS_CONF || path.join(path.dirname(new URL(import.meta.url).pathname), "loop-models.conf");
 const DEFAULT_CHAIN = "default (loop-models.conf chain)";
 const LIST_HINTS = "↑↓ select · ⏎ details · n note · x pause · X pause loop · m model · p plan · g graph · w worktrees · l loops · q quit";
 const DETAIL_HINTS = "esc back · ↑↓ prev/next · n note · x pause · X pause loop · m model · p plan";
@@ -39,6 +41,7 @@ if (isMain()) {
 }
 
 async function main(argv) {
+  if (argv[0] === "archive" || argv[0] === "unarchive") return archiveCommand(argv[0] === "archive", argv.slice(1));
   const once = argv.includes("--once");
   const showWorktrees = argv.includes("--worktrees");
   const graph = argv.includes("--graph");
@@ -54,6 +57,30 @@ async function main(argv) {
     return;
   }
   await interactive(runId, loops, { showWorktrees, graph });
+}
+
+/** `loop-top archive|unarchive`: daemon flag when it's up, else the store record directly
+ * (the daemon reloads the store on start). */
+async function archiveCommand(archive, argv) {
+  const verb = archive ? "archive" : "unarchive";
+  const explicit = argv.find((a) => !a.startsWith("--")) ?? null;
+  const { loops, online } = await loadLoops();
+  const runId = explicit ?? (archive ? inferLoop(cwdContext(), loops) : null);
+  if (!runId) throw new Error(`no loop inferred from cwd — pass a runId (loop-top ${verb} <runId>)`);
+  const status = loops.find((l) => l.runId === runId)?.status ?? "unknown";
+  if (archive && !argv.includes("--yes") && !(await confirm(`archive ${runId} (${status})?`))) {
+    console.log("not archived");
+    return;
+  }
+  if (online) {
+    const res = await postJson(`/api/loops/${encodeURIComponent(runId)}/${verb}`, {});
+    if (!res.ok) throw new Error(`${res.error}: ${runId}`);
+  } else {
+    const record = readStoreRecord(runId);
+    if (!record) throw new Error(`no such loop: ${runId}`);
+    writeStoreRecord({ ...record, archived: archive });
+  }
+  console.log(`${verb}d ${runId}`);
 }
 
 /** cwd → runId. Rules in order, first hit wins; ties → newest updatedAt. */
@@ -79,6 +106,7 @@ export function phaseRows(snapshot, state) {
   const nodes = snapshot?.graph?.nodes ?? [];
   const labelOf = new Map(nodes.map((n) => [n.id, n.phase ?? n.id]));
   const depEdges = (snapshot?.graph?.edges ?? []).filter((e) => e.kind === "depends");
+  const plannedLeg = firstTaskLeg();
   return nodes
     .filter((n) => n.kind === "phase" || n.kind === "pr-review")
     .sort((a, b) => comparePhase(a.phase ?? a.id, b.phase ?? b.id))
@@ -95,6 +123,7 @@ export function phaseRows(snapshot, state) {
         lane: n.lane,
         model: actualModel(n.runtime),
         modelOverride: n.modelOverride ?? null,
+        planned: n.kind === "phase" && n.ui !== "done" ? plannedLeg : null,
         paused: n.paused === true,
         noted: Boolean(n.noteMarkdown?.trim()),
         review: n.kind === "pr-review" ? (n.review ?? null) : null,
@@ -412,6 +441,7 @@ function loopRef(summary, record) {
 function storeSummary(record) {
   let status = record.status ?? "unknown";
   if (status !== "planned" && !isDir(record.loopDir)) status = "archived";
+  if (record.archived) status = "archived";
   return {
     runId: record.runId,
     status,
@@ -444,6 +474,24 @@ function readStoreRecords() {
 
 function readStoreRecord(runId) {
   return readJson(path.join(STORE_DIR, `${runId}.json`));
+}
+
+/** Atomic rewrite (tmp + rename), like the daemon's store. */
+function writeStoreRecord(record) {
+  const dest = path.join(STORE_DIR, `${record.runId}.json`);
+  const tmp = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(record));
+  fs.renameSync(tmp, dest);
+}
+
+/** y/N on the terminal; non-interactive stdin counts as "no" (use --yes). */
+async function confirm(question) {
+  if (!process.stdin.isTTY) return false;
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ans = await rl.question(`${question} [y/N] `);
+  rl.close();
+  return /^y(es)?$/i.test(ans.trim());
 }
 
 /** What cwd says about which loop we're in: nearest .loop/state.json runId, git branch, origin. */
@@ -553,7 +601,8 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
   const ordered = layout ? layout.entries.map((e) => e.row) : rows;
   const labelW = Math.max(1, ...rows.map((r) => r.label.length));
   const laneW = Math.max(1, ...rows.map((r) => (r.lane ?? "—").length));
-  const modelText = (r) => r.model ?? (r.modelOverride ? `→ ${r.modelOverride}` : r.review ? reviewText(r.review) : "—");
+  const modelText = (r) =>
+    r.model ?? (r.modelOverride ? `→ ${r.modelOverride}` : r.review ? reviewText(r.review) : r.planned ? `(${r.planned})` : "—");
   const engineW = Math.min(28, Math.max(1, ...rows.map((r) => modelText(r).length)));
   const depsText = (r) => (r.deps.length ? `← ${r.deps.join(", ")}` : "");
   const depsW = graph ? 0 : Math.min(16, Math.max(0, ...rows.map((r) => depsText(r).length)));
@@ -825,6 +874,12 @@ function rowTitle(r) {
 
 /** "engine:model" that really ran. A `--resume` leg records model "resume", so fall back to
  * the last attempt with the same engine that named a real model, else the bare engine. */
+/** First leg of the default task chain — what a not-yet-run phase will start on (the
+ * light/default route is only decided at launch, so this is labelled "planned"). */
+function firstTaskLeg() {
+  return readFileSafe(MODELS_CONF).match(/^CHAIN_TASK=\(\s*"([^"]+)"/m)?.[1] ?? null;
+}
+
 function actualModel(rt) {
   if (!rt?.engine) return null;
   let model = rt.model;

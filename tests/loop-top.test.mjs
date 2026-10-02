@@ -86,7 +86,7 @@ test("phaseRows: phases in natural order (2a < 2b < 10), plan node dropped, work
   const rows = phaseRows(snapshot, state);
   assert.deepEqual(rows.map((r) => r.label), ["2a", "2b", "10"]);
   assert.deepEqual(rows[0], {
-    id: "2a", label: "2a", title: "Two a", lane: "A", model: "codex", modelOverride: null, paused: false, noted: false, review: null, started: true, deps: [],
+    id: "2a", label: "2a", title: "Two a", lane: "A", model: "codex", modelOverride: null, planned: null, paused: false, noted: false, review: null, started: true, deps: [],
     icon: "✓", state: "done", branch: "feat/two-a", worktree: "/wt/lane-a",
   });
   assert.equal(rows[1].icon, "·");
@@ -180,7 +180,7 @@ test("loop-top --once: infers the loop from cwd and renders the daemon snapshot"
   assert.match(lines[1], /^repos: acme\/api$/);
   assert.match(out.stdout, /✓ 1 +Live title +A +codex +done/);
   assert.match(out.stdout, /feat\/one → \/wt\/lane-a/);
-  assert.match(out.stdout, /· 2 +Second +A +— +← 1 +todo/);
+  assert.match(out.stdout, /· 2 +Second +A +\(codex:@sol\) +← 1 +todo/); // planned: first CHAIN_TASK leg
   assert.doesNotMatch(out.stdout, /Stored title|The plan/);
   assert.match(out.stdout, /· live$/m);
 });
@@ -326,4 +326,86 @@ test("phaseRows + --once: review phases carry their tier; the model column shows
   const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
   assert.match(out.stdout, /2 +Deep review +review +max review ×2 /);
   assert.match(out.stdout, /3 +Default review +review +medium review ×3 /); // tier default from loop-models.conf
+});
+
+// ---- archive / unarchive: a manual flag on the daemon record (worktrees untouched) ----
+
+const SERVER = path.join(import.meta.dirname, "..", "loop-web", "server", "index.mjs");
+
+async function realDaemon(store) {
+  const port = 7900 + Math.floor(Math.random() * 500);
+  const child = spawn(process.execPath, [SERVER, "--daemon", "--port", String(port)], {
+    env: { PATH: process.env.PATH, LOOP_STORE_DIR: store }, stdio: "ignore",
+  });
+  const url = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 50; i++) {
+    const ok = await fetch(`${url}/api/health`).then((r) => r.ok).catch(() => false);
+    if (ok) return { url, stop: () => new Promise((r) => { child.once("exit", r); child.kill(); }) };
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  child.kill();
+  throw new Error("daemon did not start");
+}
+
+const listed = async (url) => Object.fromEntries((await (await fetch(`${url}/api/loops`)).json()).map((l) => [l.runId, l.status]));
+const stored = (fx) => JSON.parse(fs.readFileSync(path.join(fx.store, "loop-demo.json"), "utf8"));
+
+test("loop-top archive: archives the inferred loop on the daemon (persisted); unarchive restores it", async (t) => {
+  const fx = fixture();
+  const daemon = await realDaemon(fx.store);
+  t.after(async () => { await daemon.stop(); fs.rmSync(fx.root, { recursive: true, force: true }); });
+  const env = { LOOP_DAEMON_URL: daemon.url, LOOP_STORE_DIR: fx.store };
+  assert.equal((await listed(daemon.url))["loop-demo"], "active");
+
+  const out = await runCli(["archive", "--yes"], { cwd: fx.coord, env });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /archived loop-demo/);
+  assert.equal((await listed(daemon.url))["loop-demo"], "archived");
+  await new Promise((r) => setTimeout(r, 700)); // store writes are debounced
+  assert.equal(stored(fx).archived, true);
+  assert.ok(fs.existsSync(path.join(fx.coord, ".loop")), "worktree untouched");
+
+  const un = await runCli(["unarchive", "loop-demo"], { cwd: fx.root, env });
+  assert.equal(un.code, 0, un.stderr);
+  assert.equal((await listed(daemon.url))["loop-demo"], "active");
+  const declined = await runCli(["archive", "loop-demo"], { cwd: fx.root, env }); // no tty, no --yes
+  assert.match(declined.stdout, /not archived/);
+  assert.equal((await listed(daemon.url))["loop-demo"], "active");
+});
+
+test("loop-top archive: unknown loop fails; no inferable loop fails with a hint", async (t) => {
+  const fx = fixture();
+  const daemon = await realDaemon(fx.store);
+  t.after(async () => { await daemon.stop(); fs.rmSync(fx.root, { recursive: true, force: true }); });
+  const env = { LOOP_DAEMON_URL: daemon.url, LOOP_STORE_DIR: fx.store };
+  const bad = await runCli(["archive", "nope", "--yes"], { cwd: fx.root, env });
+  assert.notEqual(bad.code, 0);
+  assert.match(bad.stderr, /no such loop/);
+  const none = await runCli(["archive", "--yes"], { cwd: fx.root, env });
+  assert.notEqual(none.code, 0);
+  assert.match(none.stderr, /pass a runId/);
+});
+
+test("loop-top archive: daemon down → flag written to the store record; hidden from --once inference", async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const env = { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store };
+  const out = await runCli(["archive", "loop-demo", "--yes"], { cwd: fx.root, env });
+  assert.equal(out.code, 0, out.stderr);
+  assert.equal(stored(fx).archived, true);
+  const once = await runCli(["--once"], { cwd: fx.coord, env });
+  assert.notEqual(once.code, 0, "archived loop no longer inferred");
+});
+
+test("loop-top --once: phases without a model yet show the planned leg (override first, else CHAIN_TASK[0])", async (t) => {
+  const fx = fixture();
+  const conf = path.join(fx.root, "models.conf");
+  fs.writeFileSync(conf, 'CHAIN_TASK=("claude:planned-model" "codex:@sol")\n');
+  fs.mkdirSync(path.join(fx.coord, ".loop", "control"), { recursive: true });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const env = { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store, LOOP_MODELS_CONF: conf };
+  const out = await runCli(["--once"], { cwd: fx.coord, env });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /✓ 1 +Stored title +A +codex +done/, "actual model unchanged");
+  assert.match(out.stdout, /· 2 +Second +A +\(claude:planned-model\)/);
 });

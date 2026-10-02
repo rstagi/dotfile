@@ -258,10 +258,20 @@ export interface PlanOverview {
 // ---------------------------------------------------------------------------------------
 
 /** One attempt dir: runs/<slug>-a<K>. Files are read by the server and handed in as content. */
+/** `<runDir>/leg.json`: the leg the runner is running now (written at each leg launch). */
+export interface LegJson {
+  engine: string | null;
+  model: string | null;
+  effort?: string | null;
+  startedAt?: string | null;
+}
+
 export interface Attempt {
   k: number;
   runDir: string;
   meta: MetaJson | null;
+  /** Running leg — the only engine/model source while the attempt is in flight (no meta). */
+  leg?: LegJson | null;
   status: StatusJson | null;
   /**
    * Tail of spawn.log (the orchestrator's `nohup loop-runner.sh > spawn.log 2>&1`).

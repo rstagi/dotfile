@@ -106,6 +106,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
     question-decision.json   # ordinary exit-10 advice + evidence-backed disposition
     risk-decision-<head>.json # merge-risk advice + actual full-skim disposition/gate evidence
     stderr.log  verify.log   # wrapper-captured
+    leg.json                 # wrapper-written at each leg launch: engine, model, effort, startedAt (live model while in flight)
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
   runs/review-p<N>-<owner--repo>-a<k>/ # review phase N, k from `loop-review.sh stages`
     report.md                     # reviewer/final report (round<r> + final rows)
@@ -159,6 +160,7 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 - `POST /api/loops/:runId/finish` accepts v2 `{ status?, finishedAt?, repositories:{slug:{prUrl?,review?}} }`; legacy scalar `prUrl/review` remains accepted. For explicit plans it is ignored until the terminal review phase is `done|merged`.
 - `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, planText }` — how a fresh checkout fetches the plan with **no worktree needed**.
 - `POST /api/loops/:runId/note` `{ key, markdown }` to write or `{ key, clear:true }` to delete a steering note; rejects archived loops.
+- `POST /api/loops/:runId/archive` · `/unarchive` — manual archive flag on the store record (`loop-top archive [runId]`): listed as `archived` regardless of the worktree; worktrees untouched.
 - `POST /api/loops/:runId/control` `{ action:"pause"|"resume", phase? }` writes/removes `control/pause[-<N>]`; `{ action:"model", phase, leg|null }` writes/removes `control/model-<N>` (409 once the phase has started; invalid leg → 400). Rejects archived loops (410). The snapshot gains loop-level `paused` and per-node `paused`, `modelOverride`; UI state `paused`.
 - `GET /api/loops` (plural repository summaries) · `GET /events?runId=` ·
   `/api/loops/:runId/review?repository=<owner/repo>`; bare `/review` is the legacy alias ·

@@ -163,6 +163,8 @@ export interface LoopRecord {
   decisions: JevDecision[];
   review: ReviewInfo | null;
   prUrl: string | null;
+  /** Manually archived (`loop-top archive`): listed as archived regardless of its worktree. */
+  archived?: boolean;
   /** Last materialized snapshot — the archived short-circuit reads this. */
   lastSnapshot: Snapshot | null;
   updatedAt: string | null;

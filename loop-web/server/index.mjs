@@ -305,6 +305,8 @@ function handle(req, res) {
     if (note) return handleNote(decodeURIComponent(note[1]), req, res);
     const control = p.match(/^\/api\/loops\/([^/]+)\/control$/);
     if (control) return handleControl(decodeURIComponent(control[1]), req, res);
+    const archive = p.match(/^\/api\/loops\/([^/]+)\/(archive|unarchive)$/);
+    if (archive) return handleArchive(decodeURIComponent(archive[1]), archive[2] === "archive", res);
     const m = p.match(/^\/api\/loops\/([^/]+)\/(register|state|event|finish)$/);
     if (m) return handleIngest(decodeURIComponent(m[1]), m[2], req, res);
     return json(res, 404, { error: "unknown endpoint" });
@@ -336,6 +338,17 @@ function handle(req, res) {
 
   if (p.startsWith("/api/")) return json(res, 404, { error: "unknown endpoint" });
   return serveStatic(req, res);
+}
+
+/** Manual archive flag (`loop-top archive`): hides the loop from selectors without touching
+ * its worktree. Persisted on the store record; `unarchive` clears it. */
+function handleArchive(runId, archived, res) {
+  const entry = loops.get(runId);
+  if (!entry) return json(res, 404, { error: "no such loop", runId });
+  entry.record = { ...entry.record, archived };
+  broadcast(entry);
+  if (STORE) STORE.flush(entry.record);
+  json(res, 200, { ok: true, runId, archived });
 }
 
 function handleNote(runId, req, res) {
@@ -467,6 +480,7 @@ function listLoops() {
     // A `planned` loop keeps its status: its origin worktree may be gone, but the plan still
     // lives in the daemon (register-only records have no live logs to lose anyway).
     if (!isDir(entry.record.loopDir) && sum.status !== "planned") sum.status = "archived";
+    if (entry.record.archived) sum.status = "archived"; // manual archive (loop-top archive)
     out.push({ ...sum, seq: entry.seq });
   }
   return out.sort((a, b) => b.seq - a.seq).map(({ seq, ...rest }) => rest);
@@ -586,6 +600,7 @@ function readLoopInput(loopDir) {
       runs.push({
         name,
         meta: readText(path.join(d, "meta.json")),
+        leg: readText(path.join(d, "leg.json")),
         status: readText(path.join(d, "status.json")),
         spawnLog: tail(path.join(d, "spawn.log"), 8192),
         transcriptMtime: mtimeMs(path.join(d, "transcript.jsonl")),

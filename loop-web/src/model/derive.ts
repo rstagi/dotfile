@@ -135,11 +135,16 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
-/** engine/model of the last leg only (the highest-K ended attempt); fallback is invisible. */
+/** engine/model of the newest attempt: its meta once ended, else the leg it is running
+ * (leg.json); an in-flight attempt without a leg yet falls back to the last ended one. */
 export function lastWorkedBy(attempts: Attempt[]): {
   engine: string | null;
   model: string | null;
 } {
+  const newest = [...attempts].sort((a, b) => b.k - a.k)[0];
+  if (newest && !newest.meta && newest.leg?.engine) {
+    return { engine: newest.leg.engine, model: newest.leg.model || null };
+  }
   const ended = attempts.filter((a) => a.meta).sort((a, b) => b.k - a.k);
   const m = ended[0]?.meta;
   return { engine: m?.engine || null, model: m?.model || null };
@@ -148,8 +153,8 @@ export function lastWorkedBy(attempts: Attempt[]): {
 export function summarizeAttempt(a: Attempt): AttemptSummary {
   return {
     k: a.k,
-    engine: a.meta?.engine || null,
-    model: a.meta?.model || null,
+    engine: a.meta?.engine || a.leg?.engine || null,
+    model: a.meta?.model || a.leg?.model || null,
     outcome: a.status?.outcome ?? null,
     problem: classifyAttempt(a),
     endedAt: a.endedAt,

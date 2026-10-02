@@ -7,6 +7,7 @@ import type {
   RawEvent,
   StateJson,
   MetaJson,
+  LegJson,
   StatusJson,
 } from "./types.ts";
 
@@ -15,6 +16,8 @@ export interface RawRunDir {
   /** basename, e.g. "build-feature-a2" or "review-a1". */
   name: string;
   meta: string | null;
+  /** leg.json — the leg running right now (absent until the first launch). */
+  leg?: string | null;
   status: string | null;
   /** spawn.log tail — carries the exit-12 "verify failed" marker. */
   spawnLog: string | null;
@@ -164,6 +167,7 @@ function groupAttempts(
       k: Number(m[2]),
       runDir: `runs/${d.name}`,
       meta: safeJson<MetaJson>(d.meta),
+      leg: safeJson<LegJson>(d.leg ?? null),
       status: safeJson<StatusJson>(d.status),
       spawnLog: d.spawnLog,
       transcriptMtime: d.transcriptMtime,
