@@ -1,0 +1,35 @@
+Interface Sounds (1.0)
+
+	Created/distributed by Kenney (www.kenney.nl)
+	Creation date: 11-02-2020
+
+			------------------------------
+
+	License: (Creative Commons Zero, CC0)
+	http://creativecommons.org/publicdomain/zero/1.0/
+
+	This content is free to use in personal, educational and commercial projects.
+
+	Support us by crediting Kenney or www.kenney.nl (this is not mandatory)
+
+			------------------------------
+
+	Donate:   http://support.kenney.nl
+	Patreon:  http://patreon.com/kenney/
+
+	Follow on Twitter for updates:
+	http://twitter.com/KenneyNL
+
+ws sound attribution
+--------------------
+Source: Kenney Interface Sounds 1.0
+Asset page: https://kenney.nl/assets/interface-sounds
+Archive: https://kenney.nl/media/pages/assets/interface-sounds/fa43c1dd4d-1677589452/kenney_interface-sounds.zip
+License: CC0 1.0 Universal (public domain dedication)
+License terms: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+done.wav: Audio/glass_001.ogg, soft glass chime; gain reduced to 40%.
+waiting.wav: Audio/confirmation_001.ogg, rising attention cue; gain reduced to 55%.
+Both converted from Ogg Vorbis to 16-bit PCM WAV using ffmpeg:
+  ffmpeg -i <source.ogg> -af volume=<gain> -c:a pcm_s16le <output.wav>
+Attribution is optional under CC0; retained here for provenance.
