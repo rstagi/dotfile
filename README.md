@@ -32,7 +32,7 @@ Every state transition emits an event, including `working` and focused tabs. Rep
 
 Built-in adapters play a soft chime for `done` (`assets/ws/sounds/done.wav`) and a rising attention cue for `waiting` (`assets/ws/sounds/waiting.wav`). Both are from [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds), licensed CC0; source files and conversions are recorded in [the bundled license](assets/ws/sounds/LICENSE.txt).
 
-Override each cue with `WS_NOTIFY_SOUND_DONE` / `WS_NOTIFY_SOUND_WAITING`: a macOS sound name such as `Glass` or `Ping` (looks for `<name>.aiff` in `~/Library/Sounds`, then `/System/Library/Sounds`), or a file path, including paths with spaces. For example:
+Override each cue with `WS_NOTIFY_SOUND_DONE` / `WS_NOTIFY_SOUND_WAITING`: a macOS sound name such as `Glass` or `Ping` (looks for `<name>.aiff` in `~/Library/Sounds`, then `/System/Library/Sounds`), or a file path, including paths with spaces (relative paths use the hook working directory). For example:
 
 ```sh
 export WS_NOTIFY_SOUND_DONE=Glass

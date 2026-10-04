@@ -757,7 +757,7 @@ notify_sound() {
   waiting) sound="$WS_NOTIFY_SOUND_WAITING" ;;
   *) return 0 ;;
   esac
-  if [[ "$sound" != */* ]]; then
+  if [[ ! -f "$sound" && "$sound" != */* ]]; then
     if [[ -f "$HOME/Library/Sounds/$sound.aiff" ]]; then
       sound="$HOME/Library/Sounds/$sound.aiff"
     else
