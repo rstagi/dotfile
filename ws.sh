@@ -29,9 +29,9 @@ WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
 WS_HOME="${WS_HOME:-$HOME/.ws}"
 WS_NOTIFY="${WS_NOTIFY:-1}"
 WS_NOTIFIER="${WS_NOTIFIER:-auto}" # auto | osascript | terminal-notifier | executable path
-# Notification sound (/System/Library/Sounds or ~/Library/Sounds) + icon per state.
-WS_NOTIFY_SOUND_DONE="${WS_NOTIFY_SOUND_DONE:-Glass}"
-WS_NOTIFY_SOUND_WAITING="${WS_NOTIFY_SOUND_WAITING:-Ping}"
+# Notification sound (file path or macOS sound name) + icon per state.
+WS_NOTIFY_SOUND_DONE="${WS_NOTIFY_SOUND_DONE:-${WS_BIN:h}/assets/ws/sounds/done.wav}"
+WS_NOTIFY_SOUND_WAITING="${WS_NOTIFY_SOUND_WAITING:-${WS_BIN:h}/assets/ws/sounds/waiting.wav}"
 WS_NOTIFY_ICON_DONE="${WS_NOTIFY_ICON_DONE:-${WS_BIN:h}/assets/ws/done.png}"
 WS_NOTIFY_ICON_WAITING="${WS_NOTIFY_ICON_WAITING:-${WS_BIN:h}/assets/ws/waiting.png}"
 # Branded copy of terminal-notifier (macOS takes a notification's icon from the sending app).
@@ -737,6 +737,7 @@ notify_adapter() {
     print -r -- "$event" | jq -e '
       (.state == "idle" or .state == "waiting") and .focused == false
     ' >/dev/null 2>&1 || return 0
+    notify_sound "$(print -r -- "$event" | jq -r '.sound')"
     tmux_ display-message "ws: $(print -r -- "$event" | jq -r '.message')" 2>/dev/null
     if [[ "$WS_NOTIFIER" == osascript ]]; then
       print -r -- "$event" | osascript_notify
@@ -748,24 +749,43 @@ notify_adapter() {
   esac
 }
 
-# Preserve macOS sound/icon/group/click behavior, preferring the branded ws.app.
+# Play once outside notification transport so a fallback cannot duplicate the sound.
+notify_sound() {
+  local sound
+  case "$1" in
+  done) sound="$WS_NOTIFY_SOUND_DONE" ;;
+  waiting) sound="$WS_NOTIFY_SOUND_WAITING" ;;
+  *) return 0 ;;
+  esac
+  if [[ ! -f "$sound" && "$sound" != */* ]]; then
+    if [[ -f "$HOME/Library/Sounds/$sound.aiff" ]]; then
+      sound="$HOME/Library/Sounds/$sound.aiff"
+    else
+      sound="/System/Library/Sounds/$sound.aiff"
+    fi
+  fi
+  [[ -f "$sound" ]] && afplay "$sound" >/dev/null 2>&1
+  return 0
+}
+
+# Preserve macOS icon/group/click behavior, preferring the branded ws.app.
 # Fall back to osascript if terminal-notifier is missing or macOS rejects it.
 terminal_notifier_notify() {
   local event="$(cat)"
   local notifier="$WS_NOTIFIER_APP/Contents/MacOS/terminal-notifier"
   [[ -x "$notifier" ]] || notifier="$(command -v terminal-notifier)"
   if [[ -n "$notifier" ]]; then
-    local msg title id bundle click sound="$WS_NOTIFY_SOUND_DONE" image="$WS_NOTIFY_ICON_DONE"
+    local msg title id bundle click image="$WS_NOTIFY_ICON_DONE"
     local -a icon=()
     [[ "$(print -r -- "$event" | jq -r '.sound')" == waiting ]] \
-      && sound="$WS_NOTIFY_SOUND_WAITING" image="$WS_NOTIFY_ICON_WAITING"
+      && image="$WS_NOTIFY_ICON_WAITING"
     [[ -f "$image" ]] && icon=(-contentImage "$image") # app icon can't be overridden on modern macOS
     msg="$(print -r -- "$event" | jq -r '.message')"
     title="$(print -r -- "$event" | jq -r '.title')"
     id="$(print -r -- "$event" | jq -r '.id')"
     click="$(print -r -- "$event" | jq -r '.actions[] | select(.id == "focus") | .command')"
     bundle="${WS_TERMINAL_BUNDLE:-$(tmux_ show-environment -g __CFBundleIdentifier 2>/dev/null | cut -d= -f2)}"
-    "$notifier" -title "$title" -message "$msg" -sound "$sound" -group "${id/ws:/ws-}" "${icon[@]}" \
+    "$notifier" -title "$title" -message "$msg" -group "${id/ws:/ws-}" "${icon[@]}" \
       ${bundle:+-activate} ${bundle:+$bundle} -execute "$click" >/dev/null 2>&1 && return 0
   fi
   print -r -- "$event" | osascript_notify
