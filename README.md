@@ -28,7 +28,7 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 - `osascript`: use macOS AppleScript notifications directly (text only, as with the fallback).
 - An executable path, e.g. `export WS_NOTIFIER="$HOME/bin/ws-notify"`: receive one compact JSON object plus newline on stdin, without arguments. Paths containing spaces work. Adapters run asynchronously; failures do not block agent hooks.
 
-Currently, events are sent only when an unfocused tab transitions to `idle` or `waiting`. Repeated states and `working` transitions do not emit events. The built-in adapters preserve the sounds, icons, per-tab replacement and click-to-focus behavior described above.
+Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events. Filtering belongs to the adapter: the built-in adapters display only unfocused `idle` and `waiting` events, preserving the sounds, icons, per-tab replacement and click-to-focus behavior described above.
 
 The v1 event schema is shared by all adapters:
 
@@ -37,7 +37,7 @@ The v1 event schema is shared by all adapters:
 | `v` | number | Protocol version, `1` |
 | `id` | string | Stable tab identity, e.g. `ws:@12`; use for replacement |
 | `source` | string | `ws` |
-| `state` | string | `working`, `idle` or `waiting` (currently only the latter two emit) |
+| `state` | string | `working`, `idle` or `waiting` |
 | `prev` | string | Previous tab state; empty if unknown |
 | `title` | string | Notification title, currently `ws` |
 | `message` | string | Workspace + status, e.g. `api/feat-login needs input` |
@@ -45,8 +45,8 @@ The v1 event schema is shared by all adapters:
 | `agent` | string | Agent name, `claude` or `codex`; empty if unknown |
 | `repo` | string | Repository name from the workspace |
 | `branch` | string | Git branch name, preserving `/`; empty if unknown |
-| `focused` | boolean | Whether the tab is focused; currently always `false` |
-| `sound` | string | Semantic key: `done` for idle, `waiting` for input |
+| `focused` | boolean | Whether the tab is active in an attached tmux session |
+| `sound` | string | Semantic key: `done` for idle, `waiting` for input; empty for working |
 | `actions` | array | Objects with string `id`, `label`, `command`; currently one `focus` action labelled `Focus tab` |
 | `ts` | number | Unix timestamp in seconds (UTC) |
 

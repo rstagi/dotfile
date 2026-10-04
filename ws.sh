@@ -318,7 +318,7 @@ cmd_hook() {
   prev="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_state}' 2>/dev/null)"
   tmux_ set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
   record_resume_id "$payload"
-  [[ "$state" != "$prev" && "$state" != working ]] && notify_unless_focused "$state" "$prev"
+  [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev"
   return 0
 }
 
@@ -689,38 +689,47 @@ sessions_for() {
     | awk -F '\t' -v p="$1" '$2 == p { print $1 }'
 }
 
-# Send one v1 JSON event on stdin to the configured adapter. For now, only unfocused
-# idle/waiting transitions reach this boundary.
-notify_unless_focused() {
+# Send one v1 JSON event on stdin to the configured adapter.
+emit_notify_event() {
   (( WS_NOTIFY )) || return 0
   local focused
   focused="$(tmux_ display -p -t "$TMUX_PANE" '#{&&:#{window_active},#{session_attached}}' 2>/dev/null)"
-  [[ "$focused" == 1 ]] && return 0
+  [[ "$focused" == 1 ]] && focused=true || focused=false
   local msg="$WS_WORKSPACE is $1"
   [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
-  tmux_ display-message "ws: $msg" 2>/dev/null
-  local win sess click wt agent branch event sound=done
+  local win sess click wt agent branch event sound=""
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
   sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
   wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}')"
   agent="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_agent}')"
   branch="$(git -C "$wt" branch --show-current 2>/dev/null)"
   click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
+  [[ "$1" == idle ]] && sound=done
   [[ "$1" == waiting ]] && sound=waiting
   event="$(jq -nc --arg id "ws:$win" --arg state "$1" --arg prev "$2" \
     --arg message "$msg" --arg agent "$agent" --arg repo "${WS_WORKSPACE%%/*}" \
     --arg branch "$branch" --arg sound "$sound" --arg command "$click" \
-    --argjson ts "$(date +%s)" \
+    --argjson focused "$focused" --argjson ts "$(date +%s)" \
     '{v:1, id:$id, source:"ws", state:$state, prev:$prev, title:"ws", message:$message,
-      detail:"", agent:$agent, repo:$repo, branch:$branch, focused:false, sound:$sound,
+      detail:"", agent:$agent, repo:$repo, branch:$branch, focused:$focused, sound:$sound,
       actions:[{id:"focus", label:"Focus tab", command:$command}], ts:$ts}')" || return 0
   { print -r -- "$event" | notify_adapter; } >/dev/null 2>&1 &!
 }
 
 notify_adapter() {
   case "$WS_NOTIFIER" in
-  auto | terminal-notifier) terminal_notifier_notify ;;
-  osascript) osascript_notify ;;
+  auto | terminal-notifier | osascript)
+    local event="$(cat)"
+    print -r -- "$event" | jq -e '
+      (.state == "idle" or .state == "waiting") and .focused == false
+    ' >/dev/null 2>&1 || return 0
+    tmux_ display-message "ws: $(print -r -- "$event" | jq -r '.message')" 2>/dev/null
+    if [[ "$WS_NOTIFIER" == osascript ]]; then
+      print -r -- "$event" | osascript_notify
+    else
+      print -r -- "$event" | terminal_notifier_notify
+    fi
+    ;;
   *) "$WS_NOTIFIER" ;;
   esac
 }

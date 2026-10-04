@@ -340,8 +340,11 @@ WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWI
 sleep 0.2
 assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "repeated state does not reach a custom adapter"
 WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" working </dev/null
-sleep 0.2
-assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "working does not reach a custom adapter in phase 1"
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '.state == "working" and .prev == "idle" and .focused == false and .sound == ""' \
+  "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "custom adapter receives working transitions without a sound cue"
+rm -f "$FAKE_EVENT_OUT"
 WS_NOTIFY=0 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
 sleep 0.2
 assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "WS_NOTIFY=0 disables custom adapters too"
@@ -388,7 +391,7 @@ PATH="$TMP/fallback-bin" WS_NOTIFY=1 hook api/feat-login "$NWIN" idle </dev/null
 wait_until test -s "$FAKE_OSASCRIPT_OUT"
 assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login is idle" "auto fallback works without any terminal-notifier executable"
 
-echo "ws hook: focused tabs do not reach the adapter in phase 1"
+echo "ws hook: focused transitions reach custom adapters"
 mkfifo "$TMP/control.in"
 exec {control_fd}<>"$TMP/control.in"
 T select-window -t "$NWIN"
@@ -398,8 +401,27 @@ wait_until tab_focused
 assert_exit "$?" "0" "test client focuses the notifying tab"
 rm -f "$FAKE_EVENT_OUT"
 WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
-sleep 0.2
-assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "focused tabs suppress custom notifications"
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '.state == "waiting" and .prev == "idle" and .focused == true' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "focused waiting transition reaches the custom adapter"
+for state in working idle; do
+  rm -f "$FAKE_EVENT_OUT"
+  WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" "$state" </dev/null
+  wait_until test -s "$FAKE_EVENT_OUT"
+  jq -e --arg state "$state" '.state == $state and .focused == true' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+  assert_exit "$?" "0" "focused $state transition reaches the custom adapter"
+done
+
+echo "ws hook: built-in adapters suppress every focused transition"
+for adapter in auto terminal-notifier osascript; do
+  rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT"
+  for state in waiting working idle; do
+    WS_NOTIFY=1 WS_NOTIFIER="$adapter" hook api/feat-login "$NWIN" "$state" </dev/null
+  done
+  sleep 0.3
+  assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" \
+    "$adapter suppresses focused idle, waiting and working"
+done
 T detach-client -s "$(session_of "$NWIN")"
 exec {control_fd}>&-
 
