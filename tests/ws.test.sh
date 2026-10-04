@@ -303,6 +303,32 @@ WS_NOTIFY=1 hook api/feat-login "$NWIN" working </dev/null
 assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "no notification for working"
 hook api/feat-login "$NWIN" idle </dev/null
 
+echo "ws hook: custom adapter receives one v1 JSON event on stdin"
+mkdir -p "$TMP/custom adapters"
+cat > "$TMP/custom adapters/capture" <<'EOF'
+#!/bin/sh
+cat > "$FAKE_EVENT_OUT"
+EOF
+chmod +x "$TMP/custom adapters/capture"
+export FAKE_EVENT_OUT="$TMP/event.json"
+hook api/feat-login "$NWIN" working </dev/null
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e --arg id "ws:$NWIN" '
+  .v == 1 and .id == $id and .source == "ws" and
+  .state == "waiting" and .prev == "working" and
+  .title == "ws" and .message == "api/feat-login needs input" and
+  .detail == "" and .agent == "claude" and .repo == "api" and .branch == "feat/login" and
+  .focused == false and .sound == "waiting" and
+  (.ts | type == "number") and .ts > 0 and
+  (.actions | length == 1) and .actions[0].id == "focus" and .actions[0].label == "Focus tab" and
+  (.actions[0].command | contains("select-window") and contains("switch-client"))
+' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "custom adapter receives the v1 schema and workspace metadata"
+assert_eq "$(wc -l < "$FAKE_EVENT_OUT" 2>/dev/null | tr -d ' ')" "1" "event is one compact JSON line"
+assert_contains "$(jq -r '.actions[0].command' "$FAKE_EVENT_OUT" 2>/dev/null)" "$NWIN" "event focus action targets the tab"
+hook api/feat-login "$NWIN" idle </dev/null
+
 echo "ws _build-notifier: own-branded notifier app (name, bundle id, icon); used when present"
 SRCAPP="$TMP/src/terminal-notifier.app"
 mkdir -p "$SRCAPP/Contents/MacOS" "$SRCAPP/Contents/Resources"
