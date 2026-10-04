@@ -19,6 +19,39 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 - `ws merge` / `prefix+M` (inside a workspace): merges the branch's PR with `gh` (`$WS_MERGE_METHOD`, default squash), fast-forwards the default branch in the main checkout, then — after confirmation — removes the worktree, its tabs and the local + remote branch.
 - Trust: run `claude` once in `~/.ws/worktrees` and accept (covers all worktrees); Codex asks once per repo.
 
+### Notification adapters
+
+`WS_NOTIFY=0` disables notifications. `WS_NOTIFIER` selects the adapter:
+
+- `auto` (default): use the branded `~/.ws/ws.app`, else `terminal-notifier` on PATH; fall back to `osascript` if missing or rejected by macOS.
+- `terminal-notifier`: explicitly select the same terminal-notifier adapter, including its osascript fallback.
+- `osascript`: use macOS AppleScript notifications directly (text only, as with the fallback).
+- An executable path, e.g. `export WS_NOTIFIER="$HOME/bin/ws-notify"`: receive one compact JSON object plus newline on stdin, without arguments. Paths containing spaces work. Adapters run asynchronously; failures do not block agent hooks.
+
+Currently, events are sent only when an unfocused tab transitions to `idle` or `waiting`. Repeated states and `working` transitions do not emit events. The built-in adapters preserve the sounds, icons, per-tab replacement and click-to-focus behavior described above.
+
+The v1 event schema is shared by all adapters:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `v` | number | Protocol version, `1` |
+| `id` | string | Stable tab identity, e.g. `ws:@12`; use for replacement |
+| `source` | string | `ws` |
+| `state` | string | `working`, `idle` or `waiting` (currently only the latter two emit) |
+| `prev` | string | Previous tab state; empty if unknown |
+| `title` | string | Notification title, currently `ws` |
+| `message` | string | Workspace + status, e.g. `api/feat-login needs input` |
+| `detail` | string | Hook detail; currently empty |
+| `agent` | string | Agent name, `claude` or `codex`; empty if unknown |
+| `repo` | string | Repository name from the workspace |
+| `branch` | string | Git branch name, preserving `/`; empty if unknown |
+| `focused` | boolean | Whether the tab is focused; currently always `false` |
+| `sound` | string | Semantic key: `done` for idle, `waiting` for input |
+| `actions` | array | Objects with string `id`, `label`, `command`; currently one `focus` action labelled `Focus tab` |
+| `ts` | number | Unix timestamp in seconds (UTC) |
+
+The `focus` action's shell command selects the tab and switches the tmux client to its session. The terminal-notifier adapter also activates the terminal app. Custom adapters decide how to display events and handle actions; execute commands only from a trusted local source. Adapters should ignore unknown fields and reject unsupported protocol versions.
+
 ## Agent checkpoints
 
 Invoke `/checkpoint-30` in Claude or `$checkpoint-30` in Codex to request a status report and guidance after 30 minutes on one interactive task. Interactive timing is advisory. Loop phase attempts have a hard 30-minute cutoff and return a checkpoint to the orchestrator; other phases continue.
