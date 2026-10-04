@@ -12,6 +12,7 @@ export WS_TMUX_SOCKET="ws-test-$$"
 export WS_ROOT="$TMP/worktrees"
 export WS_HOME="$TMP/wshome"
 export WS_NOTIFY=0
+export WS_NOTIFIER=auto
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
 trap 'tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
@@ -327,6 +328,85 @@ jq -e --arg id "ws:$NWIN" '
 assert_exit "$?" "0" "custom adapter receives the v1 schema and workspace metadata"
 assert_eq "$(wc -l < "$FAKE_EVENT_OUT" 2>/dev/null | tr -d ' ')" "1" "event is one compact JSON line"
 assert_contains "$(jq -r '.actions[0].command' "$FAKE_EVENT_OUT" 2>/dev/null)" "$NWIN" "event focus action targets the tab"
+rm -f "$FAKE_EVENT_OUT" "$FAKE_NOTIFIER_OUT"
+SPECIAL_WORKSPACE=$'api/feat-"quoted"\\line\nlogin'
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook "$SPECIAL_WORKSPACE" "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.message' "$FAKE_EVENT_OUT")" "$SPECIAL_WORKSPACE is idle" "JSON preserves quotes, backslashes and newlines"
+assert_eq "$(jq -r '.id, .state, .prev, .sound' "$FAKE_EVENT_OUT")" $'ws:'"$NWIN"$'\nidle\nwaiting\ndone' "same tab identity persists across states"
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "custom adapter bypasses the built-in notifier"
+rm -f "$FAKE_EVENT_OUT"
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle </dev/null
+sleep 0.2
+assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "repeated state does not reach a custom adapter"
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" working </dev/null
+sleep 0.2
+assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "working does not reach a custom adapter in phase 1"
+WS_NOTIFY=0 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
+sleep 0.2
+assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "WS_NOTIFY=0 disables custom adapters too"
+
+echo "ws hook: explicit osascript selection bypasses terminal-notifier"
+cat > "$TMP/bin/osascript" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$FAKE_OSASCRIPT_OUT"
+EOF
+chmod +x "$TMP/bin/osascript"
+export FAKE_OSASCRIPT_OUT="$TMP/osascript.out"
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=osascript hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login is idle" "osascript receives the event message"
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "explicit osascript ignores an installed terminal-notifier"
+rm -f "$FAKE_OSASCRIPT_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=terminal-notifier hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT")" $'-sound\nPing' "explicit terminal-notifier retains waiting sound"
+assert_eq "$([[ -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "successful terminal-notifier does not fall back"
+
+echo "ws hook: failed terminal-notifier falls back to osascript"
+cat > "$TMP/bin/terminal-notifier" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+WS_NOTIFY=1 WS_NOTIFIER=auto hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login is idle" "rejected auto notification falls back with the same message"
+rm -f "$FAKE_OSASCRIPT_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=terminal-notifier hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login needs input" "explicit terminal-notifier also falls back"
+
+echo "ws hook: auto uses osascript when terminal-notifier is absent"
+mkdir -p "$TMP/fallback-bin"
+for cmd in tmux jq git date cat cut; do
+  ln -s "$(command -v "$cmd")" "$TMP/fallback-bin/$cmd"
+done
+ln -s "$TMP/bin/osascript" "$TMP/fallback-bin/osascript"
+rm -f "$FAKE_OSASCRIPT_OUT"
+PATH="$TMP/fallback-bin" WS_NOTIFY=1 hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login is idle" "auto fallback works without any terminal-notifier executable"
+
+echo "ws hook: focused tabs do not reach the adapter in phase 1"
+mkfifo "$TMP/control.in"
+exec {control_fd}<>"$TMP/control.in"
+T select-window -t "$NWIN"
+T -C attach-session -t "$(session_of "$NWIN")" < "$TMP/control.in" > "$TMP/control.out" 2>&1 &
+tab_focused() { [[ "$(T display -p -t "$NWIN" '#{&&:#{window_active},#{session_attached}}')" == 1 ]]; }
+wait_until tab_focused
+assert_exit "$?" "0" "test client focuses the notifying tab"
+rm -f "$FAKE_EVENT_OUT"
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
+sleep 0.2
+assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "focused tabs suppress custom notifications"
+T detach-client -s "$(session_of "$NWIN")"
+exec {control_fd}>&-
+
+cat > "$TMP/bin/terminal-notifier" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$FAKE_NOTIFIER_OUT"
+EOF
 hook api/feat-login "$NWIN" idle </dev/null
 
 echo "ws _build-notifier: own-branded notifier app (name, bundle id, icon); used when present"
