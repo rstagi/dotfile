@@ -41,7 +41,7 @@ The v1 event schema is shared by all adapters:
 | `prev` | string | Previous tab state; empty if unknown |
 | `title` | string | Notification title, currently `ws` |
 | `message` | string | Workspace + status, e.g. `api/feat-login needs input` |
-| `detail` | string | Hook detail; currently empty |
+| `detail` | string | Hook message or prompt, truncated to 1,024 Unicode characters; empty if unavailable |
 | `agent` | string | Agent name, `claude` or `codex`; empty if unknown |
 | `repo` | string | Repository name from the workspace |
 | `branch` | string | Git branch name, preserving `/`; empty if unknown |
@@ -49,6 +49,8 @@ The v1 event schema is shared by all adapters:
 | `sound` | string | Semantic key: `done` for idle, `waiting` for input; empty for working |
 | `actions` | array | Objects with string `id`, `label`, `command`; currently one `focus` action labelled `Focus tab` |
 | `ts` | number | Unix timestamp in seconds (UTC) |
+
+`detail` uses the first nonempty string from `message` (Claude Notification), `last_assistant_message` (Claude/Codex Stop), or `prompt` (UserPromptSubmit). Quotes, newlines and Unicode are preserved within the length bound. Missing, non-text or malformed payloads still emit the transition with empty detail.
 
 The `focus` action's shell command selects the tab and switches the tmux client to its session. The terminal-notifier adapter also activates the terminal app. Custom adapters decide how to display events and handle actions; execute commands only from a trusted local source. Adapters should ignore unknown fields and reject unsupported protocol versions.
 

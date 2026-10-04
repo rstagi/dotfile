@@ -349,6 +349,85 @@ WS_NOTIFY=0 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWI
 sleep 0.2
 assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "WS_NOTIFY=0 disables custom adapters too"
 
+echo "ws hook: Claude Notification includes its message as detail"
+DETAIL=$'Approve "deploy"?\\line\nWaiting…'
+hook api/feat-login "$NWIN" working </dev/null
+jq -nc --arg message "$DETAIL" '{hook_event_name:"Notification", notification_type:"permission_prompt", message:$message}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "$DETAIL" "Notification detail preserves quotes, backslashes, newlines and Unicode"
+
+echo "ws hook: Claude Stop includes the last assistant message"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"hook_event_name":"Stop","last_assistant_message":"Fixed the login flow."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Fixed the login flow." "Stop detail is the last assistant message"
+
+echo "ws hook: UserPromptSubmit includes the user's prompt"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"hook_event_name":"UserPromptSubmit","prompt":"Fix login for guest users."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" working
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Fix login for guest users." "working detail is the submitted prompt"
+
+echo "ws hook: detail is bounded to 1024 Unicode characters"
+rm -f "$FAKE_EVENT_OUT"
+jq -nc '{hook_event_name:"Stop", last_assistant_message:("Header: " + ("é" * 1016) + "TAIL")}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '(.detail | length) == 1024 and (.detail | startswith("Header: ") and endswith("é") and (contains("TAIL") | not))' \
+  "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "detail truncates by characters without corrupting Unicode"
+
+echo "ws hook: detail preserves trailing newlines"
+rm -f "$FAKE_EVENT_OUT"
+DETAIL=$'Please review.\n\n'
+jq -nc --arg prompt "$DETAIL" '{hook_event_name:"UserPromptSubmit", prompt:$prompt}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" working
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e --arg detail "$DETAIL" '.detail == $detail' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "detail preserves the submitted text's trailing newlines"
+
+echo "ws hook: malformed or unavailable detail never drops the transition"
+for payload in '{}' '{' '[]' 'null' '{} {}' '{"message":42,"last_assistant_message":[],"prompt":false}'; do
+  hook api/feat-login "$NWIN" working </dev/null
+  rm -f "$FAKE_EVENT_OUT"
+  print -r -- "$payload" | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
+  assert_exit "$?" "0" "hook accepts unavailable detail: $payload"
+  wait_until test -s "$FAKE_EVENT_OUT"
+  jq -e '.state == "idle" and .prev == "working" and .detail == ""' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+  assert_exit "$?" "0" "transition survives unavailable detail: $payload"
+done
+
+echo "ws hook: non-text fields do not hide an available assistant message"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"message":{},"last_assistant_message":"Available text.","prompt":"Lower-priority text."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Available text." "detail selects the first available text field"
+
+echo "ws hook: Codex Stop and UserPromptSubmit include detail and tab metadata"
+"$WS" add api/feat-login --agent codex --detach
+CWIN="$("$WS" list | awk -F '\t' -v p="$WT" '$3 == p && $4 == "codex" { print $5; exit }')"
+hook api/feat-login "$CWIN" working </dev/null
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"session_id":"sid-codex-details","turn_id":"turn-1","hook_event_name":"Stop","transcript_path":null,"last_assistant_message":"Codex finished."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$CWIN" idle
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e --arg id "ws:$CWIN" '
+  .id == $id and .agent == "codex" and .repo == "api" and .branch == "feat/login" and
+  .state == "idle" and .prev == "working" and .focused == false and .detail == "Codex finished."
+' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "Codex Stop detail belongs to the Codex tab"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"hook_event_name":"UserPromptSubmit","prompt":"Continue the Codex task."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$CWIN" working
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '.agent == "codex" and .state == "working" and .detail == "Continue the Codex task."' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "Codex working detail is the submitted prompt"
+hook api/feat-login "$NWIN" waiting </dev/null
+
 echo "ws hook: explicit osascript selection bypasses terminal-notifier"
 cat > "$TMP/bin/osascript" <<'EOF'
 #!/bin/sh
@@ -424,6 +503,16 @@ for adapter in auto terminal-notifier osascript; do
 done
 T detach-client -s "$(session_of "$NWIN")"
 exec {control_fd}>&-
+
+echo "ws hook: every built-in adapter suppresses unfocused working transitions"
+for adapter in auto terminal-notifier osascript; do
+  hook api/feat-login "$NWIN" idle </dev/null
+  rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT"
+  WS_NOTIFY=1 WS_NOTIFIER="$adapter" hook api/feat-login "$NWIN" working </dev/null
+  sleep 0.3
+  assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" \
+    "$adapter suppresses unfocused working"
+done
 
 cat > "$TMP/bin/terminal-notifier" <<'EOF'
 #!/bin/sh

@@ -318,7 +318,7 @@ cmd_hook() {
   prev="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_state}' 2>/dev/null)"
   tmux_ set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
   record_resume_id "$payload"
-  [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev"
+  [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev" "$payload"
   return 0
 }
 
@@ -697,23 +697,37 @@ emit_notify_event() {
   [[ "$focused" == 1 ]] && focused=true || focused=false
   local msg="$WS_WORKSPACE is $1"
   [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
-  local win sess click wt agent branch event sound=""
+  local win sess click wt agent branch detail event sound=""
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
   sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
   wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}')"
   agent="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_agent}')"
   branch="$(git -C "$wt" branch --show-current 2>/dev/null)"
+  detail="$(hook_detail_json "${3:-}")"
+  [[ -n "$detail" ]] || detail='""'
   click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
   [[ "$1" == idle ]] && sound=done
   [[ "$1" == waiting ]] && sound=waiting
   event="$(jq -nc --arg id "ws:$win" --arg state "$1" --arg prev "$2" \
     --arg message "$msg" --arg agent "$agent" --arg repo "${WS_WORKSPACE%%/*}" \
-    --arg branch "$branch" --arg sound "$sound" --arg command "$click" \
+    --arg branch "$branch" --argjson detail "$detail" --arg sound "$sound" --arg command "$click" \
     --argjson focused "$focused" --argjson ts "$(date +%s)" \
     '{v:1, id:$id, source:"ws", state:$state, prev:$prev, title:"ws", message:$message,
-      detail:"", agent:$agent, repo:$repo, branch:$branch, focused:$focused, sound:$sound,
+      detail:$detail, agent:$agent, repo:$repo, branch:$branch, focused:$focused, sound:$sound,
       actions:[{id:"focus", label:"Focus tab", command:$command}], ts:$ts}')" || return 0
   { print -r -- "$event" | notify_adapter; } >/dev/null 2>&1 &!
+}
+
+# Keep detail JSON-encoded so command substitution preserves trailing newlines in the text.
+hook_detail_json() {
+  print -r -- "$1" | jq -cs '
+    (if length == 1 then .[0] else {} end)
+    | if type == "object" then
+        [.message, .last_assistant_message, .prompt]
+        | map(select(type == "string") | select(length > 0))
+        | (first // "") | .[:1024]
+      else "" end
+  ' 2>/dev/null
 }
 
 notify_adapter() {
