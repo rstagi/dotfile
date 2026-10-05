@@ -8,15 +8,18 @@ source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
+# Keep the default Unix socket path below macOS's 104-byte limit.
+NOTCH_HOME="$(mktemp -d /tmp/ws-notch.XXXXXX)"
 export WS_TMUX_SOCKET="ws-test-$$"
 export WS_ROOT="$TMP/worktrees"
 export WS_HOME="$TMP/wshome"
 export WS_NOTIFY=0
 export WS_NOTIFIER=auto
+export WS_BORINGNOTCH_SOCKET="$TMP/unavailable.sock"
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
 socket_listener_pid=""
-trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
+trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP" "$NOTCH_HOME"' EXIT
 WS="$ROOT/ws.sh"
 T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
@@ -527,7 +530,7 @@ assert_contains "$(cat "$FAKE_NOTIFIER_OUT")" "api/feat-login needs input" "fail
 rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
 
 echo "ws hook: boringnotch sends one NDJSON event and plays its cue"
-NOTCH_SOCKET="$TMP/notch.sock"
+NOTCH_SOCKET="$TMP/notch notify.sock"
 NOTCH_EVENT="$TMP/notch.ndjson"
 start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
 hook api/feat-login "$NWIN" working </dev/null
@@ -536,6 +539,7 @@ print -r -- '{"message":"Approve deployment?\nTarget: staging"}' \
   | WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
     hook api/feat-login "$NWIN" waiting
 wait_until test -s "$FAKE_AFPLAY_LOG"
+assert_exit "$?" "0" "silent notch receiver does not hold up sound playback"
 jq -e --arg id "ws:$NWIN" '
   .v == 1 and .id == $id and .state == "waiting" and .prev == "working" and
   .focused == false and .sound == "waiting" and .detail == "Approve deployment?\nTarget: staging" and
@@ -546,6 +550,43 @@ assert_eq "$(wc -l < "$NOTCH_EVENT" | tr -d ' ')" "1" "notch receives exactly on
 assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "notch adapter plays waiting cue exactly once"
 assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "successful notch delivery bypasses macOS notifications"
 stop_socket_listener
+rm -f "$NOTCH_SOCKET" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch uses its default socket path and sound overrides"
+DEFAULT_NOTCH_SOCKET="$NOTCH_HOME/Library/Application Support/boringNotch/notify.sock"
+mkdir -p "${DEFAULT_NOTCH_SOCKET:h}"
+start_socket_listener "$DEFAULT_NOTCH_SOCKET" "$NOTCH_EVENT"
+HOME="$NOTCH_HOME" WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="" \
+  WS_NOTIFY_SOUND_DONE="$TMP/custom done.wav" hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_AFPLAY_LOG"
+jq -e '.state == "idle" and .prev == "waiting" and .sound == "done"' "$NOTCH_EVENT" >/dev/null 2>&1
+assert_exit "$?" "0" "notch receives idle at the default socket under HOME"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$TMP/custom done.wav" "notch adapter honors the done sound override"
+stop_socket_listener
+rm -f "$DEFAULT_NOTCH_SOCKET" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch falls back to auto when the socket is missing"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+  hook api/feat-login "$NWIN" waiting </dev/null
+assert_exit "$?" "0" "missing notch socket does not fail the hook"
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "api/feat-login needs input" "missing notch socket uses auto notification"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "missing socket fallback plays its cue exactly once"
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch falls back when a socket has no listener"
+start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
+stop_socket_listener
+assert_eq "$([[ -S "$NOTCH_SOCKET" ]] && print yes)" "yes" "stale socket remains without a listener"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+  hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "api/feat-login needs input" "unreachable notch socket uses auto notification"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "unreachable socket fallback plays its cue exactly once"
 rm -f "$NOTCH_SOCKET" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
 
 echo "ws hook: failed terminal-notifier falls back to osascript"
@@ -562,6 +603,14 @@ WS_NOTIFY=1 WS_NOTIFIER=terminal-notifier hook api/feat-login "$NWIN" waiting </
 wait_until test -s "$FAKE_OSASCRIPT_OUT"
 assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login needs input" "explicit terminal-notifier also falls back"
 assert_eq "$(cat "$FAKE_AFPLAY_LOG")" "$ROOT/assets/ws/sounds/waiting.wav" "explicit fallback plays the waiting cue exactly once"
+
+echo "ws hook: boringnotch fallback also survives a rejected terminal notification"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+WS_NOTIFY=1 WS_NOTIFIER=boringnotch hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT" 2>/dev/null)" "api/feat-login needs input" "notch fallback reaches osascript when terminal-notifier fails"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "nested notch fallback plays its cue exactly once"
 
 echo "ws hook: auto uses osascript when terminal-notifier is absent"
 mkdir -p "$TMP/fallback-bin"
@@ -596,8 +645,29 @@ for state in working idle; do
   assert_exit "$?" "0" "focused $state transition reaches the custom adapter"
 done
 
-echo "ws hook: built-in adapters suppress every focused transition"
-for adapter in auto terminal-notifier osascript; do
+echo "ws hook: boringnotch receives focused transitions and plays semantic cues"
+for state in working waiting; do
+  start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
+  rm -f "$FAKE_AFPLAY_LOG" "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT"
+  WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+    WS_NOTIFY_SOUND_WAITING="$TMP/custom waiting.wav" hook api/feat-login "$NWIN" "$state" </dev/null
+  wait_until test -s "$NOTCH_EVENT"
+  jq -e --arg state "$state" '.state == $state and .focused == true' "$NOTCH_EVENT" >/dev/null 2>&1
+  assert_exit "$?" "0" "notch receives focused $state transition"
+  if [[ "$state" == waiting ]]; then
+    wait_until test -s "$FAKE_AFPLAY_LOG"
+    assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$TMP/custom waiting.wav" "notch adapter honors the waiting sound override on a focused tab"
+  else
+    assert_eq "$([[ -e "$FAKE_AFPLAY_LOG" ]] && print yes)" "" "working notch event has no sound"
+  fi
+  assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "focused notch delivery bypasses macOS notifications"
+  stop_socket_listener
+  rm -f "$NOTCH_SOCKET"
+done
+hook api/feat-login "$NWIN" idle </dev/null
+
+echo "ws hook: macOS adapters and notch fallback suppress every focused transition"
+for adapter in auto terminal-notifier osascript boringnotch; do
   rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_OUT"
   for state in waiting working idle; do
     WS_NOTIFY=1 WS_NOTIFIER="$adapter" hook api/feat-login "$NWIN" "$state" </dev/null
@@ -609,8 +679,8 @@ done
 T detach-client -s "$(session_of "$NWIN")"
 exec {control_fd}>&-
 
-echo "ws hook: every built-in adapter suppresses unfocused working transitions"
-for adapter in auto terminal-notifier osascript; do
+echo "ws hook: macOS adapters and notch fallback suppress unfocused working transitions"
+for adapter in auto terminal-notifier osascript boringnotch; do
   hook api/feat-login "$NWIN" idle </dev/null
   rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_OUT"
   WS_NOTIFY=1 WS_NOTIFIER="$adapter" hook api/feat-login "$NWIN" working </dev/null

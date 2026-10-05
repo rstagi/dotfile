@@ -737,6 +737,8 @@ notify_adapter() {
     local event="$(cat)"
     if print -r -- "$event" | nc -U -w 1 "$WS_BORINGNOTCH_SOCKET" >/dev/null 2>&1; then
       notify_sound "$(print -r -- "$event" | jq -r '.sound')"
+    else
+      print -r -- "$event" | WS_NOTIFIER=auto notify_adapter
     fi
     ;;
   auto | terminal-notifier | osascript)
