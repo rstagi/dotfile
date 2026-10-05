@@ -26,9 +26,20 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 - `auto` (default): use the branded `~/.ws/ws.app`, else `terminal-notifier` on PATH; fall back to `osascript` if missing or rejected by macOS.
 - `terminal-notifier`: explicitly select the same terminal-notifier adapter, including its osascript fallback.
 - `osascript`: use macOS AppleScript notifications directly, with the same sound playback as terminal-notifier.
+- `boringnotch`: send every transition to the Boring Notch fork's Unix socket and play the event's sound cue. If the socket is unavailable, fall back to `auto`.
 - An executable path, e.g. `export WS_NOTIFIER="$HOME/bin/ws-notify"`: receive one compact JSON object plus newline on stdin, without arguments. Paths containing spaces work. Adapters run asynchronously; failures do not block agent hooks.
 
-Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events. Filtering belongs to the adapter: the built-in adapters display only unfocused `idle` and `waiting` events, preserving the sounds, icons, per-tab replacement and click-to-focus behavior described above.
+Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events. Filtering belongs to the adapter: the macOS adapters display only unfocused `idle` and `waiting` events, preserving the sounds, icons, per-tab replacement and click-to-focus behavior described above.
+
+For notch notifications, build and run the local [Boring Notch fork](https://github.com/rstagi/boring.notch), then enable **Settings → General → System features → External notifications** (on by default in the fork). Set this in your shell config before launching ws sessions:
+
+```sh
+export WS_NOTIFIER=boringnotch
+# Optional: point at a different local receiver.
+export WS_BORINGNOTCH_SOCKET="$HOME/Library/Application Support/boringNotch/notify.sock"
+```
+
+The adapter sends one NDJSON line per event using `nc -U -w 1`. The fork creates a user-only directory (0700) and socket (0600), updates activities by tab ID, keeps input requests visible, and runs the event's `focus` action on click. Quitting the app or disabling External notifications removes the socket; ws then uses `auto` with its usual focus/state filtering. Delivery has a one-second timeout and runs asynchronously. The adapter plays sounds locally; the fork does not, and fallback plays the cue only once. Shell actions are trusted local input; an upstream API should consider URL actions.
 
 Built-in adapters play a soft chime for `done` (`assets/ws/sounds/done.wav`) and a rising attention cue for `waiting` (`assets/ws/sounds/waiting.wav`). Both are from [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds), licensed CC0; source files and conversions are recorded in [the bundled license](assets/ws/sounds/LICENSE.txt).
 
@@ -39,7 +50,7 @@ export WS_NOTIFY_SOUND_DONE=Glass
 export WS_NOTIFY_SOUND_WAITING="$HOME/Music/needs input.wav"
 ```
 
-Playback uses `afplay` once per visible event, including osascript fallbacks; terminal-notifier's own sound is suppressed. Unavailable sounds are skipped without blocking the notification. Custom adapters receive semantic keys and own their sound playback.
+Playback uses `afplay` once per notification, including fallbacks; terminal-notifier's own sound is suppressed. With `boringnotch`, idle/waiting events play their cues even for focused tabs; working events have no sound. Unavailable sounds are skipped without blocking the notification. Custom adapters receive semantic keys and own their sound playback.
 
 The v1 event schema is shared by all adapters:
 
