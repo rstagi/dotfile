@@ -29,7 +29,7 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 - `boringnotch`: send every transition to the Boring Notch fork's Unix socket and play the event's sound cue. If the socket is unavailable, fall back to `auto`.
 - An executable path, e.g. `export WS_NOTIFIER="$HOME/bin/ws-notify"`: receive one compact JSON object plus newline on stdin, without arguments. Paths containing spaces work. Adapters run asynchronously; failures do not block agent hooks.
 
-Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events. Filtering belongs to the adapter: the macOS adapters display only unfocused `idle` and `waiting` events, preserving the sounds, icons, per-tab replacement and click-to-focus behavior described above.
+Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events, and ws drops hooks older than the tab's last applied `seq` (overlapping hooks are serialized per tab). Filtering belongs to the adapter: the macOS adapters display only unfocused `idle` and `waiting` events, preserving the sounds, icons, per-tab replacement and click-to-focus behavior described above.
 
 For notch notifications, build and run the local [Boring Notch fork](https://github.com/rstagi/boring.notch), then enable **Settings → General → System features → External notifications** (on by default in the fork). Set this in your shell config before launching ws sessions:
 
@@ -43,21 +43,21 @@ The adapter sends one NDJSON line per event using `nc -U -w 1`. The fork creates
 
 Built-in adapters play a soft chime for `done` (`assets/ws/sounds/done.wav`) and a rising attention cue for `waiting` (`assets/ws/sounds/waiting.wav`). Both are from [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds), licensed CC0; source files and conversions are recorded in [the bundled license](assets/ws/sounds/LICENSE.txt).
 
-Override each cue with `WS_NOTIFY_SOUND_DONE` / `WS_NOTIFY_SOUND_WAITING`: a macOS sound name such as `Glass` or `Ping` (looks for `<name>.aiff` in `~/Library/Sounds`, then `/System/Library/Sounds`), or a file path, including paths with spaces (relative paths use the hook working directory). For example:
+Override each cue with `WS_NOTIFY_SOUND_DONE` / `WS_NOTIFY_SOUND_WAITING`: a macOS sound name such as `Glass` or `Ping` (first `<name>.*` file in `~/Library/Sounds`, `/Library/Sounds`, then `/System/Library/Sounds`), or a file path, including paths with spaces (relative paths use the hook working directory). For example:
 
 ```sh
 export WS_NOTIFY_SOUND_DONE=Glass
 export WS_NOTIFY_SOUND_WAITING="$HOME/Music/needs input.wav"
 ```
 
-Playback uses `afplay` once per notification, including fallbacks; terminal-notifier's own sound is suppressed. With `boringnotch`, idle/waiting events play their cues even for focused tabs; working events have no sound. Unavailable sounds are skipped without blocking the notification. Custom adapters receive semantic keys and own their sound playback.
+Playback uses `afplay` once per notification, including fallbacks, in the background so long cues never delay the notification; terminal-notifier's own sound is suppressed. With `boringnotch`, idle/waiting events play their cues even for focused tabs; working events have no sound. Unavailable sounds are skipped without blocking the notification. Custom adapters receive semantic keys and own their sound playback.
 
 The v1 event schema is shared by all adapters:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `v` | number | Protocol version, `1` |
-| `id` | string | Stable tab identity, e.g. `ws:@12`; use for replacement |
+| `id` | string | Tab identity within a tmux server, e.g. `ws:@12`; use for replacement |
 | `source` | string | `ws` |
 | `state` | string | `working`, `idle` or `waiting` |
 | `prev` | string | Previous tab state; empty if unknown |
@@ -70,11 +70,12 @@ The v1 event schema is shared by all adapters:
 | `focused` | boolean | Whether the tab is active in an attached tmux session |
 | `sound` | string | Semantic key: `done` for idle, `waiting` for input; empty for working |
 | `actions` | array | Objects with string `id`, `label`, `command`; currently one `focus` action labelled `Focus tab` |
+| `seq` | number | Integer microseconds since epoch, taken at hook entry; per `id`, receivers drop events whose `seq` <= the last applied `seq`; events without `seq` are treated as newest |
 | `ts` | number | Unix timestamp in seconds (UTC) |
 
 `detail` uses the first nonempty string from `message` (Claude Notification), `last_assistant_message` (Claude/Codex Stop), or `prompt` (UserPromptSubmit). Quotes, newlines and Unicode are preserved within the length bound. Missing, non-text or malformed payloads still emit the transition with empty detail.
 
-The `focus` action's shell command selects the tab and switches the tmux client to its session. The terminal-notifier adapter also activates the terminal app. Custom adapters decide how to display events and handle actions; execute commands only from a trusted local source. Adapters should ignore unknown fields and reject unsupported protocol versions.
+The `focus` action's shell command selects the tab, switches the tmux client to its session, and activates the terminal app (`open -b`, from `WS_TERMINAL_BUNDLE` or tmux's `__CFBundleIdentifier`). Custom adapters decide how to display events and handle actions; execute commands only from a trusted local source. Adapters should ignore unknown fields and reject unsupported protocol versions.
 
 ## Agent checkpoints
 

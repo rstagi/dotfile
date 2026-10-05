@@ -310,16 +310,27 @@ confirm() {
 
 # Agent hooks call this from inside a session window: sets the window's state and records
 # the agent's session id (for resume). Best effort, always exits 0 — never blocks the agent.
+# seq (µs since epoch, taken at entry) orders hooks per tab: one older than the tab's @ws_seq
+# is dropped, and a per-window lock keeps overlapping hooks from both applying/emitting.
 cmd_hook() {
-  local state="${1:-}" payload=""
+  zmodload zsh/datetime zsh/system 2>/dev/null
+  local frac="${EPOCHREALTIME#*.}"
+  local seq="${EPOCHREALTIME%.*}${(r:6::0:)frac}" state="${1:-}" payload=""
   [[ -t 0 ]] || payload="$(cat)"
   [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || return 0
   [[ "$state" == (working|idle|waiting) ]] || return 0
-  local prev
-  prev="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_state}' 2>/dev/null)"
-  tmux_ set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
   record_resume_id "$payload"
-  [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev" "$payload"
+  local win lock lockfd prev last applied=0
+  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || return 0
+  lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+  { : >>"$lock" && zsystem flock -t 2 -f lockfd "$lock"; } 2>/dev/null || lockfd=""
+  IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
+  if [[ "$last" != <-> ]] || (( last < seq )); then
+    tmux_ set -w -t "$TMUX_PANE" @ws_seq "$seq" \; set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
+    applied=1
+  fi
+  [[ -n "$lockfd" ]] && exec {lockfd}>&-
+  (( applied )) && [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev" "$payload" "$seq"
   return 0
 }
 
@@ -707,15 +718,17 @@ emit_notify_event() {
   detail="$(hook_detail_json "${3:-}")"
   [[ -n "$detail" ]] || detail='""'
   click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
+  local bundle="${WS_TERMINAL_BUNDLE:-$(tmux_ show-environment -g __CFBundleIdentifier 2>/dev/null | cut -d= -f2)}"
+  [[ -n "$bundle" ]] && click+=" ; open -b ${(q)bundle}"
   [[ "$1" == idle ]] && sound=done
   [[ "$1" == waiting ]] && sound=waiting
   event="$(jq -nc --arg id "ws:$win" --arg state "$1" --arg prev "$2" \
     --arg message "$msg" --arg agent "$agent" --arg repo "${WS_WORKSPACE%%/*}" \
     --arg branch "$branch" --argjson detail "$detail" --arg sound "$sound" --arg command "$click" \
-    --argjson focused "$focused" --argjson ts "$(date +%s)" \
+    --argjson focused "$focused" --argjson seq "${4:-0}" --argjson ts "$(date +%s)" \
     '{v:1, id:$id, source:"ws", state:$state, prev:$prev, title:"ws", message:$message,
       detail:$detail, agent:$agent, repo:$repo, branch:$branch, focused:$focused, sound:$sound,
-      actions:[{id:"focus", label:"Focus tab", command:$command}], ts:$ts}')" || return 0
+      actions:[{id:"focus", label:"Focus tab", command:$command}], seq:$seq, ts:$ts}')" || return 0
   { print -r -- "$event" | notify_adapter; } >/dev/null 2>&1 &!
 }
 
@@ -754,7 +767,14 @@ notify_adapter() {
       print -r -- "$event" | terminal_notifier_notify
     fi
     ;;
-  *) "$WS_NOTIFIER" ;;
+  *)
+    if [[ "$WS_NOTIFIER" == */* && -x "$WS_NOTIFIER" ]]; then
+      "$WS_NOTIFIER"
+    else
+      tmux_ display-message "ws: unknown WS_NOTIFIER '$WS_NOTIFIER', using auto" 2>/dev/null
+      WS_NOTIFIER=auto notify_adapter
+    fi
+    ;;
   esac
 }
 
@@ -767,13 +787,11 @@ notify_sound() {
   *) return 0 ;;
   esac
   if [[ ! -f "$sound" && "$sound" != */* ]]; then
-    if [[ -f "$HOME/Library/Sounds/$sound.aiff" ]]; then
-      sound="$HOME/Library/Sounds/$sound.aiff"
-    else
-      sound="/System/Library/Sounds/$sound.aiff"
-    fi
+    local -a found=({$HOME/Library/Sounds,/Library/Sounds,/System/Library/Sounds}/$sound.*(N.))
+    sound="${found[1]:-}"
   fi
-  [[ -f "$sound" ]] && afplay "$sound" >/dev/null 2>&1
+  # Detached: a long cue must not delay (and reorder) the notification.
+  [[ -n "$sound" && -f "$sound" ]] && afplay "$sound" >/dev/null 2>&1 &!
   return 0
 }
 
@@ -801,9 +819,10 @@ terminal_notifier_notify() {
 }
 
 osascript_notify() {
-  local msg="$(jq -r '.message')"
-  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "ws"' \
-    -e 'end run' "$msg" >/dev/null 2>&1
+  local event="$(cat)"
+  local msg="$(print -r -- "$event" | jq -r '.message')" title="$(print -r -- "$event" | jq -r '.title')"
+  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title (item 2 of argv)' \
+    -e 'end run' "$msg" "$title" >/dev/null 2>&1
 }
 
 # Copies terminal-notifier.app to $WS_HOME/ws.app with its own name, bundle id and icon, so
