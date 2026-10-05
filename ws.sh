@@ -28,9 +28,11 @@ WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
 WS_HOME="${WS_HOME:-$HOME/.ws}"
 WS_NOTIFY="${WS_NOTIFY:-1}"
-# Notification sound (/System/Library/Sounds or ~/Library/Sounds) + icon per state.
-WS_NOTIFY_SOUND_DONE="${WS_NOTIFY_SOUND_DONE:-Glass}"
-WS_NOTIFY_SOUND_WAITING="${WS_NOTIFY_SOUND_WAITING:-Ping}"
+WS_NOTIFIER="${WS_NOTIFIER:-auto}" # auto | osascript | terminal-notifier | boringnotch | executable path
+WS_BORINGNOTCH_SOCKET="${WS_BORINGNOTCH_SOCKET:-$HOME/Library/Application Support/boringNotch/notify.sock}"
+# Notification sound (file path or macOS sound name) + icon per state.
+WS_NOTIFY_SOUND_DONE="${WS_NOTIFY_SOUND_DONE:-${WS_BIN:h}/assets/ws/sounds/done.wav}"
+WS_NOTIFY_SOUND_WAITING="${WS_NOTIFY_SOUND_WAITING:-${WS_BIN:h}/assets/ws/sounds/waiting.wav}"
 WS_NOTIFY_ICON_DONE="${WS_NOTIFY_ICON_DONE:-${WS_BIN:h}/assets/ws/done.png}"
 WS_NOTIFY_ICON_WAITING="${WS_NOTIFY_ICON_WAITING:-${WS_BIN:h}/assets/ws/waiting.png}"
 # Branded copy of terminal-notifier (macOS takes a notification's icon from the sending app).
@@ -317,7 +319,7 @@ cmd_hook() {
   prev="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_state}' 2>/dev/null)"
   tmux_ set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
   record_resume_id "$payload"
-  [[ "$state" != "$prev" && "$state" != working ]] && notify_unless_focused "$state"
+  [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev" "$payload"
   return 0
 }
 
@@ -688,33 +690,120 @@ sessions_for() {
     | awk -F '\t' -v p="$1" '$2 == p { print $1 }'
 }
 
-# terminal-notifier (sound, click → terminal app to front + tmux on the tab, one notification
-# per tab); osascript fallback when it's missing or not yet allowed by macOS.
-notify_unless_focused() {
+# Send one v1 JSON event on stdin to the configured adapter.
+emit_notify_event() {
   (( WS_NOTIFY )) || return 0
   local focused
   focused="$(tmux_ display -p -t "$TMUX_PANE" '#{&&:#{window_active},#{session_attached}}' 2>/dev/null)"
-  [[ "$focused" == 1 ]] && return 0
+  [[ "$focused" == 1 ]] && focused=true || focused=false
   local msg="$WS_WORKSPACE is $1"
   [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
-  tmux_ display-message "ws: $msg" 2>/dev/null
+  local win sess click wt agent branch detail event sound=""
+  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
+  sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
+  wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}')"
+  agent="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_agent}')"
+  branch="$(git -C "$wt" branch --show-current 2>/dev/null)"
+  detail="$(hook_detail_json "${3:-}")"
+  [[ -n "$detail" ]] || detail='""'
+  click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
+  [[ "$1" == idle ]] && sound=done
+  [[ "$1" == waiting ]] && sound=waiting
+  event="$(jq -nc --arg id "ws:$win" --arg state "$1" --arg prev "$2" \
+    --arg message "$msg" --arg agent "$agent" --arg repo "${WS_WORKSPACE%%/*}" \
+    --arg branch "$branch" --argjson detail "$detail" --arg sound "$sound" --arg command "$click" \
+    --argjson focused "$focused" --argjson ts "$(date +%s)" \
+    '{v:1, id:$id, source:"ws", state:$state, prev:$prev, title:"ws", message:$message,
+      detail:$detail, agent:$agent, repo:$repo, branch:$branch, focused:$focused, sound:$sound,
+      actions:[{id:"focus", label:"Focus tab", command:$command}], ts:$ts}')" || return 0
+  { print -r -- "$event" | notify_adapter; } >/dev/null 2>&1 &!
+}
+
+# Keep detail JSON-encoded so command substitution preserves trailing newlines in the text.
+hook_detail_json() {
+  print -r -- "$1" | jq -cs '
+    (if length == 1 then .[0] else {} end)
+    | if type == "object" then
+        [.message, .last_assistant_message, .prompt]
+        | map(select(type == "string") | select(length > 0))
+        | (first // "") | .[:1024]
+      else "" end
+  ' 2>/dev/null
+}
+
+notify_adapter() {
+  case "$WS_NOTIFIER" in
+  boringnotch)
+    local event="$(cat)"
+    if print -r -- "$event" | nc -U -w 1 "$WS_BORINGNOTCH_SOCKET" >/dev/null 2>&1; then
+      notify_sound "$(print -r -- "$event" | jq -r '.sound')"
+    else
+      print -r -- "$event" | WS_NOTIFIER=auto notify_adapter
+    fi
+    ;;
+  auto | terminal-notifier | osascript)
+    local event="$(cat)"
+    print -r -- "$event" | jq -e '
+      (.state == "idle" or .state == "waiting") and .focused == false
+    ' >/dev/null 2>&1 || return 0
+    notify_sound "$(print -r -- "$event" | jq -r '.sound')"
+    tmux_ display-message "ws: $(print -r -- "$event" | jq -r '.message')" 2>/dev/null
+    if [[ "$WS_NOTIFIER" == osascript ]]; then
+      print -r -- "$event" | osascript_notify
+    else
+      print -r -- "$event" | terminal_notifier_notify
+    fi
+    ;;
+  *) "$WS_NOTIFIER" ;;
+  esac
+}
+
+# Play once outside notification transport so a fallback cannot duplicate the sound.
+notify_sound() {
+  local sound
+  case "$1" in
+  done) sound="$WS_NOTIFY_SOUND_DONE" ;;
+  waiting) sound="$WS_NOTIFY_SOUND_WAITING" ;;
+  *) return 0 ;;
+  esac
+  if [[ ! -f "$sound" && "$sound" != */* ]]; then
+    if [[ -f "$HOME/Library/Sounds/$sound.aiff" ]]; then
+      sound="$HOME/Library/Sounds/$sound.aiff"
+    else
+      sound="/System/Library/Sounds/$sound.aiff"
+    fi
+  fi
+  [[ -f "$sound" ]] && afplay "$sound" >/dev/null 2>&1
+  return 0
+}
+
+# Preserve macOS icon/group/click behavior, preferring the branded ws.app.
+# Fall back to osascript if terminal-notifier is missing or macOS rejects it.
+terminal_notifier_notify() {
+  local event="$(cat)"
   local notifier="$WS_NOTIFIER_APP/Contents/MacOS/terminal-notifier"
   [[ -x "$notifier" ]] || notifier="$(command -v terminal-notifier)"
   if [[ -n "$notifier" ]]; then
-    local win sess bundle click sound="$WS_NOTIFY_SOUND_DONE" image="$WS_NOTIFY_ICON_DONE"
+    local msg title id bundle click image="$WS_NOTIFY_ICON_DONE"
     local -a icon=()
-    [[ "$1" == waiting ]] && sound="$WS_NOTIFY_SOUND_WAITING" image="$WS_NOTIFY_ICON_WAITING"
+    [[ "$(print -r -- "$event" | jq -r '.sound')" == waiting ]] \
+      && image="$WS_NOTIFY_ICON_WAITING"
     [[ -f "$image" ]] && icon=(-contentImage "$image") # app icon can't be overridden on modern macOS
-    win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
-    sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
+    msg="$(print -r -- "$event" | jq -r '.message')"
+    title="$(print -r -- "$event" | jq -r '.title')"
+    id="$(print -r -- "$event" | jq -r '.id')"
+    click="$(print -r -- "$event" | jq -r '.actions[] | select(.id == "focus") | .command')"
     bundle="${WS_TERMINAL_BUNDLE:-$(tmux_ show-environment -g __CFBundleIdentifier 2>/dev/null | cut -d= -f2)}"
-    click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
-    { "$notifier" -title ws -message "$msg" -sound "$sound" -group "ws-$win" "${icon[@]}" \
-        ${bundle:+-activate} ${bundle:+$bundle} -execute "$click" >/dev/null 2>&1 \
-        || osascript_notify "$msg"; } &! # fails until macOS allows its notifications
-  else
-    osascript_notify "$msg" &!
+    "$notifier" -title "$title" -message "$msg" -group "${id/ws:/ws-}" "${icon[@]}" \
+      ${bundle:+-activate} ${bundle:+$bundle} -execute "$click" >/dev/null 2>&1 && return 0
   fi
+  print -r -- "$event" | osascript_notify
+}
+
+osascript_notify() {
+  local msg="$(jq -r '.message')"
+  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "ws"' \
+    -e 'end run' "$msg" >/dev/null 2>&1
 }
 
 # Copies terminal-notifier.app to $WS_HOME/ws.app with its own name, bundle id and icon, so
@@ -740,11 +829,6 @@ build_notifier() {
   codesign --force --deep --sign - "$app" >/dev/null 2>&1 || print -u2 "ws: codesign failed (notifications may be blocked)"
   touch "$app" # nudge LaunchServices to pick up the new icon
   print -r -- "built $app"
-}
-
-osascript_notify() {
-  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "ws"' \
-    -e 'end run' "$1" >/dev/null 2>&1
 }
 
 state_icon() {

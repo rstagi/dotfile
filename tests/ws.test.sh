@@ -8,13 +8,18 @@ source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
+# Keep the default Unix socket path below macOS's 104-byte limit.
+NOTCH_HOME="$(mktemp -d /tmp/ws-notch.XXXXXX)"
 export WS_TMUX_SOCKET="ws-test-$$"
 export WS_ROOT="$TMP/worktrees"
 export WS_HOME="$TMP/wshome"
 export WS_NOTIFY=0
+export WS_NOTIFIER=auto
+export WS_BORINGNOTCH_SOCKET="$TMP/unavailable.sock"
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
-trap 'tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
+socket_listener_pid=""
+trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP" "$NOTCH_HOME"' EXIT
 WS="$ROOT/ws.sh"
 T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
@@ -63,6 +68,19 @@ wait_until() {
   local i
   for i in {1..30}; do "$@" && return 0; sleep 0.1; done
   return 1
+}
+
+start_socket_listener() {
+  /usr/bin/nc -l -U "$1" > "$2" 2> "$TMP/listener.err" &
+  socket_listener_pid=$!
+  wait_until test -S "$1"
+  assert_exit "$?" "0" "fake notch socket is listening"
+}
+
+stop_socket_listener() {
+  kill "$socket_listener_pid" 2>/dev/null
+  wait "$socket_listener_pid" 2>/dev/null
+  socket_listener_pid=""
 }
 
 windows_of() { T list-windows -a -F '#{window_id} #{@ws_path}' | awk -v p="$1" '$2 == p { print $1 }'; }
@@ -260,6 +278,15 @@ assert_exit "$?" "1" "typed non-repo path refused"
 unset WS_REPO_ROOTS
 
 echo "ws hook: notifies via terminal-notifier (sound, click focuses the tab) when unfocused"
+cat > "$TMP/bin/afplay" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$FAKE_AFPLAY_OUT"
+printf '%s\n' "$@" >> "$FAKE_AFPLAY_LOG"
+exit "${FAKE_AFPLAY_EXIT:-0}"
+EOF
+chmod +x "$TMP/bin/afplay"
+export FAKE_AFPLAY_OUT="$TMP/afplay.out"
+export FAKE_AFPLAY_LOG="$TMP/afplay.log"
 cat > "$TMP/bin/terminal-notifier" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$@" > "$FAKE_NOTIFIER_OUT"
@@ -272,7 +299,8 @@ WS_NOTIFY=1 WS_TERMINAL_BUNDLE=com.example.term hook api/feat-login "$NWIN" wait
 wait_until test -s "$FAKE_NOTIFIER_OUT"
 nout="$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)"
 assert_contains "$nout" "api/feat-login needs input" "message names workspace + state"
-assert_contains "$nout" $'-sound\n' "plays a sound"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "waiting plays the bundled rising cue by default"
+assert_eq "$([[ "$nout" == *-sound* ]] && print yes)" "" "terminal-notifier sound suppressed to avoid double playback"
 assert_contains "$nout" $'-activate\ncom.example.term' "click activates the terminal app"
 assert_contains "$nout" "switch-client" "click switches tmux to the tab"
 assert_contains "$nout" "$NWIN" "click targets the notifying tab"
@@ -282,25 +310,389 @@ rm -f "$FAKE_NOTIFIER_OUT"
 WS_NOTIFY=1 WS_NOTIFY_ICON_DONE="$TMP/icon.png" hook api/feat-login "$NWIN" idle </dev/null
 wait_until test -s "$FAKE_NOTIFIER_OUT"
 nout="$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)"
-assert_contains "$nout" $'-sound\nGlass' "done plays Glass by default"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "$ROOT/assets/ws/sounds/done.wav" "done plays the bundled soft chime by default"
 assert_contains "$nout" $'-contentImage\n'"$TMP/icon.png" "done icon attached (configurable)"
 hook api/feat-login "$NWIN" working </dev/null
 rm -f "$FAKE_NOTIFIER_OUT"
 WS_NOTIFY=1 hook api/feat-login "$NWIN" waiting </dev/null
 wait_until test -s "$FAKE_NOTIFIER_OUT"
 nout="$(cat "$FAKE_NOTIFIER_OUT")"
-assert_contains "$nout" $'-sound\nPing' "needs input plays Ping by default"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "waiting sound resolves independently from done"
 assert_contains "$nout" $'-contentImage\n'"$ROOT/assets/ws/waiting.png" "needs input uses the bundled waiting icon"
 hook api/feat-login "$NWIN" working </dev/null
 rm -f "$FAKE_NOTIFIER_OUT"
 WS_NOTIFY=1 WS_NOTIFY_SOUND_DONE=Pop hook api/feat-login "$NWIN" idle </dev/null
 wait_until test -s "$FAKE_NOTIFIER_OUT"
 nout="$(cat "$FAKE_NOTIFIER_OUT")"
-assert_contains "$nout" $'-sound\nPop' "done sound overridable"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "/System/Library/Sounds/Pop.aiff" "done sound overridable with a system sound name"
 assert_contains "$nout" $'-contentImage\n'"$ROOT/assets/ws/done.png" "done uses the bundled done icon"
-rm -f "$FAKE_NOTIFIER_OUT"
+echo "ws hook: a relative sound file with spaces resolves from the hook cwd"
+cp "$ROOT/assets/ws/sounds/done.wav" "$TMP/custom done.wav"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_AFPLAY_OUT"
+(cd "$TMP" && WS_NOTIFY=1 WS_NOTIFY_SOUND_DONE="custom done.wav" hook api/feat-login "$NWIN" idle </dev/null)
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "custom done.wav" "relative sound path is passed as one argument"
+rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_AFPLAY_OUT"
 WS_NOTIFY=1 hook api/feat-login "$NWIN" working </dev/null
 assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "no notification for working"
+hook api/feat-login "$NWIN" idle </dev/null
+
+echo "ws hook: custom adapter receives one v1 JSON event on stdin"
+mkdir -p "$TMP/custom adapters"
+cat > "$TMP/custom adapters/capture" <<'EOF'
+#!/bin/sh
+cat > "$FAKE_EVENT_OUT"
+EOF
+chmod +x "$TMP/custom adapters/capture"
+export FAKE_EVENT_OUT="$TMP/event.json"
+rm -f "$FAKE_AFPLAY_OUT"
+hook api/feat-login "$NWIN" working </dev/null
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$([[ -e "$FAKE_AFPLAY_OUT" ]] && print yes)" "" "custom adapter owns sound playback"
+jq -e --arg id "ws:$NWIN" '
+  .v == 1 and .id == $id and .source == "ws" and
+  .state == "waiting" and .prev == "working" and
+  .title == "ws" and .message == "api/feat-login needs input" and
+  .detail == "" and .agent == "claude" and .repo == "api" and .branch == "feat/login" and
+  .focused == false and .sound == "waiting" and
+  (.ts | type == "number") and .ts > 0 and
+  (.actions | length == 1) and .actions[0].id == "focus" and .actions[0].label == "Focus tab" and
+  (.actions[0].command | contains("select-window") and contains("switch-client"))
+' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "custom adapter receives the v1 schema and workspace metadata"
+assert_eq "$(wc -l < "$FAKE_EVENT_OUT" 2>/dev/null | tr -d ' ')" "1" "event is one compact JSON line"
+assert_contains "$(jq -r '.actions[0].command' "$FAKE_EVENT_OUT" 2>/dev/null)" "$NWIN" "event focus action targets the tab"
+rm -f "$FAKE_EVENT_OUT" "$FAKE_NOTIFIER_OUT"
+SPECIAL_WORKSPACE=$'api/feat-"quoted"\\line\nlogin'
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook "$SPECIAL_WORKSPACE" "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.message' "$FAKE_EVENT_OUT")" "$SPECIAL_WORKSPACE is idle" "JSON preserves quotes, backslashes and newlines"
+assert_eq "$(jq -r '.id, .state, .prev, .sound' "$FAKE_EVENT_OUT")" $'ws:'"$NWIN"$'\nidle\nwaiting\ndone' "same tab identity persists across states"
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "custom adapter bypasses the built-in notifier"
+rm -f "$FAKE_EVENT_OUT"
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle </dev/null
+sleep 0.2
+assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "repeated state does not reach a custom adapter"
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" working </dev/null
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '.state == "working" and .prev == "idle" and .focused == false and .sound == ""' \
+  "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "custom adapter receives working transitions without a sound cue"
+rm -f "$FAKE_EVENT_OUT"
+WS_NOTIFY=0 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
+sleep 0.2
+assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "WS_NOTIFY=0 disables custom adapters too"
+
+echo "ws hook: Claude Notification includes its message as detail"
+DETAIL=$'Approve "deploy"?\\line\nWaiting…'
+hook api/feat-login "$NWIN" working </dev/null
+jq -nc --arg message "$DETAIL" '{hook_event_name:"Notification", notification_type:"permission_prompt", message:$message}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "$DETAIL" "Notification detail preserves quotes, backslashes, newlines and Unicode"
+
+echo "ws hook: Claude Stop includes the last assistant message"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"hook_event_name":"Stop","last_assistant_message":"Fixed the login flow."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Fixed the login flow." "Stop detail is the last assistant message"
+
+echo "ws hook: UserPromptSubmit includes the user's prompt"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"hook_event_name":"UserPromptSubmit","prompt":"Fix login for guest users."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" working
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Fix login for guest users." "working detail is the submitted prompt"
+
+echo "ws hook: detail is bounded to 1024 Unicode characters"
+rm -f "$FAKE_EVENT_OUT"
+jq -nc '{hook_event_name:"Stop", last_assistant_message:("Header: " + ("é" * 1016) + "TAIL")}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '(.detail | length) == 1024 and (.detail | startswith("Header: ") and endswith("é") and (contains("TAIL") | not))' \
+  "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "detail truncates by characters without corrupting Unicode"
+
+echo "ws hook: detail preserves trailing newlines"
+rm -f "$FAKE_EVENT_OUT"
+DETAIL=$'Please review.\n\n'
+jq -nc --arg prompt "$DETAIL" '{hook_event_name:"UserPromptSubmit", prompt:$prompt}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" working
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e --arg detail "$DETAIL" '.detail == $detail' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "detail preserves the submitted text's trailing newlines"
+
+echo "ws hook: malformed or unavailable detail never drops the transition"
+for payload in '{}' '{' '[]' 'null' '{} {}' '{"message":42,"last_assistant_message":[],"prompt":false}'; do
+  hook api/feat-login "$NWIN" working </dev/null
+  rm -f "$FAKE_EVENT_OUT"
+  print -r -- "$payload" | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
+  assert_exit "$?" "0" "hook accepts unavailable detail: $payload"
+  wait_until test -s "$FAKE_EVENT_OUT"
+  jq -e '.state == "idle" and .prev == "working" and .detail == ""' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+  assert_exit "$?" "0" "transition survives unavailable detail: $payload"
+done
+
+echo "ws hook: non-text fields do not hide an available assistant message"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"message":{},"last_assistant_message":"Available text.","prompt":"Lower-priority text."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Available text." "detail selects the first available text field"
+
+echo "ws hook: Codex Stop and UserPromptSubmit include detail and tab metadata"
+"$WS" add api/feat-login --agent codex --detach
+CWIN="$("$WS" list | awk -F '\t' -v p="$WT" '$3 == p && $4 == "codex" { print $5; exit }')"
+hook api/feat-login "$CWIN" working </dev/null
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"session_id":"sid-codex-details","turn_id":"turn-1","hook_event_name":"Stop","transcript_path":null,"last_assistant_message":"Codex finished."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$CWIN" idle
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e --arg id "ws:$CWIN" '
+  .id == $id and .agent == "codex" and .repo == "api" and .branch == "feat/login" and
+  .state == "idle" and .prev == "working" and .focused == false and .detail == "Codex finished."
+' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "Codex Stop detail belongs to the Codex tab"
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"hook_event_name":"UserPromptSubmit","prompt":"Continue the Codex task."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$CWIN" working
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '.agent == "codex" and .state == "working" and .detail == "Continue the Codex task."' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "Codex working detail is the submitted prompt"
+hook api/feat-login "$NWIN" waiting </dev/null
+
+echo "ws hook: explicit osascript selection bypasses terminal-notifier"
+cat > "$TMP/bin/osascript" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$FAKE_OSASCRIPT_OUT"
+EOF
+chmod +x "$TMP/bin/osascript"
+export FAKE_OSASCRIPT_OUT="$TMP/osascript.out"
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=osascript hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login is idle" "osascript receives the event message"
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "explicit osascript ignores an installed terminal-notifier"
+rm -f "$FAKE_OSASCRIPT_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=terminal-notifier hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "explicit terminal-notifier plays the bundled waiting sound"
+assert_eq "$([[ -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "successful terminal-notifier does not fall back"
+
+echo "ws hook: every built-in adapter honors per-state sound file overrides"
+cp "$ROOT/assets/ws/sounds/waiting.wav" "$TMP/custom waiting.wav"
+for adapter in auto terminal-notifier osascript; do
+  for state in idle waiting; do
+    hook api/feat-login "$NWIN" working </dev/null
+    rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_OUT"
+    WS_NOTIFY=1 WS_NOTIFIER="$adapter" WS_NOTIFY_SOUND_DONE="$TMP/custom done.wav" \
+      WS_NOTIFY_SOUND_WAITING="$TMP/custom waiting.wav" hook api/feat-login "$NWIN" "$state" </dev/null
+    if [[ "$adapter" == osascript ]]; then
+      wait_until test -s "$FAKE_OSASCRIPT_OUT"
+    else
+      wait_until test -s "$FAKE_NOTIFIER_OUT"
+    fi
+    sound_file="$TMP/custom done.wav"
+    [[ "$state" == waiting ]] && sound_file="$TMP/custom waiting.wav"
+    assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "$sound_file" "$adapter resolves $state override with spaces"
+  done
+done
+
+echo "ws hook: osascript resolves system and user-library sound names"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=osascript WS_NOTIFY_SOUND_WAITING=Ping hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "/System/Library/Sounds/Ping.aiff" "waiting sound accepts a system name"
+mkdir -p "$TMP/sound-home/Library/Sounds"
+cp "$ROOT/assets/ws/sounds/done.wav" "$TMP/sound-home/Library/Sounds/Pop.aiff"
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_OUT"
+HOME="$TMP/sound-home" WS_NOTIFY=1 WS_NOTIFIER=osascript WS_NOTIFY_SOUND_DONE=Pop \
+  hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_eq "$(cat "$FAKE_AFPLAY_OUT" 2>/dev/null)" "$TMP/sound-home/Library/Sounds/Pop.aiff" "user-library sound takes precedence over a system sound"
+
+echo "ws hook: unavailable sound and playback failure do not prevent notifications"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_AFPLAY_OUT"
+WS_NOTIFY=1 WS_NOTIFY_SOUND_DONE="$TMP/missing.wav" hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT")" "api/feat-login is idle" "missing sound still displays the notification"
+assert_eq "$([[ -e "$FAKE_AFPLAY_OUT" ]] && print yes)" "" "missing sound is not played"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 FAKE_AFPLAY_EXIT=1 hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT")" "api/feat-login needs input" "failed playback still displays the notification"
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch sends one NDJSON event and plays its cue"
+NOTCH_SOCKET="$TMP/notch notify.sock"
+NOTCH_EVENT="$TMP/notch.ndjson"
+start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+print -r -- '{"message":"Approve deployment?\nTarget: staging"}' \
+  | WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+    hook api/feat-login "$NWIN" waiting
+wait_until test -s "$FAKE_AFPLAY_LOG"
+assert_exit "$?" "0" "silent notch receiver does not hold up sound playback"
+jq -e --arg id "ws:$NWIN" '
+  .v == 1 and .id == $id and .state == "waiting" and .prev == "working" and
+  .focused == false and .sound == "waiting" and .detail == "Approve deployment?\nTarget: staging" and
+  (.actions[0].command | contains("select-window") and contains("switch-client"))
+' "$NOTCH_EVENT" >/dev/null 2>&1
+assert_exit "$?" "0" "notch receives the event with detail and focus action"
+assert_eq "$(wc -l < "$NOTCH_EVENT" | tr -d ' ')" "1" "notch receives exactly one newline-terminated JSON object"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "notch adapter plays waiting cue exactly once"
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "successful notch delivery bypasses macOS notifications"
+stop_socket_listener
+rm -f "$NOTCH_SOCKET" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch uses its default socket path and sound overrides"
+DEFAULT_NOTCH_SOCKET="$NOTCH_HOME/Library/Application Support/boringNotch/notify.sock"
+mkdir -p "${DEFAULT_NOTCH_SOCKET:h}"
+start_socket_listener "$DEFAULT_NOTCH_SOCKET" "$NOTCH_EVENT"
+HOME="$NOTCH_HOME" WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="" \
+  WS_NOTIFY_SOUND_DONE="$TMP/custom done.wav" hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_AFPLAY_LOG"
+jq -e '.state == "idle" and .prev == "waiting" and .sound == "done"' "$NOTCH_EVENT" >/dev/null 2>&1
+assert_exit "$?" "0" "notch receives idle at the default socket under HOME"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$TMP/custom done.wav" "notch adapter honors the done sound override"
+stop_socket_listener
+rm -f "$DEFAULT_NOTCH_SOCKET" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch falls back to auto when the socket is missing"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+  hook api/feat-login "$NWIN" waiting </dev/null
+assert_exit "$?" "0" "missing notch socket does not fail the hook"
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "api/feat-login needs input" "missing notch socket uses auto notification"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "missing socket fallback plays its cue exactly once"
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch falls back when a socket has no listener"
+start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
+stop_socket_listener
+assert_eq "$([[ -S "$NOTCH_SOCKET" ]] && print yes)" "yes" "stale socket remains without a listener"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT"
+WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+  hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_NOTIFIER_OUT"
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "api/feat-login needs input" "unreachable notch socket uses auto notification"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "unreachable socket fallback plays its cue exactly once"
+rm -f "$NOTCH_SOCKET" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: failed terminal-notifier falls back to osascript"
+cat > "$TMP/bin/terminal-notifier" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+WS_NOTIFY=1 WS_NOTIFIER=auto hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login is idle" "rejected auto notification falls back with the same message"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG")" "$ROOT/assets/ws/sounds/done.wav" "auto fallback plays the done cue exactly once"
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+WS_NOTIFY=1 WS_NOTIFIER=terminal-notifier hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login needs input" "explicit terminal-notifier also falls back"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG")" "$ROOT/assets/ws/sounds/waiting.wav" "explicit fallback plays the waiting cue exactly once"
+
+echo "ws hook: boringnotch fallback also survives a rejected terminal notification"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+WS_NOTIFY=1 WS_NOTIFIER=boringnotch hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT" 2>/dev/null)" "api/feat-login needs input" "notch fallback reaches osascript when terminal-notifier fails"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "nested notch fallback plays its cue exactly once"
+
+echo "ws hook: auto uses osascript when terminal-notifier is absent"
+mkdir -p "$TMP/fallback-bin"
+for cmd in tmux jq git date cat cut afplay; do
+  ln -s "$(command -v "$cmd")" "$TMP/fallback-bin/$cmd"
+done
+ln -s "$TMP/bin/osascript" "$TMP/fallback-bin/osascript"
+rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+PATH="$TMP/fallback-bin" WS_NOTIFY=1 hook api/feat-login "$NWIN" idle </dev/null
+wait_until test -s "$FAKE_OSASCRIPT_OUT"
+assert_contains "$(cat "$FAKE_OSASCRIPT_OUT")" "api/feat-login is idle" "auto fallback works without any terminal-notifier executable"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG")" "$ROOT/assets/ws/sounds/done.wav" "missing-notifier fallback plays the done cue exactly once"
+
+echo "ws hook: focused transitions reach custom adapters"
+mkfifo "$TMP/control.in"
+exec {control_fd}<>"$TMP/control.in"
+T select-window -t "$NWIN"
+T -C attach-session -t "$(session_of "$NWIN")" < "$TMP/control.in" > "$TMP/control.out" 2>&1 &
+tab_focused() { [[ "$(T display -p -t "$NWIN" '#{&&:#{window_active},#{session_attached}}')" == 1 ]]; }
+wait_until tab_focused
+assert_exit "$?" "0" "test client focuses the notifying tab"
+rm -f "$FAKE_EVENT_OUT"
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_EVENT_OUT"
+jq -e '.state == "waiting" and .prev == "idle" and .focused == true' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+assert_exit "$?" "0" "focused waiting transition reaches the custom adapter"
+for state in working idle; do
+  rm -f "$FAKE_EVENT_OUT"
+  WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" "$state" </dev/null
+  wait_until test -s "$FAKE_EVENT_OUT"
+  jq -e --arg state "$state" '.state == $state and .focused == true' "$FAKE_EVENT_OUT" >/dev/null 2>&1
+  assert_exit "$?" "0" "focused $state transition reaches the custom adapter"
+done
+
+echo "ws hook: boringnotch receives focused transitions and plays semantic cues"
+for state in working waiting; do
+  start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
+  rm -f "$FAKE_AFPLAY_LOG" "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT"
+  WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+    WS_NOTIFY_SOUND_WAITING="$TMP/custom waiting.wav" hook api/feat-login "$NWIN" "$state" </dev/null
+  wait_until test -s "$NOTCH_EVENT"
+  jq -e --arg state "$state" '.state == $state and .focused == true' "$NOTCH_EVENT" >/dev/null 2>&1
+  assert_exit "$?" "0" "notch receives focused $state transition"
+  if [[ "$state" == waiting ]]; then
+    wait_until test -s "$FAKE_AFPLAY_LOG"
+    assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$TMP/custom waiting.wav" "notch adapter honors the waiting sound override on a focused tab"
+  else
+    assert_eq "$([[ -e "$FAKE_AFPLAY_LOG" ]] && print yes)" "" "working notch event has no sound"
+  fi
+  assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "focused notch delivery bypasses macOS notifications"
+  stop_socket_listener
+  rm -f "$NOTCH_SOCKET"
+done
+hook api/feat-login "$NWIN" idle </dev/null
+
+echo "ws hook: macOS adapters and notch fallback suppress every focused transition"
+for adapter in auto terminal-notifier osascript boringnotch; do
+  rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_OUT"
+  for state in waiting working idle; do
+    WS_NOTIFY=1 WS_NOTIFIER="$adapter" hook api/feat-login "$NWIN" "$state" </dev/null
+  done
+  sleep 0.3
+  assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" || -e "$FAKE_AFPLAY_OUT" ]] && print yes)" "" \
+    "$adapter suppresses notifications and sounds for focused idle, waiting and working"
+done
+T detach-client -s "$(session_of "$NWIN")"
+exec {control_fd}>&-
+
+echo "ws hook: macOS adapters and notch fallback suppress unfocused working transitions"
+for adapter in auto terminal-notifier osascript boringnotch; do
+  hook api/feat-login "$NWIN" idle </dev/null
+  rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_OUT"
+  WS_NOTIFY=1 WS_NOTIFIER="$adapter" hook api/feat-login "$NWIN" working </dev/null
+  sleep 0.3
+  assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" || -e "$FAKE_AFPLAY_OUT" ]] && print yes)" "" \
+    "$adapter suppresses notifications and sounds for unfocused working"
+done
+
+cat > "$TMP/bin/terminal-notifier" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$FAKE_NOTIFIER_OUT"
+EOF
 hook api/feat-login "$NWIN" idle </dev/null
 
 echo "ws _build-notifier: own-branded notifier app (name, bundle id, icon); used when present"

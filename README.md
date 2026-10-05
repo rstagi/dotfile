@@ -15,9 +15,66 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 - `ws new [--agent codex]` picks a repo (current repo, `~/.loop/repos.json`, then repos found under `$WS_REPO_ROOTS`, default `~/Dev ~/dotfile`; or type any path) + branch, copies `.env*`, runs setup in a `setup` tab (closes on success). Honors `.conductor/settings.toml` (`file_include_globs`, `[scripts] setup`), else an executable `.ws-setup`.
 - Picker: `ws` (attaches from a plain terminal) or `prefix+w` inside a ws session — one row per worktree, pinned first, then grouped by repo. enter open · ^n new · ^o new codex · ^a add claude tab · ^t add codex tab · ^s show/hide sessions · ^p pin · ^x rm. `prefix+N` = new; `prefix+a` / `prefix+A` = claude / codex tab in the current worktree. CLI: `ws add [repo/branch] [--agent codex]` (defaults to the worktree you're in), `ws open`, `ws rm`, `ws list`.
 - Persistence: sessions + their Claude/Codex session ids are recorded per worktree. After a reboot (or closing tabs), workspaces show as stopped; opening one resumes every session by id. Quitting an agent cleanly forgets its session.
-- Status (○ idle · ◐ working · ● needs input) comes from per-launch agent hooks → tab icons + a `terminal-notifier` notification (sound; click brings the terminal + tab to front) when an unfocused agent stops or needs input. Notifications come from a branded copy of terminal-notifier at `~/.ws/ws.app` (own name + robot icon `assets/ws/app.png`, composed from `assets/ws/robot.png`, built by `install.sh ws` or `ws _build-notifier`; re-run after `brew upgrade terminal-notifier`). Allow **ws** in System Settings → Notifications (style *Alerts* keeps them on screen); until then it falls back to `osascript`. Customize via `WS_NOTIFY_SOUND_DONE` (default Glass) / `WS_NOTIFY_SOUND_WAITING` (default Ping) — any name in `/System/Library/Sounds` or `~/Library/Sounds` — and `WS_NOTIFY_ICON_DONE` / `WS_NOTIFY_ICON_WAITING` (default `assets/ws/{done,waiting}.png`).
+- Status (○ idle · ◐ working · ● needs input) comes from per-launch agent hooks → tab icons + a `terminal-notifier` notification (sound; click brings the terminal + tab to front) when an unfocused agent stops or needs input. Notifications come from a branded copy of terminal-notifier at `~/.ws/ws.app` (own name + robot icon `assets/ws/app.png`, composed from `assets/ws/robot.png`, built by `install.sh ws` or `ws _build-notifier`; re-run after `brew upgrade terminal-notifier`). Allow **ws** in System Settings → Notifications (style *Alerts* keeps them on screen); until then it falls back to `osascript`. Customize icons via `WS_NOTIFY_ICON_DONE` / `WS_NOTIFY_ICON_WAITING` (default `assets/ws/{done,waiting}.png`); sound settings are below.
 - `ws merge` / `prefix+M` (inside a workspace): merges the branch's PR with `gh` (`$WS_MERGE_METHOD`, default squash), fast-forwards the default branch in the main checkout, then — after confirmation — removes the worktree, its tabs and the local + remote branch.
 - Trust: run `claude` once in `~/.ws/worktrees` and accept (covers all worktrees); Codex asks once per repo.
+
+### Notification adapters
+
+`WS_NOTIFY=0` disables notifications. `WS_NOTIFIER` selects the adapter:
+
+- `auto` (default): use the branded `~/.ws/ws.app`, else `terminal-notifier` on PATH; fall back to `osascript` if missing or rejected by macOS.
+- `terminal-notifier`: explicitly select the same terminal-notifier adapter, including its osascript fallback.
+- `osascript`: use macOS AppleScript notifications directly, with the same sound playback as terminal-notifier.
+- `boringnotch`: send every transition to the Boring Notch fork's Unix socket and play the event's sound cue. If the socket is unavailable, fall back to `auto`.
+- An executable path, e.g. `export WS_NOTIFIER="$HOME/bin/ws-notify"`: receive one compact JSON object plus newline on stdin, without arguments. Paths containing spaces work. Adapters run asynchronously; failures do not block agent hooks.
+
+Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events. Filtering belongs to the adapter: the macOS adapters display only unfocused `idle` and `waiting` events, preserving the sounds, icons, per-tab replacement and click-to-focus behavior described above.
+
+For notch notifications, build and run the local [Boring Notch fork](https://github.com/rstagi/boring.notch), then enable **Settings → General → System features → External notifications** (on by default in the fork). Set this in your shell config before launching ws sessions:
+
+```sh
+export WS_NOTIFIER=boringnotch
+# Optional: point at a different local receiver.
+export WS_BORINGNOTCH_SOCKET="$HOME/Library/Application Support/boringNotch/notify.sock"
+```
+
+The adapter sends one NDJSON line per event using `nc -U -w 1`. The fork creates a user-only directory (0700) and socket (0600), updates activities by tab ID, keeps input requests visible, and runs the event's `focus` action on click. Quitting the app or disabling External notifications removes the socket; ws then uses `auto` with its usual focus/state filtering. Delivery has a one-second timeout and runs asynchronously. The adapter plays sounds locally; the fork does not, and fallback plays the cue only once. Shell actions are trusted local input; an upstream API should consider URL actions.
+
+Built-in adapters play a soft chime for `done` (`assets/ws/sounds/done.wav`) and a rising attention cue for `waiting` (`assets/ws/sounds/waiting.wav`). Both are from [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds), licensed CC0; source files and conversions are recorded in [the bundled license](assets/ws/sounds/LICENSE.txt).
+
+Override each cue with `WS_NOTIFY_SOUND_DONE` / `WS_NOTIFY_SOUND_WAITING`: a macOS sound name such as `Glass` or `Ping` (looks for `<name>.aiff` in `~/Library/Sounds`, then `/System/Library/Sounds`), or a file path, including paths with spaces (relative paths use the hook working directory). For example:
+
+```sh
+export WS_NOTIFY_SOUND_DONE=Glass
+export WS_NOTIFY_SOUND_WAITING="$HOME/Music/needs input.wav"
+```
+
+Playback uses `afplay` once per notification, including fallbacks; terminal-notifier's own sound is suppressed. With `boringnotch`, idle/waiting events play their cues even for focused tabs; working events have no sound. Unavailable sounds are skipped without blocking the notification. Custom adapters receive semantic keys and own their sound playback.
+
+The v1 event schema is shared by all adapters:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `v` | number | Protocol version, `1` |
+| `id` | string | Stable tab identity, e.g. `ws:@12`; use for replacement |
+| `source` | string | `ws` |
+| `state` | string | `working`, `idle` or `waiting` |
+| `prev` | string | Previous tab state; empty if unknown |
+| `title` | string | Notification title, currently `ws` |
+| `message` | string | Workspace + status, e.g. `api/feat-login needs input` |
+| `detail` | string | Hook message or prompt, truncated to 1,024 Unicode characters; empty if unavailable |
+| `agent` | string | Agent name, `claude` or `codex`; empty if unknown |
+| `repo` | string | Repository name from the workspace |
+| `branch` | string | Git branch name, preserving `/`; empty if unknown |
+| `focused` | boolean | Whether the tab is active in an attached tmux session |
+| `sound` | string | Semantic key: `done` for idle, `waiting` for input; empty for working |
+| `actions` | array | Objects with string `id`, `label`, `command`; currently one `focus` action labelled `Focus tab` |
+| `ts` | number | Unix timestamp in seconds (UTC) |
+
+`detail` uses the first nonempty string from `message` (Claude Notification), `last_assistant_message` (Claude/Codex Stop), or `prompt` (UserPromptSubmit). Quotes, newlines and Unicode are preserved within the length bound. Missing, non-text or malformed payloads still emit the transition with empty detail.
+
+The `focus` action's shell command selects the tab and switches the tmux client to its session. The terminal-notifier adapter also activates the terminal app. Custom adapters decide how to display events and handle actions; execute commands only from a trusted local source. Adapters should ignore unknown fields and reject unsupported protocol versions.
 
 ## Agent checkpoints
 
