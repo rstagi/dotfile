@@ -238,6 +238,35 @@ T kill-window -t "$LW"
 session_forget_slot() { local f="$(git -C "$1" rev-parse --absolute-git-dir)/ws-sessions"; awk -F '\t' -v s="$2" '$1 != s' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 session_forget_slot "$ZWT" 3
 
+echo "ws unread: a tab that finishes (working → idle) unseen stays unread until visited; ctrl-u toggles"
+unread() { T show -wqv -t "$1" @ws_unread; }
+UW="$(slot_window "$ZWT" 1)"
+hook web/zeta "$UW" working </dev/null
+assert_eq "$(unread "$UW")" "" "working tab is not unread"
+hook web/zeta "$UW" idle </dev/null
+assert_eq "$(unread "$UW")" "1" "finished unseen → unread"
+hook web/zeta "$UW" idle </dev/null
+assert_eq "$(unread "$UW")" "1" "repeated idle keeps it unread"
+assert_eq "$("$WS" list | awk -F '\t' -v p="$ZWT" '$3 == p { print $8 }')" "1" "list exposes unread"
+assert_contains "$("$WS" _rows | grep -F "$ZWT" | cut -f1 | sed $'s/\e\\[[0-9;]*m//g')" "• zeta" "picker row marked unread"
+assert_contains "$("$WS" _summary | sed $'s/\e\\[[0-9;]*m//g')" "1 unread" "summary counts unread"
+"$WS" add web/zeta --agent codex --detach
+UW2="$(slot_window "$ZWT" 3)"
+T select-window -t "$UW2"
+assert_eq "$(unread "$UW")" "1" "switching away keeps it unread"
+assert_eq "$("$WS" _rows | grep -F "$ZWT" | head -1 | cut -f3)" "$UW" "workspace row targets the unread tab"
+T select-window -t "$UW"
+assert_eq "$(unread "$UW")" "" "visiting the tab marks it read"
+"$WS" _unread "$UW"
+assert_eq "$(unread "$UW")" "1" "_unread marks it unread again"
+"$WS" _unread "$UW"
+assert_eq "$(unread "$UW")" "" "_unread toggles back to read"
+"$WS" _unread "$UW"
+TMUX=fake "$WS" open web/zeta 2>/dev/null
+assert_eq "$(unread "$UW")" "" "opening from ws marks it read"
+T kill-window -t "$UW2"
+session_forget_slot "$ZWT" 3
+
 echo "ws claude: adopts a hand-opened tab as a tracked session; plain shell again after"
 MW="$(T new-window -d -P -F '#{window_id}' -t "$(session_of "$(slot_window "$ZWT" 1)"):" -c "$ZWT" \
   "zsh -fc '\"$WS\" claude --model x; echo EXIT=\$?; sleep 30'")"
