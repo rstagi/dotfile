@@ -12,9 +12,9 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws open <name|path> [--detach]   focus, or restore every recorded session (resumed by id)
 #   ws pick                    grouped picker: enter open · ctrl-n new · ctrl-o new codex ·
 #                              ctrl-a add claude tab · ctrl-t add codex tab · ctrl-p pin · ctrl-x rm ·
-#                              ctrl-s show/hide sessions
+#                              ctrl-s show/hide sessions · ctrl-u toggle unread (• = finished, not yet seen)
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
-#   ws list                    TSV: state name path agent window pinned active
+#   ws list                    TSV: state name path agent window pinned active unread
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
@@ -66,6 +66,7 @@ main() {
   _rows) picker_rows ;;
   _summary) picker_summary ;;
   _toggle_sessions) toggle_sessions ;;
+  _unread) toggle_unread "$@" ;;
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
   _build-notifier) build_notifier ;;
@@ -178,6 +179,7 @@ cmd_pick() {
     --expect ctrl-n,ctrl-o,ctrl-a,ctrl-t \
     --bind "ctrl-p:execute-silent($WS_BIN pin {2})+reload($WS_BIN _rows)" \
     --bind "ctrl-s:execute-silent($WS_BIN _toggle_sessions)+reload($WS_BIN _rows)" \
+    --bind "ctrl-u:execute-silent($WS_BIN _unread {3})+reload($WS_BIN _rows)" \
     --bind "ctrl-x:execute($WS_BIN rm --interactive {2})+reload($WS_BIN _rows)")" || return 0
   key="${out%%$'\n'*}"
   row=""
@@ -222,11 +224,11 @@ cmd_list() {
     found=0
     for win in ${(f)"$(windows_for "$wt")"}; do
       found=1
-      local -a o=("${(@ps:\t:)$(tmux_ display -p -t "$win" '#{@ws_state}	#{@ws_slot}	#{@ws_agent}	#{window_active}')}")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "${o[1]}" "$name${${o[2]:#1}:+#${o[2]}}" "$wt" "${o[3]}" "$win" "$pinned" "${o[4]}"
+      local -a o=("${(@ps:\t:)$(tmux_ display -p -t "$win" '#{@ws_state}	#{@ws_slot}	#{@ws_agent}	#{window_active}	#{?@ws_unread,1,0}')}")
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${o[1]}" "$name${${o[2]:#1}:+#${o[2]}}" "$wt" "${o[3]}" "$win" "$pinned" "${o[4]}" "${o[5]}"
     done
-    (( found )) || printf 'stopped\t%s\t%s\t-\t\t%s\t0\n' "$name" "$wt" "$pinned"
+    (( found )) || printf 'stopped\t%s\t%s\t-\t\t%s\t0\t0\n' "$name" "$wt" "$pinned"
   done
 }
 
@@ -343,6 +345,8 @@ cmd_hook() {
   state="$(hook_state "$event" "${agent_id//[^A-Za-z0-9_-]/_}" "$prev")"
   tmux_ set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
   record_resume_id "$payload"
+  # finished while you weren't looking → unread until you visit the tab (or ws opens it)
+  [[ "$prev" == working && "$state" == idle ]] && ! pane_focused && tmux_ set -w -t "$TMUX_PANE" @ws_unread 1 2>/dev/null
   [[ "$state" != "$prev" && "$state" != working ]] && notify_unless_focused "$state"
   return 0
 }
@@ -382,10 +386,13 @@ subagents_running() { tmux_ show -w -t "$TMUX_PANE" 2>/dev/null | grep -q '^@ws_
 
 # prefix+w → ws picker, prefix+N → new workspace, prefix+a / prefix+A → claude / codex tab in
 # the current worktree, prefix+M → ws merge. Only inside ws sessions (they carry the @ws_path session option);
-# other sessions keep tmux's default choose-tree on prefix+w.
+# other sessions keep tmux's default choose-tree on prefix+w. Landing on a tab, however you
+# get there, marks it read (hooks at a high index, so user hooks at [0] are kept).
 configure_bindings() {
   tmux_ has-session 2>/dev/null || return 0 # no server yet: bound when the first session is created
   local in_ws="#{!=:#{@ws_path},}"
+  tmux_ set-hook -g 'session-window-changed[77]' 'set -wu @ws_unread'
+  tmux_ set-hook -g 'client-session-changed[77]' 'set -wu @ws_unread'
   tmux_ bind-key w if-shell -F "$in_ws" \
     "display-popup -E -w 90% -h 85% -d '#{pane_current_path}' '$WS_BIN pick'" "choose-tree -Zw"
   tmux_ bind-key N if-shell -F "$in_ws" \
@@ -440,7 +447,7 @@ tag_window() {
 
 untag_window() {
   local opt
-  for opt in @ws_path @ws_slot @ws_agent @ws_state @ws_main automatic-rename \
+  for opt in @ws_path @ws_slot @ws_agent @ws_state @ws_main @ws_unread automatic-rename \
     window-status-format window-status-current-format; do
     tmux_ set -wu -t "$1" "$opt" 2>/dev/null
   done
@@ -522,8 +529,10 @@ picker_summary() {
     n=${#${(M)states:#$st}}
     (( n )) && parts+=("$(state_icon "$st") $n $st")
   done
+  n=${#${(M)${(f)"$(cmd_list | cut -f8)"}:#1}}
+  (( n )) && parts+=($'\e[36m•\e[0m'" $n unread")
   print -r -- "${(j: · :)parts:-no workspaces}"
-  print -r -- $'\e[2m↵ open · ^s sessions · ^p pin · ^x rm\e[0m'
+  print -r -- $'\e[2m↵ open · ^s sessions · ^p pin · ^u unread · ^x rm\e[0m'
   print -r -- $'\e[2m^n/^o new claude/codex · ^a/^t add claude/codex tab\e[0m'
 }
 
@@ -532,14 +541,26 @@ toggle_sessions() {
   if [[ -e "$SHOW_SESSIONS" ]]; then rm -f "$SHOW_SESSIONS"; else touch "$SHOW_SESSIONS"; fi
 }
 
+# toggle_unread <window> — picker ctrl-u: mark a tab unread again (or read). No-op when stopped.
+toggle_unread() {
+  local win="${1:-}"
+  [[ -n "$win" ]] || return 0
+  if [[ -n "$(tmux_ show -wqv -t "$win" @ws_unread)" ]]; then
+    tmux_ set -wu -t "$win" @ws_unread
+  else
+    tmux_ set -w -t "$win" @ws_unread 1
+  fi
+}
+
 # cmd_list rows (stdin) collapsed to one per worktree: most urgent state, agent (or "N
-# sessions"), last-used window (active in its tmux session, else the first).
+# sessions"), target window (first unread tab, else last-used: active in its tmux session,
+# else the first), unread (any tab), pinned.
 workspace_rows() {
   awk -F '\t' -v OFS='\t' '
     function rank(s) { return s == "waiting" ? 3 : s == "working" ? 2 : s == "idle" ? 1 : 0 }
-    !($3 in seen) { seen[$3] = 1; order[++n] = $3; st[$3] = $1; nm[$3] = $2; ag[$3] = $4; w[$3] = $5; pin[$3] = $6; act[$3] = ($7 == 1); cnt[$3] = 1; sub(/#.*/, "", nm[$3]); next }
-    { if (rank($1) > rank(st[$3])) st[$3] = $1; if ($7 == 1 && !act[$3]++) w[$3] = $5; cnt[$3]++ }
-    END { for (i = 1; i <= n; i++) { p = order[i]; print st[p], nm[p], p, (cnt[p] > 1 ? cnt[p] " sessions" : ag[p]), w[p], pin[p] } }'
+    !($3 in seen) { seen[$3] = 1; order[++n] = $3; st[$3] = $1; nm[$3] = $2; ag[$3] = $4; w[$3] = $5; pin[$3] = $6; act[$3] = ($7 == 1); un[$3] = ($8 == 1); cnt[$3] = 1; sub(/#.*/, "", nm[$3]); next }
+    { if (rank($1) > rank(st[$3])) st[$3] = $1; if (!un[$3] && ($8 == 1 || ($7 == 1 && !act[$3]++))) w[$3] = $5; if ($8 == 1) un[$3] = 1; cnt[$3]++ }
+    END { for (i = 1; i <= n; i++) { p = order[i]; print st[p], nm[p], p, (cnt[p] > 1 ? cnt[p] " sessions" : ag[p]), w[p], un[p], pin[p] } }'
 }
 
 # session_rows <cmd_list output> <workspace row> — for a multi-session worktree, one
@@ -548,12 +569,12 @@ session_rows() {
   local list="$1"
   local -a f=("${(@ps:\t:)2}")
   [[ "${f[4]}" == *" sessions" ]] || return 0
-  local state name ws_path agent win pinned active tab
-  print -r -- "$list" | while IFS=$'\t' read -r state name ws_path agent win pinned active; do
+  local state name ws_path agent win pinned active unread tab
+  print -r -- "$list" | while IFS=$'\t' read -r state name ws_path agent win pinned active unread; do
     [[ "$ws_path" == "${f[3]}" ]] || continue
     tab="$agent"
     [[ "$name" == *"#"* ]] && tab+="#${name##*#}"
-    printf '%19s└ %s %-22s \e[2m%s\e[0m\t%s\t%s\n' "" "$(state_icon "$state")" "$tab" "$state" "$ws_path" "$win"
+    printf '%17s%s └ %s %-22s \e[2m%s\e[0m\t%s\t%s\n' "" "$(unread_mark "$unread")" "$(state_icon "$state")" "$tab" "$state" "$ws_path" "$win"
   done
 }
 
@@ -566,15 +587,18 @@ picker_row() {
   pinned) mark="📌" repo_style=$'\e[1m' ;;
   first) repo_style=$'\e[1m' ;;
   esac
-  printf '%s %s%-14s\e[0m %-24s %s \e[2m%s\e[0m\t%s\t%s\n' \
-    "$mark" "$repo_style" "$repo" "$branch" "$(state_icon "${f[1]}")" "$detail" "${f[3]}" "${f[5]}"
+  printf '%s %s%-14s\e[0m %s %-24s %s \e[2m%s\e[0m\t%s\t%s\n' \
+    "$mark" "$repo_style" "$repo" "$(unread_mark "${f[6]}")" "$branch" "$(state_icon "${f[1]}")" "$detail" "${f[3]}" "${f[5]}"
 }
+
+unread_mark() { [[ "$1" == 1 ]] && print -n $'\e[1;36m•\e[0m' || print -n ' '; }
 
 focus() {
   local win="$1" sess
   [[ -n "$win" ]] || return 1
   sess="$(tmux_ display -p -t "$win" '#{session_id}')" || return 1
   tmux_ select-window -t "$win"
+  tmux_ set -wu -t "$win" @ws_unread # already current: no hook fires
   if [[ -n "${TMUX:-}" ]]; then
     tmux_ switch-client -t "$sess"
   else
@@ -805,9 +829,7 @@ sessions_for() {
 # per tab); osascript fallback when it's missing or not yet allowed by macOS.
 notify_unless_focused() {
   (( WS_NOTIFY )) || return 0
-  local focused
-  focused="$(tmux_ display -p -t "$TMUX_PANE" '#{&&:#{window_active},#{session_attached}}' 2>/dev/null)"
-  [[ "$focused" == 1 ]] && return 0
+  pane_focused && return 0
   local msg="$WS_WORKSPACE is $1"
   [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
   tmux_ display-message "ws: $msg" 2>/dev/null
@@ -828,6 +850,11 @@ notify_unless_focused() {
   else
     osascript_notify "$msg" &!
   fi
+}
+
+# The hook's tab is on screen: current in its session, and that session attached.
+pane_focused() {
+  [[ "$(tmux_ display -p -t "$TMUX_PANE" '#{&&:#{window_active},#{session_attached}}' 2>/dev/null)" == 1 ]]
 }
 
 # Copies terminal-notifier.app to $WS_HOME/ws.app with its own name, bundle id and icon, so
