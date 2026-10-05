@@ -426,6 +426,67 @@ assert_eq "$(wc -l < "$FAKE_EVENT_LOG" 2>/dev/null | tr -d ' ')" "1" "simultaneo
 assert_eq "$(T display -p -t "$NWIN" '#{@ws_state}')" "waiting" "simultaneous hooks apply the state"
 hook api/feat-login "$NWIN" idle </dev/null
 
+echo "ws hook: seq is one realtime snapshot (no second-boundary skew)"
+ws_fn() { ( source "$WS" && "$@" ) }
+assert_eq "$(ws_fn realtime_us 1791187219.9999999)" "1791187219999999" "seq truncates to microseconds"
+assert_eq "$(ws_fn realtime_us 1791187220.0000001)" "1791187220000000" "seq after the second boundary"
+assert_eq "$(ws_fn realtime_us 1791187220.5)" "1791187220500000" "short fraction right-padded"
+
+echo "ws hook: seq is captured at entry, before reading the payload"
+hook api/feat-login "$NWIN" working </dev/null
+mkfifo "$TMP/slow.in"
+exec {slow_w}<>"$TMP/slow.in"
+rm -f "$FAKE_EVENT_LOG"
+# Children must not inherit the writer, or the slow hook never sees EOF.
+(exec {slow_w}>&-; WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/append" hook api/feat-login "$NWIN" waiting <"$TMP/slow.in") &
+slow_pid=$!
+sleep 0.5 # older hook has taken its seq and blocks in payload read
+(exec {slow_w}>&-; WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/append" hook api/feat-login "$NWIN" idle </dev/null)
+exec {slow_w}>&-
+wait "$slow_pid"
+wait_until test -s "$FAKE_EVENT_LOG"
+sleep 0.3
+assert_eq "$(T display -p -t "$NWIN" '#{@ws_state}')" "idle" "newer hook wins over an older slow-payload hook"
+assert_eq "$(jq -r '.state' "$FAKE_EVENT_LOG" 2>/dev/null)" "idle" "only the newer hook emits"
+
+echo "ws hook: fails closed when the tab lock can't be taken"
+hook api/feat-login "$NWIN" working </dev/null
+HOOK_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$NWIN.lock"
+rm -f "$TMP/locked" "$FAKE_EVENT_OUT"
+zsh -fc 'zmodload zsh/system; zsystem flock -f fd "$1" && : > "$2" && sleep 4' _ "$HOOK_LOCK" "$TMP/locked" &
+holder_pid=$!
+wait_until test -e "$TMP/locked"
+WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle </dev/null
+sleep 0.2
+assert_eq "$(T display -p -t "$NWIN" '#{@ws_state}')" "working" "unlocked hook leaves state untouched"
+assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "unlocked hook emits nothing"
+kill "$holder_pid" 2>/dev/null
+wait "$holder_pid" 2>/dev/null
+rm -f "$FAKE_EVENT_OUT"
+hook api/feat-login "$NWIN" idle </dev/null
+
+echo "ws notify: built-in adapter delivers per tab in seq order"
+notify_event() {
+  jq -nc --arg id "ws:$NWIN" --arg state "$1" --argjson seq "$2" \
+    '{v:1, id:$id, source:"ws", state:$state, prev:"", title:"ws", message:("tab is " + $state),
+      detail:"", focused:false, sound:"", actions:[{id:"focus", label:"Focus tab", command:"true"}], seq:$seq}'
+}
+deliver() { notify_event "$1" "$2" | WS_NOTIFIER=terminal-notifier ws_fn notify_adapter; }
+NSEQ="$(ws_fn realtime_us "$(zsh -fc 'zmodload zsh/datetime; print $EPOCHREALTIME')")"
+rm -f "$FAKE_NOTIFIER_OUT"
+deliver waiting $(( NSEQ + 2 ))
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "tab is waiting" "newer event posted"
+rm -f "$FAKE_NOTIFIER_OUT"
+deliver idle $(( NSEQ + 1 ))
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "older event arriving late is dropped"
+deliver working $(( NSEQ + 4 ))
+deliver idle $(( NSEQ + 3 ))
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "newer working (no banner) still supersedes an older idle"
+deliver idle $(( NSEQ + 5 ))
+assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "tab is idle" "next newer event posted"
+T set -wu -t "$NWIN" @ws_notify_seq
+rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_AFPLAY_OUT"
+
 echo "ws hook: Claude Notification includes its message as detail"
 DETAIL=$'Approve "deploy"?\\line\nWaiting…'
 hook api/feat-login "$NWIN" working </dev/null

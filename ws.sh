@@ -311,11 +311,11 @@ confirm() {
 # Agent hooks call this from inside a session window: sets the window's state and records
 # the agent's session id (for resume). Best effort, always exits 0 — never blocks the agent.
 # seq (µs since epoch, taken at entry) orders hooks per tab: one older than the tab's @ws_seq
-# is dropped, and a per-window lock keeps overlapping hooks from both applying/emitting.
+# is dropped, and a per-window lock keeps overlapping hooks from both applying/emitting
+# (no lock → dropped: an unordered write could clobber a newer state).
 cmd_hook() {
   zmodload zsh/datetime zsh/system 2>/dev/null
-  local frac="${EPOCHREALTIME#*.}"
-  local seq="${EPOCHREALTIME%.*}${(r:6::0:)frac}" state="${1:-}" payload=""
+  local seq="$(realtime_us "$EPOCHREALTIME")" state="${1:-}" payload=""
   [[ -t 0 ]] || payload="$(cat)"
   [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || return 0
   [[ "$state" == (working|idle|waiting) ]] || return 0
@@ -323,15 +323,22 @@ cmd_hook() {
   local win lock lockfd prev last applied=0
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || return 0
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-  { : >>"$lock" && zsystem flock -t 2 -f lockfd "$lock"; } 2>/dev/null || lockfd=""
+  { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 0
   IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
   if [[ "$last" != <-> ]] || (( last < seq )); then
     tmux_ set -w -t "$TMUX_PANE" @ws_seq "$seq" \; set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
     applied=1
   fi
-  [[ -n "$lockfd" ]] && exec {lockfd}>&-
+  exec {lockfd}>&-
   (( applied )) && [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev" "$payload" "$seq"
   return 0
+}
+
+# realtime_us <$EPOCHREALTIME value> — integer µs since epoch from one snapshot (two reads
+# could straddle a second boundary and jump ~1s ahead).
+realtime_us() {
+  local frac="${1#*.}"
+  print -r -- "${1%.*}${(r:6::0:)frac}"
 }
 
 # prefix+w → ws picker, prefix+N → new workspace, prefix+a / prefix+A → claude / codex tab in
@@ -755,7 +762,8 @@ notify_adapter() {
     fi
     ;;
   auto | terminal-notifier | osascript)
-    local event="$(cat)"
+    local event="$(cat)" lockfd
+    notify_claim "$event" || return 0
     print -r -- "$event" | jq -e '
       (.state == "idle" or .state == "waiting") and .focused == false
     ' >/dev/null 2>&1 || return 0
@@ -776,6 +784,24 @@ notify_adapter() {
     fi
     ;;
   esac
+}
+
+# notify_claim <event> — per-tab delivery watermark for the built-in notifiers: under the tab's
+# notify lock (left open in the caller's lockfd, so posts serialize until the adapter exits),
+# fail if a same-or-newer seq was already claimed, else record this one — every state, so a
+# newer `working` still supersedes an older banner. No seq (custom/legacy) counts as newest.
+notify_claim() {
+  local id seq win lock last
+  print -r -- "$1" | jq -r '.id // "", .seq // 0' | { read -r id; read -r seq; }
+  win="${id#ws:}"
+  [[ "$id" == ws:?* && "$seq" == <1-> ]] || return 0
+  zmodload zsh/system 2>/dev/null
+  lock="${TMPDIR:-/tmp}/ws-notify-${WS_TMUX_SOCKET:-default}-$win.lock"
+  { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
+  last="$(tmux_ display -p -t "$win" '#{@ws_notify_seq}' 2>/dev/null)"
+  [[ "$last" == <-> ]] && (( seq <= last )) && return 1
+  tmux_ set -w -t "$win" @ws_notify_seq "$seq" 2>/dev/null
+  return 0
 }
 
 # Play once outside notification transport so a fallback cannot duplicate the sound.
@@ -892,4 +918,4 @@ tmux_() {
 
 die() { print -u2 "ws: $1"; exit "${2:-1}"; }
 
-main "$@"
+[[ "$ZSH_EVAL_CONTEXT" == *:file ]] || main "$@" # sourced (tests): functions only
