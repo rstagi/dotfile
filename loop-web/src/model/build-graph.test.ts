@@ -285,6 +285,18 @@ describe("buildGraph — runtime overlay", () => {
     expect(n.pulse).toBeNull(); // ended attempt ⇒ no heartbeat
   });
 
+  it.each(["merged", "done"])("a %s phase is done even if its last attempt ended in a problem (fixed after)", (status) => {
+    const rt = runtime({
+      "2": {
+        state: { status },
+        attempts: [attempt({ k: 1, meta: { engineExit: 0 }, status: { outcome: "done" }, spawnLog: "claimed done but verify failed" })],
+      },
+    });
+    const n = node(buildGraph(parsePlan(SINGLE_LANE), rt, { now }), "2");
+    expect(n.runtime?.problem).toBe("verify-fail");
+    expect(n.ui).toBe("done");
+  });
+
   it("raises ui='awaiting' when a HIL request is open", () => {
     const rt = runtime({
       "2": {

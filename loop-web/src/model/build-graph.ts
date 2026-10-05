@@ -183,12 +183,13 @@ function resolveUi(
   awaiting: boolean,
   paused = false,
 ): NodeUiState {
-  if (paused && lifecycle !== "done" && lifecycle !== "merged") return "paused";
+  // Landed work wins: a failed attempt fixed afterwards (retry, HIL, manual) must not stay red.
+  if (lifecycle === "done" || lifecycle === "merged") return "done";
+  if (paused) return "paused";
   if (awaiting) return "awaiting";
   if (problem && problem !== "blocked") return "problem"; // crash/timeout/verify-fail/chain-exhausted
   if (problem === "blocked" || lifecycle === "blocked") return "blocked";
   if (lifecycle === "running" || lifecycle === "claimed") return "running";
-  if (lifecycle === "done" || lifecycle === "merged") return "done";
   return "todo";
 }
 
