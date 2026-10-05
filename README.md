@@ -29,7 +29,7 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 - `boringnotch`: send every transition to the Boring Notch fork's Unix socket and play the event's sound cue. If the socket is unavailable, fall back to `auto`.
 - An executable path, e.g. `export WS_NOTIFIER="$HOME/bin/ws-notify"`: receive one compact JSON object plus newline on stdin, without arguments. Paths containing spaces work. Adapters run asynchronously; failures do not block agent hooks.
 
-Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events, and ws drops hooks older than the tab's last applied `seq` (overlapping hooks are serialized per tab). Filtering belongs to the adapter: the macOS adapters display only unfocused `idle` and `waiting` events, preserving the sounds, icons, per-tab replacement and click-to-focus behavior described above.
+Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events, and ws drops hooks whose `seq` is not newer than the tab's last applied `seq` (overlapping hooks are serialized per tab). Filtering belongs to the adapter: the built-in macOS adapters apply the same per-tab `seq` rule before delivery (including `working` events), then display only unfocused `idle` and `waiting` events with their sound. terminal-notifier adds icons, per-tab replacement and click-to-focus; `osascript` (explicit or fallback) shows text only.
 
 For notch notifications, build and run the local [Boring Notch fork](https://github.com/rstagi/boring.notch), then enable **Settings → General → System features → External notifications** (on by default in the fork). Set this in your shell config before launching ws sessions:
 
