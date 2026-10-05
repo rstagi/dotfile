@@ -15,7 +15,8 @@ export WS_NOTIFY=0
 export WS_NOTIFIER=auto
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
-trap 'tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
+socket_listener_pid=""
+trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
 WS="$ROOT/ws.sh"
 T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
@@ -64,6 +65,19 @@ wait_until() {
   local i
   for i in {1..30}; do "$@" && return 0; sleep 0.1; done
   return 1
+}
+
+start_socket_listener() {
+  /usr/bin/nc -l -U "$1" > "$2" 2> "$TMP/listener.err" &
+  socket_listener_pid=$!
+  wait_until test -S "$1"
+  assert_exit "$?" "0" "fake notch socket is listening"
+}
+
+stop_socket_listener() {
+  kill "$socket_listener_pid" 2>/dev/null
+  wait "$socket_listener_pid" 2>/dev/null
+  socket_listener_pid=""
 }
 
 windows_of() { T list-windows -a -F '#{window_id} #{@ws_path}' | awk -v p="$1" '$2 == p { print $1 }'; }
@@ -511,6 +525,28 @@ WS_NOTIFY=1 FAKE_AFPLAY_EXIT=1 hook api/feat-login "$NWIN" waiting </dev/null
 wait_until test -s "$FAKE_NOTIFIER_OUT"
 assert_contains "$(cat "$FAKE_NOTIFIER_OUT")" "api/feat-login needs input" "failed playback still displays the notification"
 rm -f "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws hook: boringnotch sends one NDJSON event and plays its cue"
+NOTCH_SOCKET="$TMP/notch.sock"
+NOTCH_EVENT="$TMP/notch.ndjson"
+start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+print -r -- '{"message":"Approve deployment?\nTarget: staging"}' \
+  | WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
+    hook api/feat-login "$NWIN" waiting
+wait_until test -s "$FAKE_AFPLAY_LOG"
+jq -e --arg id "ws:$NWIN" '
+  .v == 1 and .id == $id and .state == "waiting" and .prev == "working" and
+  .focused == false and .sound == "waiting" and .detail == "Approve deployment?\nTarget: staging" and
+  (.actions[0].command | contains("select-window") and contains("switch-client"))
+' "$NOTCH_EVENT" >/dev/null 2>&1
+assert_exit "$?" "0" "notch receives the event with detail and focus action"
+assert_eq "$(wc -l < "$NOTCH_EVENT" | tr -d ' ')" "1" "notch receives exactly one newline-terminated JSON object"
+assert_eq "$(cat "$FAKE_AFPLAY_LOG" 2>/dev/null)" "$ROOT/assets/ws/sounds/waiting.wav" "notch adapter plays waiting cue exactly once"
+assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "successful notch delivery bypasses macOS notifications"
+stop_socket_listener
+rm -f "$NOTCH_SOCKET" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
 
 echo "ws hook: failed terminal-notifier falls back to osascript"
 cat > "$TMP/bin/terminal-notifier" <<'EOF'

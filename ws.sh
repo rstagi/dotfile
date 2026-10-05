@@ -28,7 +28,8 @@ WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
 WS_HOME="${WS_HOME:-$HOME/.ws}"
 WS_NOTIFY="${WS_NOTIFY:-1}"
-WS_NOTIFIER="${WS_NOTIFIER:-auto}" # auto | osascript | terminal-notifier | executable path
+WS_NOTIFIER="${WS_NOTIFIER:-auto}" # auto | osascript | terminal-notifier | boringnotch | executable path
+WS_BORINGNOTCH_SOCKET="${WS_BORINGNOTCH_SOCKET:-$HOME/Library/Application Support/boringNotch/notify.sock}"
 # Notification sound (file path or macOS sound name) + icon per state.
 WS_NOTIFY_SOUND_DONE="${WS_NOTIFY_SOUND_DONE:-${WS_BIN:h}/assets/ws/sounds/done.wav}"
 WS_NOTIFY_SOUND_WAITING="${WS_NOTIFY_SOUND_WAITING:-${WS_BIN:h}/assets/ws/sounds/waiting.wav}"
@@ -732,6 +733,12 @@ hook_detail_json() {
 
 notify_adapter() {
   case "$WS_NOTIFIER" in
+  boringnotch)
+    local event="$(cat)"
+    if print -r -- "$event" | nc -U -w 1 "$WS_BORINGNOTCH_SOCKET" >/dev/null 2>&1; then
+      notify_sound "$(print -r -- "$event" | jq -r '.sound')"
+    fi
+    ;;
   auto | terminal-notifier | osascript)
     local event="$(cat)"
     print -r -- "$event" | jq -e '
