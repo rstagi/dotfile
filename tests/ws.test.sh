@@ -238,6 +238,20 @@ T kill-window -t "$LW"
 session_forget_slot() { local f="$(git -C "$1" rev-parse --absolute-git-dir)/ws-sessions"; awk -F '\t' -v s="$2" '$1 != s' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 session_forget_slot "$ZWT" 3
 
+echo "ws pick: cursor starts on the current tab's row"
+cat > "$TMP/bin/fzf" <<'EOF'
+#!/bin/sh
+cat > "$FAKE_FZF_IN"; printf '%s\n' "$@" > "$FAKE_FZF_ARGS"; exit 1
+EOF
+chmod +x "$TMP/bin/fzf"
+export FAKE_FZF_IN="$TMP/fzf.in" FAKE_FZF_ARGS="$TMP/fzf.args"
+start_pos() { grep '^start:' "$FAKE_FZF_ARGS" | sed 's/.*pos(\([0-9]*\)).*/\1/'; }
+TMUX=fake TMUX_PANE="$(T display -p -t "$(slot_window "$ZWT" 1)" '#{pane_id}')" "$WS" pick
+assert_eq "$(sed -n "$(start_pos)p" "$FAKE_FZF_IN" | cut -f2)" "$ZWT" "starts on the current workspace"
+(cd "$TMP" && env -u TMUX -u TMUX_PANE WS_TMUX_SOCKET=none "$WS" pick 2>/dev/null)
+assert_eq "$(start_pos)" "1" "outside tmux: first row"
+unset FAKE_FZF_IN FAKE_FZF_ARGS
+
 echo "ws unread: a tab that finishes (working → idle) unseen stays unread until visited; ctrl-u toggles"
 unread() { T show -wqv -t "$1" @ws_unread; }
 UW="$(slot_window "$ZWT" 1)"

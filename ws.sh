@@ -172,9 +172,11 @@ cmd_run() {
 
 cmd_pick() {
   command -v fzf >/dev/null || die "fzf not installed"
-  local out key row wt win # never `path`: zsh ties it to $PATH
-  out="$(picker_rows | fzf --ansi --delimiter '\t' --with-nth 1 --no-sort --layout reverse \
-    --header-first --bind "start,load:transform-header($WS_BIN _summary)" \
+  local out key row wt win rows # never `path`: zsh ties it to $PATH
+  rows="$(picker_rows)"
+  out="$(print -r -- "$rows" | fzf --ansi --delimiter '\t' --with-nth 1 --no-sort --layout reverse --sync \
+    --header-first --bind "load:transform-header($WS_BIN _summary)" \
+    --bind "start:transform-header($WS_BIN _summary)+pos($(current_row "$rows"))" \
     --preview "$WS_BIN _preview {2} {3}" --preview-window 'right,50%,follow' \
     --expect ctrl-n,ctrl-o,ctrl-a,ctrl-t \
     --bind "ctrl-p:execute-silent($WS_BIN pin {2})+reload($WS_BIN _rows)" \
@@ -589,6 +591,20 @@ picker_row() {
   esac
   printf '%s %s%-14s\e[0m %s %-24s %s \e[2m%s\e[0m\t%s\t%s\n' \
     "$mark" "$repo_style" "$repo" "$(unread_mark "${f[6]}")" "$branch" "$(state_icon "${f[1]}")" "$detail" "${f[3]}" "${f[5]}"
+}
+
+# current_row <picker rows> — 1-based index of the row for the tab we were opened from (its
+# window, else its worktree), so the picker starts on it; 1 outside tmux or ws. In the
+# prefix+w popup TMUX_PANE is unset and display -p resolves to the client's current window.
+current_row() {
+  local cur ws_path
+  local -a target=(${TMUX_PANE:+-t} ${TMUX_PANE:-})
+  cur="$(tmux_ display -p "${target[@]}" $'#{window_id}\t#{@ws_path}' 2>/dev/null)"
+  ws_path="${cur#*$'\t'}" cur="${cur%%$'\t'*}"
+  print -r -- "$1" | awk -F '\t' -v w="$cur" -v p="$ws_path" '
+    w != "" && $3 == w { print NR; found = 1; exit }
+    p != "" && $2 == p && !byp { byp = NR }
+    END { if (!found) print (byp ? byp : 1) }'
 }
 
 unread_mark() { [[ "$1" == 1 ]] && print -n $'\e[1;36m•\e[0m' || print -n ' '; }
