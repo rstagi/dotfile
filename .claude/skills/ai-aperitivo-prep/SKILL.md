@@ -15,6 +15,7 @@ Run end to end without asking for confirmation. Leave the Luma event **private**
 | `date` | yes | Event date (e.g. `2026-11-18`). Month and year come from it. Time stays at the template's 18:30–21:30 unless told otherwise |
 | `sponsor` | yes | Sponsor name |
 | `sponsor_logo` | no | Local path or URL. If missing, find it yourself (see Step 0) |
+| `sponsor_url` | no | Sponsor website. If missing, find the official site in Step 0 |
 | `cover_image` | yes | Local path. Upload as given, no crop or resize |
 | `venue` | no | Name + address. Defaults to the sponsor's Milan office (see Step 0) |
 
@@ -48,7 +49,7 @@ To read a Google Doc's text, the page body is a canvas, so `read` won't work. Fe
 State lives in `~/.ai-aperitivo/<YYYY-MM>.json`:
 
 ```json
-{ "date": "...", "sponsor": "...", "venue": "...", "logo_path": "...",
+{ "date": "...", "sponsor": "...", "sponsor_url": "...", "venue": "...", "logo_path": "...",
   "luma_manage_url": "...", "luma_public_url": "...",
   "doc_url": "...", "deck_url": "...",
   "done": ["research", "luma_duplicate", "doc", "deck", "luma_fill"] }
@@ -61,7 +62,9 @@ At start, read the state file if it exists and skip every step already in `done`
 
 If one exists, adopt it, record its URL and verify its state rather than recreating it.
 
-## Step 0 — research (sponsor logo + venue)
+## Step 0 — research (sponsor site, logo, venue)
+
+- **Site** (only if `sponsor_url` is missing): find the sponsor's official website and record `sponsor_url`. The sponsor name is always linked to it in Luma.
 
 - **Logo** (only if `sponsor_logo` is missing): find the official logo on the sponsor's site, press kit or brand page. Use perplexity or WebSearch to locate it. Prefer a wide (horizontal) PNG or SVG, transparent or light background, readable on a light Luma theme. Convert SVG to PNG (e.g. `rsvg-convert` or `sips`). Save it under the scratchpad and record `logo_path`.
 - **Venue** (only if `venue` is missing): find the sponsor's main office **in Milan** (website contact page, Google Maps, LinkedIn). If they have no Milan office, stop and ask the user for the venue. That's the one allowed mid-run question.
@@ -84,6 +87,7 @@ If one exists, adopt it, record its URL and verify its state rather than recreat
 ## Step 3 — topics deck on aisocratic.org
 
 1. https://aisocratic.org/presentations → "Create new deck" → **Socratic event (full scaffold)**.
+   - **Before doing anything else**, open Menu → Deck setup, set the name and **Link** sharing, then click **Save deck**. The deck's URL slug comes from the name at its first save and can't be changed later. If you save slides first, the slug ends up as `deck`; a duplicate gets `-copy`.
 2. Open the deck menu (top-right hamburger) and add a **"Topics Coming Soon"** slide right after **"Socratic Dialogues"**. Copy it as-is from the deck template, whose slide order is Cover, Agenda, Our Mission, Guidelines, Selfie, Thanks, Intro, Socratic Dialogues, **Topics Coming Soon**, StackOverflow Live, Thank You. The user fills in topics later.
 3. In deck settings:
    - Event = **Generic deck (no event)**. The Luma event is private, so it can't be selected.
@@ -95,11 +99,17 @@ If one exists, adopt it, record its URL and verify its state rather than recreat
 
 ## Step 4 — fill the Luma event
 
+Everything is in the "Modifica Evento" form on the manage page. The description is a tiptap editor. Edit it through `document.querySelector('.ProseMirror').editor`: find each placeholder's position with `state.doc.descendants`, then use `chain().setTextSelection(...).insertContent([...text nodes with bold/italic/link marks])`. This is more reliable than typing.
+- **Sponsor logo:** select and delete the placeholder paragraph's text. The `.add-block-menu` widget then moves next to that empty paragraph. Set its hidden image `input[type=file]` with CDP `DOM.setFileInputFiles` (get the objectId via `Runtime.evaluate`). The image is inserted at that spot.
+- **Location:** type the address into "Luogo dell'evento" and pick the first Google suggestion.
+- **Cover:** "Cambia Foto" opens a dialog. Use the `upload` tool on its "file upload" button. The upload takes a few seconds and applies immediately.
+- **Clone dialog:** the date field is `dd/mm/yyyy`. Fill it, then press Tab so it gets parsed (it should show e.g. "mar 20 ott"). If the confirm button is covered by an overlay, click it via DOM.
+
 Edit the new event's description, modeled on the filled example and replacing each template placeholder:
 
 | Template placeholder | Replace with |
 |---|---|
-| `👉 This event has been sponsored by **<Sponsor(s) Here>**` | sponsor name, bold |
+| `👉 This event has been sponsored by **<Sponsor(s) Here>**` | sponsor name, bold, **always** linked to `sponsor_url` |
 | `Topics of this month: <Coming soon or blog post link…>` | link text `AI Socratic Milan <MONTH YEAR>` → `deck_url`, followed by 🔥 |
 | `🎤 Demos & Presentations: <Google Doc link…>` | link text `Google Doc` → `doc_url`, followed by 🔥 |
 | Socratic Conversations `<Coming soon or blog post link…>` | `coming soon 🔥` (blog post isn't out yet) |
