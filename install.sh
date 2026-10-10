@@ -625,6 +625,27 @@ install_claude_tools() {
   fi
 }
 
+# Parallel web search MCP (https://search.parallel.ai/mcp) for Claude Code, Codex and Ratel Local.
+# Key: 1Password "Parallel API Key" (or $PARALLEL_API_KEY), written as a literal header since
+# agents don't inherit load_secret vars. Idempotent per agent.
+configure_parallel_search() {
+  local url="https://search.parallel.ai/mcp" key
+  key="${PARALLEL_API_KEY:-$(op read "op://Remote Agents/Parallel API Key/credential" 2>/dev/null)}"
+  if [ -z "$key" ]; then
+    echo "parallel-search: no key (1Password 'Parallel API Key' or \$PARALLEL_API_KEY) — skipped" >&2
+    return 0
+  fi
+  claude mcp get parallel-search &> /dev/null || \
+    claude mcp add --scope user --transport http parallel-search "$url" --header "Authorization: Bearer $key"
+  if command -v codex &> /dev/null && ! grep -q '^\[mcp_servers\.parallel-search\]' "$HOME/.codex/config.toml" 2>/dev/null; then
+    printf '\n[mcp_servers.parallel-search]\nurl = "%s"\nhttp_headers = { Authorization = "Bearer %s" }\n' \
+      "$url" "$key" >> "$HOME/.codex/config.toml"
+  fi
+  if command -v ratel-local &> /dev/null && ! ratel-local mcp get parallel-search &> /dev/null; then
+    ratel-local mcp add --transport http --header "Authorization: Bearer $key" parallel-search "$url"
+  fi
+}
+
 install_claude_config() {
   configure_claude() {
     # Symlink entire agents and skills folders from dotfile
@@ -666,6 +687,8 @@ install_claude_config() {
     grep -q scrapegraph <<< "$mcp_list" || \
       claude mcp add --scope user scrapegraph-mcp -- \
         npx mcp-remote https://mcp.scrapegraphai.com/mcp --header "X-API-Key:\${SCRAPEGRAPH_API_KEY}"
+
+    configure_parallel_search
 
     # Enable Perplexity plugin in settings
     local settings="$HOME/.claude/settings.json"
