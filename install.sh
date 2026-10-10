@@ -690,13 +690,6 @@ install_claude_config() {
 
     configure_parallel_search
 
-    # Enable Perplexity plugin in settings
-    local settings="$HOME/.claude/settings.json"
-    if [ -f "$settings" ]; then
-      local updated
-      updated=$(jq '.enabledPlugins["perplexity@perplexity-mcp-server"] = true' "$settings")
-      echo "$updated" > "$settings"
-    fi
 
     echo "Agent config installed (Claude Code, Codex, Ratel Local, MCP servers)"
   }

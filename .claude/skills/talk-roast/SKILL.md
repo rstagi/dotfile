@@ -132,8 +132,8 @@ Record a per-claim verdict — `verified` / `wrong` / `unsourced` / `misattribut
 against `../talk/references/sources.md`. **Flag every statistic with no traceable source** — that is the
 user's explicit ask, and "it has a citation" is not the same as "the source exists and says this."
 
-Prefer the **Perplexity MCP tools** if available (`perplexity_search` for the source URL,
-`perplexity_research` for contested claims, `perplexity_ask` for a quick cited check); degrade to
+Prefer the **Parallel search MCP** if available (`web_search` for the source URL,
+several queries per call for contested claims, `web_fetch` to read the primary source); degrade to
 `WebSearch` / `WebFetch`. When you can't reach a primary source, the verdict is `needs human check` —
 a TODO for the speaker, so you flag it rather than guessing or passing it over in silence.
 

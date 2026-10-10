@@ -1,8 +1,8 @@
 # Research, evidence, analogy — the subroutines
 
 The mechanics behind Steps 4 and 6 of the skill. Short attributions; full bibliography in
-[`../../talk/references/sources.md`](../../talk/references/sources.md). Prefer **Perplexity MCP tools**
-when loaded (`perplexity_search`, `perplexity_research`, `perplexity_ask` — they return citations);
+[`../../talk/references/sources.md`](../../talk/references/sources.md). Prefer the **Parallel search MCP**
+when loaded (`web_search`, `web_fetch` — results carry source URLs);
 **degrade to `WebSearch` / `WebFetch`** otherwise.
 
 ---
