@@ -8,10 +8,10 @@ set -u -o pipefail
 #
 # Usage:
 #   loop-runner.sh --worktree <path> --run-dir <abs path> --prompt-file <f>
-#     [--chain task|escalate|review-adv-a|review-adv-b|review-fix|review-final]
+#     [--chain task|escalate|review-adv-a|review-adv-b|review-adv-c|review-fix|review-final]
 #     [--review-tier shallow|medium|max]   (review chains; default LOOP_REVIEW_TIER_DEFAULT)
 #     [--timeout <s>] [--verify-cmd <cmd>]
-#     [--resume <sessionId> --engine codex|claude] [--models-conf <f>] [--budget <usd>]
+#     [--resume <sessionId> --engine codex|claude|grok] [--models-conf <f>] [--budget <usd>]
 #     [--loop-dir <d>]   (default: RUN_DIR/../.. — the coordinator .loop/)
 #
 # Live controls (polled every LOOP_CONTROL_POLL_SEC, default 2s, while the engine runs):
@@ -91,6 +91,7 @@ trap 'loop_runner_finish $?' EXIT
 source "$MODELS_CONF" || { echo "loop-runner: cannot source $MODELS_CONF" >&2; exit 1; }
 (( ${+CODEX_EXTRA_ARGS} )) || CODEX_EXTRA_ARGS=()
 (( ${+CLAUDE_EXTRA_ARGS} )) || CLAUDE_EXTRA_ARGS=()
+(( ${+GROK_EXTRA_ARGS} )) || GROK_EXTRA_ARGS=()
 LOOP_TASK_DEFAULT_PROFILE="${LOOP_TASK_DEFAULT_PROFILE:-default}"
 LOOP_TASK_LIGHT_PROFILE="${LOOP_TASK_LIGHT_PROFILE:-light}"
 LOOP_JEV_KEY_FILE="${LOOP_JEV_KEY_FILE:-$SCRIPT_DIR/.loop-secrets/typesafe-api-key}"
@@ -114,12 +115,12 @@ EFFORT=""
 case "$CHAIN_NAME" in
 task) chain=("${CHAIN_TASK[@]}"); EFFORT="${EFFORT_TASK:-}"; TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_TASK}" ;;
 escalate) chain=("${CHAIN_ESCALATE[@]}"); EFFORT="${EFFORT_ESCALATE:-}"; TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_ESCALATE}" ;;
-review-adv-a|review-adv-b|review-fix|review-final)
+review-adv-a|review-adv-b|review-adv-c|review-fix|review-final)
   REVIEW_TIER="${REVIEW_TIER:-${LOOP_REVIEW_TIER_DEFAULT:-medium}}"
   [[ "$REVIEW_TIER" == (shallow|medium|max) ]] || {
     echo "loop-runner: unknown review tier '$REVIEW_TIER' (shallow|medium|max)" >&2; exit 1
   }
-  review_role="${${CHAIN_NAME#review-}//-/_}"   # adv_a | adv_b | fix | final
+  review_role="${${CHAIN_NAME#review-}//-/_}"   # adv_a | adv_b | adv_c | fix | final
   review_var="REVIEW_${(U)REVIEW_TIER}_${(U)review_role}"
   chain_var="CHAIN_$review_var" effort_var="EFFORT_$review_var"
   (( ${(P)+chain_var} )) && (( ${#${(P)chain_var}} )) || {
@@ -150,7 +151,7 @@ CONTROL_POLL="${LOOP_CONTROL_POLL_SEC:-2}"
 MODEL_OVERRIDE=""
 if [[ "$CHAIN_NAME" == task && -n "$PHASE" && -z "$RESUME_SID" && -f "$CONTROL_DIR/model-$PHASE" ]]; then
   override_leg="$(head -n 1 "$CONTROL_DIR/model-$PHASE" | tr -d '[:space:]')"
-  if [[ "$override_leg" =~ '^(codex|claude):@?[A-Za-z0-9._-]+(\+[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*)?$' ]]; then
+  if [[ "$override_leg" =~ '^(codex|claude|grok):@?[A-Za-z0-9._-]+(\+[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*)?$' ]]; then
     MODEL_OVERRIDE="$override_leg"
     chain=("$MODEL_OVERRIDE" ${CHAIN_TASK:#$MODEL_OVERRIDE})
     ROUTE_FALLBACK_REASON="user-override"
@@ -302,8 +303,8 @@ ORIG_RESUME_SID="$RESUME_SID" PROMPT_IN="$RUN_DIR/prompt.md"
 
 write_meta() { # $1 = engine exit code
   local sid model="$CUR_MODEL" init_model
-  # claude aliases (opus, sonnet, fable, resume) → the concrete model from the init event
-  if [[ "$CUR_ENGINE" == claude ]]; then
+  # claude aliases (opus, sonnet, fable, resume) / grok default → the concrete model from the init event
+  if [[ "$CUR_ENGINE" == (claude|grok) ]]; then
     init_model="$(jq -r 'select(.type == "system" and .subtype == "init") | .model // empty' \
       "$TRANSCRIPT" 2>/dev/null | head -1)"
     [[ -n "$init_model" ]] && model="$init_model"
@@ -336,10 +337,13 @@ write_leg() {
 
 # --- engine launchers (backgrounded by run_leg; cwd/-C = the worktree) ---
 
-# Effort actually passed for the current leg: claude has no `ultra`, so it clamps to max.
+# Effort actually passed for the current leg: claude has no `ultra` (clamps to max); grok tops
+# out at xhigh (max/ultra clamp to it).
 leg_effort() {
   [[ -n "$EFFORT" ]] || return 0
-  if [[ "$CUR_ENGINE" == claude && "$EFFORT" == ultra ]]; then print -r -- max; else print -r -- "$EFFORT"; fi
+  if [[ "$CUR_ENGINE" == claude && "$EFFORT" == ultra ]]; then print -r -- max
+  elif [[ "$CUR_ENGINE" == grok && "$EFFORT" == (max|ultra) ]]; then print -r -- xhigh
+  else print -r -- "$EFFORT"; fi
 }
 
 launch_claude() { # $1 model, $2 fallback (may be empty)
@@ -376,6 +380,20 @@ launch_codex() { # $1 model
   fi
 }
 
+# Grok Build: `grok:default` runs the CLI's default (latest) model; a full name pins it with -m.
+# streaming-messages-json is claude-shaped (system/init carries session_id + model, then a
+# result line), so meta/last.md extraction is shared with claude. No budget flag (like codex).
+launch_grok() { # $1 model
+  local effort_args=() model_args=() resume_args=() effort
+  effort="$(leg_effort)"
+  [[ -n "$effort" ]] && effort_args=(--effort "$effort")
+  [[ -n "$1" && "$1" != (default|resume) ]] && model_args=(-m "$1")
+  [[ -n "$RESUME_SID" ]] && resume_args=(--resume "$RESUME_SID")
+  ( cd "$WT" && command grok --prompt-file "$PROMPT_IN" "${resume_args[@]}" "${model_args[@]}" "${effort_args[@]}" \
+      "${GROK_EXTRA_ARGS[@]}" --always-approve --output-format streaming-messages-json \
+      > "$TRANSCRIPT" 2> "$STDERR" )
+}
+
 descendants() { # print pids of the full process tree under $1 (depth-first)
   local p
   for p in $(pgrep -P "$1" 2>/dev/null); do
@@ -394,11 +412,11 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
       return 200
     fi
   fi
-  if [[ "$CUR_ENGINE" == "claude" ]]; then
-    launch_claude "$CUR_MODEL" "$CUR_FALLBACK" &
-  else
-    launch_codex "$CUR_MODEL" &
-  fi
+  case "$CUR_ENGINE" in
+  claude) launch_claude "$CUR_MODEL" "$CUR_FALLBACK" & ;;
+  grok) launch_grok "$CUR_MODEL" & ;;
+  *) launch_codex "$CUR_MODEL" & ;;
+  esac
   local child=$!
   # watchdog only marks + TERMs the whole tree; the KILL follow-through happens in the
   # main flow after wait (the watchdog dies with its TERM'd parent otherwise)
@@ -552,8 +570,8 @@ is_transient() { grep -qiE 'overloaded|"5[0-9][0-9]"|status.?5[0-9][0-9]|ECONNRE
 # --- chain loop: every attempt starts at the top of the chain ---
 
 if [[ -n "$RESUME_SID" ]]; then
-  [[ "$RESUME_ENGINE" == "claude" || "$RESUME_ENGINE" == "codex" ]] || {
-    echo "loop-runner: --resume requires --engine claude|codex" >&2; exit 1
+  [[ "$RESUME_ENGINE" == (claude|codex|grok) ]] || {
+    echo "loop-runner: --resume requires --engine claude|codex|grok" >&2; exit 1
   }
   chain=("${RESUME_ENGINE}:resume")
 fi
@@ -662,7 +680,7 @@ if [[ $final_rc -eq 40 ]]; then
   exit 40
 fi
 
-# claude writes no -o file; extract the final message for humans/post-mortems
+# claude/grok write no -o file; extract the final message for humans/post-mortems
 if [[ ! -s "$LAST" ]]; then
   jq -r 'select(.type == "result") | .result // empty' "$TRANSCRIPT" 2>/dev/null > "$LAST" || true
 fi

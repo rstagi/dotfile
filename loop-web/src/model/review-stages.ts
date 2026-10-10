@@ -33,7 +33,7 @@ export function reviewStageRuns(
   });
 }
 
-/** loop-review.sh stages: medium/max run the adversary pair each round; shallow runs one
+/** loop-review.sh stages: medium/max run three adversaries each round (gpt, claude, grok); shallow runs one
  * reviewer and its last round is `final` alone. Every round but the last is followed by a fix. */
 export function planReviewRuns(tier: ReviewTier, rounds: number | null): PlannedReviewRun[] {
   const total = rounds ?? DEFAULT_REVIEW_ROUNDS[tier];
@@ -46,6 +46,7 @@ export function planReviewRuns(tier: ReviewTier, rounds: number | null): Planned
     } else {
       add(`round${r}`, "review-adv-a");
       add(`round${r}`, "review-adv-b");
+      add(`round${r}`, "review-adv-c");
     }
     if (r < total) add(`fix${r}`, "review-fix");
   }

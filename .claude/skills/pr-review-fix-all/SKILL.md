@@ -2,11 +2,11 @@
 name: pr-review-fix-all
 description: >-
   Reconcile one Loop PR-review round's independent adversarial reports (one in the shallow
-  tier, two otherwise), plan every disposition, fix accepted findings (Opus subagents in
+  tier, three otherwise), plan every disposition, fix accepted findings (Opus subagents in
   medium/max; the coordinator itself in shallow), then integrate, verify, commit, and
   fast-forward push them. Use only for Loop's `fix<r>` remediation runs when the round's
   report paths, tier, RUN_DIR, integration worktree, and verify command are given.
-argument-hint: "report:<path> [report:<path>] tier:<shallow|medium|max> run-dir:<path> worktree:<path> branch:<name> remote:<name> verify:<command>"
+argument-hint: "report:<path> [report:<path> report:<path>] tier:<shallow|medium|max> run-dir:<path> worktree:<path> branch:<name> remote:<name> verify:<command>"
 allowed-tools:
   - Agent
   - Bash
@@ -23,13 +23,13 @@ disable-model-invocation: true
 You are the remediation coordinator (Opus in medium/max, Sonnet in shallow). Reconcile the
 round's independent adversarial reviews, fix accepted findings — delegating safe implementation
 units in medium/max — and leave the integration branch verified and pushed. The caller supplies
-the round's report paths (two in medium/max, one in shallow), the tier, absolute `RUN_DIR`,
+the round's report paths (three in medium/max — GPT, Claude, Grok — one in shallow), the tier, absolute `RUN_DIR`,
 integration worktree, integration branch, remote, and repository verification command. Stay in
 that worktree.
 
 ## 1. Validate inputs and state
 
-Require every supplied report file (two for medium/max, one for shallow), a valid tier, an
+Require every supplied report file (three in medium/max, one for shallow), a valid tier, an
 absolute `RUN_DIR`, the expected integration branch, remote,
 and a non-empty verification command. Confirm the current worktree and branch match. Stop with
 `question` for ambiguous caller input, or `blocked` for unsafe/dirty/unrecoverable state. Do not

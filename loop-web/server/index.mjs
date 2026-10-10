@@ -30,7 +30,7 @@ const NOTE_BYTES = 16 * 1024;
 const CONTROL_ACTIONS = new Set(["pause", "resume", "model", "review"]);
 const REVIEW_TIERS = new Set(["shallow", "medium", "max"]);
 /** `engine:model[+fallback[,fallback2]]` — the loop-models.conf leg grammar. */
-const MODEL_LEG = /^(codex|claude):@?[A-Za-z0-9._-]+(\+[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*)?$/;
+const MODEL_LEG = /^(codex|claude|grok):@?[A-Za-z0-9._-]+(\+[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*)?$/;
 const DECISION_FILE_BYTES = 128 * 1024;
 const BODY_LIMIT = 4 * 1024 * 1024; // cap an ingest body (plan md + state) — reject beyond
 const HOST = "127.0.0.1";
@@ -413,7 +413,7 @@ function handleControl(runId, req, res) {
     if (action === "review") return setReviewTier(entry, loopDir, phase, parsed.tier, res);
     const leg = parsed.leg ?? null;
     if (action === "model" && leg !== null && (typeof leg !== "string" || !MODEL_LEG.test(leg))) {
-      return json(res, 400, { error: "leg must be codex|claude:<model>[+fallback[,fallback]]" });
+      return json(res, 400, { error: "leg must be codex|claude|grok:<model>[+fallback[,fallback]]" });
     }
     if (action === "model" && phaseStarted(entry.record, loopDir, phase)) {
       return json(res, 409, { error: "phase already started — model can only change before its first attempt", phase });

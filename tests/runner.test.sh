@@ -282,6 +282,19 @@ assert_exit "$RC" "0" "medium adversary B completes"
 assert_contains "$INVOCATIONS" 'claude -p --model opus ' "medium adversary B is Opus"
 assert_contains "$INVOCATIONS" '--effort xhigh' "medium adversary B runs at xhigh"
 
+run_review review-adv-c
+assert_exit "$RC" "0" "medium adversary C completes"
+assert_contains "$INVOCATIONS" 'grok --prompt-file ' "medium adversary C is Grok (headless, prompt from file)"
+assert_contains "$INVOCATIONS" '--always-approve' "grok skips approvals"
+assert_contains "$INVOCATIONS" '--output-format streaming-messages-json' "grok streams a claude-shaped transcript"
+assert_contains "$INVOCATIONS" '--effort xhigh' "medium adversary C runs at xhigh"
+assert_eq "$([[ "$INVOCATIONS" == *' -m '* ]] && echo yes || echo no)" "no" "grok:default runs the CLI's default (latest) model"
+assert_eq "$(jq -r '.engine' "$RUN_DIR/meta.json")" "grok" "meta records the grok engine"
+assert_eq "$(jq -r '.model' "$RUN_DIR/meta.json")" "grok-4.7" "meta records the concrete model from the init event"
+assert_eq "$(jq -r '.sessionId' "$RUN_DIR/meta.json")" "s-grok" "meta keeps the grok session for resume"
+assert_eq "$(cat "$RUN_DIR/last.md")" "grok done" "final message extracted to last.md"
+assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "adversary C has no fallback reviewer"
+
 run_review review-fix
 assert_exit "$RC" "0" "medium remediation coordinator completes"
 assert_contains "$INVOCATIONS" 'claude -p --model opus ' "medium fixes run on Opus"
@@ -304,6 +317,10 @@ assert_contains "$INVOCATIONS" 'claude -p --model fable ' "max adversary B is Fa
 assert_contains "$INVOCATIONS" '--effort max' "Fable runs at max"
 run_review review-final rate-limit --review-tier max
 assert_contains "$INVOCATIONS" '--effort max' "max verdict runs at max"
+run_review review-adv-c rate-limit --review-tier max
+assert_contains "$INVOCATIONS" 'grok --prompt-file ' "max adversary C is Grok"
+assert_contains "$INVOCATIONS" '--effort xhigh' "grok has no max: clamped to xhigh"
+assert_eq "$(jq -r '.effort' "$RUN_DIR/meta.json")" "xhigh" "meta records the clamped effort"
 
 echo "runner: shallow tier — one Opus reviewer, Sonnet fixes, no adversary B"
 run_review review-adv-a rate-limit --review-tier shallow
@@ -314,6 +331,8 @@ assert_contains "$INVOCATIONS" 'claude -p --model sonnet ' "shallow fixes run on
 assert_contains "$INVOCATIONS" '--effort medium' "shallow fixes run at medium"
 run_review review-adv-b rate-limit --review-tier shallow
 assert_exit "$RC" "1" "shallow has no adversary B (usage error)"
+run_review review-adv-c rate-limit --review-tier shallow
+assert_exit "$RC" "1" "shallow has no adversary C (usage error)"
 run_review review-adv-a rate-limit --review-tier huge
 assert_exit "$RC" "1" "unknown tier is a usage error"
 
@@ -449,5 +468,15 @@ assert_exit "$RC" "0" "alias leg completes"
 assert_contains "$(print -r -- "$INVOCATIONS" | head -1)" "claude -p --model opus " "alias passed through to claude"
 assert_eq "$(jq -r '.model' "$RUN_DIR/meta.json")" "claude-opus-5-5" "meta records the concrete model"
 unset FAKE_CODEX_MODELS
+
+echo "runner: a grok session resumes with --engine grok"
+run_review review-adv-c rate-limit --resume s-grok --engine grok
+assert_exit "$RC" "0" "grok resume completes"
+assert_contains "$INVOCATIONS" '--resume s-grok' "resumes the grok session by id"
+
+echo "runner: a pinned grok model is passed with -m"
+{ cat "$ROOT/loop-models.conf"; print -r -- 'CHAIN_TASK=("grok:grok-4.6")'; } > "$TMP/grok-models.conf"
+run_review task rate-limit --models-conf "$TMP/grok-models.conf"
+assert_contains "$(print -r -- "$INVOCATIONS" | grep '^grok ')" '-m grok-4.6' "pinned grok model reaches the grok CLI"
 
 test_summary

@@ -21,8 +21,8 @@ between repositories.
   `` `[kind: pr-review]` ``; phases without `kind:` are work phases.
 - A review phase may add `` `[review: shallow|medium|max]` `` (default `medium`) and
   `` `[rounds: N]` `` (default per tier: shallow 1, medium 3, max 3; `1 ≤ N ≤ 5`). shallow = one
-  Opus reviewer, Sonnet fixes; medium = Sol + Opus adversaries, Opus fixes; max = Astra + Fable
-  adversaries, Opus fixes; every tier ends with one Opus verdict. `loop-review.sh stages` turns
+  Opus reviewer, Sonnet fixes; medium = Sol + Opus + Grok adversaries, Opus fixes; max = Astra +
+  Fable + Grok adversaries, Opus fixes; every tier ends with one Opus verdict. `loop-review.sh stages` turns
   the pair into the run list.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.

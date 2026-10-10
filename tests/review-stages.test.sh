@@ -19,26 +19,30 @@ CONF
 stages() { zsh "$ROOT/loop-review.sh" stages --models-conf "$CONF" "$@" 2>"$TMP/err"; }
 T=$'\t'
 
-echo "review-stages: medium 3 is today's nine-run pipeline"
+echo "review-stages: medium 3 — three adversaries per round (gpt, claude, grok)"
 assert_eq "$(stages --tier medium --rounds 3)" "a1${T}round1${T}review-adv-a
 a2${T}round1${T}review-adv-b
-a3${T}fix1${T}review-fix
-a4${T}round2${T}review-adv-a
-a5${T}round2${T}review-adv-b
-a6${T}fix2${T}review-fix
-a7${T}round3${T}review-adv-a
-a8${T}round3${T}review-adv-b
-a9${T}final${T}review-final" "medium 3 → 9 runs"
+a3${T}round1${T}review-adv-c
+a4${T}fix1${T}review-fix
+a5${T}round2${T}review-adv-a
+a6${T}round2${T}review-adv-b
+a7${T}round2${T}review-adv-c
+a8${T}fix2${T}review-fix
+a9${T}round3${T}review-adv-a
+a10${T}round3${T}review-adv-b
+a11${T}round3${T}review-adv-c
+a12${T}final${T}review-final" "medium 3 → 12 runs"
 
-echo "review-stages: medium 1 is one adversarial pair + verdict"
+echo "review-stages: medium 1 is one adversarial trio + verdict"
 assert_eq "$(stages --tier medium --rounds 1)" "a1${T}round1${T}review-adv-a
 a2${T}round1${T}review-adv-b
-a3${T}final${T}review-final" "medium 1 → 3 runs"
+a3${T}round1${T}review-adv-c
+a4${T}final${T}review-final" "medium 1 → 4 runs"
 
 echo "review-stages: max 2"
 assert_eq "$(stages --tier max --rounds 2 | cut -f2,3 | tr '\t\n' ' |')" \
-  "round1 review-adv-a|round1 review-adv-b|fix1 review-fix|round2 review-adv-a|round2 review-adv-b|final review-final|" \
-  "max 2 → pair, fix, pair, final"
+  "round1 review-adv-a|round1 review-adv-b|round1 review-adv-c|fix1 review-fix|round2 review-adv-a|round2 review-adv-b|round2 review-adv-c|final review-final|" \
+  "max 2 → trio, fix, trio, final"
 
 echo "review-stages: shallow has one reviewer and no adversary in the last round"
 assert_eq "$(stages --tier shallow --rounds 1)" "a1${T}final${T}review-final" "shallow 1 → the final run alone"
@@ -49,7 +53,7 @@ a4${T}fix2${T}review-fix
 a5${T}final${T}review-final" "shallow 3 → review/fix ×2, final"
 
 echo "review-stages: defaults come from the models conf"
-assert_eq "$(stages | wc -l | tr -d ' ')" "9" "no flags → medium 3"
+assert_eq "$(stages | wc -l | tr -d ' ')" "12" "no flags → medium 3"
 assert_eq "$(stages --tier shallow | wc -l | tr -d ' ')" "1" "shallow without rounds → its default (1)"
 
 echo "review-stages: validation"

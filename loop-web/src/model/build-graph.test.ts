@@ -183,9 +183,9 @@ describe("buildGraph — review pipeline sub-stages", () => {
     };
     const graph = buildGraph(parsePlan(MULTI_REPO_REVIEW), rt);
     const stages = node(graph, "4").reviewStages ?? [];
-    expect(stages).toHaveLength(18); // medium ×3 = 9 runs × 2 repositories
+    expect(stages).toHaveLength(24); // medium ×3 = 12 runs × 2 repositories
     expect(stages[0]).toMatchObject({ repository: "acme/api", k: 1, stage: "round1", state: "running", model: "@sol" });
-    expect(stages[9]).toMatchObject({ repository: "acme/web", k: 1, state: "todo" });
+    expect(stages[12]).toMatchObject({ repository: "acme/web", k: 1, state: "todo" });
     expect(node(graph, "2").reviewStages).toBeUndefined();
   });
 });
