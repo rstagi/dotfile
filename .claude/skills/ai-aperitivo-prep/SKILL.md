@@ -81,6 +81,7 @@ If one exists, adopt it, record its URL and verify its state rather than recreat
 1. Make a copy of the doc template (File → Make a copy, or `…/copy` URL) in the **same Drive folder** as the template.
 2. Title: `AI Aperitivo Milan Presentations — <DATE_LONG>`.
 3. In the body, replace `<date>` with `<DATE_ORDINAL>` and `<luma link>` with `luma_public_url`. Leave everything else (moderators, rules, table) untouched. Compare with the filled example.
+   - The Luma URL must be a **clickable hyperlink**, not plain text. Find & Replace (⌘⇧H) only inserts plain text. After replacing, press ⌘F, search for the URL, press Esc (this selects the match in the doc), then press ⌘K: Docs links the selected URL to itself. Verify with `/export?format=html`: there should be an `<a href=…luma.com/…>` around the URL.
 4. Share → General access: **Anyone with the link → Editor**.
 5. Record `doc_url` as the `…/edit?usp=sharing` link.
 
