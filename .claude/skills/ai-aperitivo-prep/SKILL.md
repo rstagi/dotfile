@@ -66,7 +66,7 @@ If one exists, adopt it, record its URL and verify its state rather than recreat
 
 - **Site** (only if `sponsor_url` is missing): find the sponsor's official website and record `sponsor_url`. The sponsor name is always linked to it in Luma.
 
-- **Logo** (only if `sponsor_logo` is missing): find the official logo on the sponsor's site, press kit or brand page. Use perplexity or WebSearch to locate it. Prefer a wide (horizontal) PNG or SVG, transparent or light background, readable on a light Luma theme. Convert SVG to PNG (e.g. `rsvg-convert` or `sips`). Save it under the scratchpad and record `logo_path`.
+- **Logo** (only if `sponsor_logo` is missing): find the official logo on the sponsor's site, press kit or brand page. Use Google search in BrowserOS to locate it. Prefer a wide (horizontal) PNG or SVG, transparent or light background, readable on a light Luma theme. Convert SVG to PNG (e.g. `rsvg-convert` or `sips`). Save it under the scratchpad and record `logo_path`.
 - **Venue** (only if `venue` is missing): find the sponsor's main office **in Milan** (website contact page, Google Maps, LinkedIn). If they have no Milan office, stop and ask the user for the venue. That's the one allowed mid-run question.
 
 ## Step 1 — duplicate the Luma template (private)
@@ -86,16 +86,24 @@ If one exists, adopt it, record its URL and verify its state rather than recreat
 
 ## Step 3 — topics deck on aisocratic.org
 
-1. https://aisocratic.org/presentations → "Create new deck" → **Socratic event (full scaffold)**.
-   - **Before doing anything else**, open Menu → Deck setup, set the name and **Link** sharing, then click **Save deck**. The deck's URL slug comes from the name at its first save and can't be changed later. If you save slides first, the slug ends up as `deck`; a duplicate gets `-copy`.
-2. Open the deck menu (top-right hamburger) and add a **"Topics Coming Soon"** slide right after **"Socratic Dialogues"**. Copy it as-is from the deck template, whose slide order is Cover, Agenda, Our Mission, Guidelines, Selfie, Thanks, Intro, Socratic Dialogues, **Topics Coming Soon**, StackOverflow Live, Thank You. The user fills in topics later.
-3. In deck settings:
-   - Event = **Generic deck (no event)**. The Luma event is private, so it can't be selected.
-   - Leave Blog post at its default.
-   - Saved deck name `AI Socratic Milan <MONTH YEAR>`.
+Create the deck from scratch with "Create new deck". **Never** use "Duplicate presentation" or "Use as template": they give a `-copy` slug and a `(copy)` name.
+
+1. https://aisocratic.org/presentations → "Create new deck" → **Socratic event (full scaffold)**. This opens an unsaved deck at `/slides/1`.
+2. **Before touching any slide**, open Menu (top-right hamburger) → Deck setup and set:
+   - Event = **Generic deck (no event)** (the default). The Luma event is private, so it can't be selected.
+   - Blog post left at its default.
+   - Deck name `AI Socratic Milan <MONTH YEAR>`.
    - Sharing **Link**.
-   - Click **Save changes**.
-4. Record `deck_url` with "Copy link", or use `https://aisocratic.org/slides/<slug>`.
+
+   Then click **Save deck**. The URL slug comes from the name at this first save and can't be changed afterwards. If you save slides first, the slug ends up as `deck`. You should land on `/slides/ai-socratic-milan-<month>-<year>/1`.
+3. Close Deck setup. Click the "Socratic Dialogues" slide, then Menu → **Edit slides** → **Add slide**. The new slide is added after the current one; it's a title slide named "Slide".
+4. Select that new slide and set its title (the `h2[contenteditable]`) to **Topics Coming Soon**. This matches the template's slide. Click **Save**. The final order should be:
+   - Cover, Agenda, Our Mission, Guidelines, Selfie, Thanks, Intro
+   - Socratic Dialogues, **Topics Coming Soon**
+   - StackOverflow Live, Thank You
+
+   The user fills in the topics later.
+5. Record `deck_url` = `https://aisocratic.org/slides/<slug>`. Check on /presentations that exactly one deck has this name and that it shows "Link only".
 
 ## Step 4 — fill the Luma event
 
