@@ -14,13 +14,14 @@ export WS_HOME="$TMP/wshome"
 export WS_NOTIFY=0
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
+export GROK_HOME="$TMP/grokhome"
 trap 'tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
 WS="$ROOT/ws.sh"
 T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
 # Fake agents print their argv, then stay alive until a line arrives (→ clean exit 0).
 mkdir -p "$TMP/bin"
-for agent in claude codex; do
+for agent in claude codex grok; do
   cat > "$TMP/bin/$agent" <<EOF
 #!/bin/sh
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE"
@@ -155,6 +156,27 @@ assert_contains "$(wait_pane "$(slot_window "$WT" 1)" sid-claude-1)" "--resume s
 assert_contains "$(wait_pane "$(slot_window "$WT" 2)" sid-codex-2)" "resume sid-codex-2" "codex session resumed by id"
 assert_eq "$(session_of "$(slot_window "$WT" 2)")" "api/feat-login" "restored into one worktree session"
 
+echo "ws grok: launched w/ --always-approve + global ws hook file; resumed by GROK_SESSION_ID"
+"$WS" new --repo "$REPO" --branch grokky --agent grok --detach
+GWT="$WS_ROOT/api/grokky"
+GW="$(slot_window "$GWT" 1)"
+assert_eq "$(T display -p -t "$GW" '#{window_name}')" "grok" "grok tab named after agent"
+assert_contains "$(wait_pane "$GW" FAKE-grok)" "--always-approve" "grok skips approvals"
+GH="$GROK_HOME/hooks/ws.json"
+assert_eq "$(jq -r '.hooks.StopCancelled[0].hooks[0].command' "$GH" 2>/dev/null)" "$WS hook idle" "grok hook file: StopCancelled → idle"
+assert_eq "$(jq -r '.hooks.Notification[0].matcher' "$GH" 2>/dev/null)" "permission_prompt" "grok hook file: permission prompt → waiting"
+"$WS" add api/grokky --agent grok --detach
+GW2="$(slot_window "$GWT" 2)"
+assert_eq "$(T display -p -t "$GW2" '#{window_name}')" "grok#2" "second grok tab named grok#2"
+GROK_SESSION_ID=sid-grok-2 hook api/grokky "$GW2" idle </dev/null
+T kill-window -t "$GW"; T kill-window -t "$GW2"
+"$WS" open api/grokky --detach
+wait_until test -n "$(slot_window "$GWT" 2)"
+assert_contains "$(wait_pane "$(slot_window "$GWT" 2)" sid-grok-2)" "--resume sid-grok-2" "grok resumed by GROK_SESSION_ID"
+"$WS" add api/grokky --agent gemini --detach 2>/dev/null
+assert_exit "$?" "1" "unknown agent refused"
+"$WS" rm api/grokky --force --delete-branch
+
 echo "ws add: defaults to the worktree you're in"
 before="$(windows_of "$WT" | wc -l | tr -d ' ')"
 (cd "$WT" && "$WS" add --agent codex --detach)
@@ -224,6 +246,9 @@ assert_eq "$(windows_of "$first" | wc -l | tr -d ' ')" "$((before + 1))" "ctrl-a
 sed -i '' 's/ctrl-a/ctrl-t/' "$TMP/bin/fzf"
 TMUX=fake "$WS" pick 2>/dev/null
 assert_eq "$("$WS" list | awk -F '\t' -v p="$first" '$3 == p && $4 == "codex"' | wc -l | tr -d ' ')" "1" "ctrl-t on the first row adds a codex session"
+sed -i '' 's/ctrl-t/ctrl-v/' "$TMP/bin/fzf"
+TMUX=fake "$WS" pick 2>/dev/null
+assert_eq "$("$WS" list | awk -F '\t' -v p="$first" '$3 == p && $4 == "grok"' | wc -l | tr -d ' ')" "1" "ctrl-v on the first row adds a grok session"
 
 echo "ws open / pick: a running workspace opens on its last-used tab"
 "$WS" add web/zeta --agent codex --detach

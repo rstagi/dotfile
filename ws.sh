@@ -4,14 +4,15 @@ zmodload zsh/system # zsystem flock (sessions file)
 
 # ws — bare-minimum terminal Conductor: one git worktree + one tmux session per workspace,
 # one tab (window) per agent session inside it. Status and resume ids come from Claude Code /
-# Codex hooks — no screen scraping.
+# Codex / Grok Build hooks — no screen scraping.
 #
 #   ws                         picker (attaches when run outside tmux)
-#   ws new [--repo P] [--branch B] [--agent claude|codex] [--detach]
-#   ws add [name|path] [--agent claude|codex] [--detach]   another agent tab (default: current worktree)
+#   ws new [--repo P] [--branch B] [--agent claude|codex|grok] [--detach]
+#   ws add [name|path] [--agent claude|codex|grok] [--detach]   another agent tab (default: current worktree)
 #   ws open <name|path> [--detach]   focus, or restore every recorded session (resumed by id)
 #   ws pick                    grouped picker: enter open · ctrl-n new · ctrl-o new codex ·
-#                              ctrl-a add claude tab · ctrl-t add codex tab · ctrl-p pin · ctrl-x rm ·
+#                              ctrl-r new grok · ctrl-a add claude tab · ctrl-t add codex tab ·
+#                              ctrl-v add grok tab · ctrl-p pin · ctrl-x rm ·
 #                              ctrl-s show/hide sessions · ctrl-u toggle unread (• = finished, not yet seen)
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
 #   ws list                    TSV: state name path agent window pinned active unread
@@ -20,7 +21,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              default squash), fast-forward the main checkout, then on confirm
 #                              remove worktree + tabs + local/remote branch (prefix+M); if
 #                              dirty, lists the files and asks to force delete
-#   ws claude|codex [args]     run the agent in this tab as a tracked session (e.g. a prefix+c tab)
+#   ws claude|codex|grok [args]  run the agent in this tab as a tracked session (e.g. a prefix+c tab)
 #   ws hook <event>            called by agent hooks inside a session window
 #                              (working|idle|waiting|subagent-start|subagent-stop)
 #
@@ -46,6 +47,8 @@ WS_REPO_ROOTS="${WS_REPO_ROOTS:-$HOME/Dev $HOME/dotfile}" # scanned for repos by
 PINS="$WS_HOME/pins"
 SHOW_SESSIONS="$WS_HOME/show-sessions" # exists → picker lists per-session rows (ctrl-s)
 DEFAULT_INCLUDE_GLOBS=(".env*")
+AGENTS=(claude codex grok)
+GROK_HOOKS="${GROK_HOME:-$HOME/.grok}/hooks/ws.json"
 
 main() {
   local cmd="${1:-}"
@@ -61,7 +64,7 @@ main() {
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
   _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause
-  claude | codex) cmd_run "$cmd" "$@" ;;
+  claude | codex | grok) cmd_run "$cmd" "$@" ;;
   hook) cmd_hook "$@" ;;
   _rows) picker_rows ;;
   _summary) picker_summary ;;
@@ -70,7 +73,7 @@ main() {
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
   _build-notifier) build_notifier ;;
-  -h | --help | help) sed -n '4,23p' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
+  -h | --help | help) sed -n '4,24p' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
   esac
 }
@@ -178,7 +181,7 @@ cmd_pick() {
     --header-first --bind "load:transform-header($WS_BIN _summary)" \
     --bind "start:transform-header($WS_BIN _summary)+pos($(current_row "$rows"))" \
     --preview "$WS_BIN _preview {2} {3}" --preview-window 'right,50%,follow' \
-    --expect ctrl-n,ctrl-o,ctrl-a,ctrl-t \
+    --expect ctrl-n,ctrl-o,ctrl-r,ctrl-a,ctrl-t,ctrl-v \
     --bind "ctrl-p:execute-silent($WS_BIN pin {2})+reload($WS_BIN _rows)" \
     --bind "ctrl-s:execute-silent($WS_BIN _toggle_sessions)+reload($WS_BIN _rows)" \
     --bind "ctrl-u:execute-silent($WS_BIN _unread {3})+reload($WS_BIN _rows)" \
@@ -191,8 +194,10 @@ cmd_pick() {
   case "$key" in
   ctrl-n) cmd_new ;;
   ctrl-o) cmd_new --agent codex ;;
+  ctrl-r) cmd_new --agent grok ;;
   ctrl-a) [[ -n "$wt" ]] && cmd_add "$wt" ;;
   ctrl-t) [[ -n "$wt" ]] && cmd_add "$wt" --agent codex ;;
+  ctrl-v) [[ -n "$wt" ]] && cmd_add "$wt" --agent grok ;;
   *)
     if [[ -n "$win" ]]; then
       focus "$win"
@@ -386,8 +391,8 @@ hook_state() {
 
 subagents_running() { tmux_ show -w -t "$TMUX_PANE" 2>/dev/null | grep -q '^@ws_sub_'; }
 
-# prefix+w → ws picker, prefix+N → new workspace, prefix+a / prefix+A → claude / codex tab in
-# the current worktree, prefix+M → ws merge. Only inside ws sessions (they carry the @ws_path session option);
+# prefix+w → ws picker, prefix+N → new workspace, prefix+a / prefix+A / prefix+G → claude /
+# codex / grok tab in the current worktree, prefix+M → ws merge. Only inside ws sessions (they carry the @ws_path session option);
 # other sessions keep tmux's default choose-tree on prefix+w. Landing on a tab, however you
 # get there, marks it read (hooks at a high index, so user hooks at [0] are kept).
 configure_bindings() {
@@ -403,6 +408,7 @@ configure_bindings() {
     "display-popup -E -w 70% -h 50% -d '#{pane_current_path}' '$WS_BIN _merge_popup'"
   tmux_ bind-key a if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}'\""
   tmux_ bind-key A if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}' --agent codex\""
+  tmux_ bind-key G if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}' --agent grok\""
 }
 
 # Opens one agent tab in the worktree's tmux session (creating the session if needed) and
@@ -477,6 +483,12 @@ agent_command() {
     done
     print -r -- "$cmd"
     ;;
+  grok)
+    write_grok_hooks
+    local cmd="grok --always-approve"
+    [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
+    print -r -- "$cmd"
+    ;;
   esac
 }
 
@@ -497,6 +509,23 @@ write_claude_settings() {
       Notification: [{matcher: "permission_prompt|elicitation_dialog",
                       hooks: [{type: "command", command: "\($h) waiting", timeout: 5}]}]
     }}' > "$WS_HOME/claude-settings.json"
+}
+
+# Grok has no per-launch hooks flag, so ws hooks live in its global hooks dir (always
+# trusted there). Harmless outside ws: cmd_hook no-ops without WS_WORKSPACE.
+write_grok_hooks() {
+  mkdir -p "${GROK_HOOKS:h}"
+  jq -n --arg h "$WS_BIN hook" '
+    def cmd($s): {type: "command", command: "\($h) \($s)", timeout: 5};
+    def run($s): [{hooks: [cmd($s)]}];
+    {hooks: {
+      UserPromptSubmit: run("working"),
+      PostToolUse: run("working"),
+      Stop: run("idle"),
+      StopCancelled: run("idle"),
+      PermissionRequest: run("waiting"),
+      Notification: [{matcher: "permission_prompt", hooks: [cmd("waiting")]}]
+    }}' > "$GROK_HOOKS"
 }
 
 # Picker rows (TSV: display, path, window): pinned first, then grouped by repo. No header
@@ -535,7 +564,7 @@ picker_summary() {
   (( n )) && parts+=($'\e[36m•\e[0m'" $n unread")
   print -r -- "${(j: · :)parts:-no workspaces}"
   print -r -- $'\e[2m↵ open · ^s sessions · ^p pin · ^u unread · ^x rm\e[0m'
-  print -r -- $'\e[2m^n/^o new claude/codex · ^a/^t add claude/codex tab\e[0m'
+  print -r -- $'\e[2m^n/^o/^r new claude/codex/grok · ^a/^t/^v add claude/codex/grok tab\e[0m'
 }
 
 toggle_sessions() {
@@ -652,7 +681,7 @@ scan_repos() {
   done
 }
 
-check_agent() { [[ "$1" == (claude|codex) ]] || die "agent must be claude or codex"; }
+check_agent() { (( ${AGENTS[(Ie)$1]} )) || die "agent must be one of: ${(j:, :)AGENTS}"; }
 
 # Main checkout of a repo (or of any of its worktrees): parent of the common git dir.
 main_checkout() {
@@ -765,6 +794,7 @@ session_remove() {
 record_resume_id() {
   local sid wt slot agent f
   sid="$(print -r -- "$1" | jq -r '.session_id // empty' 2>/dev/null)"
+  [[ -n "$sid" ]] || sid="${GROK_SESSION_ID:-}" # grok hooks: id in env if not in the payload
   [[ -n "$sid" ]] || return 0
   wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}' 2>/dev/null)"
   slot="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_slot}' 2>/dev/null)"

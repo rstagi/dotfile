@@ -66,7 +66,7 @@ loop-models.conf        Loop engineering: model chains, budgets, timeouts
 loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model controls)
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
-ws.sh                   Terminal workspaces: worktree + tmux session per branch, tab per Claude/Codex session (hook-driven status + resume)
+ws.sh                   Terminal workspaces: worktree + tmux session per branch, tab per Claude/Codex/Grok session (hook-driven status + resume)
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)

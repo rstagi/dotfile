@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws" "grok")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -215,6 +215,7 @@ install_package() {
     "ralph") install_claude_tools ;;
     "loop-web") install_loop_web ;;
     "ws") install_ws ;;
+    "grok") install_grok ;;
     "claude-config") install_claude_config ;;
     *) echo "Unknown package: $package" ;;
   esac
@@ -422,7 +423,20 @@ install_ws() {
   if ! grep -q "source.*\.zshrc_ws_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
     echo "source $HOME/dotfile/.zshrc_ws_ext" >> "$HOME/.zshrc_ext"
   fi
+  # Grok Build: optional third agent, never a hard dep (it sends repo content to xAI)
+  if ! command -v grok &> /dev/null && read_yes "Install Grok Build (optional ws agent; sends code to xAI)?"; then
+    install_grok
+  fi
   echo "ws installed — run 'ws' to open the workspace session"
+}
+
+install_grok() {
+  if command -v grok &> /dev/null; then
+    echo "grok is already installed"
+  else
+    echo "Installing Grok Build..."
+    curl -fsSL https://x.ai/cli/install.sh | bash
+  fi
 }
 
 install_gcloud() {
