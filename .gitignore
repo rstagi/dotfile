@@ -8,3 +8,6 @@ loop-web/dist/
 .claude/skills/synced/
 .claude/skills/browseros-neo/
 .DS_Store
+
+# Private skills: name them private-<name>; kept local, never pushed (public repo)
+.claude/skills/private-*/
