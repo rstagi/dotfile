@@ -22,6 +22,7 @@ export GROK_HOME="$TMP/grokhome"
 socket_listener_pid=""
 trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP" "$NOTCH_HOME"' EXIT
 WS="$ROOT/ws.sh"
+export WS_TEST_CLI="$WS"
 T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
 # Fake agents print their argv, then stay alive until a line arrives (→ clean exit 0).
@@ -29,7 +30,8 @@ mkdir -p "$TMP/bin"
 for agent in claude codex grok; do
   cat > "$TMP/bin/$agent" <<EOF
 #!/bin/sh
-echo "FAKE-$agent \$* WS=\$WS_WORKSPACE"
+own_id=\$("\$WS_TEST_CLI" whoami)
+echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
 read line
 EOF
   chmod +x "$TMP/bin/$agent"
@@ -113,6 +115,13 @@ out="$(wait_pane "$WIN" FAKE-claude)"
 assert_contains "$out" "--dangerously-skip-permissions" "claude skips permissions"
 assert_contains "$out" "--settings" "claude launched w/ ws hook settings"
 assert_contains "$out" "WS=api/feat-login" "agent sees WS_WORKSPACE"
+
+echo "ws sessions: new tabs have a global identity"
+assert_contains "$out" "ID=1" "first agent gets global id in its environment"
+assert_contains "$out" "WHOAMI=1" "agent can query its own id"
+assert_contains "$("$WS" sessions)" $'1\t\tapi/feat-login\tclaude\tidle\tactive' "registry lists identity, workspace, agent, state and status"
+env -u WS_SESSION "$WS" whoami 2>/dev/null
+assert_exit "$?" "1" "whoami refuses outside a tracked session"
 
 echo "ws hook: agent events set window state; no-op outside a workspace"
 state() { T display -p -t "$WIN" '#{@ws_state}'; }
