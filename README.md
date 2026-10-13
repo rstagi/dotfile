@@ -33,7 +33,7 @@ Every state transition emits an event, including `working` and focused tabs. Rep
 
 Once a tab has notified, ws dismisses it with a `closed` event when you select that tab (tmux `session-window-changed` / `client-session-changed` hooks, installed with ws's key bindings) or when its agent exits. The tab state is unchanged; receivers drop the tab's notification (terminal-notifier removes its banner; the notch removes its activity). Each notification is closed at most once.
 
-For notch notifications, build and run the local [Boring Notch fork](https://github.com/rstagi/boring.notch), then enable **Settings → General → System features → External notifications** (on by default in the fork). Set this in your shell config before launching ws sessions:
+For notch notifications, build and run the local [Boring Notch fork](https://github.com/rstagi/boring.notch), then enable **Settings → General → System features → External notifications** (on by default in the fork). Set this in your shell config before launching ws sessions (agent hooks and tmux hooks read the tmux server's environment, so if tmux is already running also run `tmux set-environment -g WS_NOTIFIER boringnotch`):
 
 ```sh
 export WS_NOTIFIER=boringnotch
