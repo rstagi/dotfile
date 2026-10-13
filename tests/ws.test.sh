@@ -148,6 +148,11 @@ for pid in $global_pids; do
 done
 assert_eq "$("$WS" sessions | awk -F '\t' '$3 ~ /^api\/global-/ {print $1}' | sort -n | tr '\n' ' ')" \
   "2 3 4 5 6 7 8 9 " "parallel allocation never duplicates or loses an id"
+for i in {1..8}; do
+  allocated_id="$("$WS" sessions | awk -F '\t' -v name="api/global-$i" '$3 == name {print $1}')"
+  assert_contains "$(wait_pane "$(windows_of "$WS_ROOT/api/global-$i")" FAKE-claude)" \
+    "WS=api/global-$i ID=$allocated_id WHOAMI=$allocated_id" "concurrent tab owns the identity of its workspace"
+done
 GLOBAL_SESSION_ID="$("$WS" sessions | awk -F '\t' '$3 == "api/global-1" {print $1}')"
 GW="$(windows_of "$WS_ROOT/api/global-1")"
 assert_contains "$(wait_pane "$GW" FAKE-claude)" "ID=$GLOBAL_SESSION_ID WHOAMI=$GLOBAL_SESSION_ID" "concurrent tab gets its own allocated identity"
@@ -219,11 +224,18 @@ assert_eq "$(cut -f1,3 "$SF" | tr '\t\n' ': ')" "1:sid-claude-1 2:sid-codex-2 " 
 T kill-window -t "$WIN"; T kill-window -t "$W2"
 assert_eq "$(windows_of "$WT")" "" "both windows gone (simulated reboot)"
 assert_contains "$("$WS" list)" $'stopped\tapi/feat-login\t' "workspace shows stopped"
+"$WS" open reviewer --detach
+assert_exit "$?" "0" "named stopped session resumes independently"
+assert_contains "$(wait_pane "$(slot_window "$WT" 1)" FAKE-claude)" "--resume sid-claude-1" "named resume uses its saved conversation id"
+assert_contains "$(wait_pane "$(slot_window "$WT" 1)" FAKE-claude)" "ID=1 WHOAMI=1" "named resume preserves global identity"
+assert_eq "$(slot_window "$WT" 2)" "" "resuming one id leaves other sessions stopped"
+T kill-window -t "$(slot_window "$WT" 1)"
 "$WS" open api/feat-login --detach
 wait_until test -n "$(slot_window "$WT" 2)"
 assert_contains "$(wait_pane "$(slot_window "$WT" 1)" sid-claude-1)" "--resume sid-claude-1" "claude session resumed by id"
 assert_contains "$(wait_pane "$(slot_window "$WT" 2)" sid-codex-2)" "resume sid-codex-2" "codex session resumed by id"
 assert_eq "$(session_of "$(slot_window "$WT" 2)")" "api/feat-login" "restored into one worktree session"
+assert_contains "$(wait_pane "$(slot_window "$WT" 1)" FAKE-claude)" "ID=1 WHOAMI=1" "workspace resume keeps the same named global identity"
 
 echo "ws grok: launched w/ --always-approve + global ws hook file; resumed by GROK_SESSION_ID"
 "$WS" new --repo "$REPO" --branch grokky --agent grok --detach

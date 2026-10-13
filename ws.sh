@@ -123,8 +123,9 @@ cmd_new() {
   [[ -e "$wt" ]] && die "workspace exists: $wt (use: ws open ${repo:t}/${wt:t})"
   add_worktree "$repo" "$branch" "$wt" || die "git worktree add failed"
   copy_included_files "$repo" "$wt"
-  local win
-  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  local win slot
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  win="$(open_session "$wt" "$slot" "$agent" "")" || die "cannot open session"
   run_setup "$wt" "$(setup_script "$repo")"
   (( detach )) || focus "$win"
 }
@@ -140,9 +141,10 @@ cmd_add() {
   done
   check_agent "$agent"
   [[ -n "$target" ]] || target="$(current_workspace)" || die "add: not inside a workspace (pass <repo/branch>)"
-  local wt win
+  local wt win slot
   wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
-  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  win="$(open_session "$wt" "$slot" "$agent" "")" || die "cannot open session"
   (( detach )) || focus "$win"
 }
 
@@ -855,19 +857,23 @@ session_remove() {
 # Stores the tab's resume id, re-adding its row if it went missing (a session must stay
 # resumable after a reboot). Skips the write when nothing changed — hooks fire on every tool.
 record_resume_id() {
-  local sid wt slot agent f
+  local sid wt slot agent f id
   sid="$(print -r -- "$1" | jq -r '.session_id // empty' 2>/dev/null)"
   [[ -n "$sid" ]] || sid="${GROK_SESSION_ID:-}" # grok hooks: id in env if not in the payload
   [[ -n "$sid" ]] || return 0
   wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}' 2>/dev/null)"
   slot="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_slot}' 2>/dev/null)"
   agent="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_agent}' 2>/dev/null)"
+  id="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)"
   [[ -n "$wt" && -n "$slot" ]] || return 0
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  grep -qxF -- "$slot	${agent:-claude}	$sid" "$f" && return 0
-  with_lock "$f" rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" \
-    '$1 == s { $3 = id; found = 1 } { print } END { if (!found) print s, a, id }'
+  if [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" && "$(jq -r '.resume_id' "$WS_SESSIONS/$id/meta")" != "$sid" ]]; then
+    ws_bus_update "$id" --arg resume "$sid" '.resume_id = $resume' || return 0
+  fi
+  grep -qxF -- "$slot	${agent:-claude}	$sid	$id" "$f" && return 0
+  with_lock "$f" rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" -v g="$id" \
+    '$1 == s { $3 = id; if (g != "") $4 = g; found = 1 } { print } END { if (!found) print s, a, id, g }'
 }
 
 # with_lock <file> <cmd...> — runs cmd holding <file>.lock: parallel tool calls fire hooks
@@ -876,7 +882,7 @@ with_lock() {
   local f="$1"
   shift
   : >> "$f.lock" # flock won't create it
-  (zsystem flock -t 3 "$f.lock" 2>/dev/null || exit 1; "$@")
+  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || exit 1; "$@")
 }
 
 # rewrite <file> <awk args...> — replaces the file with awk's output, atomically.
