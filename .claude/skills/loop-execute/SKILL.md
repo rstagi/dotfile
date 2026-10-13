@@ -87,8 +87,11 @@ every phase has *Done when*; every work phase has exactly one known repository; 
 document phase is `[kind: pr-review]`. Legacy plans without explicit kinds retain their
 synthetic terminal review. Resolve each `owner/repo` through
 `loop-repo.sh get`; before autonomy ask once for missing checkout paths and persist them
-with `loop-repo.sh map`. Run `loop-repo.sh check` for origin/default-branch/collision
-validation. Ensure coordinator `.loop/` is gitignored and repository worktrees are clean.
+with `loop-repo.sh map`. Run `loop-repo.sh check` for origin/default-branch validation; it
+reports `mode` `create` or `adopt` (branch already exists, e.g. the ws worktree you run from —
+`adoptWorktree` is where it is checked out) and refuses a dirty adopted worktree or the
+default branch as integration branch (exit 4).
+Ensure coordinator `.loop/` is gitignored and repository worktrees are clean.
 **Adopt the plan's
 `planId` as the run id** — the planId IS the runId, so loop-execute drives the same daemon
 record through planned → active → finished (one selector entry). If it is already `finished`,
@@ -101,7 +104,8 @@ gate so the gate's no-further-contact promise holds.
 ### 2. One confirm gate, then autonomy
 
 Show the user: the backend (local-only vs Kestral-linked), repository → checkout/default
-branch/integration branch/verify table, phase/kind/lane/repository table, chains +
+branch/integration branch/create-vs-adopt/verify table (adopt: the adopted worktree path and
+its commits ahead of default — they become part of the PR), phase/kind/lane/repository table, chains +
 budget/timeouts from `loop-models.conf`, concurrency (the plan's **Concurrency** line
 overrides `LOOP_MAX_PARALLEL`; default 3). After their go, do not contact them again
 except through the HIL path or completion. `AskUserQuestion` is reserved for those two
@@ -111,10 +115,14 @@ moments.
 
 `loop-state.sh init` with runtime state v2 from the protocol. For every repository run
 `loop-repo.sh prepare --repo <owner/repo> --run-id <runId> --integration-branch <branch>`.
-It fetches GitHub's default ref and creates the integration branch/worktree from that exact
-fetched SHA under `~/.loop/worktrees/<runId>/<owner--repo>/integration`; never use stale
-local `main`. Push each initial integration branch and persist the returned repository fields
-in state. Later phase merges go through loop-merge; only a review-phase remediation
+It fetches GitHub's default ref and either creates the integration branch/worktree from that
+exact fetched SHA under `~/.loop/worktrees/<runId>/<owner--repo>/integration`, or adopts the
+existing branch/worktree (ff-only to the fetched default when it has no unique commits;
+refuses divergence from default or from its remote); never use stale local `main`. Push each
+initial integration branch and persist the returned repository fields (including `adopted`)
+in `state.repositories[slug]`. When the adopted worktree is the coordinator checkout itself,
+`.loop/` lives inside it (gitignored) and the human must not edit that worktree while the
+loop runs. Later phase merges go through loop-merge; only a review-phase remediation
 coordinator may also fast-forward-push its verified fixes. Set plan
 **Status: in progress**, then repush once.
 
@@ -292,7 +300,8 @@ its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
 - **4** → semantic conflict: `git revert -m1 HEAD` in the integration worktree, then L3
   for this phase with the verify output.
 - **3 / 1** → reconcile from git per the protocol (already-merged → done; dirty
-  integration worktree → clean it), don't treat as a conflict.
+  integration worktree → clean it, except an `adopted` one: never discard its changes, HIL
+  pause instead), don't treat as a conflict.
 
 ### 7. Escalate
 
@@ -420,7 +429,7 @@ thing left and no lane can progress).
 - **status** — print the lane table from state + live pids + last events; read-only.
 - **abort** — kill live runners, `--abort` any merge, flip in-progress phases back to
   todo, repush plan, notify, unlock. Leave worktrees for autopsy; tell the user the
-  cleanup commands.
+  cleanup commands — never for an adopted integration worktree (it is the user's).
 
 ## Steering notes
 

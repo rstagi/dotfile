@@ -98,8 +98,10 @@ Author the plan in the **canonical plan format** (see
 - **Repositories** — resolve every touched checkout to its GitHub `owner/repo` slug from
   its `origin`; declare it under `## Repositories`, give it a mandatory repository-wide
   `Verify:` command, and put `Repository:` on every work phase. One work phase belongs to one
-  repository; a lane may hop repositories. Store no checkout paths in the plan. Use the
-  shared integration branch default unless a repository needs an override. Newly authored
+  repository; a lane may hop repositories. Store no checkout paths in the plan. Default the
+  shared integration branch to the current checkout's branch when it is not the repository's
+  default branch (loop-execute adopts it), else `<type>/<effort-slug>`; override per
+  repository only when needed. Newly authored
   plans always use repository blocks; the legacy scalar format is read-only compatibility.
 - **Slices, not layers** — for full-stack work, each phase is a **vertical slice**: the
   backend *and* the frontend of one user-visible capability ship in the same phase, never

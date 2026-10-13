@@ -3,6 +3,8 @@ set -u -o pipefail
 
 # Persistent GitHub repository mapping and fresh-remote integration bootstrap.
 # Registry paths stay outside plans so the same owner/repo plan is portable across machines.
+# check/prepare create the integration branch from fetched origin/<default>, or adopt an
+# existing non-default one (clean worktree, ff-only to origin/<default>, never behind its remote).
 
 CMD="${1:-}"
 [[ -n "$CMD" ]] && shift
@@ -90,18 +92,87 @@ check_repo() {
   default_branch="$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" \
     || die "could not resolve GitHub default branch for $REPO" 3
   [[ -n "$default_branch" ]] || die "GitHub returned no default branch for $REPO" 3
+  [[ "$INTEGRATION_BRANCH" != "$default_branch" ]] \
+    || die "integration branch cannot be the default branch ($default_branch)" 4
 
+  local mode=create adopt_worktree=""
   if git -C "$checkout" show-ref --verify --quiet "refs/heads/$INTEGRATION_BRANCH"; then
-    die "integration branch already exists in $REPO: $INTEGRATION_BRANCH" 4
+    mode=adopt
+    adopt_worktree="$(branch_worktree "$checkout" "$INTEGRATION_BRANCH")" || exit $?
+    if [[ -n "$adopt_worktree" && -n "$(git -C "$adopt_worktree" status --porcelain)" ]]; then
+      die "integration branch $INTEGRATION_BRANCH has uncommitted changes in $adopt_worktree; commit or stash first" 4
+    fi
+  else
+    collision="$(branch_worktree "$checkout" "$INTEGRATION_BRANCH")" || exit $?
+    [[ -z "$collision" ]] || die "integration branch is already checked out: $INTEGRATION_BRANCH" 4
   fi
-  collision="$(git -C "$checkout" worktree list --porcelain | \
-    awk -v target="refs/heads/$INTEGRATION_BRANCH" '$1 == "branch" && $2 == target { print "collision"; exit }')"
-  [[ -z "$collision" ]] || die "integration branch is already checked out: $INTEGRATION_BRANCH" 4
 
   jq -cn --arg repository "$REPO" --arg sourceRoot "$checkout" \
     --arg defaultBranch "$default_branch" --arg integrationBranch "$INTEGRATION_BRANCH" \
+    --arg mode "$mode" --arg adoptWorktree "$adopt_worktree" \
     '{repository:$repository, sourceRoot:$sourceRoot, defaultBranch:$defaultBranch,
-      integrationBranch:$integrationBranch}'
+      integrationBranch:$integrationBranch, mode:$mode,
+      adoptWorktree:(if $adoptWorktree == "" then null else $adoptWorktree end)}'
+}
+
+# Normalized path of the worktree that has <branch> checked out, or empty.
+branch_worktree() {
+  local checkout="$1" target="refs/heads/$2" line wt="" resolved
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) wt="${line#worktree }" ;;
+      "branch $target")
+        resolved="$(cd "$wt" 2>/dev/null && pwd -P)" \
+          || die "stale worktree for $2 at $wt; run git worktree prune" 4
+        print -r -- "$resolved"
+        return 0
+        ;;
+    esac
+  done < <(git -C "$checkout" worktree list --porcelain)
+}
+
+# Adopt mode: refuse a local branch behind its remote or diverged from base_sha; set
+# integration_worktree (existing, else new run-scoped), then ff-only it to base_sha when the
+# branch has no unique commits. The worktree comes first so a refused add moves no ref.
+adopt_branch() {
+  local checkout="$1" branch="$2" base_sha="$3" default_branch="$4" adopt_worktree="$5"
+  local ref="refs/heads/$branch" remote_rc needs_ff=false
+  git -C "$checkout" ls-remote --exit-code --heads origin "$ref" >/dev/null 2>&1
+  remote_rc=$?
+  if [[ $remote_rc -eq 0 ]]; then
+    git -C "$checkout" fetch -q origin "+${ref}:refs/remotes/origin/${branch}" >/dev/null \
+      || die "fetch failed for $REPO:$branch" 3
+    git -C "$checkout" merge-base --is-ancestor "refs/remotes/origin/$branch" "$ref" \
+      || die "integration branch $branch is behind or diverged from origin/$branch; pull it first" 4
+  elif [[ $remote_rc -ne 2 ]]; then
+    die "could not query origin for $REPO:$branch" 3
+  fi
+
+  if ! git -C "$checkout" merge-base --is-ancestor "$base_sha" "$ref"; then
+    git -C "$checkout" merge-base --is-ancestor "$ref" "$base_sha" \
+      || die "integration branch $branch has diverged from origin/$default_branch; rebase or merge it first" 4
+    needs_ff=true
+  fi
+
+  if [[ -n "$adopt_worktree" ]]; then
+    integration_worktree="$adopt_worktree"
+  else
+    new_integration_worktree "$checkout" "$branch"
+  fi
+  if $needs_ff; then
+    git -C "$integration_worktree" merge -q --ff-only "$base_sha" >/dev/null \
+      || die "could not fast-forward $branch in $integration_worktree" 4
+  fi
+}
+
+# Run-scoped integration worktree path guard + creation; extra args go to worktree add.
+new_integration_worktree() {
+  local checkout="$1"; shift
+  integration_worktree="$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/integration"
+  [[ ! -e "$integration_worktree" ]] || die "integration worktree path exists: $integration_worktree" 4
+  mkdir -p "${integration_worktree:h}"
+  git -C "$checkout" worktree add -q "$integration_worktree" "$@" \
+    || die "could not create integration worktree for $REPO" 4
 }
 
 case "$CMD" in
@@ -149,18 +220,23 @@ prepare)
     || die "fetch failed for $REPO:$default_branch" 3
   base_sha="$(git -C "$checkout" rev-parse "refs/remotes/origin/$default_branch")" \
     || die "fetched default ref is missing for $REPO" 3
-  repo_key="${REPO//\//--}"
-  integration_worktree="$WORKTREE_ROOT/$RUN_ID/$repo_key/integration"
-  [[ ! -e "$integration_worktree" ]] || die "integration worktree path exists: $integration_worktree" 4
-  mkdir -p "${integration_worktree:h}"
-  git -C "$checkout" worktree add -q -b "$INTEGRATION_BRANCH" "$integration_worktree" "$base_sha" \
-    || die "could not create integration worktree for $REPO" 4
+  integration_worktree="" adopted=false
+  if [[ "$(print -r -- "$checked" | jq -r .mode)" == adopt ]]; then
+    adopted=true
+    adopt_branch "$checkout" "$INTEGRATION_BRANCH" "$base_sha" "$default_branch" \
+      "$(print -r -- "$checked" | jq -r '.adoptWorktree // empty')"
+  else
+    new_integration_worktree "$checkout" -b "$INTEGRATION_BRANCH" "$base_sha"
+  fi
+  ahead_count="$(git -C "$checkout" rev-list --count "$base_sha..refs/heads/$INTEGRATION_BRANCH")"
   jq -cn --arg repository "$REPO" --arg sourceRoot "$checkout" \
     --arg defaultBranch "$default_branch" --arg baseSha "$base_sha" \
     --arg integrationBranch "$INTEGRATION_BRANCH" --arg integrationWorktree "$integration_worktree" \
+    --argjson adopted "$adopted" --argjson aheadCount "$ahead_count" \
     '{repository:$repository, sourceRoot:$sourceRoot, defaultBranch:$defaultBranch,
       baseSha:$baseSha, integrationBranch:$integrationBranch,
-      integrationWorktree:$integrationWorktree, prUrl:null, review:null}'
+      integrationWorktree:$integrationWorktree, adopted:$adopted, aheadCount:$aheadCount,
+      prUrl:null, review:null}'
   ;;
 *)
   die "unknown command '$CMD' (map|get|list|unmap|check|prepare)"

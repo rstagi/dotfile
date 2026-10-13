@@ -59,7 +59,7 @@ loop-merge.sh           Loop engineering: lane→integration merges (conflict = 
 loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-in Telegram)
 loop-state.sh           Loop engineering: state/lock/journal/daemon + note/notes steering ops
 loop-plan.sh            Loop engineering: register/push a plan on the daemon + progress notes (local backend, Kestral-free)
-loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap
+loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap (or adopt existing branch)
 loop-review.sh          Loop engineering: review tier + rounds → ordered review runs (a<k>, stage, chain)
 loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)
 loop-models.conf        Loop engineering: model chains, budgets, timeouts

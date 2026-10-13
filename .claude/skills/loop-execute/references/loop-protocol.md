@@ -134,8 +134,10 @@ Worktrees live outside the repo (ralph convention):
   Suggested branch, cut from that repository's current integration tip. A lane repository
   hop removes the old worktree; reuse is same-repository consecutive phases only.
 - Integration: `~/.loop/worktrees/<runId>/<owner--repo>/integration`. `loop-repo.sh
-  prepare` fetches GitHub's default ref and creates it from the exact fetched SHA. All
-  repository merges/pushes happen only here.
+  prepare` fetches GitHub's default ref and creates it from the exact fetched SHA, or adopts
+  an existing integration branch: its current worktree (often the user's ws worktree or the
+  coordinator checkout) when checked out, else this path on that branch. Adopted worktrees
+  are the user's; never remove them. All repository merges/pushes happen only here.
 
 ## Daemon & events
 
@@ -223,7 +225,7 @@ fields — keep the shape:
     "owner/api": {
       "sourceRoot": "<mapped checkout>", "defaultBranch": "main", "baseSha": "<sha>",
       "integrationBranch": "feat/<effort-slug>",
-      "integrationWorktree": "<abs path>", "prUrl": null,
+      "integrationWorktree": "<abs path>", "adopted": false, "prUrl": null,
       "reviewPipeline": { "phase": 7, "stage": "round1", "tier": "medium", "rounds": 3,
                           "headSha": "<sha for current review round>" },
       "review": { "outcome": "done|question|blocked", "summary": "...",
@@ -260,9 +262,24 @@ loop-repo.sh check --repo <owner/repo> --integration-branch <branch>
 loop-repo.sh prepare --repo <owner/repo> --run-id <runId> --integration-branch <branch>
 ```
 
-`check` validates mapping, SSH/HTTPS GitHub origin, GitHub default branch, and branch/worktree
-collisions. `prepare` fetches the remote default ref, records its exact SHA, and creates the
-run/repository-scoped integration worktree from that SHA.
+`check` validates mapping, SSH/HTTPS GitHub origin, and GitHub default branch (exit 4 when
+the integration branch IS the default branch), then reports
+`mode`: `create` (branch absent) or `adopt` (branch exists) plus `adoptWorktree` (normalized
+path where it is checked out, else null). It is non-mutating; exit 4 when the adopted worktree
+is dirty (`git status --porcelain`; ignored files such as `.loop/` do not count).
+
+`prepare` fetches the remote default ref and records its exact SHA as `baseSha`.
+- `create`: new branch + run/repository-scoped integration worktree from that SHA.
+- `adopt`: when `origin/<branch>` exists it is fetched and must be an ancestor of the local
+  branch (exit 4: behind/diverged, pull first). A branch not containing `baseSha` is
+  fast-forwarded to it only when it has no unique commits; otherwise exit 4 (diverged,
+  rebase/merge first). The integration worktree is the existing one, or a new run-scoped
+  worktree on the branch (exit 4 if git refuses, e.g. a paused rebase/bisect elsewhere); the
+  ff-only merge runs inside it afterwards, so a refusal moves no ref. Never forces, resets,
+  or rewrites history.
+
+Output adds `adopted` and `aheadCount` (commits on the branch beyond `baseSha`; they ship in
+the PR). Create mode reports `false`/`0`.
 
 ## Runner spawn (how the orchestrator launches loop-runner.sh)
 
@@ -822,6 +839,7 @@ observability only: serialized merge and merged-tree Verify remain unconditional
 - **3** — lane branch missing: reconcile from git (already merged + deleted → treat as
   done; otherwise escalate). Occurs after crash-resume repairs.
 - **1** — merge failed to start (dirty integration worktree) — clean it, don't "resolve".
+  An `adopted` integration worktree is the user's: never discard its changes; HIL pause.
 
 **First successful merge per repository → open its draft PR** (`gh pr create --draft` from
 that integration branch); later repository merges just push. Only the orchestrator pushes

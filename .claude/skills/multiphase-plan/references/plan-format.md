@@ -64,6 +64,10 @@ between repositories.
 - **Integration branch:** `<type>/<effort-slug>`
 - **Concurrency:** 3
 
+Default the integration branch to the current checkout's branch when it is not the
+repository's default branch (loop-execute then adopts that branch/worktree); otherwise
+`<type>/<effort-slug>`.
+
 ## Repositories
 
 ### `owner/api`
