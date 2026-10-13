@@ -29,9 +29,10 @@ T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 mkdir -p "$TMP/bin"
 # Fake delivery TUI records bytes submitted outside bracketed paste, including multiline input.
 cat > "$TMP/paste-agent.py" <<'PY_AGENT'
-import json, os, tty
-print("\033[?2004h", end="", flush=True)
+import json, os, time, tty
+time.sleep(0.6) # delayed startup exposes paste before the resumed TUI is ready
 tty.setraw(0)
+print("\033[?2004h", end="", flush=True)
 print("PASTE-READY", flush=True)
 buf = b""
 while True:
@@ -1309,6 +1310,45 @@ reply="$(print '{}' | hook api/delivery "$SEND_WIN" stop)"
 assert_eq "$(print -r -- "$reply" | jq -r '[.reason | scan("concurrent-[1-8]")] | length')" "8" "one Stop delivers all concurrent messages"
 for i in {1..8}; do assert_contains "$reply" "concurrent-$i" "queued sender $i survives"; done
 assert_eq "$(print '{}' | hook api/delivery "$SEND_WIN" stop)" "{}" "concurrent inbox never repeats"
+
+echo "ws send: done sessions warn; force resumes closed spawned sessions by retained id"
+for agent in claude codex grok; do
+  BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
+  BUS_ID="$(T display -p -t "$BUS_WIN" '#{@ws_session}')"
+  META="$WS_HOME/sessions/$BUS_ID/meta"
+  jq '.status = "done" | .spawned = true | .resume_id = "resume-delivery"' "$META" > "$META.fixture"
+  mv "$META.fixture" "$META"
+  T kill-window -t "$BUS_WIN"
+  out="$(WS_SESSION=1 "$WS" send "$BUS_ID" "wake again" 2>&1)"
+  assert_exit "$?" "1" "$agent done send requires force"
+  assert_contains "$out" "done" "$agent done target warns"
+  assert_contains "$out" "--force" "$agent warning explains override"
+  assert_eq "$("$WS" sessions "$BUS_ID" | cut -f5)" "stopped" "$agent rejected send never resumes target"
+  out="$(WS_SESSION=1 "$WS" send "$BUS_ID" "wake again" --force 2>&1)"
+  forced_exit=$?
+  assert_exit "$forced_exit" "0" "$agent force send resumes and delivers"
+  assert_contains "$out" "done" "$agent force send still warns"
+  BUS_WIN="$(jq -r '.window' "$META")"
+  if (( forced_exit == 0 )); then
+    wait_until pane_received "$BUS_ID" $'[ws #1]\nwake again'
+  fi
+  assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" | jq -r '.text')" $'[ws #1]\nwake again' "$agent resumed TUI receives message after delayed startup"
+  assert_contains "$(T capture-pane -p -t "$BUS_WIN" 2>/dev/null)" "resume-delivery" "$agent resumes its recorded conversation"
+  assert_eq "$("$WS" sessions "$BUS_ID" | cut -f6)" "done" "$agent force preserves declared done status"
+done
+
+echo "ws send: terminal sender and validation"
+hook api/delivery "$BUS_WIN" idle </dev/null
+env -u WS_SESSION "$WS" send --force "$BUS_ID" "from terminal" 2>/dev/null
+assert_exit "$?" "0" "force is also accepted before target"
+wait_until pane_received "$BUS_ID" $'[ws terminal]\nfrom terminal'
+assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" | jq -r '.text')" $'[ws terminal]\nfrom terminal' "untracked sender has terminal prefix"
+"$WS" send no-such-session text 2>/dev/null
+assert_exit "$?" "1" "unknown target refused"
+print -n '' | "$WS" send "$BUS_ID" - 2>/dev/null
+assert_exit "$?" "1" "empty stdin refused"
+"$WS" send "$BUS_ID" 2>/dev/null
+assert_exit "$?" "1" "missing message refused"
 
 "$WS" rm api/delivery --force --delete-branch >/dev/null
 

@@ -4,8 +4,17 @@
 WS_SESSIONS="$WS_HOME/sessions"
 
 cmd_send() {
-  [[ $# == 2 ]] || die "send: expected <id|name> <message|->"
-  local id message="$2" sender=terminal
+  local force=0
+  [[ "${1:-}" != --force ]] || { force=1; shift; }
+  if [[ $# == 3 && "$2" == --force ]]; then
+    force=1
+    set -- "$1" "$3"
+  elif [[ $# == 3 && "$3" == --force ]]; then
+    force=1
+    set -- "$1" "$2"
+  fi
+  [[ $# == 2 ]] || die "send: expected [--force] <id|name> <message|->"
+  local id message="$2" sender=terminal lifecycle
   id="$(ws_bus_resolve "$1")" || die "no such session: $1"
   if [[ -n "${WS_SESSION:-}" ]]; then
     sender="#$(cmd_whoami)" || return 1
@@ -15,11 +24,25 @@ cmd_send() {
     message="${message%.}"
   fi
   [[ -n "$message" ]] || die "send: empty message"
-  local win lock lockfd
-  win="$(ws_bus_window "$id")" || die "send: session is stopped: $id"
+  lifecycle="$(jq -r '.status' "$WS_SESSIONS/$id/meta")" || return 1
+  if [[ "$lifecycle" == done ]]; then
+    print -u2 "ws: session #$id is done; --force required to send"
+    (( force )) || return 1
+  fi
+  message="[ws $sender]"$'\n'"$message"
+  local win lock lockfd queued=0
+  win="$(ws_bus_window "$id")"
+  if [[ -z "$win" ]]; then
+    # Retain the message even if resume fails or the TUI cannot become ready in time.
+    with_lock "$WS_SESSIONS/$id/inbox" ws_bus_enqueue "$id" "$message" || return 1
+    queued=1
+    ws_bus_open "$id" 1 || die "send: message queued; cannot resume session #$id"
+    win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open"
+    ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+  fi
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
   { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
-  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "[ws $sender]"$'\n'"$message"
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" "$queued"
   local rc=$?
   exec {lockfd}>&-
   return "$rc"
@@ -27,13 +50,31 @@ cmd_send() {
 
 # Both send and Stop hold the window's hook lock before the inbox lock: no idle/queue race.
 ws_bus_send_locked() {
-  local id="$1" win="$2" message="$3" state
+  local id="$1" win="$2" message="$3" queued="${4:-0}" state
   state="$(tmux_ show -wqv -t "$win" @ws_state)"
-  jq -nc --arg message "$message" '{message:$message}' >> "$WS_SESSIONS/$id/inbox" || return 1
-  if [[ "$state" == idle ]]; then
+  (( queued )) || ws_bus_enqueue "$id" "$message" || return 1
+  if [[ "$state" == idle && -s "$WS_SESSIONS/$id/inbox" ]]; then
     ws_bus_idle_locked "$id" "$win" || return 1
     tmux_ set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
   fi
+}
+
+ws_bus_enqueue() {
+  jq -nc --arg message "$2" '{message:$message}' >> "$WS_SESSIONS/$1/inbox"
+}
+
+# tmux 3.8 exposes the TUI's bracketed-paste mode. A freshly resumed tab starts in a
+# shell: never paste there before the agent enables input. Stop may already have consumed
+# the queued message during startup, which also counts as delivery.
+ws_bus_wait_ready() {
+  local id="$1" win="$2" attempt ready
+  for attempt in {1..50}; do
+    [[ -s "$WS_SESSIONS/$id/inbox" ]] || return 0
+    ready="$(tmux_ display -p -t "$win" '#{bracket_paste_flag}' 2>/dev/null)" || return 1
+    [[ "$ready" != 1 ]] || return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 # A Stop continuation is one-shot. The next Stop with an empty inbox must allow stopping.

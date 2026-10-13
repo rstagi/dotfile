@@ -19,7 +19,8 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws whoami                  own global session id (inside an agent tab)
 #   ws sessions [id|name]      TSV: id name workspace agent state status
 #   ws name <label>            name your session (unique; usable in place of its id)
-#   ws send <id|name> <msg|->   send a message (or stdin) prefixed with your session id
+#   ws send [--force] <id|name> <msg|->   sender-prefixed message (or stdin): paste idle, queue busy
+#                              done needs --force; stopped sessions resume before delivery
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
