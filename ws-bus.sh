@@ -1,5 +1,6 @@
 #!/bin/zsh
 # Global session registry, sourced by ws.sh. Workspace slots remain local; ids never reuse.
+# Live state comes from tmux; metadata keeps durable identity and lifecycle status.
 WS_SESSIONS="$WS_HOME/sessions"
 
 cmd_whoami() {
@@ -121,7 +122,7 @@ ws_bus_allocate_locked() {
   jq -n --arg id "$id" --arg wt "$wt" --arg workspace "$(workspace_name "$wt")" \
     --arg agent "$agent" --arg slot "$slot" --arg resume "$resume" \
     '{id:$id, name:"", workspace:$workspace, path:$wt, slot:$slot, agent:$agent,
-      resume_id:$resume, window:"", state:"stopped", status:"active", spawned:false}' > "$dir/meta" || return 1
+      resume_id:$resume, window:"", status:"active", spawned:false}' > "$dir/meta" || return 1
   touch "$dir/inbox" "$dir/events"
   print -r -- "$id"
 }
@@ -158,5 +159,5 @@ ws_bus_update_locked() {
 }
 
 ws_bus_close() {
-  ws_bus_update "$1" '.window = "" | .state = "stopped" | if .status == "active" then .status = "closed" else . end'
+  ws_bus_update "$1" '.window = "" | if .status == "active" then .status = "closed" else . end'
 }

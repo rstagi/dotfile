@@ -181,7 +181,7 @@ cmd_run() {
   wt="$(current_workspace)" && wt="$(resolve_workspace "$wt")" || die "$agent: not inside a workspace"
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
   [[ -z "$(tmux_ show -wqv -t "$win" @ws_slot)" ]] || die "$agent: this tab already runs a ws session"
-  slot="$(session_add "$wt" "$agent")"
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
   id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || die "cannot register session"
   tag_window "$win" "$wt" "$slot" "$agent"
   cmd="$(agent_command "$agent" "")"
@@ -476,8 +476,18 @@ configure_bindings() {
 # anything else (crash, SIGHUP) keeps it for resume.
 open_session() {
   local wt="$1" slot="$2" agent="$3" resume="$4"
-  local name tab cmd run sess win id
+  local id
   id="$(ws_bus_identity "$wt" "$slot" "$agent" "$resume")" || return 1
+  with_lock "$WS_SESSIONS/$id/open" open_session_locked "$wt" "$slot" "$agent" "$resume" "$id"
+}
+
+open_session_locked() {
+  local wt="$1" slot="$2" agent="$3" resume="$4" id="$5"
+  local name tab cmd run sess win
+  if win="$(ws_bus_window "$id")"; then
+    print -r -- "$win"
+    return 0
+  fi
   name="$(workspace_name "$wt")"
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
@@ -487,9 +497,9 @@ open_session() {
     -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
-    win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")"
+    win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")" || return 1
   else
-    win="$(tmux_ new-session -s "${name//[.:]/_}" "${spawn[@]}")"
+    win="$(tmux_ new-session -s "${name//[.:]/_}" "${spawn[@]}")" || return 1
     configure_bindings
     sess="$(tmux_ display -p -t "$win" '#{session_id}')"
     tmux_ set -t "$sess" @ws_path "$wt"
@@ -497,7 +507,7 @@ open_session() {
     tmux_ set -t "$sess" status-left-length 60
     tmux_ set -t "$sess" status-left "#[bold] $name #[default]"
   fi
-  tag_window "$win" "$wt" "$slot" "$agent"
+  tag_window "$win" "$wt" "$slot" "$agent" || return 1
   print -r -- "$win"
 }
 
@@ -512,7 +522,7 @@ tag_window() {
   tmux_ set -w -t "$win" @ws_session "$id"
   tmux_ set -w -t "$win" @ws_agent "$agent"
   tmux_ set -w -t "$win" @ws_state idle
-  ws_bus_update "$id" --arg win "$win" '.window = $win | .state = "idle" | if .status == "closed" then .status = "active" else . end'
+  ws_bus_update "$id" --arg win "$win" '.window = $win | if .status == "closed" then .status = "active" else . end'
   tmux_ set -w -t "$win" automatic-rename off
   tmux_ set -w -t "$win" window-status-format "#I $(state_format) #W"
   tmux_ set -w -t "$win" window-status-current-format "#[bold]#I $(state_format) #W#[default]"

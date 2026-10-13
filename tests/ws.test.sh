@@ -168,6 +168,20 @@ WS_SESSION="$GLOBAL_SESSION_ID" "$WS" name reviewer 2>/dev/null
 assert_exit "$?" "1" "duplicate session names are refused"
 T kill-window -t "$GW"
 assert_contains "$("$WS" sessions "$GLOBAL_SESSION_ID")" $'\tstopped\tactive' "killed session is stopped and remains active"
+open_pids=()
+for i in {1..16}; do
+  "$WS" open "$GLOBAL_SESSION_ID" --detach > "$TMP/open-$i.log" 2>&1 &
+  open_pids+=($!)
+done
+for pid in $open_pids; do
+  wait "$pid"
+  assert_exit "$?" "0" "concurrent resume succeeds"
+done
+for i in {1..16}; do
+  assert_eq "$(cat "$TMP/open-$i.log")" "" "concurrent resume completes without errors"
+done
+assert_eq "$(windows_of "$WS_ROOT/api/global-1" | wc -l | tr -d ' ')" "1" "concurrent resume opens exactly one tab for a global id"
+T kill-window -t "$(windows_of "$WS_ROOT/api/global-1")"
 "$WS" open api/global-1 --detach
 out="$(wait_pane "$(windows_of "$WS_ROOT/api/global-1")" FAKE-claude)"
 assert_contains "$out" "ID=$GLOBAL_SESSION_ID WHOAMI=$GLOBAL_SESSION_ID" "workspace resume preserves global id without an agent resume id"
