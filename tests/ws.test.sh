@@ -1235,6 +1235,36 @@ wait_until test -s "$WS_HOME/pane-$SEND_ID.jsonl"
 assert_eq "$(jq -r '.text' "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null)" $'[ws #1]\nfirst line\nsecond "quoted" line $literal' "sender prefix and multiline text reach pane intact"
 assert_eq "$(jq -r '.raw | startswith("\u001b[200~") and endswith("\u001b[201~\r")' "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null)" "true" "paste is bracketed with separate Enter"
 assert_eq "$(wc -l < "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null | tr -d ' ')" "1" "multiline message submits exactly once"
+echo "ws send: working and waiting sessions consume inbox once through synchronous Stop hooks"
+for agent in claude codex grok; do
+  if [[ "$agent" == claude ]]; then
+    BUS_WIN="$SEND_WIN"
+  else
+    "$WS" add api/delivery --agent "$agent" --detach
+    BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
+    assert_contains "$(wait_pane "$BUS_WIN" PASTE-READY)" "PASTE-READY" "$agent fake TUI ready"
+  fi
+  BUS_ID="$(T display -p -t "$BUS_WIN" '#{@ws_session}')"
+  for busy_state in working waiting; do
+    hook api/delivery "$BUS_WIN" "$busy_state" </dev/null
+    before="$(cat "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null)"
+    WS_SESSION=1 "$WS" send "$BUS_ID" "$agent $busy_state message"
+    assert_exit "$?" "0" "$agent queues while $busy_state"
+    assert_eq "$(cat "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null)" "$before" "$agent busy message never goes into pane input"
+    reply="$(print '{"hook_event_name":"Stop","stop_hook_active":false,"stopHookActive":false}' | hook api/delivery "$BUS_WIN" stop)"
+    assert_eq "$(print -r -- "$reply" | jq -r '.decision' 2>/dev/null)" "block" "$agent Stop requests continuation"
+    assert_eq "$(print -r -- "$reply" | jq -r '.reason' 2>/dev/null)" "[ws #1]"$'\n'"$agent $busy_state message" "$agent Stop delivers sender-prefixed message"
+    assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "working" "$agent block keeps tab working"
+    assert_eq "$([[ -s "$WS_HOME/sessions/$BUS_ID/inbox" ]] && print pending)" "" "$agent Stop consumes durable inbox"
+    reply="$(print '{"hook_event_name":"Stop","stop_hook_active":true,"stopHookActive":true}' | hook api/delivery "$BUS_WIN" stop)"
+    assert_eq "$reply" "{}" "$agent continued Stop never repeats consumed messages"
+    assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "idle" "$agent empty Stop marks idle"
+  done
+done
+assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$WS_HOME/claude-settings.json")" "$WS hook stop" "Claude Stop uses synchronous bus delivery"
+assert_contains "$(T capture-pane -p -t "$(slot_window "$SEND_WT" 2)")" "hook stop" "Codex Stop uses synchronous bus delivery"
+assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$GROK_HOME/hooks/ws.json")" "$WS hook stop" "Grok Stop uses synchronous bus delivery"
+
 "$WS" rm api/delivery --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"

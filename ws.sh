@@ -363,7 +363,8 @@ confirm() {
 }
 
 # Agent hooks call this from inside a session window: sets the window's state and records
-# the agent's session id (for resume). Best effort, always exits 0 — never blocks the agent.
+# the agent's session id (for resume). Best effort, always exits 0. Stop may request a
+# continuation with queued messages; all other hook output stays silent.
 # seq (µs since epoch, taken at entry) orders hooks per tab: one older than the tab's @ws_seq
 # is dropped, and a per-window lock keeps overlapping hooks from both applying/emitting
 # (no lock → dropped: an unordered write could clobber a newer state).
@@ -371,24 +372,41 @@ cmd_hook() {
   zmodload zsh/datetime zsh/system 2>/dev/null
   local seq="$(realtime_us "$EPOCHREALTIME")" event="${1:-}" payload=""
   [[ -t 0 ]] || payload="$(cat)"
-  [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || return 0
-  [[ "$event" == (working|idle|waiting|subagent-start|subagent-stop) ]] || return 0
+  # Accept older launches that wired Stop to idle, as well as the explicit Stop command.
+  if [[ "$event" == idle ]] && print -r -- "$payload" | jq -e '.hook_event_name == "Stop"' >/dev/null 2>&1; then
+    event=stop
+  fi
+  local reply=""
+  [[ "$event" != stop ]] || reply='{}'
+  [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
+  [[ "$event" == (working|idle|stop|waiting|subagent-start|subagent-stop) ]] || return 0
   record_resume_id "$payload"
   local win lock lockfd prev last state agent_id="" applied=0
   [[ -n "$payload" ]] && agent_id="$(print -r -- "$payload" | jq -r '.agent_id // empty' 2>/dev/null)"
   agent_id="${agent_id//[^A-Za-z0-9_-]/_}"
-  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || return 0
+  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-  { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 0
+  { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
   if [[ "$last" != <-> ]] || (( last < seq )); then
-    state="$(hook_state "$event" "$agent_id" "$prev")"
+    if [[ "$event" == stop ]]; then
+      local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+      reply="$(ws_bus_stop "$id" "$payload")" || reply='{}'
+      if [[ "$reply" == *'"decision":"block"'* ]]; then
+        state="$(hook_state working "" "$prev")"
+      else
+        state="$(hook_state idle "" "$prev")"
+      fi
+    else
+      state="$(hook_state "$event" "$agent_id" "$prev")"
+    fi
     tmux_ set -w -t "$TMUX_PANE" @ws_seq "$seq" \; set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
     applied=1
   elif [[ "$event" == subagent-* ]]; then
     hook_state "$event" "$agent_id" "$prev" >/dev/null # stale for state, but keep subagent bookkeeping
   fi
   exec {lockfd}>&-
+  [[ -z "$reply" ]] || print -r -- "$reply"
   (( applied )) || return 0
   # finished while you weren't looking → unread until you visit the tab (or ws opens it)
   [[ "$prev" == working && "$state" == idle ]] && ! pane_focused && tmux_ set -w -t "$TMUX_PANE" @ws_unread 1 2>/dev/null
@@ -555,7 +573,7 @@ agent_command() {
     local cmd="codex" ev st
     [[ -n "$resume" ]] && cmd+=" resume ${(q)resume}"
     cmd+=" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
-    for ev st in UserPromptSubmit working PostToolUse working PermissionRequest waiting Stop idle Interrupt idle; do
+    for ev st in UserPromptSubmit working PreToolUse working PostToolUse working PermissionRequest waiting Stop stop Interrupt idle; do
       cmd+=" -c 'hooks.$ev=[{hooks=[{type=\"command\",command=\"$WS_BIN hook $st\"}]}]'"
     done
     print -r -- "$cmd"
@@ -579,7 +597,7 @@ write_claude_settings() {
       UserPromptSubmit: run("working"),
       PreToolUse: run("working"),
       PostToolUse: run("working"),
-      Stop: run("idle"),
+      Stop: run("stop"),
       SubagentStart: run("subagent-start"),
       SubagentStop: run("subagent-stop"),
       PermissionRequest: run("waiting"),
@@ -597,8 +615,9 @@ write_grok_hooks() {
     def run($s): [{hooks: [cmd($s)]}];
     {hooks: {
       UserPromptSubmit: run("working"),
+      PreToolUse: run("working"),
       PostToolUse: run("working"),
-      Stop: run("idle"),
+      Stop: run("stop"),
       StopCancelled: run("idle"),
       PermissionRequest: run("waiting"),
       Notification: [{matcher: "permission_prompt", hooks: [cmd("waiting")]}]

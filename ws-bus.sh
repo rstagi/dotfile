@@ -19,7 +19,41 @@ cmd_send() {
   win="$(ws_bus_window "$id")" || die "send: session is stopped: $id"
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
   { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
-  ws_bus_paste "$id" "$win" "[ws $sender]"$'\n'"$message"
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "[ws $sender]"$'\n'"$message"
+  local rc=$?
+  exec {lockfd}>&-
+  return "$rc"
+}
+
+# Both send and Stop hold the window's hook lock before the inbox lock: no idle/queue race.
+ws_bus_send_locked() {
+  local id="$1" win="$2" message="$3" state
+  state="$(tmux_ show -wqv -t "$win" @ws_state)"
+  if [[ "$state" == idle ]]; then
+    ws_bus_paste "$id" "$win" "$message" || return 1
+    tmux_ set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
+  else
+    jq -nc --arg message "$message" '{message:$message}' >> "$WS_SESSIONS/$id/inbox"
+  fi
+}
+
+# A Stop continuation is one-shot. The next Stop with an empty inbox must allow stopping.
+ws_bus_stop() {
+  local id="$1" payload="$2"
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || { print '{}'; return 0; }
+  if print -r -- "$payload" | jq -e '.stop_hook_active == true or .stopHookActive == true' >/dev/null 2>&1; then
+    print '{}'
+    return 0
+  fi
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_stop_locked "$id"
+}
+
+ws_bus_stop_locked() {
+  local inbox="$WS_SESSIONS/$1/inbox" reply
+  [[ -s "$inbox" ]] || { print '{}'; return 0; }
+  reply="$(jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inbox")" || return 1
+  : > "$inbox" || return 1
+  print -r -- "$reply"
 }
 
 # Named buffers isolate concurrent senders; raw paste preserves LF inside bracketed input.
