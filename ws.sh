@@ -400,6 +400,12 @@ cmd_hook() {
     else
       state="$(hook_state "$event" "$agent_id" "$prev")"
     fi
+    if [[ "$state" == idle ]]; then
+      local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+      if ws_bus_idle "$id" "$win"; then
+        state="$(hook_state working "" "$prev")"
+      fi
+    fi
     tmux_ set -w -t "$TMUX_PANE" @ws_seq "$seq" \; set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
     applied=1
   elif [[ "$event" == subagent-* ]]; then

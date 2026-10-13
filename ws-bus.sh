@@ -29,11 +29,10 @@ cmd_send() {
 ws_bus_send_locked() {
   local id="$1" win="$2" message="$3" state
   state="$(tmux_ show -wqv -t "$win" @ws_state)"
+  jq -nc --arg message "$message" '{message:$message}' >> "$WS_SESSIONS/$id/inbox" || return 1
   if [[ "$state" == idle ]]; then
-    ws_bus_paste "$id" "$win" "$message" || return 1
+    ws_bus_idle_locked "$id" "$win" || return 1
     tmux_ set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
-  else
-    jq -nc --arg message "$message" '{message:$message}' >> "$WS_SESSIONS/$id/inbox"
   fi
 }
 
@@ -54,6 +53,23 @@ ws_bus_stop_locked() {
   reply="$(jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inbox")" || return 1
   : > "$inbox" || return 1
   print -r -- "$reply"
+}
+
+# Fallback for cancellation, legacy hooks or an active Stop guard. Only a verified idle
+# tab may receive pane input; callers hold its hook lock while checking/draining the inbox.
+ws_bus_idle() {
+  local id="$1" win="$2"
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" && -s "$WS_SESSIONS/$id/inbox" ]] || return 1
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_idle_locked "$id" "$win"
+}
+
+ws_bus_idle_locked() {
+  local id="$1" win="$2" inbox="$WS_SESSIONS/$1/inbox" message
+  [[ -s "$inbox" ]] || return 1
+  message="$(jq -rjs 'map(.message) | join("\n\n")' "$inbox" && print -n .)" || return 1
+  message="${message%.}"
+  ws_bus_paste "$id" "$win" "$message" || return 1
+  : > "$inbox"
 }
 
 # Named buffers isolate concurrent senders; raw paste preserves LF inside bracketed input.

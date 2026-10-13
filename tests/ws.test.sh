@@ -1265,6 +1265,51 @@ assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$WS_HOME/claude-settings.j
 assert_contains "$(T capture-pane -p -t "$(slot_window "$SEND_WT" 2)")" "hook stop" "Codex Stop uses synchronous bus delivery"
 assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$GROK_HOME/hooks/ws.json")" "$WS hook stop" "Grok Stop uses synchronous bus delivery"
 
+pane_received() { [[ "$(tail -1 "$WS_HOME/pane-$1.jsonl" 2>/dev/null | jq -r '.text')" == "$2" ]]; }
+echo "ws send: continuation guards and cancellation fall back to paste on verified idle"
+for agent in claude codex grok; do
+  BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
+  BUS_ID="$(T display -p -t "$BUS_WIN" '#{@ws_session}')"
+  hook api/delivery "$BUS_WIN" working </dev/null
+  WS_SESSION=1 "$WS" send "$BUS_ID" "$agent guarded message"
+  if [[ "$agent" == grok ]]; then active_payload='{"stopHookActive":true}'; else active_payload='{"stop_hook_active":true}'; fi
+  reply="$(print -r -- "$active_payload" | hook api/delivery "$BUS_WIN" stop)"
+  assert_eq "$reply" "{}" "$agent active Stop does not recursively block"
+  wait_until pane_received "$BUS_ID" "[ws #1]"$'\n'"$agent guarded message"
+  assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null | jq -r '.text')" "[ws #1]"$'\n'"$agent guarded message" "$agent guarded inbox falls back to idle paste"
+  assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "working" "$agent pasted continuation is working"
+  hook api/delivery "$BUS_WIN" working </dev/null
+  WS_SESSION=1 "$WS" send "$BUS_ID" "$agent cancelled message"
+  hook api/delivery "$BUS_WIN" idle </dev/null
+  wait_until pane_received "$BUS_ID" "[ws #1]"$'\n'"$agent cancelled message"
+  assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null | jq -r '.text')" "[ws #1]"$'\n'"$agent cancelled message" "$agent cancellation delivers inbox at idle"
+  assert_eq "$([[ -s "$WS_HOME/sessions/$BUS_ID/inbox" ]] && print pending)" "" "$agent fallback consumes inbox"
+done
+
+echo "ws send: a background subagent postpones idle paste until the whole tab is idle"
+hook api/delivery "$SEND_WIN" working </dev/null
+print '{"agent_id":"delivery-bg"}' | hook api/delivery "$SEND_WIN" subagent-start
+WS_SESSION=1 "$WS" send "$SEND_ID" "after background"
+before="$(cat "$WS_HOME/pane-$SEND_ID.jsonl")"
+print '{"stop_hook_active":true}' | hook api/delivery "$SEND_WIN" stop >/dev/null
+assert_eq "$(cat "$WS_HOME/pane-$SEND_ID.jsonl")" "$before" "background activity prevents fallback input"
+print '{"agent_id":"delivery-bg"}' | hook api/delivery "$SEND_WIN" subagent-stop
+wait_until pane_received "$SEND_ID" $'[ws #1]\nafter background'
+assert_eq "$(tail -1 "$WS_HOME/pane-$SEND_ID.jsonl" | jq -r '.text')" $'[ws #1]\nafter background' "last subagent stop drains idle inbox"
+
+echo "ws send: concurrent senders retain every queued message"
+hook api/delivery "$SEND_WIN" working </dev/null
+send_pids=()
+for i in {1..8}; do
+  WS_SESSION=1 "$WS" send "$SEND_ID" "concurrent-$i" > "$TMP/send-$i.log" 2>&1 &
+  send_pids+=($!)
+done
+for pid in $send_pids; do wait "$pid"; assert_exit "$?" "0" "concurrent send succeeds"; done
+reply="$(print '{}' | hook api/delivery "$SEND_WIN" stop)"
+assert_eq "$(print -r -- "$reply" | jq -r '[.reason | scan("concurrent-[1-8]")] | length')" "8" "one Stop delivers all concurrent messages"
+for i in {1..8}; do assert_contains "$reply" "concurrent-$i" "queued sender $i survives"; done
+assert_eq "$(print '{}' | hook api/delivery "$SEND_WIN" stop)" "{}" "concurrent inbox never repeats"
+
 "$WS" rm api/delivery --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
