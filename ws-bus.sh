@@ -8,18 +8,76 @@ cmd_whoami() {
   print -r -- "$id"
 }
 
+cmd_name() {
+  [[ $# == 1 ]] || die "name: expected <label>"
+  local label="$1" id="$(cmd_whoami)"
+  [[ -n "$id" ]] || return 1
+  [[ "$label" == [A-Za-z]* && "$label" != *[^A-Za-z0-9_.-]* && "$label" != me ]] \
+    || die "name: use a letter followed by letters, digits, dots, underscores or hyphens (me is reserved)"
+  with_lock "$WS_SESSIONS/names" ws_bus_name_locked "$id" "$label"
+}
+
+ws_bus_name_locked() {
+  local id="$1" label="$2" existing
+  existing="$(ws_bus_resolve "$label")"
+  [[ -z "$existing" || "$existing" == "$id" ]] || { print -u2 "ws: name already in use: $label"; return 1; }
+  ws_bus_update "$id" --arg name "$label" '.name = $name'
+}
+
 # TSV: id, name, workspace, agent, state, status. A missing tab is stopped, not done.
 cmd_sessions() {
-  local meta id win state
-  for meta in "$WS_SESSIONS"/<->/meta(N); do
+  [[ $# -le 1 ]] || die "sessions: expected [id|name]"
+  local meta id win state selected=""
+  [[ $# == 0 ]] || selected="$(ws_bus_resolve "$1")" || die "no such session: $1"
+  for meta in "$WS_SESSIONS"/<->/meta(Nn); do
     id="${meta:h:t}"
-    win="$(jq -r '.window // empty' "$meta")"
+    [[ -z "$selected" || "$selected" == "$id" ]] || continue
+    win="$(ws_bus_window "$id")"
     state=stopped
-    if [[ -n "$win" && "$(tmux_ display -p -t "$win" '#{@ws_session}' 2>/dev/null)" == "$id" ]]; then
+    if [[ -n "$win" ]]; then
       state="$(tmux_ show -wqv -t "$win" @ws_state 2>/dev/null)"
     fi
     jq -r --arg state "$state" '[.id, .name, .workspace, .agent, $state, .status] | @tsv' "$meta"
   done
+}
+
+ws_bus_resolve() {
+  local target="$1" meta id
+  [[ "$target" != me ]] || target="${WS_SESSION:-}"
+  target="${target#\#}"
+  if [[ "$target" == <-> ]]; then
+    [[ -f "$WS_SESSIONS/$target/meta" ]] || return 1
+    print -r -- "$target"
+    return 0
+  fi
+  [[ -n "$target" ]] || return 1
+  for meta in "$WS_SESSIONS"/<->/meta(N); do
+    id="$(jq -r --arg name "$target" 'select(.name == $name) | .id' "$meta")"
+    [[ -z "$id" ]] || { print -r -- "$id"; return 0; }
+  done
+  return 1
+}
+
+ws_bus_window() {
+  local id="$1" win
+  win="$(jq -r '.window // empty' "$WS_SESSIONS/$id/meta")"
+  [[ -n "$win" && "$(tmux_ display -p -t "$win" '#{@ws_session}' 2>/dev/null)" == "$id" ]] || return 1
+  print -r -- "$win"
+}
+
+ws_bus_open() {
+  local id="$1" detach="$2" win wt slot agent resume
+  win="$(ws_bus_window "$id")"
+  if [[ -z "$win" ]]; then
+    wt="$(jq -r '.path' "$WS_SESSIONS/$id/meta")"
+    wt="$(resolve_workspace "$wt")" || die "session workspace no longer exists: $id"
+    slot="$(jq -r '.slot' "$WS_SESSIONS/$id/meta")"
+    agent="$(jq -r '.agent' "$WS_SESSIONS/$id/meta")"
+    resume="$(jq -r '.resume_id' "$WS_SESSIONS/$id/meta")"
+    win="$(open_session "$wt" "$slot" "$agent" "$resume")" || return 1
+  fi
+  (( detach )) || focus "$win"
+  return 0
 }
 
 # Called under the workspace sessions-file lock, then the global counter lock.

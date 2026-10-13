@@ -9,7 +9,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws                         picker (attaches when run outside tmux)
 #   ws new [--repo P] [--branch B] [--agent claude|codex|grok] [--detach]
 #   ws add [name|path] [--agent claude|codex|grok] [--detach]   another agent tab (default: current worktree)
-#   ws open <name|path> [--detach]   focus, or restore every recorded session (resumed by id)
+#   ws open <workspace|path|id|name> [--detach]   focus or resume a workspace/session
 #   ws pick                    grouped picker: enter open · ctrl-n new · ctrl-o new codex ·
 #                              ctrl-r new grok · ctrl-a add claude tab · ctrl-t add codex tab ·
 #                              ctrl-v add grok tab · ctrl-p pin · ctrl-x rm ·
@@ -17,7 +17,8 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
 #   ws list                    TSV: state name path agent window pinned active unread
 #   ws whoami                  own global session id (inside an agent tab)
-#   ws sessions                TSV: id name workspace agent state status
+#   ws sessions [id|name]      TSV: id name workspace agent state status
+#   ws name <label>            name your session (unique; usable in place of its id)
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
@@ -69,7 +70,8 @@ main() {
   pin) cmd_pin "$@" ;;
   list | ls) cmd_list ;;
   whoami) cmd_whoami ;;
-  sessions) cmd_sessions ;;
+  sessions) cmd_sessions "$@" ;;
+  name) cmd_name "$@" ;;
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
   _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause
@@ -153,6 +155,10 @@ cmd_open() {
     esac
   done
   local wt slot agent resume id
+  if id="$(ws_bus_resolve "$target")"; then
+    ws_bus_open "$id" "$detach"
+    return $?
+  fi
   wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
   if [[ -z "$(windows_for "$wt")" ]]; then
     [[ -n "$(sessions_read "$wt")" ]] || session_add "$wt" claude >/dev/null

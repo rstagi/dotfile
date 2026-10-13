@@ -123,6 +123,19 @@ assert_contains "$("$WS" sessions)" $'1\t\tapi/feat-login\tclaude\tidle\tactive'
 env -u WS_SESSION "$WS" whoami 2>/dev/null
 assert_exit "$?" "1" "whoami refuses outside a tracked session"
 
+echo "ws name: labels address a session globally"
+WS_SESSION=1 "$WS" name reviewer
+assert_exit "$?" "0" "session can set its name"
+assert_eq "$("$WS" sessions reviewer)" $'1\treviewer\tapi/feat-login\tclaude\tidle\tactive' "name resolves to the same registry entry"
+"$WS" open reviewer --detach
+assert_exit "$?" "0" "open accepts a session name"
+"$WS" open 1 --detach
+assert_exit "$?" "0" "open accepts a global id"
+assert_eq "$(windows_of "$WT" | wc -l | tr -d ' ')" "1" "opening a live session focuses its existing tab"
+WS_SESSION=1 "$WS" name 123 2>/dev/null
+assert_exit "$?" "1" "numeric names cannot shadow ids"
+assert_contains "$("$WS" sessions 1)" $'1\treviewer\t' "invalid rename preserves existing name"
+
 echo "ws hook: agent events set window state; no-op outside a workspace"
 state() { T display -p -t "$WIN" '#{@ws_state}'; }
 assert_eq "$(state)" "idle" "fresh window starts idle"
