@@ -9,13 +9,16 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws                         picker (attaches when run outside tmux)
 #   ws new [--repo P] [--branch B] [--agent claude|codex|grok] [--detach]
 #   ws add [name|path] [--agent claude|codex|grok] [--detach]   another agent tab (default: current worktree)
-#   ws open <name|path> [--detach]   focus, or restore every recorded session (resumed by id)
+#   ws open <workspace|path|id|name> [--detach]   focus or resume a workspace/session
 #   ws pick                    grouped picker: enter open · ctrl-n new · ctrl-o new codex ·
 #                              ctrl-r new grok · ctrl-a add claude tab · ctrl-t add codex tab ·
 #                              ctrl-v add grok tab · ctrl-p pin · ctrl-x rm ·
 #                              ctrl-s show/hide sessions · ctrl-u toggle unread (• = finished, not yet seen)
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
 #   ws list                    TSV: state name path agent window pinned active unread
+#   ws whoami                  own global session id (inside an agent tab)
+#   ws sessions [id|name]      TSV: id name workspace agent state status
+#   ws name <label>            name your session (unique; usable in place of its id)
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
@@ -26,8 +29,9 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              (working|idle|waiting|subagent-start|subagent-stop)
 #   ws _dismiss <window|pane>  tab seen or agent exited: emit `closed` if a notification is open
 #
-# Sessions live in <worktree git dir>/ws-sessions (slot, agent, resume id). Quitting an agent
-# cleanly forgets its session; a killed one (reboot, kill-window) is resumed on `ws open`.
+# Workspace slots live in <worktree git dir>/ws-sessions (slot, agent, resume id, global id).
+# Global identities live in $WS_HOME/sessions/<id>/. A killed tab resumes on `ws open`;
+# a clean exit forgets its workspace slot while retaining its global record.
 
 WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
@@ -52,6 +56,7 @@ SHOW_SESSIONS="$WS_HOME/show-sessions" # exists → picker lists per-session row
 DEFAULT_INCLUDE_GLOBS=(".env*")
 AGENTS=(claude codex grok)
 GROK_HOOKS="${GROK_HOME:-$HOME/.grok}/hooks/ws.json"
+source "${WS_BIN:h}/ws-bus.sh"
 
 main() {
   local cmd="${1:-}"
@@ -64,6 +69,9 @@ main() {
   pick) cmd_pick ;;
   pin) cmd_pin "$@" ;;
   list | ls) cmd_list ;;
+  whoami) cmd_whoami ;;
+  sessions) cmd_sessions "$@" ;;
+  name) cmd_name "$@" ;;
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
   _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause
@@ -77,7 +85,7 @@ main() {
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
   _build-notifier) build_notifier ;;
-  -h | --help | help) sed -n '4,24p' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
+  -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
   esac
 }
@@ -115,8 +123,9 @@ cmd_new() {
   [[ -e "$wt" ]] && die "workspace exists: $wt (use: ws open ${repo:t}/${wt:t})"
   add_worktree "$repo" "$branch" "$wt" || die "git worktree add failed"
   copy_included_files "$repo" "$wt"
-  local win
-  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  local win slot
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  win="$(open_session "$wt" "$slot" "$agent" "")" || die "cannot open session"
   run_setup "$wt" "$(setup_script "$repo")"
   (( detach )) || focus "$win"
 }
@@ -132,9 +141,10 @@ cmd_add() {
   done
   check_agent "$agent"
   [[ -n "$target" ]] || target="$(current_workspace)" || die "add: not inside a workspace (pass <repo/branch>)"
-  local wt win
+  local wt win slot
   wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
-  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  win="$(open_session "$wt" "$slot" "$agent" "")" || die "cannot open session"
   (( detach )) || focus "$win"
 }
 
@@ -146,12 +156,17 @@ cmd_open() {
     *) target="$1"; shift ;;
     esac
   done
-  local wt slot agent resume
+  local wt id row
+  if id="$(ws_bus_resolve "$target")"; then
+    ws_bus_open "$id" "$detach"
+    return $?
+  fi
   wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
   if [[ -z "$(windows_for "$wt")" ]]; then
     [[ -n "$(sessions_read "$wt")" ]] || session_add "$wt" claude >/dev/null
-    sessions_read "$wt" | while IFS=$'\t' read -r slot agent resume; do
-      open_session "$wt" "$slot" "$agent" "$resume" >/dev/null
+    sessions_read "$wt" | while IFS= read -r row; do
+      local -a fields=("${(@ps:\t:)row}")
+      open_session "$wt" "${fields[1]}" "${fields[2]}" "${fields[3]:-}" >/dev/null
     done
   fi
   (( detach )) || focus "$(active_window_for "$wt")"
@@ -160,17 +175,18 @@ cmd_open() {
 # Runs an agent in the current tab (one opened by hand, e.g. prefix+c) as a tracked session:
 # ws hooks, state, resume. The tab goes back to a plain shell when the agent exits.
 cmd_run() {
-  local agent="$1" wt win slot cmd s
+  local agent="$1" wt win slot cmd s id
   shift
   [[ -n "${TMUX_PANE:-}" ]] || die "$agent: run it inside a workspace's tmux tab"
   wt="$(current_workspace)" && wt="$(resolve_workspace "$wt")" || die "$agent: not inside a workspace"
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
   [[ -z "$(tmux_ show -wqv -t "$win" @ws_slot)" ]] || die "$agent: this tab already runs a ws session"
-  slot="$(session_add "$wt" "$agent")"
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || die "cannot register session"
   tag_window "$win" "$wt" "$slot" "$agent"
   cmd="$(agent_command "$agent" "")"
   (( $# )) && cmd+=" ${(j: :)${(q)@}}"
-  WS_WORKSPACE="$(workspace_name "$wt")" ${(z)WS_AGENT_SHELL} "$cmd"
+  WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ${(z)WS_AGENT_SHELL} "$cmd"
   s=$?
   cmd_dismiss "$TMUX_PANE"
   (( s == 0 )) && session_remove "$wt" "$slot" # else kept for resume, as for a killed tab
@@ -460,18 +476,30 @@ configure_bindings() {
 # anything else (crash, SIGHUP) keeps it for resume.
 open_session() {
   local wt="$1" slot="$2" agent="$3" resume="$4"
+  local id
+  id="$(ws_bus_identity "$wt" "$slot" "$agent" "$resume")" || return 1
+  with_lock "$WS_SESSIONS/$id/open" open_session_locked "$wt" "$slot" "$agent" "$resume" "$id"
+}
+
+open_session_locked() {
+  local wt="$1" slot="$2" agent="$3" resume="$4" id="$5"
   local name tab cmd run sess win
+  if win="$(ws_bus_window "$id")"; then
+    print -r -- "$win"
+    return 0
+  fi
   name="$(workspace_name "$wt")"
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
   cmd="$(agent_command "$agent" "$resume")"
   run="$cmd; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
-  local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" ${(z)WS_AGENT_SHELL} "$run")
+  local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
+    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
-    win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")"
+    win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")" || return 1
   else
-    win="$(tmux_ new-session -s "${name//[.:]/_}" "${spawn[@]}")"
+    win="$(tmux_ new-session -s "${name//[.:]/_}" "${spawn[@]}")" || return 1
     configure_bindings
     sess="$(tmux_ display -p -t "$win" '#{session_id}')"
     tmux_ set -t "$sess" @ws_path "$wt"
@@ -479,19 +507,22 @@ open_session() {
     tmux_ set -t "$sess" status-left-length 60
     tmux_ set -t "$sess" status-left "#[bold] $name #[default]"
   fi
-  tag_window "$win" "$wt" "$slot" "$agent"
+  tag_window "$win" "$wt" "$slot" "$agent" || return 1
   print -r -- "$win"
 }
 
 # Marks a tab as an agent session: what windows_for, cmd_list and hooks key on.
 tag_window() {
-  local win="$1" wt="$2" slot="$3" agent="$4" tab="$4"
+  local win="$1" wt="$2" slot="$3" agent="$4" tab="$4" id
+  id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || return 1
   (( slot > 1 )) && tab+="#$slot"
   tmux_ rename-window -t "$win" "$tab"
   tmux_ set -w -t "$win" @ws_path "$wt"
   tmux_ set -w -t "$win" @ws_slot "$slot"
+  tmux_ set -w -t "$win" @ws_session "$id"
   tmux_ set -w -t "$win" @ws_agent "$agent"
   tmux_ set -w -t "$win" @ws_state idle
+  ws_bus_update "$id" --arg win "$win" '.window = $win | if .status == "closed" then .status = "active" else . end'
   tmux_ set -w -t "$win" automatic-rename off
   tmux_ set -w -t "$win" window-status-format "#I $(state_format) #W"
   tmux_ set -w -t "$win" window-status-current-format "#[bold]#I $(state_format) #W#[default]"
@@ -499,7 +530,7 @@ tag_window() {
 
 untag_window() {
   local opt
-  for opt in @ws_path @ws_slot @ws_agent @ws_state @ws_main @ws_unread automatic-rename \
+  for opt in @ws_path @ws_slot @ws_session @ws_agent @ws_state @ws_main @ws_unread automatic-rename \
     window-status-format window-status-current-format; do
     tmux_ set -wu -t "$1" "$opt" 2>/dev/null
   done
@@ -815,14 +846,15 @@ sessions_read() {
 session_add() {
   local wt="$1" agent="$2" f
   f="$(sessions_file "$wt")"
-  with_lock "$f" session_append "$f" "$agent"
+  with_lock "$f" session_append "$f" "$agent" "$wt"
 }
 
 session_append() {
-  local f="$1" agent="$2" slot
+  local f="$1" agent="$2" wt="$3" slot id
   slot="$( { [[ -f "$f" ]] && cut -f1 "$f"; print 0; } | sort -n | tail -1)"
   slot=$((slot + 1))
-  printf '%s\t%s\t\n' "$slot" "$agent" >> "$f"
+  id="$(ws_bus_allocate "$wt" "$slot" "$agent")" || return 1
+  printf '%s\t%s\t\t%s\n' "$slot" "$agent" "$id" >> "$f"
   print -r -- "$slot"
 }
 
@@ -830,25 +862,37 @@ session_remove() {
   local wt="$1" slot="$2" f
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  with_lock "$f" rewrite "$f" -F '\t' -v s="$slot" '$1 != s'
+  with_lock "$f" session_remove_locked "$f" "$slot"
+}
+
+session_remove_locked() {
+  local f="$1" slot="$2" id
+  id="$(awk -F '\t' -v s="$slot" '$1 == s {print $4}' "$f")"
+  rewrite "$f" -F '\t' -v s="$slot" '$1 != s' || return 1
+  [[ "$id" != <-> ]] || ws_bus_close "$id"
+  return 0
 }
 
 # Stores the tab's resume id, re-adding its row if it went missing (a session must stay
 # resumable after a reboot). Skips the write when nothing changed — hooks fire on every tool.
 record_resume_id() {
-  local sid wt slot agent f
+  local sid wt slot agent f id
   sid="$(print -r -- "$1" | jq -r '.session_id // empty' 2>/dev/null)"
   [[ -n "$sid" ]] || sid="${GROK_SESSION_ID:-}" # grok hooks: id in env if not in the payload
   [[ -n "$sid" ]] || return 0
   wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}' 2>/dev/null)"
   slot="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_slot}' 2>/dev/null)"
   agent="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_agent}' 2>/dev/null)"
+  id="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)"
   [[ -n "$wt" && -n "$slot" ]] || return 0
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  grep -qxF -- "$slot	${agent:-claude}	$sid" "$f" && return 0
-  with_lock "$f" rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" \
-    '$1 == s { $3 = id; found = 1 } { print } END { if (!found) print s, a, id }'
+  if [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" && "$(jq -r '.resume_id' "$WS_SESSIONS/$id/meta")" != "$sid" ]]; then
+    ws_bus_update "$id" --arg resume "$sid" '.resume_id = $resume' || return 0
+  fi
+  grep -qxF -- "$slot	${agent:-claude}	$sid	$id" "$f" && return 0
+  with_lock "$f" rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" -v g="$id" \
+    '$1 == s { $3 = id; if (g != "") $4 = g; found = 1 } { print } END { if (!found) print s, a, id, g }'
 }
 
 # with_lock <file> <cmd...> — runs cmd holding <file>.lock: parallel tool calls fire hooks
@@ -857,7 +901,7 @@ with_lock() {
   local f="$1"
   shift
   : >> "$f.lock" # flock won't create it
-  (zsystem flock -t 3 "$f.lock" 2>/dev/null || exit 1; "$@")
+  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || exit 1; "$@")
 }
 
 # rewrite <file> <awk args...> — replaces the file with awk's output, atomically.
