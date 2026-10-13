@@ -173,6 +173,13 @@ T send-keys -t "$(windows_of "$WS_ROOT/api/global-1")" Enter
 registry_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tclosed' ]]; }
 wait_until registry_closed "$GLOBAL_SESSION_ID"
 assert_exit "$?" "0" "clean exit closes the global record without deleting its identity"
+"$WS" add api/global-1 --agent codex --detach
+assert_contains "$(wait_pane "$(slot_window "$WS_ROOT/api/global-1" 1)" FAKE-codex)" "ID=10 WHOAMI=10" "reusing a workspace slot allocates a fresh global id"
+"$WS" open "$GLOBAL_SESSION_ID" --detach
+assert_exit "$?" "0" "closed global session can be reopened by id"
+assert_contains "$(wait_pane "$(slot_window "$WS_ROOT/api/global-1" 2)" FAKE-claude)" \
+  "ID=$GLOBAL_SESSION_ID WHOAMI=$GLOBAL_SESSION_ID" "closed resume preserves identity when its old slot is occupied"
+assert_contains "$("$WS" sessions "$GLOBAL_SESSION_ID")" $'\tclaude\tidle\tactive' "reopened global record is active"
 for i in {1..8}; do "$WS" rm "api/global-$i" --force --delete-branch >/dev/null; done
 
 echo "ws hook: agent events set window state; no-op outside a workspace"

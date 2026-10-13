@@ -71,13 +71,37 @@ ws_bus_open() {
   if [[ -z "$win" ]]; then
     wt="$(jq -r '.path' "$WS_SESSIONS/$id/meta")"
     wt="$(resolve_workspace "$wt")" || die "session workspace no longer exists: $id"
-    slot="$(jq -r '.slot' "$WS_SESSIONS/$id/meta")"
+    slot="$(ws_bus_restore_slot "$wt" "$id")" || return 1
     agent="$(jq -r '.agent' "$WS_SESSIONS/$id/meta")"
     resume="$(jq -r '.resume_id' "$WS_SESSIONS/$id/meta")"
     win="$(open_session "$wt" "$slot" "$agent" "$resume")" || return 1
   fi
   (( detach )) || focus "$win"
   return 0
+}
+
+# Reattach a retained identity to a free workspace slot; the old slot may have been reused.
+ws_bus_restore_slot() {
+  local f
+  f="$(sessions_file "$1")" || return 1
+  with_lock "$f" ws_bus_restore_locked "$f" "$2"
+}
+
+ws_bus_restore_locked() {
+  local f="$1" id="$2" slot existing agent resume
+  touch "$f" || return 1
+  existing="$(awk -F '\t' -v id="$id" '$4 == id {print $1; exit}' "$f")"
+  [[ -z "$existing" ]] || { print -r -- "$existing"; return 0; }
+  slot="$(jq -r '.slot' "$WS_SESSIONS/$id/meta")"
+  if [[ "$slot" != <-> || -n "$(awk -F '\t' -v s="$slot" '$1 == s {print $1; exit}' "$f")" ]]; then
+    slot="$( { cut -f1 "$f"; print 0; } | sort -n | tail -1)"
+    (( slot += 1 ))
+  fi
+  agent="$(jq -r '.agent' "$WS_SESSIONS/$id/meta")"
+  resume="$(jq -r '.resume_id' "$WS_SESSIONS/$id/meta")"
+  printf '%s\t%s\t%s\t%s\n' "$slot" "$agent" "$resume" "$id" >> "$f" || return 1
+  ws_bus_update "$id" --arg slot "$slot" '.slot = $slot' || return 1
+  print -r -- "$slot"
 }
 
 # Called under the workspace sessions-file lock, then the global counter lock.

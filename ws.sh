@@ -511,7 +511,7 @@ tag_window() {
   tmux_ set -w -t "$win" @ws_session "$id"
   tmux_ set -w -t "$win" @ws_agent "$agent"
   tmux_ set -w -t "$win" @ws_state idle
-  ws_bus_update "$id" --arg win "$win" '.window = $win | .state = "idle"'
+  ws_bus_update "$id" --arg win "$win" '.window = $win | .state = "idle" | if .status == "closed" then .status = "active" else . end'
   tmux_ set -w -t "$win" automatic-rename off
   tmux_ set -w -t "$win" window-status-format "#I $(state_format) #W"
   tmux_ set -w -t "$win" window-status-current-format "#[bold]#I $(state_format) #W#[default]"
