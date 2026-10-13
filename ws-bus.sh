@@ -132,3 +132,7 @@ ws_bus_update_locked() {
   shift
   jq "$@" "$meta" > "$meta.tmp" && mv "$meta.tmp" "$meta"
 }
+
+ws_bus_close() {
+  ws_bus_update "$1" '.window = "" | .state = "stopped" | if .status == "active" then .status = "closed" else . end'
+}

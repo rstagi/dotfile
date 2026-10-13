@@ -139,12 +139,17 @@ assert_contains "$("$WS" sessions 1)" $'1\treviewer\t' "invalid rename preserves
 echo "ws sessions: concurrent workspaces allocate distinct monotone ids"
 global_pids=()
 for i in {1..8}; do
-  "$WS" new --repo "$REPO" --branch "global-$i" --detach > "$TMP/global-$i.log" 2>&1 &
+  git -C "$REPO" worktree add -q -b "global-$i" "$WS_ROOT/api/global-$i" main
+done
+for i in {1..8}; do
+  "$WS" add "api/global-$i" --detach > "$TMP/global-$i.log" 2>&1 &
   global_pids+=($!)
 done
 for pid in $global_pids; do
   wait "$pid"
-  assert_exit "$?" "0" "concurrent workspace launches successfully"
+  launch_exit=$?
+  (( launch_exit == 0 )) || cat "$TMP"/global-*.log
+  assert_exit "$launch_exit" "0" "concurrent workspace launches successfully"
 done
 assert_eq "$("$WS" sessions | awk -F '\t' '$3 ~ /^api\/global-/ {print $1}' | sort -n | tr '\n' ' ')" \
   "2 3 4 5 6 7 8 9 " "parallel allocation never duplicates or loses an id"
@@ -164,6 +169,10 @@ assert_contains "$("$WS" sessions "$GLOBAL_SESSION_ID")" $'\tstopped\tactive' "k
 out="$(wait_pane "$(windows_of "$WS_ROOT/api/global-1")" FAKE-claude)"
 assert_contains "$out" "ID=$GLOBAL_SESSION_ID WHOAMI=$GLOBAL_SESSION_ID" "workspace resume preserves global id without an agent resume id"
 assert_eq "${out/*--resume*/resumed}" "$out" "global id is never passed as an agent resume id"
+T send-keys -t "$(windows_of "$WS_ROOT/api/global-1")" Enter
+registry_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tclosed' ]]; }
+wait_until registry_closed "$GLOBAL_SESSION_ID"
+assert_exit "$?" "0" "clean exit closes the global record without deleting its identity"
 for i in {1..8}; do "$WS" rm "api/global-$i" --force --delete-branch >/dev/null; done
 
 echo "ws hook: agent events set window state; no-op outside a workspace"

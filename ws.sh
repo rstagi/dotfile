@@ -851,7 +851,15 @@ session_remove() {
   local wt="$1" slot="$2" f
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  with_lock "$f" rewrite "$f" -F '\t' -v s="$slot" '$1 != s'
+  with_lock "$f" session_remove_locked "$f" "$slot"
+}
+
+session_remove_locked() {
+  local f="$1" slot="$2" id
+  id="$(awk -F '\t' -v s="$slot" '$1 == s {print $4}' "$f")"
+  rewrite "$f" -F '\t' -v s="$slot" '$1 != s' || return 1
+  [[ "$id" != <-> ]] || ws_bus_close "$id"
+  return 0
 }
 
 # Stores the tab's resume id, re-adding its row if it went missing (a session must stay
