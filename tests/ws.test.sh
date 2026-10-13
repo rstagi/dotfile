@@ -27,11 +27,27 @@ T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
 # Fake agents print their argv, then stay alive until a line arrives (→ clean exit 0).
 mkdir -p "$TMP/bin"
+# Fake delivery TUI records bytes submitted outside bracketed paste, including multiline input.
+cat > "$TMP/paste-agent.py" <<'PY_AGENT'
+import json, os, tty
+print("\033[?2004h", end="", flush=True)
+tty.setraw(0)
+print("PASTE-READY", flush=True)
+buf = b""
+while True:
+    ch = os.read(0, 1)
+    buf += ch
+    if ch == b"\r" and not (b"\033[200~" in buf and b"\033[201~" not in buf):
+        with open(os.environ["WS_HOME"] + "/pane-" + os.environ["WS_SESSION"] + ".jsonl", "a") as f:
+            f.write(json.dumps({"raw": buf.decode(), "text": buf[:-1].replace(b"\033[200~", b"").replace(b"\033[201~", b"").decode()}) + "\n")
+        buf = b""
+PY_AGENT
 for agent in claude codex grok; do
   cat > "$TMP/bin/$agent" <<EOF
 #!/bin/sh
 own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
+[ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
 EOF
   chmod +x "$TMP/bin/$agent"
@@ -1204,6 +1220,22 @@ assert_eq "$([[ -d "$DWT" ]] && print yes)" "" "dirty, force confirmed: worktree
 assert_eq "$(git -C "$MREPO" branch --list feat/dirty)" "" "dirty, force confirmed: branch deleted"
 (cd "$MREPO" && env -u TMUX "$WS" merge </dev/null 2>/dev/null)
 assert_exit "$?" "1" "merge outside a workspace refused"
+
+echo "ws send: idle named target receives one bracketed multiline prompt with sender id"
+"$WS" new --repo "$REPO" --branch delivery --detach
+SEND_WT="$WS_ROOT/api/delivery"
+SEND_WIN="$(windows_of "$SEND_WT")"
+SEND_ID="$(T display -p -t "$SEND_WIN" '#{@ws_session}')"
+assert_contains "$(wait_pane "$SEND_WIN" PASTE-READY)" "PASTE-READY" "fake delivery TUI ready"
+WS_SESSION="$SEND_ID" "$WS" name receiver
+MESSAGE=$'first line\nsecond "quoted" line $literal'
+print -r -- "$MESSAGE" | WS_SESSION=1 "$WS" send receiver -
+assert_exit "$?" "0" "send accepts stdin and target name"
+wait_until test -s "$WS_HOME/pane-$SEND_ID.jsonl"
+assert_eq "$(jq -r '.text' "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null)" $'[ws #1]\nfirst line\nsecond "quoted" line $literal' "sender prefix and multiline text reach pane intact"
+assert_eq "$(jq -r '.raw | startswith("\u001b[200~") and endswith("\u001b[201~\r")' "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null)" "true" "paste is bracketed with separate Enter"
+assert_eq "$(wc -l < "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null | tr -d ' ')" "1" "multiline message submits exactly once"
+"$WS" rm api/delivery --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach

@@ -3,6 +3,38 @@
 # Live state comes from tmux; metadata keeps durable identity and lifecycle status.
 WS_SESSIONS="$WS_HOME/sessions"
 
+cmd_send() {
+  [[ $# == 2 ]] || die "send: expected <id|name> <message|->"
+  local id message="$2" sender=terminal
+  id="$(ws_bus_resolve "$1")" || die "no such session: $1"
+  if [[ -n "${WS_SESSION:-}" ]]; then
+    sender="#$(cmd_whoami)" || return 1
+  fi
+  if [[ "$message" == - ]]; then
+    message="$(cat; print -n .)"
+    message="${message%.}"
+  fi
+  [[ -n "$message" ]] || die "send: empty message"
+  local win lock lockfd
+  win="$(ws_bus_window "$id")" || die "send: session is stopped: $id"
+  lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+  { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
+  ws_bus_paste "$id" "$win" "[ws $sender]"$'\n'"$message"
+}
+
+# Named buffers isolate concurrent senders; raw paste preserves LF inside bracketed input.
+ws_bus_paste() {
+  local id="$1" win="$2" message="$3" buffer="ws-$1-$$" pane
+  pane="$(tmux_ display -p -t "$win" '#{pane_id}')" || return 1
+  print -rn -- "$message" | tmux_ load-buffer -b "$buffer" - || return 1
+  if ! tmux_ paste-buffer -d -p -r -b "$buffer" -t "$pane"; then
+    tmux_ delete-buffer -b "$buffer" 2>/dev/null
+    return 1
+  fi
+  sleep 0.3
+  tmux_ send-keys -t "$pane" Enter
+}
+
 cmd_whoami() {
   local id="${WS_SESSION:-}"
   [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || die "whoami: not inside a ws session"
