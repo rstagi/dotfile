@@ -3,5 +3,12 @@ set -u
 
 print -r -- "claude $*" >> "${FAKE_ENGINE_LOG:?FAKE_ENGINE_LOG required}"
 [[ -n "${FAKE_CLAUDE_MODEL:-}" ]] && print -r -- '{"type":"system","subtype":"init","session_id":"s-claude","model":"'"$FAKE_CLAUDE_MODEL"'"}'
+# session-limit → Claude's headless plan-limit reply: an is_error result and no status.json,
+# exiting FAKE_CLAUDE_LIMIT_RC (the CLI has been seen to exit 0 here)
+if [[ "${FAKE_CLAUDE_OUTCOME:-done}" == session-limit ]]; then
+  print -r -- '{"type":"assistant","message":{"content":[{"type":"text","text":"You'"'"'ve hit your session limit · resets 4:40pm (Europe/Rome)"}]}}'
+  print -r -- '{"type":"result","subtype":"success","is_error":true,"result":"You'"'"'ve hit your session limit · resets 4:40pm (Europe/Rome)"}'
+  exit "${FAKE_CLAUDE_LIMIT_RC:-0}"
+fi
 jq -cn '{outcome:"done"}' > "${FAKE_RUN_DIR:?FAKE_RUN_DIR required}/status.json"
 print -r -- '{"type":"result","result":"done"}'

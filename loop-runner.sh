@@ -564,7 +564,8 @@ collect_error_text() {
       "$TRANSCRIPT" 2>/dev/null | tail -20
   } > "$RUN_DIR/.errtext" 2>/dev/null || true
 }
-is_rate_limited() { grep -qiE '(^|[^0-9])429([^0-9]|$)|rate.?limit|usage limit|quota exceeded' "$RUN_DIR/.errtext" 2>/dev/null; }
+# Claude's plan limits ("You've hit your session/weekly limit · resets …") arrive as an is_error result
+is_rate_limited() { grep -qiE '(^|[^0-9])429([^0-9]|$)|rate.?limit|usage limit|quota exceeded|hit your [a-z ]*limit' "$RUN_DIR/.errtext" 2>/dev/null; }
 is_transient() { grep -qiE 'overloaded|"5[0-9][0-9]"|status.?5[0-9][0-9]|ECONNRESET|ETIMEDOUT|internal server error' "$RUN_DIR/.errtext" 2>/dev/null; }
 
 # --- chain loop: every attempt starts at the top of the chain ---
@@ -640,13 +641,17 @@ for leg in "${chain[@]}"; do
       echo "loop-runner: timeout on $leg after ${TIMEOUT}s" >&2
       exit 124
     fi
-    if [[ $rc -eq 0 && ( -s "$TRANSCRIPT" || -s "$STATUS" ) ]]; then
+    if [[ $rc -eq 0 && -s "$STATUS" ]]; then
       leg_done=1; break
     fi
+    # a usage-limit reply can exit 0 with a non-empty transcript: classify before trusting it
     collect_error_text
     if is_rate_limited; then
       echo "loop-runner: rate/usage limit on $leg — next leg" >&2
       break
+    fi
+    if [[ $rc -eq 0 && -s "$TRANSCRIPT" ]]; then
+      leg_done=1; break
     fi
     if is_transient || [[ $rc -eq 0 ]]; then
       retries=$((retries + 1))

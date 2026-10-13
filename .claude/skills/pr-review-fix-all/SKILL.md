@@ -15,7 +15,6 @@ allowed-tools:
   - Grep
   - Read
   - Write
-disable-model-invocation: true
 ---
 
 # PR Review Fix All

@@ -479,4 +479,21 @@ echo "runner: a pinned grok model is passed with -m"
 run_review task rate-limit --models-conf "$TMP/grok-models.conf"
 assert_contains "$(print -r -- "$INVOCATIONS" | grep '^grok ')" '-m grok-4.6' "pinned grok model reaches the grok CLI"
 
+echo "runner: a claude plan-limit reply is a usage limit, not a finished leg"
+for limit_rc in 0 1; do
+  mkdir -p "$TMP/limit-$limit_rc"
+  FAKE_RUN_DIR="$TMP/limit-$limit_rc" FAKE_ENGINE_LOG="$TMP/limit-$limit_rc.log" \
+    FAKE_CLAUDE_OUTCOME=session-limit FAKE_CLAUDE_LIMIT_RC=$limit_rc \
+    zsh "$ROOT/loop-runner.sh" \
+      --worktree "$ROOT" \
+      --run-dir "$TMP/limit-$limit_rc" \
+      --prompt-file "$TMP/prompt.md" \
+      --chain task \
+      --timeout 5 > "$TMP/limit-$limit_rc.out" 2>&1
+  RC=$?
+  assert_exit "$RC" "40" "exhausts the chain instead of succeeding (claude rc=$limit_rc)"
+  assert_contains "$(cat "$TMP/limit-$limit_rc.out")" "rate/usage limit on claude" "classifies the reply as a usage limit (claude rc=$limit_rc)"
+  assert_eq "$(grep -c '^claude ' "$TMP/limit-$limit_rc.log")" "1" "does not retry the limited leg (claude rc=$limit_rc)"
+done
+
 test_summary

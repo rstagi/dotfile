@@ -520,7 +520,7 @@ Claude stream-json, `error` events in Codex JSONL — stderr regex last):
 
 - transient (`5xx|overloaded|ECONNRESET|ETIMEDOUT|empty result`) → retry same leg, 3
   attempts total, backoff 10/30s;
-- rate/usage (`429|rate.?limit|usage limit|quota`) → advance to next leg immediately;
+- rate/usage (`429|rate.?limit|usage limit|quota|hit your … limit`, checked before a status-less exit 0 counts as done) → advance to next leg immediately;
 - other nonzero → one retry, then next leg.
 
 For every chain, `loop-runner.sh` caps even an explicit `--timeout` at

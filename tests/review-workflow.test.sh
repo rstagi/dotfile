@@ -27,6 +27,7 @@ assert_contains "$SKILL" '`/pr-review-fix-all`' "loop workflow invokes the remed
 assert_contains "$PROTOCOL" '`/pr-review-fix-all`' "protocol invokes the remediation skill"
 
 echo "review workflow: remediation skill owns Opus delegation"
+assert_eq "$([[ "$FIX_SKILL" == *'disable-model-invocation: true'* ]] && echo blocked || echo invocable)" "invocable" "headless fix runs can invoke the skill"
 assert_contains "$FIX_SKILL" 'Write `RUN_DIR/remediation-plan.md`' "records reconciliation before fixes"
 assert_contains "$FIX_SKILL" 'accepted, rejected, or duplicate' "disposes every finding"
 assert_contains "$FIX_SKILL" 'maximum of 3 concurrent subagents' "bounds parallel remediation"
