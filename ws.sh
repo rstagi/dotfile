@@ -154,7 +154,7 @@ cmd_open() {
     *) target="$1"; shift ;;
     esac
   done
-  local wt slot agent resume id
+  local wt id row
   if id="$(ws_bus_resolve "$target")"; then
     ws_bus_open "$id" "$detach"
     return $?
@@ -162,8 +162,9 @@ cmd_open() {
   wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
   if [[ -z "$(windows_for "$wt")" ]]; then
     [[ -n "$(sessions_read "$wt")" ]] || session_add "$wt" claude >/dev/null
-    sessions_read "$wt" | while IFS=$'\t' read -r slot agent resume id; do
-      open_session "$wt" "$slot" "$agent" "$resume" >/dev/null
+    sessions_read "$wt" | while IFS= read -r row; do
+      local -a fields=("${(@ps:\t:)row}")
+      open_session "$wt" "${fields[1]}" "${fields[2]}" "${fields[3]:-}" >/dev/null
     done
   fi
   (( detach )) || focus "$(active_window_for "$wt")"

@@ -136,6 +136,31 @@ WS_SESSION=1 "$WS" name 123 2>/dev/null
 assert_exit "$?" "1" "numeric names cannot shadow ids"
 assert_contains "$("$WS" sessions 1)" $'1\treviewer\t' "invalid rename preserves existing name"
 
+echo "ws sessions: concurrent workspaces allocate distinct monotone ids"
+global_pids=()
+for i in {1..8}; do
+  "$WS" new --repo "$REPO" --branch "global-$i" --detach > "$TMP/global-$i.log" 2>&1 &
+  global_pids+=($!)
+done
+for pid in $global_pids; do
+  wait "$pid"
+  assert_exit "$?" "0" "concurrent workspace launches successfully"
+done
+assert_eq "$("$WS" sessions | awk -F '\t' '$3 ~ /^api\/global-/ {print $1}' | sort -n | tr '\n' ' ')" \
+  "2 3 4 5 6 7 8 9 " "parallel allocation never duplicates or loses an id"
+GLOBAL_SESSION_ID="$("$WS" sessions | awk -F '\t' '$3 == "api/global-1" {print $1}')"
+GW="$(windows_of "$WS_ROOT/api/global-1")"
+assert_contains "$(wait_pane "$GW" FAKE-claude)" "ID=$GLOBAL_SESSION_ID WHOAMI=$GLOBAL_SESSION_ID" "concurrent tab gets its own allocated identity"
+WS_SESSION="$GLOBAL_SESSION_ID" "$WS" name reviewer 2>/dev/null
+assert_exit "$?" "1" "duplicate session names are refused"
+T kill-window -t "$GW"
+assert_contains "$("$WS" sessions "$GLOBAL_SESSION_ID")" $'\tstopped\tactive' "killed session is stopped and remains active"
+"$WS" open api/global-1 --detach
+out="$(wait_pane "$(windows_of "$WS_ROOT/api/global-1")" FAKE-claude)"
+assert_contains "$out" "ID=$GLOBAL_SESSION_ID WHOAMI=$GLOBAL_SESSION_ID" "workspace resume preserves global id without an agent resume id"
+assert_eq "${out/*--resume*/resumed}" "$out" "global id is never passed as an agent resume id"
+for i in {1..8}; do "$WS" rm "api/global-$i" --force --delete-branch >/dev/null; done
+
 echo "ws hook: agent events set window state; no-op outside a workspace"
 state() { T display -p -t "$WIN" '#{@ws_state}'; }
 assert_eq "$(state)" "idle" "fresh window starts idle"
