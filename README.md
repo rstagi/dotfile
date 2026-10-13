@@ -26,10 +26,12 @@ Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
 - `auto` (default): use the branded `~/.ws/ws.app`, else `terminal-notifier` on PATH; fall back to `osascript` if missing or rejected by macOS.
 - `terminal-notifier`: explicitly select the same terminal-notifier adapter, including its osascript fallback.
 - `osascript`: use macOS AppleScript notifications directly, with the same sound playback as terminal-notifier.
-- `boringnotch`: send every transition to the Boring Notch fork's Unix socket and play the event's sound cue. If the socket is unavailable, fall back to `auto`.
+- `boringnotch`: send every transition to the Boring Notch fork's Unix socket; the app plays the sound (pick it in its Settings). If the socket is unavailable, fall back to `auto`, which plays the ws cue.
 - An executable path, e.g. `export WS_NOTIFIER="$HOME/bin/ws-notify"`: receive one compact JSON object plus newline on stdin, without arguments. Paths containing spaces work. Adapters run asynchronously; failures do not block agent hooks.
 
 Every state transition emits an event, including `working` and focused tabs. Repeated states do not emit events, and ws drops hooks whose `seq` is not newer than the tab's last applied `seq` (overlapping hooks are serialized per tab). Filtering belongs to the adapter: the built-in macOS adapters apply the same per-tab `seq` rule before delivery (including `working` events), then display only unfocused `idle` and `waiting` events with their sound. terminal-notifier adds icons, per-tab replacement and click-to-focus; `osascript` (explicit or fallback) shows text only.
+
+Once a tab has notified, ws dismisses it with a `closed` event when you select that tab (tmux `session-window-changed` / `client-session-changed` hooks, installed with ws's key bindings) or when its agent exits. The tab state is unchanged; receivers drop the tab's notification (terminal-notifier removes its banner; the notch removes its activity). Each notification is closed at most once.
 
 For notch notifications, build and run the local [Boring Notch fork](https://github.com/rstagi/boring.notch), then enable **Settings → General → System features → External notifications** (on by default in the fork). Set this in your shell config before launching ws sessions:
 
@@ -50,7 +52,7 @@ export WS_NOTIFY_SOUND_DONE=Glass
 export WS_NOTIFY_SOUND_WAITING="$HOME/Music/needs input.wav"
 ```
 
-Playback uses `afplay` once per notification, including fallbacks, in the background so long cues never delay the notification; terminal-notifier's own sound is suppressed. With `boringnotch`, idle/waiting events play their cues even for focused tabs; working events have no sound. Unavailable sounds are skipped without blocking the notification. Custom adapters receive semantic keys and own their sound playback.
+Playback uses `afplay` once per notification, including fallbacks, in the background so long cues never delay the notification; terminal-notifier's own sound is suppressed. With `boringnotch`, ws plays nothing on successful delivery: the notch app plays its configured sound. Unavailable sounds are skipped without blocking the notification. Custom adapters receive semantic keys and own their sound playback.
 
 The v1 event schema is shared by all adapters:
 
@@ -59,7 +61,7 @@ The v1 event schema is shared by all adapters:
 | `v` | number | Protocol version, `1` |
 | `id` | string | Tab identity within a tmux server, e.g. `ws:@12`; use for replacement |
 | `source` | string | `ws` |
-| `state` | string | `working`, `idle` or `waiting` |
+| `state` | string | `working`, `idle`, `waiting`, or `closed` (tab seen or agent exited: drop its notification) |
 | `prev` | string | Previous tab state; empty if unknown |
 | `title` | string | Notification title, currently `ws` |
 | `message` | string | Workspace + status, e.g. `api/feat-login needs input` |
@@ -68,7 +70,7 @@ The v1 event schema is shared by all adapters:
 | `repo` | string | Repository name from the workspace |
 | `branch` | string | Git branch name, preserving `/`; empty if unknown |
 | `focused` | boolean | Whether the tab is active in an attached tmux session |
-| `sound` | string | Semantic key: `done` for idle, `waiting` for input; empty for working |
+| `sound` | string | Semantic key: `done` for idle, `waiting` for input; empty for working and closed |
 | `actions` | array | Objects with string `id`, `label`, `command`; currently one `focus` action labelled `Focus tab` |
 | `seq` | number | Integer microseconds since epoch, taken at hook entry; per `id`, receivers drop events whose `seq` <= the last applied `seq`; events without `seq` are treated as newest |
 | `ts` | number | Unix timestamp in seconds (UTC) |

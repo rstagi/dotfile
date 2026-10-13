@@ -484,6 +484,12 @@ deliver idle $(( NSEQ + 3 ))
 assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" ]] && print yes)" "" "newer working (no banner) still supersedes an older idle"
 deliver idle $(( NSEQ + 5 ))
 assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "tab is idle" "next newer event posted"
+rm -f "$FAKE_NOTIFIER_OUT"
+deliver closed $(( NSEQ + 6 ))
+nout="$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)"
+assert_contains "$nout" "-remove" "closed removes the banner"
+assert_contains "$nout" "ws-$NWIN" "closed targets the tab's banner group"
+assert_eq "$([[ "$nout" == *-message* ]] && print yes)" "" "closed posts no new banner"
 T set -wu -t "$NWIN" @ws_notify_seq
 rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_AFPLAY_OUT"
 
@@ -662,7 +668,7 @@ assert_eq "$([[ "$oout" == *'title "ws"'* ]] && print yes)" "" "osascript title 
 assert_contains "$oout" $'api/feat-login is idle\nws' "osascript receives the event title as an argument"
 rm -f "$FAKE_OSASCRIPT_OUT"
 
-echo "ws hook: boringnotch sends one NDJSON event and plays its cue"
+echo "ws hook: boringnotch sends one NDJSON event and leaves sound to the app"
 NOTCH_SOCKET="$TMP/notch notify.sock"
 NOTCH_EVENT="$TMP/notch.ndjson"
 start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
@@ -671,8 +677,8 @@ rm -f "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
 print -r -- '{"message":"Approve deployment?\nTarget: staging"}' \
   | WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="$NOTCH_SOCKET" \
     hook api/feat-login "$NWIN" waiting
-wait_until test -s "$FAKE_AFPLAY_LOG"
-assert_exit "$?" "0" "silent notch receiver does not hold up sound playback"
+wait_until test -s "$NOTCH_EVENT"
+assert_exit "$?" "0" "notch receives the event"
 jq -e --arg id "ws:$NWIN" '
   .v == 1 and .id == $id and .state == "waiting" and .prev == "working" and
   .focused == false and .sound == "waiting" and .detail == "Approve deployment?\nTarget: staging" and
@@ -680,21 +686,23 @@ jq -e --arg id "ws:$NWIN" '
 ' "$NOTCH_EVENT" >/dev/null 2>&1
 assert_exit "$?" "0" "notch receives the event with detail and focus action"
 assert_eq "$(wc -l < "$NOTCH_EVENT" | tr -d ' ')" "1" "notch receives exactly one newline-terminated JSON object"
-assert_eq "$(afplay_log)" "$ROOT/assets/ws/sounds/waiting.wav" "notch adapter plays waiting cue exactly once"
+sleep 0.3
+assert_eq "$([[ -e "$FAKE_AFPLAY_LOG" ]] && print yes)" "" "successful notch delivery leaves sound to the app"
 assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "successful notch delivery bypasses macOS notifications"
 stop_socket_listener
 rm -f "$NOTCH_SOCKET" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
 
-echo "ws hook: boringnotch uses its default socket path and sound overrides"
+echo "ws hook: boringnotch uses its default socket path"
 DEFAULT_NOTCH_SOCKET="$NOTCH_HOME/Library/Application Support/boringNotch/notify.sock"
 mkdir -p "${DEFAULT_NOTCH_SOCKET:h}"
 start_socket_listener "$DEFAULT_NOTCH_SOCKET" "$NOTCH_EVENT"
 HOME="$NOTCH_HOME" WS_NOTIFY=1 WS_NOTIFIER=boringnotch WS_BORINGNOTCH_SOCKET="" \
   WS_NOTIFY_SOUND_DONE="$TMP/custom done.wav" hook api/feat-login "$NWIN" idle </dev/null
-wait_until test -s "$FAKE_AFPLAY_LOG"
+wait_until test -s "$NOTCH_EVENT"
 jq -e '.state == "idle" and .prev == "waiting" and .sound == "done"' "$NOTCH_EVENT" >/dev/null 2>&1
 assert_exit "$?" "0" "notch receives idle at the default socket under HOME"
-assert_eq "$(afplay_log)" "$TMP/custom done.wav" "notch adapter honors the done sound override"
+sleep 0.3
+assert_eq "$([[ -e "$FAKE_AFPLAY_LOG" ]] && print yes)" "" "notch delivery ignores ws sound overrides"
 stop_socket_listener
 rm -f "$DEFAULT_NOTCH_SOCKET" "$FAKE_AFPLAY_LOG"
 
@@ -721,6 +729,63 @@ wait_until test -s "$FAKE_NOTIFIER_OUT"
 assert_contains "$(cat "$FAKE_NOTIFIER_OUT" 2>/dev/null)" "api/feat-login needs input" "unreachable notch socket uses auto notification"
 assert_eq "$(afplay_log)" "$ROOT/assets/ws/sounds/waiting.wav" "unreachable socket fallback plays its cue exactly once"
 rm -f "$NOTCH_SOCKET" "$FAKE_OSASCRIPT_OUT" "$FAKE_AFPLAY_LOG"
+
+echo "ws dismiss: clears an open notification once with a closed event"
+APPEND="$TMP/custom adapters/append"
+event_count() { wc -l < "$FAKE_EVENT_LOG" 2>/dev/null | tr -d ' '; }
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_EVENT_LOG"
+WS_NOTIFY=1 WS_NOTIFIER="$APPEND" hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_EVENT_LOG"
+WS_NOTIFY=1 WS_NOTIFIER="$APPEND" "$WS" _dismiss "$NWIN"
+assert_exit "$?" "0" "dismiss succeeds"
+wait_until eval '(( $(event_count) >= 2 ))'
+jq -se --arg id "ws:$NWIN" '
+  .[1].v == 1 and .[1].id == $id and .[1].state == "closed" and .[1].prev == "waiting" and
+  .[1].sound == "" and .[1].seq > .[0].seq and (.[1].actions | length) == 1
+' "$FAKE_EVENT_LOG" >/dev/null 2>&1
+assert_exit "$?" "0" "dismiss emits a newer closed event for the tab"
+assert_eq "$(T display -p -t "$NWIN" '#{@ws_state}')" "waiting" "dismiss keeps the tab state"
+WS_NOTIFY=1 WS_NOTIFIER="$APPEND" "$WS" _dismiss "$NWIN"
+sleep 0.3
+assert_eq "$(event_count)" "2" "second dismiss emits nothing"
+KEEPALIVE_WIN="$(T display -p -t keepalive '#{window_id}')"
+WS_NOTIFY=1 WS_NOTIFIER="$APPEND" "$WS" _dismiss "$KEEPALIVE_WIN"
+assert_exit "$?" "0" "dismiss outside ws tabs is a no-op"
+WS_NOTIFY=0 WS_NOTIFIER="$APPEND" hook api/feat-login "$NWIN" idle </dev/null
+sleep 0.3
+assert_eq "$(event_count)" "2" "no extra events from outside tabs or with WS_NOTIFY=0"
+
+echo "ws dismiss: selecting the tab dismisses its notification"
+NSESS="$(T display -p -t "$NWIN" '#{session_id}')"
+OTHER_WIN="$(T new-window -d -P -F '#{window_id}' -t "$NSESS:")"
+T select-window -t "$OTHER_WIN"
+T set-environment -g WS_NOTIFY 1
+T set-environment -g WS_NOTIFIER "$APPEND"
+T set-environment -g FAKE_EVENT_LOG "$FAKE_EVENT_LOG"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_EVENT_LOG"
+WS_NOTIFY=1 WS_NOTIFIER="$APPEND" hook api/feat-login "$NWIN" waiting </dev/null
+wait_until test -s "$FAKE_EVENT_LOG"
+T select-window -t "$NWIN"
+wait_until eval 'jq -se "map(.state) == [\"waiting\", \"closed\"]" "$FAKE_EVENT_LOG" >/dev/null 2>&1'
+assert_exit "$?" "0" "tab selection emits closed"
+T kill-window -t "$OTHER_WIN"
+
+echo "ws dismiss: agent exit dismisses its notification"
+before="$(windows_of "$WT")"
+"$WS" add api/feat-login --detach >/dev/null
+XWIN="$(windows_of "$WT" | grep -vxF -- "$before" | head -1)"
+wait_pane "$XWIN" FAKE-claude >/dev/null
+rm -f "$FAKE_EVENT_LOG"
+WS_NOTIFY=1 WS_NOTIFIER="$APPEND" hook api/feat-login "$XWIN" waiting </dev/null
+wait_until test -s "$FAKE_EVENT_LOG"
+T send-keys -t "$XWIN" Enter
+wait_until eval 'jq -se --arg id "ws:$XWIN" "map(select(.id == \$id) | .state) == [\"waiting\", \"closed\"]" "$FAKE_EVENT_LOG" >/dev/null 2>&1'
+assert_exit "$?" "0" "agent exit emits closed for its tab"
+T set-environment -gu WS_NOTIFY
+T set-environment -gu WS_NOTIFIER
+T set-environment -gu FAKE_EVENT_LOG
 
 echo "ws hook: failed terminal-notifier falls back to osascript"
 cat > "$TMP/bin/terminal-notifier" <<'EOF'
@@ -778,7 +843,7 @@ for state in working idle; do
   assert_exit "$?" "0" "focused $state transition reaches the custom adapter"
 done
 
-echo "ws hook: boringnotch receives focused transitions and plays semantic cues"
+echo "ws hook: boringnotch receives focused transitions with semantic sound keys (app plays them)"
 for state in working waiting; do
   start_socket_listener "$NOTCH_SOCKET" "$NOTCH_EVENT"
   rm -f "$FAKE_AFPLAY_LOG" "$FAKE_NOTIFIER_OUT" "$FAKE_OSASCRIPT_OUT"
@@ -787,12 +852,10 @@ for state in working waiting; do
   wait_until test -s "$NOTCH_EVENT"
   jq -e --arg state "$state" '.state == $state and .focused == true' "$NOTCH_EVENT" >/dev/null 2>&1
   assert_exit "$?" "0" "notch receives focused $state transition"
-  if [[ "$state" == waiting ]]; then
-    wait_until test -s "$FAKE_AFPLAY_LOG"
-    assert_eq "$(afplay_log)" "$TMP/custom waiting.wav" "notch adapter honors the waiting sound override on a focused tab"
-  else
-    assert_eq "$([[ -e "$FAKE_AFPLAY_LOG" ]] && print yes)" "" "working notch event has no sound"
-  fi
+  jq -e --arg state "$state" '.sound == (if $state == "waiting" then "waiting" else "" end)' "$NOTCH_EVENT" >/dev/null 2>&1
+  assert_exit "$?" "0" "focused $state event carries its semantic sound key"
+  sleep 0.3
+  assert_eq "$([[ -e "$FAKE_AFPLAY_LOG" ]] && print yes)" "" "ws plays no $state sound for the notch"
   assert_eq "$([[ -e "$FAKE_NOTIFIER_OUT" || -e "$FAKE_OSASCRIPT_OUT" ]] && print yes)" "" "focused notch delivery bypasses macOS notifications"
   stop_socket_listener
   rm -f "$NOTCH_SOCKET"

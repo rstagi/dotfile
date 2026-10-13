@@ -20,6 +20,7 @@ set -u -o pipefail
 #                              remove worktree + tabs + local/remote branch (prefix+M); if
 #                              dirty, lists the files and asks to force delete
 #   ws hook <working|idle|waiting>   called by agent hooks inside a session window
+#   ws _dismiss <window|pane>        tab seen or agent exited: emit `closed` if a notification is open
 #
 # Sessions live in <worktree git dir>/ws-sessions (slot, agent, resume id). Quitting an agent
 # cleanly forgets its session; a killed one (reboot, kill-window) is resumed on `ws open`.
@@ -61,6 +62,7 @@ main() {
   merge) cmd_merge ;;
   _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause
   hook) cmd_hook "$@" ;;
+  _dismiss) cmd_dismiss "$@" ;;
   _rows) picker_rows ;;
   _summary) picker_summary ;;
   _toggle_sessions) toggle_sessions ;;
@@ -334,6 +336,18 @@ cmd_hook() {
   return 0
 }
 
+# Tab selected (tmux hook) or agent exited: emits one `closed` event when the tab's last
+# notification is still open, so receivers drop it. The tab state itself is untouched.
+cmd_dismiss() {
+  zmodload zsh/datetime 2>/dev/null
+  local seq="$(realtime_us "$EPOCHREALTIME")" target="${1:-}" open state
+  (( WS_NOTIFY )) && [[ -n "$target" ]] || return 0
+  IFS='|' read -r open state <<<"$(tmux_ display -p -t "$target" '#{@ws_notify_open}|#{@ws_state}' 2>/dev/null)"
+  [[ "$open" == 1 ]] || return 0
+  emit_notify_event closed "$state" "" "$seq" "$target"
+  return 0
+}
+
 # realtime_us <$EPOCHREALTIME value> — integer µs since epoch from one snapshot (two reads
 # could straddle a second boundary and jump ~1s ahead).
 realtime_us() {
@@ -355,6 +369,11 @@ configure_bindings() {
     "display-popup -E -w 70% -h 50% -d '#{pane_current_path}' '$WS_BIN _merge_popup'"
   tmux_ bind-key a if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}'\""
   tmux_ bind-key A if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}' --agent codex\""
+  # Selecting a tab (in any session, or by switching session) dismisses its open notification.
+  # Fixed array index: re-running stays idempotent and leaves the user's own hooks alone.
+  local dismiss="if-shell -F '#{==:#{@ws_notify_open},1}' \"run-shell -b \\\"'$WS_BIN' _dismiss '#{window_id}'\\\"\""
+  tmux_ set-hook -g 'session-window-changed[77]' "$dismiss"
+  tmux_ set-hook -g 'client-session-changed[77]' "$dismiss"
 }
 
 # Opens one agent tab in the worktree's tmux session (creating the session if needed) and
@@ -367,7 +386,7 @@ open_session() {
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
   cmd="$(agent_command "$agent" "$resume")"
-  run="$cmd; s=\$?; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  run="$cmd; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
@@ -708,19 +727,24 @@ sessions_for() {
     | awk -F '\t' -v p="$1" '$2 == p { print $1 }'
 }
 
-# Send one v1 JSON event on stdin to the configured adapter.
+# emit_notify_event <state> <prev> <payload> <seq> [target] — send one v1 JSON event on stdin
+# to the configured adapter. target (window/pane) defaults to the hook's pane. `closed` marks
+# the tab's notification dismissed; any other state marks it open (see cmd_dismiss).
 emit_notify_event() {
   (( WS_NOTIFY )) || return 0
-  local focused
-  focused="$(tmux_ display -p -t "$TMUX_PANE" '#{&&:#{window_active},#{session_attached}}' 2>/dev/null)"
+  local target="${5:-$TMUX_PANE}" focused
+  focused="$(tmux_ display -p -t "$target" '#{&&:#{window_active},#{session_attached}}' 2>/dev/null)"
   [[ "$focused" == 1 ]] && focused=true || focused=false
-  local msg="$WS_WORKSPACE is $1"
-  [[ "$1" == waiting ]] && msg="$WS_WORKSPACE needs input"
-  local win sess click wt agent branch detail event sound=""
-  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
-  sess="$(tmux_ display -p -t "$TMUX_PANE" '#{session_id}')"
-  wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}')"
-  agent="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_agent}')"
+  local win sess click wt agent branch detail event sound="" name
+  win="$(tmux_ display -p -t "$target" '#{window_id}')"
+  sess="$(tmux_ display -p -t "$target" '#{session_id}')"
+  wt="$(tmux_ display -p -t "$target" '#{@ws_path}')"
+  agent="$(tmux_ display -p -t "$target" '#{@ws_agent}')"
+  name="${WS_WORKSPACE:-$(workspace_name "$wt")}"
+  local msg="$name is $1"
+  [[ "$1" == waiting ]] && msg="$name needs input"
+  [[ "$1" == closed ]] && msg="$name dismissed"
+  tmux_ set -w -t "$win" @ws_notify_open "$([[ "$1" == closed ]] && print 0 || print 1)" 2>/dev/null
   branch="$(git -C "$wt" branch --show-current 2>/dev/null)"
   detail="$(hook_detail_json "${3:-}")"
   [[ -n "$detail" ]] || detail='""'
@@ -730,7 +754,7 @@ emit_notify_event() {
   [[ "$1" == idle ]] && sound=done
   [[ "$1" == waiting ]] && sound=waiting
   event="$(jq -nc --arg id "ws:$win" --arg state "$1" --arg prev "$2" \
-    --arg message "$msg" --arg agent "$agent" --arg repo "${WS_WORKSPACE%%/*}" \
+    --arg message "$msg" --arg agent "$agent" --arg repo "${name%%/*}" \
     --arg branch "$branch" --argjson detail "$detail" --arg sound "$sound" --arg command "$click" \
     --argjson focused "$focused" --argjson seq "${4:-0}" --argjson ts "$(date +%s)" \
     '{v:1, id:$id, source:"ws", state:$state, prev:$prev, title:"ws", message:$message,
@@ -755,15 +779,17 @@ notify_adapter() {
   case "$WS_NOTIFIER" in
   boringnotch)
     local event="$(cat)"
-    if print -r -- "$event" | nc -U -w 1 "$WS_BORINGNOTCH_SOCKET" >/dev/null 2>&1; then
-      notify_sound "$(print -r -- "$event" | jq -r '.sound')"
-    else
-      print -r -- "$event" | WS_NOTIFIER=auto notify_adapter
-    fi
+    # The notch app owns sound (its Settings); only the fallback plays ws cues.
+    print -r -- "$event" | nc -U -w 1 "$WS_BORINGNOTCH_SOCKET" >/dev/null 2>&1 \
+      || print -r -- "$event" | WS_NOTIFIER=auto notify_adapter
     ;;
   auto | terminal-notifier | osascript)
     local event="$(cat)" lockfd
     notify_claim "$event" || return 0
+    if [[ "$(print -r -- "$event" | jq -r '.state')" == closed ]]; then
+      [[ "$WS_NOTIFIER" == osascript ]] || print -r -- "$event" | terminal_notifier_remove
+      return 0
+    fi
     print -r -- "$event" | jq -e '
       (.state == "idle" or .state == "waiting") and .focused == false
     ' >/dev/null 2>&1 || return 0
@@ -842,6 +868,16 @@ terminal_notifier_notify() {
       ${bundle:+-activate} ${bundle:+$bundle} -execute "$click" >/dev/null 2>&1 && return 0
   fi
   print -r -- "$event" | osascript_notify
+}
+
+# Remove the tab's banner (osascript notifications can't be withdrawn).
+terminal_notifier_remove() {
+  local notifier="$WS_NOTIFIER_APP/Contents/MacOS/terminal-notifier" id
+  [[ -x "$notifier" ]] || notifier="$(command -v terminal-notifier)"
+  [[ -n "$notifier" ]] || return 0
+  id="$(jq -r '.id')"
+  "$notifier" -remove "${id/ws:/ws-}" >/dev/null 2>&1
+  return 0
 }
 
 osascript_notify() {
