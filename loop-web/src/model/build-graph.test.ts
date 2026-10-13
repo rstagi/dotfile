@@ -183,9 +183,9 @@ describe("buildGraph — review pipeline sub-stages", () => {
     };
     const graph = buildGraph(parsePlan(MULTI_REPO_REVIEW), rt);
     const stages = node(graph, "4").reviewStages ?? [];
-    expect(stages).toHaveLength(18); // medium ×3 = 9 runs × 2 repositories
+    expect(stages).toHaveLength(24); // medium ×3 = 12 runs × 2 repositories
     expect(stages[0]).toMatchObject({ repository: "acme/api", k: 1, stage: "round1", state: "running", model: "@sol" });
-    expect(stages[9]).toMatchObject({ repository: "acme/web", k: 1, state: "todo" });
+    expect(stages[12]).toMatchObject({ repository: "acme/web", k: 1, state: "todo" });
     expect(node(graph, "2").reviewStages).toBeUndefined();
   });
 });
@@ -283,6 +283,18 @@ describe("buildGraph — runtime overlay", () => {
     expect(n.runtime?.problem).toBe("crash");
     expect(n.ui).toBe("problem");
     expect(n.pulse).toBeNull(); // ended attempt ⇒ no heartbeat
+  });
+
+  it.each(["merged", "done"])("a %s phase is done even if its last attempt ended in a problem (fixed after)", (status) => {
+    const rt = runtime({
+      "2": {
+        state: { status },
+        attempts: [attempt({ k: 1, meta: { engineExit: 0 }, status: { outcome: "done" }, spawnLog: "claimed done but verify failed" })],
+      },
+    });
+    const n = node(buildGraph(parsePlan(SINGLE_LANE), rt, { now }), "2");
+    expect(n.runtime?.problem).toBe("verify-fail");
+    expect(n.ui).toBe("done");
   });
 
   it("raises ui='awaiting' when a HIL request is open", () => {

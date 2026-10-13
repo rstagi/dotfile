@@ -152,8 +152,8 @@ rewrite; one survivor in opinionated prose is a note).
    `needs human check` (you couldn't reach a primary source and won't guess). Never upgrade a guess
    to "verified."
 
-Prefer the **Perplexity MCP tools** when available (`perplexity_search` for the source URL,
-`perplexity_research` for contested claims, `perplexity_ask` for a quick cited check); degrade to
+Prefer the **Parallel search MCP** when available (`web_search` for the source URL,
+several queries per call for contested claims, `web_fetch` to read the primary source); degrade to
 `WebSearch` / `WebFetch`. When you can't reach a primary source, the verdict is `needs human check`,
 not silence — list it as a thing the speaker must verify before standing up.
 

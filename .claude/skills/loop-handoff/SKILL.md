@@ -146,7 +146,7 @@ the "Next up" line accordingly.
 ## Auto mode
 
 `loop-handoff --auto phase:<N> status:<done|blocked|in-progress> [lane:<X>
-engine:<codex|claude>]` — used only inside the `loop-execute` flow (contract:
+engine:<codex|claude|grok>]` — used only inside the `loop-execute` flow (contract:
 `../loop-execute/references/loop-protocol.md`), in two contexts distinguished by the
 status value:
 

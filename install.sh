@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws" "grok")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -215,6 +215,7 @@ install_package() {
     "ralph") install_claude_tools ;;
     "loop-web") install_loop_web ;;
     "ws") install_ws ;;
+    "grok") install_grok ;;
     "claude-config") install_claude_config ;;
     *) echo "Unknown package: $package" ;;
   esac
@@ -422,7 +423,20 @@ install_ws() {
   if ! grep -q "source.*\.zshrc_ws_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
     echo "source $HOME/dotfile/.zshrc_ws_ext" >> "$HOME/.zshrc_ext"
   fi
+  # Grok Build: optional third agent, never a hard dep (it sends repo content to xAI)
+  if ! command -v grok &> /dev/null && read_yes "Install Grok Build (optional ws agent; sends code to xAI)?"; then
+    install_grok
+  fi
   echo "ws installed — run 'ws' to open the workspace session"
+}
+
+install_grok() {
+  if command -v grok &> /dev/null; then
+    echo "grok is already installed"
+  else
+    echo "Installing Grok Build..."
+    curl -fsSL https://x.ai/cli/install.sh | bash
+  fi
 }
 
 install_gcloud() {
@@ -611,6 +625,27 @@ install_claude_tools() {
   fi
 }
 
+# Parallel web search MCP (https://search.parallel.ai/mcp) for Claude Code, Codex and Ratel Local.
+# Key: 1Password "Parallel API Key" (or $PARALLEL_API_KEY), written as a literal header since
+# agents don't inherit load_secret vars. Idempotent per agent.
+configure_parallel_search() {
+  local url="https://search.parallel.ai/mcp" key
+  key="${PARALLEL_API_KEY:-$(op read "op://Remote Agents/Parallel API Key/credential" 2>/dev/null)}"
+  if [ -z "$key" ]; then
+    echo "parallel-search: no key (1Password 'Parallel API Key' or \$PARALLEL_API_KEY) — skipped" >&2
+    return 0
+  fi
+  claude mcp get parallel-search &> /dev/null || \
+    claude mcp add --scope user --transport http parallel-search "$url" --header "Authorization: Bearer $key"
+  if command -v codex &> /dev/null && ! grep -q '^\[mcp_servers\.parallel-search\]' "$HOME/.codex/config.toml" 2>/dev/null; then
+    printf '\n[mcp_servers.parallel-search]\nurl = "%s"\nhttp_headers = { Authorization = "Bearer %s" }\n' \
+      "$url" "$key" >> "$HOME/.codex/config.toml"
+  fi
+  if command -v ratel-local &> /dev/null && ! ratel-local mcp get parallel-search &> /dev/null; then
+    ratel-local mcp add --transport http --header "Authorization: Bearer $key" parallel-search "$url"
+  fi
+}
+
 install_claude_config() {
   configure_claude() {
     # Symlink entire agents and skills folders from dotfile
@@ -653,13 +688,8 @@ install_claude_config() {
       claude mcp add --scope user scrapegraph-mcp -- \
         npx mcp-remote https://mcp.scrapegraphai.com/mcp --header "X-API-Key:\${SCRAPEGRAPH_API_KEY}"
 
-    # Enable Perplexity plugin in settings
-    local settings="$HOME/.claude/settings.json"
-    if [ -f "$settings" ]; then
-      local updated
-      updated=$(jq '.enabledPlugins["perplexity@perplexity-mcp-server"] = true' "$settings")
-      echo "$updated" > "$settings"
-    fi
+    configure_parallel_search
+
 
     echo "Agent config installed (Claude Code, Codex, Ratel Local, MCP servers)"
   }

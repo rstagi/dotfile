@@ -1,0 +1,7 @@
+#!/bin/zsh
+set -u
+
+print -r -- "grok $*" >> "${FAKE_ENGINE_LOG:?FAKE_ENGINE_LOG required}"
+print -r -- '{"type":"system","subtype":"init","session_id":"s-grok","model":"'"${FAKE_GROK_MODEL:-grok-4.7}"'"}'
+jq -cn '{outcome:"done"}' > "${FAKE_RUN_DIR:?FAKE_RUN_DIR required}/status.json"
+print -r -- '{"type":"result","subtype":"success","session_id":"s-grok","result":"grok done"}'

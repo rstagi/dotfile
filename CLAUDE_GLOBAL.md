@@ -55,9 +55,9 @@ Goal: top-down reading style - see high-level first, then dive into details. For
 
 Always use context7 when I need code generation, setup or configuration steps, or library/API documentation. This means you should automatically use the Context7 MCP tools to resolve library id and get library docs without me having to explicitly ask.
 
-## Perplexity
+## Web search (Parallel)
 
-Use Perplexity for up-to-date info beyond knowledge cutoff. Pick the right tool: `perplexity_search` for quick facts/news, `perplexity_ask` for conversational queries w/ web context, `perplexity_research` for deep investigation/reports, `perplexity_reason` for complex analysis/step-by-step reasoning.
+Use the `parallel-search` MCP for up-to-date info beyond knowledge cutoff: `web_search` first (excerpts are usually answer-ready; batch related queries in one call), `web_fetch` only for a specific URL, exact quotes, or when excerpts are insufficient.
 
 ## Browser Automation
 

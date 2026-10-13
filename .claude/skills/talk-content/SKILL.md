@@ -70,7 +70,7 @@ Beware the **Curse of Knowledge** (Heath, *Made to Stick* — sources.md): the s
 
 ### Step 4 — Research + creative connections
 
-Build the evidence and the analogies. Prefer **Perplexity MCP tools** if available (`perplexity_search` for facts/URLs, `perplexity_research` for multi-source depth, `perplexity_ask` for quick cited answers) — they return citations directly. **Degrade gracefully to `WebSearch` / `WebFetch`** if Perplexity isn't loaded.
+Build the evidence and the analogies. Prefer the **Parallel search MCP** if available (`web_search` for facts/URLs, batching related queries; `web_fetch` for a specific source page) — results carry source URLs. **Degrade gracefully to `WebSearch` / `WebFetch`** if it isn't loaded.
 
 **Evidence.** For every statistic or claim you'll put on stage:
 - Trace it to the **primary source** using SIFT + CRAAP (lateral reading; read past the blog to the study). See [`references/research-and-evidence.md`](references/research-and-evidence.md).

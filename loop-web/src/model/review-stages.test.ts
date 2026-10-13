@@ -26,7 +26,7 @@ describe("planReviewRuns", () => {
   });
 
   it("falls back to the tier's default round count", () => {
-    expect(planReviewRuns("medium", null)).toHaveLength(9);
+    expect(planReviewRuns("medium", null)).toHaveLength(12);
     expect(planReviewRuns("shallow", null).map((r) => r.stage)).toEqual(["final"]);
   });
 });

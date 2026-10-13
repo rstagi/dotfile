@@ -513,13 +513,27 @@ test("control review: rewrites the review phase's [review:] tag in plan.md; guar
   assert.equal((await control({ action: "review", phase: "2", tier: "shallow" })).status, 409, "already started");
 });
 
+test("control model: accepts grok legs alongside codex|claude; rejects unknown engines", async (t) => {
+  const fx = fixture();
+  const daemon = await realDaemon(fx.store);
+  t.after(async () => { await daemon.stop(); fs.rmSync(fx.root, { recursive: true, force: true }); });
+  const control = (body) => fetch(`${daemon.url}/api/loops/loop-demo/control`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  assert.equal((await control({ action: "model", phase: "2", leg: "grok:default" })).status, 200);
+  assert.equal(fs.readFileSync(path.join(fx.coord, ".loop", "control", "model-2"), "utf8").trim(), "grok:default");
+  const bad = await control({ action: "model", phase: "2", leg: "gemini:pro" });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /codex\|claude\|grok/);
+});
+
 test("tierChoices: one line per tier with default rounds + models, current tier marked", () => {
   const conf = [
     "LOOP_REVIEW_ROUNDS_SHALLOW=1", "LOOP_REVIEW_ROUNDS_MEDIUM=3", "LOOP_REVIEW_ROUNDS_MAX=2",
     'CHAIN_REVIEW_SHALLOW_ADV_A=("claude:opus");  EFFORT_REVIEW_SHALLOW_ADV_A=high',
     'CHAIN_REVIEW_SHALLOW_FIX=("claude:sonnet")',
     'CHAIN_REVIEW_SHALLOW_FINAL=("claude:opus")',
-    'CHAIN_REVIEW_MEDIUM_ADV_A=("codex:@sol")', 'CHAIN_REVIEW_MEDIUM_ADV_B=("claude:opus")',
+    'CHAIN_REVIEW_MEDIUM_ADV_A=("codex:@sol")', 'CHAIN_REVIEW_MEDIUM_ADV_B=("claude:opus")', 'CHAIN_REVIEW_MEDIUM_ADV_C=("grok:default")',
     'CHAIN_REVIEW_MEDIUM_FIX=("claude:opus")', 'CHAIN_REVIEW_MEDIUM_FINAL=("claude:opus")',
     'CHAIN_REVIEW_MAX_ADV_A=("codex:@astra")', 'CHAIN_REVIEW_MAX_ADV_B=("claude:fable")',
     'CHAIN_REVIEW_MAX_FIX=("claude:opus")', 'CHAIN_REVIEW_MAX_FINAL=("claude:opus")',
@@ -527,6 +541,6 @@ test("tierChoices: one line per tier with default rounds + models, current tier 
   const lines = tierChoices(conf, "medium");
   assert.equal(lines.length, 3);
   assert.match(lines[0], /^shallow +×1 +review claude:opus · fix claude:sonnet · final claude:opus$/);
-  assert.match(lines[1], /^medium +×3 +review codex:@sol \+ claude:opus · fix claude:opus · final claude:opus +\(current\)$/);
+  assert.match(lines[1], /^medium +×3 +review codex:@sol \+ claude:opus \+ grok:default · fix claude:opus · final claude:opus +\(current\)$/);
   assert.match(lines[2], /^max +×2 +review codex:@astra \+ claude:fable/);
 });

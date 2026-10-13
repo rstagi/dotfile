@@ -325,7 +325,7 @@ export interface ReviewRun {
 }
 
 /** loop-review.sh chain names — one run of a review pipeline uses exactly one. */
-export type ReviewChain = "review-adv-a" | "review-adv-b" | "review-fix" | "review-final";
+export type ReviewChain = "review-adv-a" | "review-adv-b" | "review-adv-c" | "review-fix" | "review-final";
 
 export type ReviewRunState = "todo" | "running" | "done" | "question" | "blocked" | "failed";
 

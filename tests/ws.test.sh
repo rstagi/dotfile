@@ -18,6 +18,7 @@ export WS_NOTIFIER=auto
 export WS_BORINGNOTCH_SOCKET="$TMP/unavailable.sock"
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
+export GROK_HOME="$TMP/grokhome"
 socket_listener_pid=""
 trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP" "$NOTCH_HOME"' EXIT
 WS="$ROOT/ws.sh"
@@ -25,7 +26,7 @@ T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
 # Fake agents print their argv, then stay alive until a line arrives (→ clean exit 0).
 mkdir -p "$TMP/bin"
-for agent in claude codex; do
+for agent in claude codex grok; do
   cat > "$TMP/bin/$agent" <<EOF
 #!/bin/sh
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE"
@@ -124,6 +125,26 @@ env -u WS_WORKSPACE TMUX_PANE="$(T display -p -t "$WIN" '#{pane_id}')" "$WS" hoo
 assert_exit "$?" "0" "hook outside workspace exits 0"
 assert_eq "$(state)" "waiting" "hook outside workspace is a no-op"
 
+echo "ws hook: tab stays working while background subagents run past the main turn"
+sub() { print -r -- "{\"agent_id\":\"$2\"}" | hook api/feat-login "$WIN" "$1"; }
+hook api/feat-login "$WIN" working </dev/null
+sub subagent-start a1; sub subagent-start a2
+hook api/feat-login "$WIN" idle </dev/null
+assert_eq "$(state)" "working" "main Stop w/ subagents running stays working"
+sub working a1
+sub subagent-stop a1
+assert_eq "$(state)" "working" "still working while one subagent runs"
+sub subagent-stop a2
+assert_eq "$(state)" "idle" "idle once the last subagent stops after main Stop"
+sub subagent-start a3
+hook api/feat-login "$WIN" working </dev/null
+sub subagent-stop a3
+assert_eq "$(state)" "working" "foreground subagent stop keeps main working"
+hook api/feat-login "$WIN" idle </dev/null
+assert_eq "$(state)" "idle" "main Stop w/o subagents goes idle"
+assert_contains "$(jq -c '.hooks | keys' "$WS_HOME/claude-settings.json")" "SubagentStop" "claude settings hook subagent lifecycle"
+hook api/feat-login "$WIN" waiting </dev/null
+
 echo "ws list: rows for open and window-less workspaces"
 git -C "$REPO" worktree add -q -b orphan "$WS_ROOT/api/orphan"
 out="$("$WS" list)"
@@ -141,6 +162,13 @@ assert_contains "$out" "--dangerously-bypass-approvals-and-sandbox" "codex bypas
 assert_contains "$out" "hooks.Stop" "codex gets Stop hook override"
 print '{"session_id":"sid-claude-1"}' | hook api/feat-login "$WIN" idle
 print '{"session_id":"sid-codex-2"}' | hook api/feat-login "$W2" idle
+SF="$(git -C "$WT" rev-parse --absolute-git-dir)/ws-sessions"
+for i in {1..8}; do # parallel tool calls fire PostToolUse hooks concurrently
+  print '{"session_id":"sid-claude-1"}' | hook api/feat-login "$WIN" working &
+  print '{"session_id":"sid-codex-2"}' | hook api/feat-login "$W2" working &
+done
+wait
+assert_eq "$(cut -f1,3 "$SF" | tr '\t\n' ': ')" "1:sid-claude-1 2:sid-codex-2 " "concurrent hooks keep every session row"
 T kill-window -t "$WIN"; T kill-window -t "$W2"
 assert_eq "$(windows_of "$WT")" "" "both windows gone (simulated reboot)"
 assert_contains "$("$WS" list)" $'stopped\tapi/feat-login\t' "workspace shows stopped"
@@ -149,6 +177,27 @@ wait_until test -n "$(slot_window "$WT" 2)"
 assert_contains "$(wait_pane "$(slot_window "$WT" 1)" sid-claude-1)" "--resume sid-claude-1" "claude session resumed by id"
 assert_contains "$(wait_pane "$(slot_window "$WT" 2)" sid-codex-2)" "resume sid-codex-2" "codex session resumed by id"
 assert_eq "$(session_of "$(slot_window "$WT" 2)")" "api/feat-login" "restored into one worktree session"
+
+echo "ws grok: launched w/ --always-approve + global ws hook file; resumed by GROK_SESSION_ID"
+"$WS" new --repo "$REPO" --branch grokky --agent grok --detach
+GWT="$WS_ROOT/api/grokky"
+GW="$(slot_window "$GWT" 1)"
+assert_eq "$(T display -p -t "$GW" '#{window_name}')" "grok" "grok tab named after agent"
+assert_contains "$(wait_pane "$GW" FAKE-grok)" "--always-approve" "grok skips approvals"
+GH="$GROK_HOME/hooks/ws.json"
+assert_eq "$(jq -r '.hooks.StopCancelled[0].hooks[0].command' "$GH" 2>/dev/null)" "$WS hook idle" "grok hook file: StopCancelled → idle"
+assert_eq "$(jq -r '.hooks.Notification[0].matcher' "$GH" 2>/dev/null)" "permission_prompt" "grok hook file: permission prompt → waiting"
+"$WS" add api/grokky --agent grok --detach
+GW2="$(slot_window "$GWT" 2)"
+assert_eq "$(T display -p -t "$GW2" '#{window_name}')" "grok#2" "second grok tab named grok#2"
+GROK_SESSION_ID=sid-grok-2 hook api/grokky "$GW2" idle </dev/null
+T kill-window -t "$GW"; T kill-window -t "$GW2"
+"$WS" open api/grokky --detach
+wait_until test -n "$(slot_window "$GWT" 2)"
+assert_contains "$(wait_pane "$(slot_window "$GWT" 2)" sid-grok-2)" "--resume sid-grok-2" "grok resumed by GROK_SESSION_ID"
+"$WS" add api/grokky --agent gemini --detach 2>/dev/null
+assert_exit "$?" "1" "unknown agent refused"
+"$WS" rm api/grokky --force --delete-branch
 
 echo "ws add: defaults to the worktree you're in"
 before="$(windows_of "$WT" | wc -l | tr -d ' ')"
@@ -219,6 +268,83 @@ assert_eq "$(windows_of "$first" | wc -l | tr -d ' ')" "$((before + 1))" "ctrl-a
 sed -i '' 's/ctrl-a/ctrl-t/' "$TMP/bin/fzf"
 TMUX=fake "$WS" pick 2>/dev/null
 assert_eq "$("$WS" list | awk -F '\t' -v p="$first" '$3 == p && $4 == "codex"' | wc -l | tr -d ' ')" "1" "ctrl-t on the first row adds a codex session"
+sed -i '' 's/ctrl-t/ctrl-v/' "$TMP/bin/fzf"
+TMUX=fake "$WS" pick 2>/dev/null
+assert_eq "$("$WS" list | awk -F '\t' -v p="$first" '$3 == p && $4 == "grok"' | wc -l | tr -d ' ')" "1" "ctrl-v on the first row adds a grok session"
+
+echo "ws open / pick: a running workspace opens on its last-used tab"
+"$WS" add web/zeta --agent codex --detach
+LW="$(slot_window "$ZWT" 3)"
+T select-window -t "$LW"
+TMUX=fake "$WS" open web/zeta 2>/dev/null
+assert_eq "$(T display -p -t "$LW" '#{window_active}')" "1" "open keeps the last-used tab"
+assert_eq "$("$WS" _rows | grep -F "$ZWT" | head -1 | cut -f3)" "$LW" "picker row targets the last-used tab"
+T select-window -t "$(slot_window "$ZWT" 1)"
+assert_eq "$("$WS" _rows | grep -F "$ZWT" | head -1 | cut -f3)" "$(slot_window "$ZWT" 1)" "follows the tab you switch to"
+T kill-window -t "$LW"
+session_forget_slot() { local f="$(git -C "$1" rev-parse --absolute-git-dir)/ws-sessions"; awk -F '\t' -v s="$2" '$1 != s' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
+session_forget_slot "$ZWT" 3
+
+echo "ws pick: cursor starts on the current tab's row"
+cat > "$TMP/bin/fzf" <<'EOF'
+#!/bin/sh
+cat > "$FAKE_FZF_IN"; printf '%s\n' "$@" > "$FAKE_FZF_ARGS"; exit 1
+EOF
+chmod +x "$TMP/bin/fzf"
+export FAKE_FZF_IN="$TMP/fzf.in" FAKE_FZF_ARGS="$TMP/fzf.args"
+start_pos() { grep '^start:' "$FAKE_FZF_ARGS" | sed 's/.*pos(\([0-9]*\)).*/\1/'; }
+TMUX=fake TMUX_PANE="$(T display -p -t "$(slot_window "$ZWT" 1)" '#{pane_id}')" "$WS" pick
+assert_eq "$(sed -n "$(start_pos)p" "$FAKE_FZF_IN" | cut -f2)" "$ZWT" "starts on the current workspace"
+(cd "$TMP" && env -u TMUX -u TMUX_PANE WS_TMUX_SOCKET=none "$WS" pick 2>/dev/null)
+assert_eq "$(start_pos)" "1" "outside tmux: first row"
+unset FAKE_FZF_IN FAKE_FZF_ARGS
+
+echo "ws unread: a tab that finishes (working → idle) unseen stays unread until visited; ctrl-u toggles"
+unread() { T show -wqv -t "$1" @ws_unread; }
+UW="$(slot_window "$ZWT" 1)"
+hook web/zeta "$UW" working </dev/null
+assert_eq "$(unread "$UW")" "" "working tab is not unread"
+hook web/zeta "$UW" idle </dev/null
+assert_eq "$(unread "$UW")" "1" "finished unseen → unread"
+hook web/zeta "$UW" idle </dev/null
+assert_eq "$(unread "$UW")" "1" "repeated idle keeps it unread"
+assert_eq "$("$WS" list | awk -F '\t' -v p="$ZWT" '$3 == p { print $8 }')" "1" "list exposes unread"
+assert_contains "$("$WS" _rows | grep -F "$ZWT" | cut -f1 | sed $'s/\e\\[[0-9;]*m//g')" "• zeta" "picker row marked unread"
+assert_contains "$("$WS" _summary | sed $'s/\e\\[[0-9;]*m//g')" "1 unread" "summary counts unread"
+"$WS" add web/zeta --agent codex --detach
+UW2="$(slot_window "$ZWT" 3)"
+T select-window -t "$UW2"
+assert_eq "$(unread "$UW")" "1" "switching away keeps it unread"
+assert_eq "$("$WS" _rows | grep -F "$ZWT" | head -1 | cut -f3)" "$UW" "workspace row targets the unread tab"
+T select-window -t "$UW"
+assert_eq "$(unread "$UW")" "" "visiting the tab marks it read"
+"$WS" _unread "$UW"
+assert_eq "$(unread "$UW")" "1" "_unread marks it unread again"
+"$WS" _unread "$UW"
+assert_eq "$(unread "$UW")" "" "_unread toggles back to read"
+"$WS" _unread "$UW"
+TMUX=fake "$WS" open web/zeta 2>/dev/null
+assert_eq "$(unread "$UW")" "" "opening from ws marks it read"
+T kill-window -t "$UW2"
+session_forget_slot "$ZWT" 3
+
+echo "ws claude: adopts a hand-opened tab as a tracked session; plain shell again after"
+MW="$(T new-window -d -P -F '#{window_id}' -t "$(session_of "$(slot_window "$ZWT" 1)"):" -c "$ZWT" \
+  "zsh -fc '\"$WS\" claude --model x; echo EXIT=\$?; sleep 30'")"
+out="$(wait_pane "$MW" FAKE-claude)"
+assert_contains "$out" "--settings" "agent launched w/ ws hooks"
+assert_contains "$out" "--model x" "extra args passed through"
+assert_contains "$out" "WS=web/zeta" "agent sees WS_WORKSPACE"
+assert_eq "$(T display -p -t "$MW" '#{@ws_path}')" "$ZWT" "tab tagged as a workspace session"
+assert_eq "$(T display -p -t "$MW" '#{window_name}')" "claude#3" "tab named agent#slot"
+assert_contains "$("$WS" list)" $'web/zeta#3\t' "listed as a session"
+T send-keys -t "$MW" Enter
+wait_pane "$MW" "EXIT=0" >/dev/null
+assert_eq "$(T show -wqv -t "$MW" @ws_slot)" "" "untagged after the agent exits"
+assert_eq "$(cut -f1 "$(git -C "$ZWT" rev-parse --absolute-git-dir)/ws-sessions" | grep -c '^3$')" "0" "clean exit forgets the session"
+T kill-window -t "$MW"
+(cd "$TMP" && TMUX_PANE=%0 env -u TMUX "$WS" claude 2>/dev/null)
+assert_exit "$?" "1" "refused outside a workspace"
 
 echo "ws pick: selecting a stopped workspace restores it"
 # Fake fzf: empty --expect key line, then the row matching FAKE_FZF_PICK.

@@ -338,9 +338,10 @@ list once with `loop-review.sh stages --tier <T> --rounds <N>` (TSV `a<k> stage 
 execute its rows in order for each repository in `runs/review-p<N>-<owner--repo>-a<k>/`, passing
 `--chain <chain> --review-tier <T> --phase <N> --repository <owner/repo>`. Different repositories
 may progress in parallel under Loop Concurrency; rows within one repository are ordered, except
-the two adversaries of one `round<r>`, which run in parallel:
+the three adversaries of one `round<r>`, which run in parallel:
 
-- `round<r>` (`review-adv-a`, plus `review-adv-b` outside shallow): capture the current PR head
+- `round<r>` (`review-adv-a`, plus `review-adv-b` and `review-adv-c` outside shallow — one
+  adversary per provider: GPT, Claude, Grok): capture the current PR head
   SHA; every adversary of the round reviews that same SHA with the full `pr-review` inspection,
   **never posts or mutates GitHub**, and never reads another adversary's output.
 - `fix<r>` (`review-fix`): on the integration worktree, its prompt invokes `/pr-review-fix-all`

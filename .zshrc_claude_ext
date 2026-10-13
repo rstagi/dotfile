@@ -128,7 +128,6 @@ setup_claude_tools() {
   local _failed=0
 
   load_secrets_parallel \
-    PERPLEXITY_API_KEY "op://Remote Agents/Perplexity API Key/credential" \
     CONTEXT7_API_KEY "op://Remote Agents/Context7 API Key/credential" \
     BROWSER_USE_API_KEY "op://Remote Agents/Browser-use API Key/credential" \
     SCRAPEGRAPH_API_KEY "op://Remote Agents/ScrapegraphAI API Key/credential"

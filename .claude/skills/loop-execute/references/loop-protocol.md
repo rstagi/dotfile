@@ -452,22 +452,24 @@ CHAIN_TASK_LIGHT=("codex:@terra" "${CHAIN_TASK[@]}")
 CHAIN_ESCALATE=("claude:fable+opus")
 CHAIN_ORCHESTRATE=("claude:opus")
 EFFORT_TASK=high  EFFORT_ESCALATE=high  EFFORT_ORCHESTRATE=high
-# review tiers: CHAIN_REVIEW_<TIER>_<ROLE> + EFFORT_REVIEW_<TIER>_<ROLE>, ROLE ∈ ADV_A|ADV_B|FIX|FINAL
+# review tiers: CHAIN_REVIEW_<TIER>_<ROLE> + EFFORT_REVIEW_<TIER>_<ROLE>, ROLE ∈ ADV_A|ADV_B|ADV_C|FIX|FINAL
 CHAIN_REVIEW_SHALLOW_ADV_A=("claude:opus")   EFFORT_REVIEW_SHALLOW_ADV_A=high
 CHAIN_REVIEW_SHALLOW_FIX=("claude:sonnet")   EFFORT_REVIEW_SHALLOW_FIX=medium
 CHAIN_REVIEW_SHALLOW_FINAL=("claude:opus")   EFFORT_REVIEW_SHALLOW_FINAL=high
 CHAIN_REVIEW_MEDIUM_ADV_A=("codex:@sol")     EFFORT_REVIEW_MEDIUM_ADV_A=xhigh
 CHAIN_REVIEW_MEDIUM_ADV_B=("claude:opus")    EFFORT_REVIEW_MEDIUM_ADV_B=xhigh
+CHAIN_REVIEW_MEDIUM_ADV_C=("grok:default")   EFFORT_REVIEW_MEDIUM_ADV_C=xhigh
 CHAIN_REVIEW_MEDIUM_FIX=("claude:opus")      EFFORT_REVIEW_MEDIUM_FIX=medium
 CHAIN_REVIEW_MEDIUM_FINAL=("claude:opus")    EFFORT_REVIEW_MEDIUM_FINAL=xhigh
 CHAIN_REVIEW_MAX_ADV_A=("codex:@astra")      EFFORT_REVIEW_MAX_ADV_A=ultra
 CHAIN_REVIEW_MAX_ADV_B=("claude:fable")      EFFORT_REVIEW_MAX_ADV_B=max
+CHAIN_REVIEW_MAX_ADV_C=("grok:default")      EFFORT_REVIEW_MAX_ADV_C=max
 CHAIN_REVIEW_MAX_FIX=("claude:opus")         EFFORT_REVIEW_MAX_FIX=medium
 CHAIN_REVIEW_MAX_FINAL=("claude:opus")       EFFORT_REVIEW_MAX_FINAL=max
 LOOP_REVIEW_TIER_DEFAULT=medium
 LOOP_REVIEW_ROUNDS_SHALLOW=1  LOOP_REVIEW_ROUNDS_MEDIUM=3  LOOP_REVIEW_ROUNDS_MAX=3
 LOOP_REVIEW_ROUNDS_CAP=5
-LOOP_BUDGET_USD=15        # per attempt, claude legs only (codex has no budget flag)
+LOOP_BUDGET_USD=15        # per attempt, claude legs only (codex/grok have no budget flag)
 LOOP_CHECKPOINT_SEC=1800  # hard ceiling across all legs/retries of one phase attempt
 LOOP_TIMEOUT_TASK=1800    # 30m
 LOOP_TIMEOUT_ESCALATE=1800
@@ -489,13 +491,14 @@ leg of the task chain (the default chain follows as fallback), the route is skip
 `fallbackReason: "user-override"`, and `meta.json` records `modelOverride`.
 
 Effort is per chain, not per engine: the runner maps the chain's `EFFORT_*` to Claude
-`--effort <level>` (`low|medium|high|xhigh|max`; `ultra` clamps to `max`) and Codex
-`-c model_reasoning_effort="<level>"` (adds `ultra` on Sol/Astra). Defaults: implementing
+`--effort <level>` (`low|medium|high|xhigh|max`; `ultra` clamps to `max`), Codex
+`-c model_reasoning_effort="<level>"` (adds `ultra` on Sol/Astra), and Grok `--effort <level>`
+(`low|medium|high|xhigh`; `max`/`ultra` clamp to `xhigh`). Defaults: implementing
 `high` (Sol, Sonnet, escalation), fixing `medium` (Opus), orchestrating `high`, reviewing per
-tier (shallow `high`, medium `xhigh`, max `max`/`ultra`). Orchestrator and reviewers never use
+tier (shallow `high`, medium `xhigh`, max `max`/`ultra`, Grok `xhigh`). Orchestrator and reviewers never use
 multi-agent workflows (`ultracode`): runners are one-shot `-p` processes, and the review
 pipeline is already multi-agent. `meta.json.effort` records the level used.
-`--chain review-adv-a|review-adv-b|review-fix|review-final` requires `--review-tier`
+`--chain review-adv-a|review-adv-b|review-adv-c|review-fix|review-final` requires `--review-tier`
 (default `LOOP_REVIEW_TIER_DEFAULT`); legacy `review-astra`/`review-fable` = max `adv-a`/`adv-b`.
 
 Leg grammar: `engine:model[+fallback[,fallback2]]`. The `+` list maps to Claude's native
@@ -505,8 +508,10 @@ model of its family so releases need no config edit: Claude legs use the CLI's n
 (`opus`, `sonnet`, `fable`); Codex legs use `@<family>` (`@sol`, `@astra`, `@terra`), which
 loop-runner resolves at leg start to the highest-versioned *listed* `gpt-<v>-<family>` in
 `codex debug models` (15s bound; falls back to `~/.codex/models_cache.json`; an unresolvable
-family skips the leg). `meta.json.model` records the concrete model that ran (Claude: from the
-transcript's init event). A full model name still pins a leg. Each review chain contains exactly one leg: a failed stage stays failed
+family skips the leg). Grok legs use `grok:default` (the CLI's default, i.e. latest, model) and
+run headless as `grok --prompt-file <f> --always-approve --output-format streaming-messages-json`
+(claude-shaped transcript; resume with `--engine grok`). `meta.json.model` records the concrete
+model that ran (Claude/Grok: from the transcript's init event). A full model name still pins a leg. Each review chain contains exactly one leg: a failed stage stays failed
 instead of silently becoming a duplicate of another model. The `review-fix` prompt invokes
 `/pr-review-fix-all`; that skill owns Opus subagent delegation.
 
@@ -515,7 +520,7 @@ Claude stream-json, `error` events in Codex JSONL — stderr regex last):
 
 - transient (`5xx|overloaded|ECONNRESET|ETIMEDOUT|empty result`) → retry same leg, 3
   attempts total, backoff 10/30s;
-- rate/usage (`429|rate.?limit|usage limit|quota`) → advance to next leg immediately;
+- rate/usage (`429|rate.?limit|usage limit|quota|hit your … limit`, checked before a status-less exit 0 counts as done) → advance to next leg immediately;
 - other nonzero → one retry, then next leg.
 
 For every chain, `loop-runner.sh` caps even an explicit `--timeout` at
@@ -691,25 +696,28 @@ Every explicit `[kind: pr-review]` phase runs a tiered pipeline per repository. 
 heading may carry `[review: shallow|medium|max]` (default `LOOP_REVIEW_TIER_DEFAULT`, medium)
 and `[rounds: N]` (default `LOOP_REVIEW_ROUNDS_<TIER>`, 1/3/3; `1 ≤ N ≤ LOOP_REVIEW_ROUNDS_CAP`).
 
-| Tier | Adversaries per round (`review-adv-a` / `-b`) | Fix (`review-fix`) | Verdict (`review-final`) |
+| Tier | Adversaries per round (`review-adv-a` / `-b` / `-c`) | Fix (`review-fix`) | Verdict (`review-final`) |
 |------|------|------|------|
 | `shallow` | Opus `high` (one reviewer) | Sonnet `medium`, no subagents | Opus `high`, reviews the code itself |
-| `medium` (default) | Sol `xhigh` + Opus `xhigh` | Opus `medium` + Opus fixers | Opus `xhigh` |
-| `max` | Astra `ultra` + Fable `max` | Opus `medium` + Opus fixers | Opus `max` |
+| `medium` (default) | Sol `xhigh` + Opus `xhigh` + Grok `xhigh` | Opus `medium` + Opus fixers | Opus `xhigh` |
+| `max` | Astra `ultra` + Fable `max` + Grok `xhigh` | Opus `medium` + Opus fixers | Opus `max` |
+
+medium/max run one adversary per provider (GPT, Claude, Grok). The Grok adversary sends the PR's
+repository to xAI.
 
 `loop-review.sh stages --tier <T> --rounds <N>` generates the ordered run list (TSV
-`a<k> stage chain`). medium/max: rounds `r < N` run the adversary pair (`round<r>`) then
-`fix<r>`; round N runs the pair then `final`. shallow: rounds `r < N` run one reviewer then
-`fix<r>`; the last round is `final` alone. medium 3 is the classic nine runs:
+`a<k> stage chain`). medium/max: rounds `r < N` run the adversary trio (`round<r>`) then
+`fix<r>`; round N runs the trio then `final`. shallow: rounds `r < N` run one reviewer then
+`fix<r>`; the last round is `final` alone. medium 3 is twelve runs:
 
 | Run | Stage | Chain | GitHub mutation |
 |-----|-------|-------|-----------------|
-| `a1`, `a2` | `round1` | `review-adv-a`, `review-adv-b` | none |
-| `a3` | `fix1` | `review-fix` | commit + push only |
-| `a4`, `a5` | `round2` | `review-adv-a`, `review-adv-b` | none |
-| `a6` | `fix2` | `review-fix` | commit + push only |
-| `a7`, `a8` | `round3` | `review-adv-a`, `review-adv-b` | none |
-| `a9` | `final` | `review-final` | one PR review |
+| `a1`–`a3` | `round1` | `review-adv-a`, `review-adv-b`, `review-adv-c` | none |
+| `a4` | `fix1` | `review-fix` | commit + push only |
+| `a5`–`a7` | `round2` | `review-adv-a`, `review-adv-b`, `review-adv-c` | none |
+| `a8` | `fix2` | `review-fix` | commit + push only |
+| `a9`–`a11` | `round3` | `review-adv-a`, `review-adv-b`, `review-adv-c` | none |
+| `a12` | `final` | `review-final` | one PR review |
 
 Rows within a repository are strictly ordered (a round's adversaries run concurrently);
 different repositories may advance concurrently under `LOOP_MAX_PARALLEL`. Run artifacts use
@@ -724,12 +732,12 @@ PR URL, project instructions, verify commands, and the repository steering note.
 Perform the full pr-review inspection adversarially against <PR URL> at exactly <head SHA>.
 Use its checkout/run/checklist methodology, but override its posting step: do not call any
 GitHub mutation endpoint, do not post a review/comment, and do not push. Review independently;
-do not read the paired review run, earlier review runs, their reports/transcripts/status files,
+do not read the sibling review runs, earlier review runs, their reports/transcripts/status files,
 or existing GitHub reviews/comments. Save the complete findings to RUN_DIR/report.md, then
 write RUN_DIR/status.json with {"outcome":"done|question|blocked","summary":"..."}.
 ```
 
-Every round is local-only. A reviewer failure blocks the repository after its sibling finishes;
+Every round is local-only. A reviewer failure blocks the repository after its siblings finish;
 never substitute a model. An exit-10 `checkpoint:true` is a timed status request: the supervisor
 answers and resumes the same stage at the same PR head while other repositories continue. Do not
 advance the stage until it finishes.
@@ -743,6 +751,7 @@ Its prompt passes only that round's reports plus the remediation execution input
 Invoke `/pr-review-fix-all` with:
 - report: <absolute review-adv-a report.md of round r>
 - report: <absolute review-adv-b report.md of round r>   (omitted in shallow)
+- report: <absolute review-adv-c report.md of round r>   (omitted in shallow)
 - tier: <shallow|medium|max>
 - run-dir: <absolute fix RUN_DIR>
 - worktree: <absolute repository integration worktree>

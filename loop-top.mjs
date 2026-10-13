@@ -30,7 +30,7 @@ const DETAIL_HINTS = "esc back · ↑↓ prev/next · n note · x pause · X pau
 const ICONS = { done: "✓", running: "◐", awaiting: "⏸", paused: "‖", problem: "✗", blocked: "✗", todo: "·" };
 /** Review pipeline run state (snapshot `reviewStages[].state`) → glyph. */
 const RUN_ICONS = { done: "✓", running: "◐", todo: "·", question: "⏸", blocked: "✗", failed: "✗" };
-const CHAIN_KEYS = { "review-adv-a": "ADV_A", "review-adv-b": "ADV_B", "review-fix": "FIX", "review-final": "FINAL" };
+const CHAIN_KEYS = { "review-adv-a": "ADV_A", "review-adv-b": "ADV_B", "review-adv-c": "ADV_C", "review-fix": "FIX", "review-final": "FINAL" };
 const WAITING_TEXT = "waiting on you (orchestrator)";
 const ESC = "\x1b[";
 const STYLE = { dim: "2", bold: "1", green: "32", yellow: "33", red: "31", cyan: "36" };
@@ -325,17 +325,17 @@ export function tierChoices(confText, current = null) {
   return ["shallow", "medium", "max"].map((tier) => {
     const T = tier.toUpperCase();
     const rounds = confText.match(new RegExp(`^LOOP_REVIEW_ROUNDS_${T}=(\\d+)`, "m"))?.[1] ?? { shallow: 1, medium: 3, max: 3 }[tier];
-    const reviewers = [first(`${T}_ADV_A`), first(`${T}_ADV_B`)].filter(Boolean).join(" + ");
+    const reviewers = [first(`${T}_ADV_A`), first(`${T}_ADV_B`), first(`${T}_ADV_C`)].filter(Boolean).join(" + ");
     const line = `${tier.padEnd(8)} ×${rounds}  review ${reviewers} · fix ${first(`${T}_FIX`)} · final ${first(`${T}_FINAL`)}`;
     return tier === current ? `${line}  (current)` : line;
   });
 }
 
 function pickModel(row) {
-  const legs = [...new Set([...readFileSafe(MODELS_CONF).matchAll(/"((?:codex|claude):[^"\s]+)"/g)].map((m) => m[1]))];
+  const legs = [...new Set([...readFileSafe(MODELS_CONF).matchAll(/"((?:codex|claude|grok):[^"\s]+)"/g)].map((m) => m[1]))];
   const input = [DEFAULT_CHAIN, ...legs].join("\n");
   const res = spawnSync("fzf", ["--prompt", `phase ${row.label} model> `, "--height", "40%", "--reverse", "--print-query",
-    "--header", "pick a leg, or type engine:model (codex|claude) and press enter"], {
+    "--header", "pick a leg, or type engine:model (codex|claude|grok) and press enter"], {
     input, encoding: "utf8", stdio: ["pipe", "pipe", "inherit"],
   });
   if (res.error || res.status === 130) return undefined;

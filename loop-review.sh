@@ -9,8 +9,9 @@ set -u
 #   loop-review.sh stages [--tier shallow|medium|max] [--rounds N] [--models-conf <f>]
 #     → one TSV line per run: a<k> \t <stage> \t <chain>
 #
-# medium/max: each round runs two independent adversaries (review-adv-a, review-adv-b); every
-# round but the last is followed by review-fix; the last round is followed by review-final.
+# medium/max: each round runs three independent adversaries, one per provider (review-adv-a
+# gpt, review-adv-b claude, review-adv-c grok); every round but the last is followed by
+# review-fix; the last round is followed by review-final.
 # shallow: one reviewer (review-adv-a) + review-fix per round but the last; the last round is
 # review-final alone (the final run reviews the code itself).
 
@@ -53,6 +54,7 @@ for (( r = 1; r <= ROUNDS; r++ )); do
   else
     row "round$r" review-adv-a
     row "round$r" review-adv-b
+    row "round$r" review-adv-c
   fi
   (( r < ROUNDS )) && row "fix$r" review-fix
 done
