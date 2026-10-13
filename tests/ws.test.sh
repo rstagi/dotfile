@@ -100,8 +100,11 @@ REPO="$(make_repo api)"
 print 'SECRET=1' > "$REPO/.env"
 
 echo "ws new: creates worktree, copies env, opens a tmux session w/ one agent tab"
+# An existing tmux server may predate the caller's WS_HOME override.
+T set-environment -g WS_HOME "$TMP/stale-wshome"
 "$WS" new --repo "$REPO" --branch feat/login --detach
 assert_exit "$?" "0" "new succeeds"
+T set-environment -g WS_HOME "$WS_HOME"
 WT="$WS_ROOT/api/feat-login"
 assert_eq "$(git -C "$WT" branch --show-current)" "feat/login" "worktree on new branch"
 assert_eq "$(cat "$WT/.env" 2>/dev/null)" "SECRET=1" ".env copied from main checkout"
@@ -181,6 +184,19 @@ assert_contains "$(wait_pane "$(slot_window "$WS_ROOT/api/global-1" 2)" FAKE-cla
   "ID=$GLOBAL_SESSION_ID WHOAMI=$GLOBAL_SESSION_ID" "closed resume preserves identity when its old slot is occupied"
 assert_contains "$("$WS" sessions "$GLOBAL_SESSION_ID")" $'\tclaude\tidle\tactive' "reopened global record is active"
 for i in {1..8}; do "$WS" rm "api/global-$i" --force --delete-branch >/dev/null; done
+
+echo "ws sessions: legacy resume records acquire one stable global identity"
+LEGACY_WT="$WS_ROOT/api/legacy"
+git -C "$REPO" worktree add -q -b legacy "$LEGACY_WT" main
+LEGACY_SF="$(git -C "$LEGACY_WT" rev-parse --absolute-git-dir)/ws-sessions"
+printf '1\tclaude\tsid-legacy\n' > "$LEGACY_SF"
+"$WS" open api/legacy --detach
+assert_contains "$(wait_pane "$(slot_window "$LEGACY_WT" 1)" FAKE-claude)" "--resume sid-legacy" "legacy conversation resumes"
+assert_contains "$(wait_pane "$(slot_window "$LEGACY_WT" 1)" FAKE-claude)" "ID=11 WHOAMI=11" "legacy tab acquires a global identity"
+T kill-window -t "$(slot_window "$LEGACY_WT" 1)"
+"$WS" open api/legacy --detach
+assert_contains "$(wait_pane "$(slot_window "$LEGACY_WT" 1)" FAKE-claude)" "ID=11 WHOAMI=11" "legacy migration never allocates a second identity"
+"$WS" rm api/legacy --force --delete-branch >/dev/null
 
 echo "ws hook: agent events set window state; no-op outside a workspace"
 state() { T display -p -t "$WIN" '#{@ws_state}'; }
