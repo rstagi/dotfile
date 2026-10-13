@@ -130,6 +130,44 @@ gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input review.jso
 ```
 
 Use `APPROVE` or `REQUEST_CHANGES` only when the user says so; gating a merge is their call, not yours. Pin `commit_id` to the head SHA you actually reviewed. Afterwards, verify: re-read the posted comments and confirm the review state landed as intended.
+
+## Step 4: Visual report (HTML page + explainer video)
+
+After the written report (and regardless of whether anything is posted to GitHub), produce a self-contained visual report. Keep every review behavior above unchanged; this is an extra deliverable.
+
+**Output location.** Write to `pr-review-output/<repo>-<pr>/` under the directory the session was started in (not inside the review worktree, and never inside the PR's tracked files):
+
+```
+pr-review-output/<repo>-<pr>/
+  index.html   # full review report
+  video.mp4    # Remotion explainer, embedded in index.html
+```
+
+**Never commit, push, or add these outputs (or the Remotion project) to the PR branch.** If the session dir is a clone of the repo, make sure `pr-review-output/` stays untracked (add it to `.git/info/exclude`, not `.gitignore`).
+
+### (a) index.html
+
+- One self-contained file: inline CSS (and any JS), no CDN or external assets other than the sibling `video.mp4`.
+- Contents: PR title, repo, number, link, head SHA reviewed; the verdict and Step 1 validation result (commands run, pass/fail, key output); every finding with its `[label]`, file:line, mechanism, evidence and fix/preventive change, ordered by severity; the stacked-PR split proposal or "no split recommended"; a short "what the PR does / how" summary.
+- Embed the video near the top: `<video src="video.mp4" controls playsinline width="100%"></video>`.
+- Same writing rules as the report: concise, no em-dashes or en-dashes.
+
+### (b) Remotion explainer video (remotion.dev, React)
+
+A short (about 60 to 90 s, 1920x1080 or 1280x720, 30 fps) video that explains, in this order:
+1. **What the PR does** (the problem and the user-visible change),
+2. **How it does it** (key files/modules, data or control flow, simple diagrams built from React/SVG boxes and arrows, short code snippets),
+3. **The issues found** (one scene per important finding with its severity label, or a summary card for nits; end on the verdict).
+
+Practical guidance:
+- Scaffold in a temp dir **outside** the repo, e.g. `D=$(mktemp -d /tmp/remotion-<repo>-<pr>-XXXX)`. Either `npx create-video@latest --yes --blank` there, or create a minimal project by hand: `npm init -y && npm i remotion @remotion/cli react react-dom`, `src/index.ts` calling `registerRoot`, `src/Root.tsx` with a `<Composition id="PRReview" ...>`.
+- Build scenes with `<Sequence>`/`<Series>`, `useCurrentFrame`, `interpolate`, `spring`. Keep text large and readable, few words per screen, a consistent color per severity. No external network assets (fonts, images) at render time; use system fonts.
+- Render: `npx remotion render src/index.ts PRReview <out>/video.mp4 --codec=h264`. If Chrome headless shell can't be downloaded, pass `--browser-executable=$(which google-chrome || which chromium)`.
+- Verify with `ffprobe` that the mp4 has the expected duration, then copy it next to `index.html` as `video.mp4`. Delete the temp Remotion dir when done (or leave it in /tmp; never in the repo).
+- If rendering fails after reasonable attempts, still ship `index.html`, state the failure in it and in the final message.
+
+Finish by printing the absolute paths of `index.html` and `video.mp4`.
+
 ## Headless mode
 
 When invoked with `--headless` (the loop-execute orchestrator runs this after opening the effort PR): never pause to ask anything, and never mutate the checkout you were started in. Skip `gh pr checkout` entirely. Instead, from a clone of the repo:
