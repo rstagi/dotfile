@@ -1564,6 +1564,46 @@ assert_exit "$?" "0" "last source completion publishes and fires"
 reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"results $SOURCE_A,$SOURCE_B: alpha \"quoted\" \$literal"$'\n'"beta" "fan-in expands literal output text and ordered ids"
 assert_eq "$("$WS" triggers)" "" "fired trigger is no longer pending"
+echo "ws on: already-satisfied registration fires once, even when events repeat concurrently"
+hook api/triggers "$TARGET_WIN" working </dev/null
+SATISFIED_TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_A,$SOURCE_B" done --send-to me 'already {id}')"
+assert_exit "$?" "0" "already-done fan-in registers and fires immediately"
+repeat_pids=()
+for source_id in "$SOURCE_A" "$SOURCE_B"; do
+  WS_SESSION="$source_id" "$WS" done > "$TMP/repeat-$source_id.log" 2>&1 &
+  repeat_pids+=($!)
+done
+for pid in $repeat_pids; do wait "$pid"; assert_exit "$?" "0" "concurrent repeat completion succeeds"; done
+reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"already $SOURCE_A,$SOURCE_B" "already-satisfied trigger delivers exactly once"
+assert_eq "$(hook api/triggers "$TARGET_WIN" stop </dev/null)" "{}" "repeat completion never queues another action"
+
+echo "ws on: rejects direct and transitive cycles; removal cancels a pending action"
+CYCLE_TID="$("$WS" on "$SOURCE_A" exit --send-to "$TARGET_ID" cycle-forward)"
+assert_exit "$?" "0" "forward dependency registers"
+out="$("$WS" on "$TARGET_ID" exit --send-to "$SOURCE_A" cycle-backward 2>&1)"
+assert_exit "$?" "1" "reverse edge forming a cycle is rejected"
+assert_contains "$out" "cycle" "cycle error explains rejection"
+"$WS" on "$TARGET_ID" done --send-to "$TARGET_ID" self-cycle 2>/dev/null
+assert_exit "$?" "1" "direct self-dependency is rejected"
+"$WS" on "$TARGET_ID,$SOURCE_B" done --send-to "$TARGET_ID" fan-in-cycle 2>/dev/null
+assert_exit "$?" "1" "fan-in cannot include its own target"
+CHAIN_TID="$("$WS" on "$TARGET_ID" exit --send-to "$SOURCE_B" cycle-chain)"
+out="$("$WS" on "$SOURCE_B" exit --send-to "$SOURCE_A" cycle-end 2>&1)"
+assert_exit "$?" "1" "three-session cycle is rejected"
+assert_contains "$out" "cycle" "transitive cycle is explained"
+"$WS" on --rm "$CHAIN_TID"
+assert_exit "$?" "0" "removes pending chain trigger"
+"$WS" on --rm "$CYCLE_TID"
+assert_exit "$?" "0" "removes pending trigger"
+assert_eq "$("$WS" triggers)" "" "removed triggers are absent"
+"$WS" on --rm "$CYCLE_TID" 2>/dev/null
+assert_exit "$?" "1" "removing an absent trigger is rejected"
+hook api/triggers "$TARGET_WIN" working </dev/null
+T send-keys -t "$SOURCE_A_WIN" Enter
+wait_until lifecycle_exit_count "$SOURCE_A" 1
+assert_eq "$(hook api/triggers "$TARGET_WIN" stop </dev/null)" "{}" "cancelled trigger never delivers"
+
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"

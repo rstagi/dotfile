@@ -27,6 +27,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws show <id|name>           session metadata, lifecycle status and output path
 #   ws on <id[,id…]> <done|exit> --send-to <id|me> <msg>   one-shot fan-in trigger
 #   ws triggers                TSV: pending trigger id, sources, event, action, target, template
+#   ws on --rm <trigger-id>     cancel a pending trigger; cycles are rejected on registration
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm

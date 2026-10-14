@@ -6,6 +6,12 @@ WS_TRIGGERS="$WS_HOME/triggers"
 
 # Trigger ids are independent of session ids. Records retain fired actions for diagnostics.
 cmd_on() {
+  if [[ "${1:-}" == --rm ]]; then
+    [[ $# == 2 && "$2" == <-> ]] || die "on --rm: expected <trigger-id>"
+    [[ -d "$WS_TRIGGERS" ]] || die "on --rm: no such pending trigger: $2"
+    with_lock "$WS_TRIGGERS/registry" ws_bus_remove_trigger "$2"
+    return $?
+  fi
   [[ $# == 5 && "$3" == --send-to ]] || die "on: expected <ids> <done|exit> --send-to <id|me> <message>"
   local event="$2" target sender="" id tid sources
   local -a ids=()
@@ -35,6 +41,11 @@ cmd_triggers() {
 }
 
 ws_bus_register_trigger() {
+  # Serialize graph validation with registration/removal; concurrent reverse edges lose.
+  if ws_bus_trigger_cycle "$1" "$3"; then
+    print -u2 "ws: on: dependency cycle rejected"
+    return 1
+  fi
   local tid=0
   [[ ! -f "$WS_TRIGGERS/counter" ]] || read -r tid < "$WS_TRIGGERS/counter"
   [[ "$tid" == <-> ]] || return 1
@@ -43,8 +54,33 @@ ws_bus_register_trigger() {
   jq -n --arg id "$tid" --argjson sources "$1" --arg event "$2" --arg target "$3" \
     --arg template "$4" --arg sender "$5" \
     '{id:$id,sources:$sources,event:$event,action:"send",target:$target,template:$template,sender:$sender,status:"pending"}' \
-    > "$WS_TRIGGERS/$tid.json" || return 1
+    > "$WS_TRIGGERS/$tid.json.tmp" && mv "$WS_TRIGGERS/$tid.json.tmp" "$WS_TRIGGERS/$tid.json" || return 1
   print -r -- "$tid"
+}
+
+ws_bus_trigger_cycle() {
+  local -a records=("$WS_TRIGGERS"/<->.json(N))
+  print -n '' | jq -se --argjson sources "$1" --arg target "$2" '
+    map(select(.status == "pending" and .action == "send")) as $edges |
+    def reaches($node; $seen):
+      if ($sources | index($node)) != null then true
+      elif ($seen | index($node)) != null then false
+      else any($edges[];
+        if (.sources | index($node)) != null
+        then reaches(.target; $seen + [$node]) else false end)
+      end;
+    reaches($target; [])' "${records[@]}" >/dev/null
+}
+
+ws_bus_remove_trigger() {
+  with_lock "$WS_TRIGGERS/$1" ws_bus_remove_trigger_locked "$1"
+}
+
+ws_bus_remove_trigger_locked() {
+  local record="$WS_TRIGGERS/$1.json"
+  [[ -f "$record" && "$(jq -r '.status' "$record")" == pending ]] \
+    || { print -u2 "ws: on --rm: no such pending trigger: $1"; return 1; }
+  rm -f "$record"
 }
 
 # Evaluate only subscribers to this source/event, after releasing the append lock.
