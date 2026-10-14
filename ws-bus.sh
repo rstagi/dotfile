@@ -4,7 +4,7 @@
 WS_SESSIONS="$WS_HOME/sessions"
 WS_TRIGGERS="$WS_HOME/triggers"
 
-# Trigger ids are independent of session ids. Records retain fired actions for diagnostics.
+# Trigger ids are independent of session ids. Terminal records are archived for diagnostics.
 cmd_on() {
   if [[ "${1:-}" == --rm ]]; then
     [[ $# == 2 && "$2" == <-> ]] || die "on --rm: expected <trigger-id>"
@@ -33,6 +33,9 @@ cmd_on() {
   *) die "on: expected --send-to or --spawn" ;;
   esac
   [[ -n "$template" ]] || die "on: empty message or prompt"
+  local required_text="${template//\{output\}/}"
+  [[ -n "${required_text//[[:space:]]/}" ]] \
+    || die "on: message or prompt may be empty; include text or {id} alongside {output}"
   for id in "${(@s:,:)1}"; do
     id="$(ws_bus_resolve "$id")" || die "on: no such source session"
     (( ${ids[(Ie)$id]} )) || ids+=("$id")
@@ -58,10 +61,10 @@ cmd_on() {
 # TSV: trigger id, ordered source ids, event, action, target, template.
 cmd_triggers() {
   [[ $# == 0 ]] || die "triggers: expected no arguments"
-  local record
-  for record in "$WS_TRIGGERS"/<->.json(Nn); do
-    jq -r 'select(.status == "pending") | [.id, (.sources | join(",")), .event, .action, .target, .template] | @tsv' "$record"
-  done
+  local -a records=("$WS_TRIGGERS"/<->.json(Nn))
+  (( ${#records} )) || return 0
+  { cat "${records[@]}" 2>/dev/null || true; } |
+    jq -r 'select(.status == "pending") | [.id, (.sources | join(",")), .event, .action, .target, .template] | @tsv'
 }
 
 cmd_done() {
@@ -187,9 +190,17 @@ cmd_sessions() {
 
 ws_bus_register_trigger() {
   # Serialize graph validation with registration/removal; concurrent reverse edges lose.
-  if [[ "$3" == send ]] && ws_bus_trigger_cycle "$1" "$4"; then
-    print -u2 "ws: on: dependency cycle rejected"
-    return 1
+  local cycle_rc=0
+  if [[ "$3" == send ]]; then
+    ws_bus_trigger_cycle "$1" "$4" || cycle_rc=$?
+    if (( cycle_rc != 1 )); then
+      if (( cycle_rc == 0 )); then
+        print -u2 "ws: on: dependency cycle rejected"
+      else
+        print -u2 "ws: on: cannot validate dependency cycles; registration rejected"
+      fi
+      return 1
+    fi
   fi
   local tid=0 id offset offsets='{}'
   # Snapshot complete event records under each source's append lock. Exits before
@@ -238,9 +249,15 @@ ws_bus_remove_trigger_locked() {
 
 # Evaluate only subscribers to this source/event, after releasing the append lock.
 ws_bus_evaluate() {
-  local record tid
-  for record in "$WS_TRIGGERS"/<->.json(Nn); do
-    tid="$(jq -r --arg id "$1" --arg event "$2" 'select(.status == "pending" and .event == $event and (.sources | index($id))) | .id' "$record")"
+  local tid tids
+  local -a records=("$WS_TRIGGERS"/<->.json(Nn))
+  (( ${#records} )) || return 0
+  # Archiving may remove a snapshotted path: skip missing files, parse the rest once.
+  tids="$( { cat "${records[@]}" 2>/dev/null || true; } | jq -r --arg id "$1" --arg event "$2" '
+    select(.status == "fired" or .status == "failed" or
+      (.status == "pending" and .event == $event and (.sources | index($id)))) | .id
+  ')" || return 1
+  for tid in "${(@f)tids}"; do
     [[ -z "$tid" ]] || ws_bus_evaluate_trigger "$tid" # failures are recorded; keep going
   done
   return 0
@@ -253,7 +270,11 @@ ws_bus_evaluate_trigger() {
 ws_bus_fire_trigger() {
   local record="$WS_TRIGGERS/$1.json" id event offset target sender template output="" piece message action rc errfile
   [[ -f "$record" ]] || return 0
-  [[ "$(jq -r '.status' "$record")" == pending ]] || return 0
+  case "$(jq -r '.status' "$record")" in
+    pending) ;;
+    fired|failed) ws_bus_archive_trigger "$1"; return $? ;; # retire legacy records
+    *) return 0 ;;
+  esac
   event="$(jq -r '.event' "$record")"
   local -a ids=("${(@f)$(jq -r '.sources[]' "$record")}")
   for id in "${ids[@]}"; do
@@ -298,10 +319,17 @@ ws_bus_fire_trigger() {
   if (( rc )); then
     jq --argjson rc "$rc" --rawfile error "$errfile" '.status = "failed" | .exit_code = $rc | .error = $error' \
       "$record" > "$record.tmp" && mv "$record.tmp" "$record"
-    print -u2 "ws: trigger #$1 action failed: $(tail -1 "$errfile"); see $record"
+    print -u2 "ws: trigger #$1 action failed: $(tail -1 "$errfile"); see $WS_TRIGGERS/archive/$1.json"
   fi
   rm -f "$errfile"
+  ws_bus_archive_trigger "$1" || return 1
   return "$rc"
+}
+
+# Called under the trigger lock, after the action has finished updating its record.
+ws_bus_archive_trigger() {
+  mkdir -p -m 700 "$WS_TRIGGERS/archive" &&
+    mv "$WS_TRIGGERS/$1.json" "$WS_TRIGGERS/archive/$1.json"
 }
 
 # Allocate through normal workspace slots and mark origin before the agent can run.
@@ -625,7 +653,7 @@ ws_bus_name_locked() {
 }
 
 ws_bus_resolve() {
-  local target="$1" meta id
+  local target="$1" id
   [[ "$target" != me ]] || target="${WS_SESSION:-}"
   target="${target#\#}"
   if [[ "$target" == <-> ]]; then
@@ -634,11 +662,12 @@ ws_bus_resolve() {
     return 0
   fi
   [[ -n "$target" ]] || return 1
-  for meta in "$WS_SESSIONS"/<->/meta(N); do
-    id="$(jq -r --arg name "$target" 'select(.name == $name) | .id' "$meta")"
-    [[ -z "$id" ]] || { print -r -- "$id"; return 0; }
-  done
-  return 1
+  local -a records=("$WS_SESSIONS"/<->/meta(N))
+  (( ${#records} )) || return 1
+  id="$( { cat "${records[@]}" 2>/dev/null || true; } |
+    jq -sr --arg name "$target" 'map(select(.name == $name))[0].id // empty')" || return 1
+  [[ -n "$id" ]] || return 1
+  print -r -- "$id"
 }
 
 ws_bus_window() {

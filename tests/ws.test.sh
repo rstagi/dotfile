@@ -2027,7 +2027,7 @@ mv "$TMP/bin/claude-exit-normal" "$TMP/bin/claude"
 echo "ws done: a spawned session keeps accepted messages deliverable until Stop"
 M1_TID="$(WS_SESSION="$DONE_ID" "$WS" on "$DONE_ID" done --spawn 'Finish after checking follow-ups')"
 assert_exit "$?" "0" "M1 spawns a tracked child through a done trigger"
-M1_ID="$(jq -r '.spawned_session' "$WS_HOME/triggers/$M1_TID.json")"
+M1_ID="$(jq -r '.spawned_session' "$WS_HOME/triggers/archive/$M1_TID.json")"
 M1_WIN="$(jq -r '.window' "$WS_HOME/sessions/$M1_ID/meta")"
 assert_contains "$(wait_pane "$M1_WIN" FAKE-claude)" "FAKE-claude" "M1 spawned agent ready"
 hook api/lifecycle "$M1_WIN" working </dev/null
@@ -2255,8 +2255,8 @@ assert_exit "$?" "0" "literal dash trigger registers"
 reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n-' "trigger dash is delivered literally"
 
-# --- G2: empty expansions stay pending; failed actions keep their stderr ---
-echo "ws on: an empty {output} expansion leaves send and spawn triggers pending"
+# --- G2: empty templates reject registration; failed actions keep their stderr ---
+echo "ws on: output-only send and spawn templates reject registration"
 empty_before="$(windows_of "$TRIGGER_WT")"
 "$WS" add api/triggers --detach
 EMPTY_WIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$empty_before"))"
@@ -2265,6 +2265,7 @@ WS_SESSION="$EMPTY_SRC" "$WS" done </dev/null
 assert_exit "$?" "0" "empty-output source declares done"
 empty_sessions="$("$WS" sessions | wc -l | tr -d ' ')"
 for empty_action in --send-to --spawn; do
+  empty_counter="$(cat "$WS_HOME/triggers/counter")"
   if [[ "$empty_action" == --send-to ]]; then
     out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --send-to me '{output}' 2>&1)"
   else
@@ -2272,9 +2273,7 @@ for empty_action in --send-to --spawn; do
   fi
   assert_exit "$?" "1" "$empty_action empty expansion reports failure"
   assert_contains "$out" "empty" "$empty_action empty expansion explains itself"
-  EMPTY_TID="${${(f)out}[1]}"
-  assert_eq "$(jq -r '.status' "$WS_HOME/triggers/$EMPTY_TID.json" 2>/dev/null)" "pending" "$empty_action empty expansion is not burned"
-  "$WS" on --rm "$EMPTY_TID"
+  assert_eq "$(cat "$WS_HOME/triggers/counter")" "$empty_counter" "$empty_action empty template allocates no trigger"
 done
 assert_eq "$("$WS" sessions | wc -l | tr -d ' ')" "$empty_sessions" "empty spawn prompt never starts a blank child"
 reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
@@ -2287,8 +2286,8 @@ jq -n --arg id "$BROKEN_ID" '{id:$id,name:"",workspace:"api/gone",agent:"claude"
 out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --send-to "$BROKEN_ID" unreachable 2>&1)"
 assert_exit "$?" "1" "unreachable trigger target fails"
 BROKEN_TID="${${(f)out}[1]}"
-assert_eq "$(jq -r '.status' "$WS_HOME/triggers/$BROKEN_TID.json")" "failed" "failed action is marked failed"
-assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/$BROKEN_TID.json")" "no longer exists" "failed action record keeps stderr"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$BROKEN_TID.json")" "failed" "failed action is marked failed"
+assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/$BROKEN_TID.json")" "no longer exists" "failed action record keeps stderr"
 rm -rf "$WS_HOME/sessions/$BROKEN_ID"
 T send-keys -t "$EMPTY_WIN" Enter
 # --- end G2 trigger failures ---
@@ -2403,6 +2402,74 @@ reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n'"new exit $SOURCE_A" "next exit delivers the continuation"
 assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "exit watcher delivers once"
 # --- end M2 stale exit ---
+
+# --- trigger edges ---
+echo "ws on: trigger edges reject a cycle graph that cannot be validated"
+for corrupt_record in '{' '{"status":"pending","action":"send","sources":7}'; do
+  print -r -- "$corrupt_record" > "$WS_HOME/triggers/999999.json"
+  edge_counter="$(cat "$WS_HOME/triggers/counter")"
+  out="$("$WS" on "$SOURCE_A" exit --send-to "$DEFAULT_ID" 'after exit' 2>&1)"
+  assert_exit "$?" "1" "unreadable cycle graph rejects registration"
+  assert_contains "$out" "cannot validate" "cycle graph failure explains rejection"
+  assert_eq "$(cat "$WS_HOME/triggers/counter")" "$edge_counter" "failed validation allocates no trigger"
+  rm -f "$WS_HOME/triggers/999999.json"
+  # Clean up the old behavior's incorrectly accepted trigger during the RED run.
+  [[ "$(cat "$WS_HOME/triggers/counter")" == "$edge_counter" ]] || "$WS" on --rm "$(cat "$WS_HOME/triggers/counter")"
+done
+# Registration must report this to the waiter even before a future event has output.
+echo "ws on: trigger edges reject templates that can expand to empty"
+for edge_template in '{output}' $' \t{output} {output}\n'; do
+  edge_counter="$(cat "$WS_HOME/triggers/counter")"
+  out="$("$WS" on "$SOURCE_A" exit --send-to "$DEFAULT_ID" "$edge_template" 2>&1)"
+  assert_exit "$?" "1" "output-only future trigger rejects registration"
+  assert_contains "$out" "empty" "waiter sees the empty-template error at registration"
+  assert_eq "$(cat "$WS_HOME/triggers/counter")" "$edge_counter" "empty template leaves no pending trigger"
+  [[ "$(cat "$WS_HOME/triggers/counter")" == "$edge_counter" ]] || "$WS" on --rm "$(cat "$WS_HOME/triggers/counter")"
+done
+echo "ws on: trigger edges archive terminal actions outside the active registry"
+assert_eq "$([[ -f "$WS_HOME/triggers/$TID.json" ]] && print active)" "" "fired trigger is pruned from the active registry"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$TID.json" 2>/dev/null)" "fired" "archive preserves the fired trigger for diagnostics"
+assert_eq "$([[ -f "$WS_HOME/triggers/$BROKEN_TID.json" ]] && print active)" "" "failed trigger is pruned from the active registry"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$BROKEN_TID.json" 2>/dev/null)" "failed" "archive preserves the failed action"
+assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/$BROKEN_TID.json" 2>/dev/null)" "no longer exists" "archive keeps the failure reason"
+# --- trigger edge batching ---
+echo "ws on: trigger edges batch unrelated records and retire legacy terminal records"
+edge_jq="$(command -v jq)"
+mkdir -p "$TMP/edge-bin"
+cat > "$TMP/edge-bin/jq" <<'EDGE_JQ'
+#!/bin/sh
+printf '.\n' >> "$WS_EDGE_JQ_CALLS"
+exec "$WS_EDGE_JQ" "$@"
+EDGE_JQ
+chmod +x "$TMP/edge-bin/jq"
+WS_SESSION="$DEFAULT_ID" "$WS" name trigger-edge-waiter
+for edge_fixture in {700001..700030}; do
+  mkdir -p "$WS_HOME/sessions/$edge_fixture"
+  jq -n --arg id "$edge_fixture" '{id:$id,name:"",status:"active"}' > "$WS_HOME/sessions/$edge_fixture/meta"
+  jq -n --arg id "$edge_fixture" --arg source "$SOURCE_B" --arg target "$DEFAULT_ID" \
+    '{id:$id,sources:[$source],event:"exit",action:"send",target:$target,template:"after exit",status:"pending"}' \
+    > "$WS_HOME/triggers/$edge_fixture.json"
+done
+: > "$TMP/edge-jq-calls"
+out="$(PATH="$TMP/edge-bin:$PATH" WS_EDGE_JQ="$edge_jq" WS_EDGE_JQ_CALLS="$TMP/edge-jq-calls" "$WS" show trigger-edge-waiter)"
+assert_contains "$out" "id: $DEFAULT_ID" "batched name lookup resolves the waiter"
+edge_calls="$(wc -l < "$TMP/edge-jq-calls")"
+assert_eq "$(( edge_calls <= 2 ))" "1" "name lookup uses bounded jq processes across many sessions"
+# A record retained by older versions must be archived without executing it again.
+cp "$WS_HOME/triggers/archive/$TID.json" "$WS_HOME/triggers/$TID.json"
+: > "$TMP/edge-jq-calls"
+PATH="$TMP/edge-bin:$PATH" WS_EDGE_JQ="$edge_jq" WS_EDGE_JQ_CALLS="$TMP/edge-jq-calls" WS_SESSION="$SOURCE_A" "$WS" done
+assert_exit "$?" "0" "done succeeds with many unrelated pending triggers"
+edge_calls="$(wc -l < "$TMP/edge-jq-calls")"
+assert_eq "$(( edge_calls < 20 ))" "1" "event evaluation uses bounded jq processes across unrelated triggers"
+assert_eq "$([[ -f "$WS_HOME/triggers/$TID.json" ]] && print active)" "" "legacy fired record is retired on the next event"
+assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "unrelated triggers do not notify the waiter"
+for edge_fixture in {700001..700030}; do
+  rm -rf "$WS_HOME/sessions/$edge_fixture"
+  rm -f "$WS_HOME/triggers/$edge_fixture.json"
+done
+# --- end trigger edge batching ---
+# --- end trigger edges ---
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 
