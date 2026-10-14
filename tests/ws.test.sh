@@ -1631,6 +1631,65 @@ for spawn_agent in claude codex grok; do
 done
 assert_eq "$([[ -e "$TRIGGER_WT/never-execute-ws-prompt" ]] && print yes)" "" "spawn prompt never executes shell substitution"
 
+echo "ws on: concurrent last-source exits spawn once and default agent is claude"
+DEFAULT_TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_B" done --spawn default-child)"
+assert_exit "$?" "0" "spawn accepts omitted agent"
+DEFAULT_ID="$("$WS" sessions | awk -F '\t' '$3 == "api/triggers" && $5 != "stopped" && $1 != "'"$TARGET_ID"'" && $1 != "'"$SOURCE_B"'" {print $1}')"
+assert_eq "$("$WS" sessions "$DEFAULT_ID" | cut -f4)" "claude" "spawn defaults to claude"
+DEFAULT_WIN="$(jq -r '.window' "$WS_HOME/sessions/$DEFAULT_ID/meta")"
+assert_contains "$(wait_pane "$DEFAULT_WIN" FAKE-claude)" "default-child" "default child receives initial prompt"
+exit_before="$("$WS" sessions | wc -l | tr -d ' ')"
+EXIT_TID="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B,$TARGET_ID" exit --spawn 'after exit {id}' --agent codex)"
+assert_exit "$?" "0" "exit fan-in registers while both sources are live"
+assert_eq "$("$WS" sessions | wc -l | tr -d ' ')" "$exit_before" "exit trigger does not confuse done with exit"
+assert_contains "$("$WS" triggers)" "$EXIT_TID"$'\t'"$SOURCE_B,$TARGET_ID"$'\texit\tspawn' "pending spawn trigger is listed"
+T send-keys -t "$SOURCE_B_WIN" Enter &
+exit_a_pid=$!
+T send-keys -t "$TARGET_WIN" Enter &
+exit_b_pid=$!
+wait "$exit_a_pid"; wait "$exit_b_pid"
+wait_until lifecycle_exit_count "$SOURCE_B" 1
+wait_until lifecycle_exit_count "$TARGET_ID" 1
+exit_child_ready() { [[ "$("$WS" sessions | awk -F '\t' '$3 == "api/triggers" && $4 == "codex" && $5 != "stopped" {print $1}')" == <-> ]]; }
+wait_until exit_child_ready
+assert_exit "$?" "0" "concurrent exits start one codex child"
+EXIT_CHILD="$("$WS" sessions | awk -F '\t' '$3 == "api/triggers" && $4 == "codex" && $5 != "stopped" {print $1}')"
+assert_eq "$("$WS" sessions | wc -l | tr -d ' ')" "$((exit_before + 1))" "two racing evaluations allocate exactly one child"
+assert_contains "$(wait_pane "$(jq -r '.window' "$WS_HOME/sessions/$EXIT_CHILD/meta")" FAKE-codex)" "after exit $SOURCE_B,$TARGET_ID" "exit child receives expanded source ids"
+assert_eq "$("$WS" triggers)" "" "exit action is no longer pending"
+
+echo "ws on: sends a literal dash instead of interpreting the trigger message as stdin"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+DASH_TID="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --send-to me - </dev/null)"
+assert_exit "$?" "0" "literal dash trigger registers"
+reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n-' "trigger dash is delivered literally"
+
+echo "ws on: validates source lists, events and action options without creating triggers"
+for bad_sources in '' ',' "$SOURCE_B," ",$SOURCE_B" "$SOURCE_B,,${TARGET_ID}" no-such-session; do
+  "$WS" on "$bad_sources" done --send-to "$DEFAULT_ID" invalid 2>/dev/null
+  assert_exit "$?" "1" "invalid source list rejected: $bad_sources"
+done
+"$WS" on "$SOURCE_B" idle --send-to "$DEFAULT_ID" invalid 2>/dev/null
+assert_exit "$?" "1" "unsupported lifecycle event rejected"
+"$WS" on "$SOURCE_B" done --send-to missing-target invalid 2>/dev/null
+assert_exit "$?" "1" "unknown target rejected"
+"$WS" on "$SOURCE_B" done --send-to "$DEFAULT_ID" '' 2>/dev/null
+assert_exit "$?" "1" "empty message rejected"
+WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn '' 2>/dev/null
+assert_exit "$?" "1" "empty spawn prompt rejected"
+WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn invalid --agent invalid 2>/dev/null
+assert_exit "$?" "1" "unknown spawn agent rejected"
+WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn invalid --send-to "$DEFAULT_ID" 2>/dev/null
+assert_exit "$?" "1" "mixed send/spawn options rejected"
+(cd "$REPO" && env -u WS_SESSION -u TMUX -u WS_WORKSPACE "$WS" on "$SOURCE_B" done --spawn invalid 2>/dev/null)
+assert_exit "$?" "1" "terminal spawn outside ws worktree rejected"
+"$WS" triggers unexpected 2>/dev/null
+assert_exit "$?" "1" "triggers rejects unexpected arguments"
+"$WS" on --rm ../counter 2>/dev/null
+assert_exit "$?" "1" "remove rejects unsafe trigger ids"
+assert_eq "$("$WS" triggers)" "" "invalid registrations create no pending triggers"
+
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"

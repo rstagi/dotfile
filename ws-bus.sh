@@ -261,7 +261,7 @@ ws_bus_fire_trigger() {
   if [[ "$action" == spawn ]]; then
     ws_bus_spawn_trigger "$record" "$message" >/dev/null
   else
-    (WS_SESSION="$sender" cmd_send "$target" "$message") >/dev/null
+    print -rn -- "$message" | (WS_SESSION="$sender" cmd_send "$target" -) >/dev/null
   fi
   rc=$?
   if (( rc )); then
