@@ -153,12 +153,15 @@ ws_bus_run_agent() {
   ${(z)WS_AGENT_SHELL} "$command" <&$input_fd &
   agent_pid=$!
   exec {input_fd}<&-
-  trap 'kill -HUP "$agent_pid" 2>/dev/null; ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
+  trap 'trap "" HUP; kill -HUP "$agent_pid" 2>/dev/null; ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
   trap '' INT
   wait "$agent_pid"
   code=$?
-  trap - HUP INT
-  ws_bus_exit "$id" "$code"
+  # EOF may finish the child just before the tty's HUP arrives. Protect publication,
+  # including its subprocesses, rather than restoring the default HUP action early.
+  trap '' HUP INT
+  ws_bus_exit "$id" "$code" </dev/null
+
   return "$code"
 }
 
