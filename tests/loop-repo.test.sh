@@ -265,4 +265,66 @@ assert_exit "$?" "4" "retry refuses a worktree switched to a different branch"
 assert_eq "$(git -C "$M2_WT" branch --show-current)" "feat/milestone-other" "retry leaves the other branch untouched"
 git -C "$M2_WT" switch -q feat/api-milestone-2
 
+echo "loop-repo: retire removes clean owned worktrees and is retryable"
+PRE_RETIRE_SHA="$(git -C "$WT" rev-parse HEAD)"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$WT" --adopted false
+assert_exit "$?" "0" "retire removes a clean non-adopted worktree"
+[[ -e "$WT" ]]
+assert_exit "$?" "1" "retired worktree directory is gone"
+assert_eq "$(git -C "$CHECKOUT" rev-parse feat/api)" "$PRE_RETIRE_SHA" "retire keeps the integration branch"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$WT" --adopted false
+assert_exit "$?" "0" "retire succeeds when worktree is already gone"
+
+echo "loop-repo: retire refuses adopted, dirty, outside-root, and coordinator worktrees"
+refuse_retire() {
+  local target="$1" adopted="$2" message="$3"
+  $ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$target" --adopted "$adopted" >/dev/null 2>&1
+  assert_exit "$?" "4" "$message"
+  [[ -e "$target" ]]
+  assert_exit "$?" "0" "$message leaves worktree intact"
+}
+refuse_retire "$M2_WT" true "explicitly adopted worktree refused"
+print dirty >> "$M2_WT/file.txt"
+refuse_retire "$M2_WT" false "tracked changes refused"
+git -C "$M2_WT" restore file.txt
+print scratch > "$M2_WT/scratch.txt"
+refuse_retire "$M2_WT" false "untracked changes refused"
+rm "$M2_WT/scratch.txt"
+print staged > "$M2_WT/staged.txt"
+git -C "$M2_WT" add staged.txt
+refuse_retire "$M2_WT" false "staged changes refused"
+git -C "$M2_WT" restore --staged staged.txt
+rm "$M2_WT/staged.txt"
+refuse_retire "$WS" false "outside-root worktree refused"
+refuse_retire "$WT6" false "another run's worktree refused"
+mkdir -p "$M2_WT/.loop"
+print '{}' > "$M2_WT/.loop/state.json"
+print '.loop/' >> "$(git -C "$M2_WT" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+assert_eq "$(git -C "$M2_WT" status --porcelain)" "" "coordinator state is gitignored"
+refuse_retire "$M2_WT" false "clean coordinator worktree refused"
+rm -r "$M2_WT/.loop"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-6 --worktree "$WT6" --adopted true >/dev/null 2>&1
+assert_exit "$?" "4" "adopted run-scoped worktree refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-6 --worktree "$WT6" --adopted false >/dev/null 2>&1
+assert_exit "$?" "4" "recorded adopted ownership cannot be overridden by caller"
+
+echo "loop-repo: retire guards path aliases and repository ownership"
+ln -s "$WS" "$LOOP_WORKTREE_ROOT/run-1/escape"
+refuse_retire "$LOOP_WORKTREE_ROOT/run-1/escape" false "symlink escaping run root refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 \
+  --worktree "$LOOP_WORKTREE_ROOT/run-1/../run-6/acme--api/integration" --adopted false >/dev/null 2>&1
+assert_exit "$?" "4" "path traversal into another run refused"
+FOREIGN_WT="$LOOP_WORKTREE_ROOT/run-1/acme--web/retire-test"
+git -C "$WEB_CHECKOUT" worktree add -q -b feat/retire-test "$FOREIGN_WT" feat/web
+refuse_retire "$FOREIGN_WT" false "another repository's worktree refused"
+refuse_retire "$LOOP_WORKTREE_ROOT/run-1" false "run root itself refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id .. --worktree "$M2_WT" --adopted false >/dev/null 2>&1
+assert_exit "$?" "1" "parent-directory run id refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$M2_WT" >/dev/null 2>&1
+assert_exit "$?" "1" "missing adopted flag refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$M2_WT" --adopted yes >/dev/null 2>&1
+assert_exit "$?" "1" "invalid adopted flag refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$TMP/missing" --adopted false >/dev/null 2>&1
+assert_exit "$?" "4" "missing path outside run root still refused"
+
 test_summary

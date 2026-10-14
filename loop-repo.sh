@@ -11,7 +11,7 @@ CMD="${1:-}"
 
 REGISTRY="${LOOP_REPO_REGISTRY:-${HOME}/.loop/repos.json}"
 WORKTREE_ROOT="${LOOP_WORKTREE_ROOT:-${HOME}/.loop/worktrees}"
-REPO="" RUN_ID="" INTEGRATION_BRANCH="" MILESTONE=1 POSITIONAL=()
+REPO="" RUN_ID="" INTEGRATION_BRANCH="" MILESTONE=1 WORKTREE="" ADOPTED="" POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -19,6 +19,8 @@ while [[ $# -gt 0 ]]; do
   --run-id) RUN_ID="$2"; shift 2 ;;
   --integration-branch) INTEGRATION_BRANCH="$2"; shift 2 ;;
   --milestone) MILESTONE="$2"; shift 2 ;;
+  --worktree) WORKTREE="$2"; shift 2 ;;
+  --adopted) ADOPTED="$2"; shift 2 ;;
   *) POSITIONAL+=("$1"); shift ;;
   esac
 done
@@ -192,6 +194,39 @@ integration_path() {
   print -r -- "$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/integration$suffix"
 }
 
+retire_worktree() {
+  validate_slug "$REPO"
+  validate_run_id
+  [[ -n "$WORKTREE" ]] || die "retire requires --worktree"
+  [[ "$ADOPTED" == true || "$ADOPTED" == false ]] || die "retire requires --adopted true|false"
+  [[ "$ADOPTED" == false ]] || die "cannot retire an adopted worktree" 4
+  local target="${WORKTREE:A}" run_root="${WORKTREE_ROOT:A}/$RUN_ID" checkout common target_common record
+  [[ "$target" == "$run_root/"* ]] || die "cannot retire worktree outside run root: $target" 4
+  [[ -e "$target" ]] || return 0
+  [[ ! -e "$target/.loop" ]] || die "cannot retire a coordinator worktree: $target" 4
+  checkout="$(mapping_get "$REPO")" || die "no mapping for $REPO" 2
+  checkout="$(normalize_checkout "$checkout")" || exit $?
+  [[ -f "$target/.git" && "$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" == "$target" ]] \
+    || die "not a linked worktree: $target" 4
+  common="$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir)" || exit $?
+  target_common="$(git -C "$target" rev-parse --path-format=absolute --git-common-dir)" || exit $?
+  [[ "${common:A}" == "${target_common:A}" ]] || die "worktree does not belong to $REPO: $target" 4
+  record="$(git -C "$target" rev-parse --absolute-git-dir)/loop-repo-prepare.json"
+  if [[ -f "$record" ]]; then
+    jq -e '.adopted == false' "$record" >/dev/null 2>&1 \
+      || die "cannot retire an adopted worktree: $target" 4
+  fi
+  [[ -z "$(git -C "$target" status --porcelain --untracked-files=all)" ]] \
+    || die "cannot retire dirty worktree: $target" 4
+  git -C "$checkout" worktree remove -- "$target" || die "could not retire worktree: $target" 4
+}
+
+validate_run_id() {
+  local run_id_re='^[A-Za-z0-9._-]+$'
+  [[ -n "$RUN_ID" && "$RUN_ID" != . && "$RUN_ID" != .. && "$RUN_ID" =~ $run_id_re ]] \
+    || die "invalid run id '$RUN_ID'"
+}
+
 case "$CMD" in
 map)
   repo="${POSITIONAL[1]:-}" checkout="${POSITIONAL[2]:-}"
@@ -227,8 +262,7 @@ check)
 prepare)
   [[ -n "$REPO" ]] || die "prepare requires --repo"
   [[ -n "$RUN_ID" ]] || die "prepare requires --run-id"
-  run_id_re='^[A-Za-z0-9._-]+$'
-  [[ "$RUN_ID" =~ $run_id_re ]] || die "invalid run id '$RUN_ID'"
+  validate_run_id
   milestone_re='^[1-9][0-9]*$'
   [[ "$MILESTONE" =~ $milestone_re ]] || die "invalid milestone '$MILESTONE'"
   checked="$(check_repo)" || exit $?
@@ -273,7 +307,10 @@ prepare)
       integrationWorktree:$integrationWorktree, adopted:$adopted, aheadCount:$aheadCount,
       prUrl:null, review:null}'
   ;;
+retire)
+  retire_worktree
+  ;;
 *)
-  die "unknown command '$CMD' (map|get|list|unmap|check|prepare)"
+  die "unknown command '$CMD' (map|get|list|unmap|check|prepare|retire)"
   ;;
 esac
