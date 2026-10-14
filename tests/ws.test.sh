@@ -1538,6 +1538,34 @@ done
 
 "$WS" rm api/lifecycle --force --delete-branch >/dev/null
 
+echo "ws on: fan-in waits for all sources and expands outputs in source order"
+"$WS" new --repo "$REPO" --branch triggers --detach
+TRIGGER_WT="$WS_ROOT/api/triggers"
+SOURCE_A_WIN="$(windows_of "$TRIGGER_WT")"
+SOURCE_A="$(T display -p -t "$SOURCE_A_WIN" '#{@ws_session}')"
+"$WS" add api/triggers --detach
+SOURCE_B_WIN="$(slot_window "$TRIGGER_WT" 2)"
+SOURCE_B="$(T display -p -t "$SOURCE_B_WIN" '#{@ws_session}')"
+"$WS" add api/triggers --detach
+TARGET_WIN="$(slot_window "$TRIGGER_WT" 3)"
+TARGET_ID="$(T display -p -t "$TARGET_WIN" '#{@ws_session}')"
+assert_contains "$(wait_pane "$TARGET_WIN" FAKE-claude)" "FAKE-claude" "trigger target ready"
+hook api/triggers "$TARGET_WIN" working </dev/null
+TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_A,$SOURCE_B" done --send-to me 'results {id}: {output}')"
+assert_exit "$?" "0" "fan-in trigger registers"
+assert_contains "$("$WS" triggers)" "$TID"$'\t'"$SOURCE_A,$SOURCE_B"$'\tdone\tsend' "pending trigger is listed"
+printf 'alpha "quoted" $literal' | WS_SESSION="$SOURCE_A" "$WS" done -
+assert_exit "$?" "0" "first source completion publishes"
+reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
+assert_eq "$reply" "{}" "first source alone does not deliver"
+hook api/triggers "$TARGET_WIN" working </dev/null
+printf beta | WS_SESSION="$SOURCE_B" "$WS" done -
+assert_exit "$?" "0" "last source completion publishes and fires"
+reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"results $SOURCE_A,$SOURCE_B: alpha \"quoted\" \$literal"$'\n'"beta" "fan-in expands literal output text and ordered ids"
+assert_eq "$("$WS" triggers)" "" "fired trigger is no longer pending"
+"$WS" rm api/triggers --force --delete-branch >/dev/null
+
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach
 print dirty >> "$WT/file.txt"

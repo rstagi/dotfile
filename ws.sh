@@ -25,6 +25,8 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              --output - also reads stdin; repeat appends another done event
 #                              spawned tabs close after publication; user-opened tabs stay
 #   ws show <id|name>           session metadata, lifecycle status and output path
+#   ws on <id[,id…]> <done|exit> --send-to <id|me> <msg>   one-shot fan-in trigger
+#   ws triggers                TSV: pending trigger id, sources, event, action, target, template
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
@@ -80,6 +82,8 @@ main() {
   name) cmd_name "$@" ;;
   send) cmd_send "$@" ;;
   done) cmd_done "$@" ;;
+  on) cmd_on "$@" ;;
+  triggers) cmd_triggers "$@" ;;
   show) cmd_show "$@" ;;
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
