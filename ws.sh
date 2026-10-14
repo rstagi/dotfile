@@ -196,9 +196,8 @@ cmd_run() {
   tag_window "$win" "$wt" "$slot" "$agent"
   cmd="$(agent_command "$agent" "")"
   (( $# )) && cmd+=" ${(j: :)${(q)@}}"
-  WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ${(z)WS_AGENT_SHELL} "$cmd"
+  WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ws_bus_run_agent "$id" "$cmd"
   s=$?
-  ws_bus_exit "$id" "$s"
   cmd_dismiss "$TMUX_PANE"
   (( s == 0 )) && session_remove "$wt" "$slot" # else kept for resume, as for a killed tab
   untag_window "$win"

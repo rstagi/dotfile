@@ -1473,6 +1473,16 @@ assert_contains "$(wait_pane "$MANUAL_WIN" EXIT=0)" "EXIT=0" "adopted tab return
 assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$MANUAL_ID/events")" $'exit\n0' "adopted tab also emits actual process exit"
 T kill-window -t "$MANUAL_WIN"
 
+echo "ws lifecycle: closing a manually adopted tab reports SIGHUP too"
+MANUAL_WIN="$(T new-window -d -P -F '#{window_id}' -t keepalive: -c "$DONE_WT" \
+  "zsh -fc '\"$WS\" claude; sleep 30'")"
+assert_contains "$(wait_pane "$MANUAL_WIN" FAKE-claude)" "FAKE-claude" "adopted closure fixture ready"
+MANUAL_ID="$(T display -p -t "$MANUAL_WIN" '#{@ws_session}')"
+T kill-window -t "$MANUAL_WIN"
+wait_until lifecycle_exit_count "$MANUAL_ID" 1
+assert_exit "$?" "0" "closing adopted tab emits termination"
+assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$MANUAL_ID/events")" $'exit\n129' "adopted closure records SIGHUP once"
+
 echo "ws done: spawned agent closes its own tab after publishing output"
 "$WS" add api/lifecycle --detach
 SPAWN_WIN="$(windows_of "$DONE_WT")"

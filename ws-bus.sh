@@ -25,23 +25,6 @@ cmd_done() {
   fi
 }
 
-# Output publication, status and event order are serialized across repeat declarations.
-ws_bus_done_locked() {
-  local id="$1" source="$2" dir="$WS_SESSIONS/$1" tmp detail
-  tmp="$(mktemp "$dir/.output.XXXXXX")" || return 1
-  if [[ -n "$source" ]] && ! cat -- "$source" > "$tmp"; then
-    rm -f "$tmp"
-    return 1
-  fi
-  if ! mv "$tmp" "$dir/output.md"; then
-    rm -f "$tmp"
-    return 1
-  fi
-  ws_bus_update "$id" '.status = "done"' || return 1
-  detail="$(jq -nc --arg output "$dir/output.md" '{output:$output}')" || return 1
-  ws_bus_event "$id" done "$detail"
-}
-
 cmd_show() {
   [[ $# == 1 ]] || die "show: expected <id|name>"
   local id output=""
@@ -50,28 +33,6 @@ cmd_show() {
   jq -r --arg output "$output" '
     "id: \(.id)\nname: \(.name)\nworkspace: \(.workspace)\nagent: \(.agent)\nstatus: \(.status)\noutput: \($output)"
   ' "$WS_SESSIONS/$id/meta"
-}
-
-# Single lifecycle append boundary: subscribers attach here after the durable JSONL write.
-# Event payloads carry id/event/at plus event-specific fields (done: output; exit: code).
-ws_bus_event() {
-  local id="$1" event="$2" detail="${3:-\{\}}" record
-  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
-  record="$(jq -nc --arg id "$id" --arg event "$event" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --argjson detail "$detail" '$detail + {id:$id,event:$event,at:$at}')" || return 1
-  with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record"
-}
-
-# Called by the launch wrapper immediately after wait, before slot cleanup or crash prompt.
-ws_bus_exit() {
-  [[ $# == 2 && "$2" == <-> && "$2" -le 255 ]] || die "_exit: expected <id> <exit-code>"
-  local detail
-  detail="$(jq -nc --argjson code "$2" '{code:$code}')" || return 1
-  ws_bus_event "$1" exit "$detail"
-}
-
-ws_bus_event_locked() {
-  print -r -- "$2" >> "$WS_SESSIONS/$1/events"
 }
 
 cmd_send() {
@@ -149,6 +110,58 @@ cmd_sessions() {
     fi
     jq -r --arg state "$state" '[.id, .name, .workspace, .agent, $state, .status] | @tsv' "$meta"
   done
+}
+
+# Output publication, status and event order are serialized across repeat declarations.
+ws_bus_done_locked() {
+  local id="$1" source="$2" dir="$WS_SESSIONS/$1" tmp detail
+  tmp="$(mktemp "$dir/.output.XXXXXX")" || return 1
+  if [[ -n "$source" ]] && ! cat -- "$source" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! mv "$tmp" "$dir/output.md"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  ws_bus_update "$id" '.status = "done"' || return 1
+  detail="$(jq -nc --arg output "$dir/output.md" '{output:$output}')" || return 1
+  ws_bus_event "$id" done "$detail"
+}
+
+# Single lifecycle append boundary: subscribers attach here after the durable JSONL write.
+# Event payloads carry id/event/at plus event-specific fields (done: output; exit: code).
+ws_bus_event() {
+  local id="$1" event="$2" detail="${3:-}" record
+  [[ -n "$detail" ]] || detail='{}'
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
+  record="$(jq -nc --arg id "$id" --arg event "$event" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson detail "$detail" '$detail + {id:$id,event:$event,at:$at}')" || return 1
+  with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record"
+}
+
+ws_bus_event_locked() {
+  print -r -- "$2" >> "$WS_SESSIONS/$1/events"
+}
+
+# Adopted tabs run through this watcher so their exits have the same lifecycle contract.
+ws_bus_run_agent() {
+  setopt localtraps
+  local id="$1" command="$2" code
+  trap 'ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
+  ${(z)WS_AGENT_SHELL} "$command"
+  code=$?
+  trap - HUP
+  ws_bus_exit "$id" "$code"
+  return "$code"
+}
+
+# Called by the launch wrapper immediately after wait, before slot cleanup or crash prompt.
+ws_bus_exit() {
+  [[ $# == 2 && "$2" == <-> && "$2" -le 255 ]] || die "_exit: expected <id> <exit-code>"
+  local detail
+  detail="$(jq -nc --argjson code "$2" '{code:$code}')" || return 1
+  ws_bus_event "$1" exit "$detail"
 }
 
 # Both send and Stop hold the window's hook lock before the inbox lock: no idle/queue race.
