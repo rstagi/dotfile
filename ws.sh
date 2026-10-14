@@ -45,6 +45,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 # Workspace slots live in <worktree git dir>/ws-sessions (slot, agent, resume id, global id).
 # Global identities live in $WS_HOME/sessions/<id>/. A killed tab resumes on `ws open`;
 # a clean exit forgets its workspace slot while retaining its global record.
+# Exited tabs stop accepting messages before exit triggers run; sends resume the session.
 
 WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"

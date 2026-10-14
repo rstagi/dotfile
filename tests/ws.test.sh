@@ -1723,6 +1723,88 @@ for agent in claude codex grok; do
   "$WS" rm "api/interactive-$agent" --force --delete-branch >/dev/null
 done
 
+# --- exit path ---
+echo "ws exit path: every exit stops delivery before slow exit actions run"
+"$WS" new --repo "$REPO" --branch exit-path --detach
+EXIT_WT="$WS_ROOT/api/exit-path"
+"$WS" new --repo "$REPO" --branch delivery --detach
+EXIT_TARGET_WIN="$(windows_of "$WS_ROOT/api/delivery")"
+assert_contains "$(wait_pane "$EXIT_TARGET_WIN" PASTE-READY)" "PASTE-READY" "exit action target ready"
+EXIT_TARGET_ID="$(T display -p -t "$EXIT_TARGET_WIN" '#{@ws_session}')"
+for exit_code in 0 17; do
+  [[ "$exit_code" == 0 ]] || "$WS" add api/exit-path --detach
+  EXIT_WIN="$(windows_of "$EXIT_WT")"
+  assert_contains "$(wait_pane "$EXIT_WIN" FAKE-claude)" "FAKE-claude" "exit $exit_code source ready"
+  EXIT_ID="$(T display -p -t "$EXIT_WIN" '#{@ws_session}')"
+  hook api/exit-path "$EXIT_WIN" stop </dev/null >/dev/null
+  T kill-window -t "$EXIT_TARGET_WIN"
+  wait_until lifecycle_exit_count "$EXIT_TARGET_ID" "$(( exit_code == 0 ? 1 : 2 ))"
+  EXIT_TID="$("$WS" on "$EXIT_ID" exit --send-to "$EXIT_TARGET_ID" "exit action $exit_code")"
+  # Keep the exit action waiting for its resumed TUI while a concurrent send runs.
+  print 6 > "$WS_HOME/tui-delay"
+  # Resume is deliberately unavailable: send must retain the message, never paste into
+  # the dead source. This private fixture releases the lock immediately after send.
+  EXIT_OPEN_LOCK="$WS_HOME/sessions/$EXIT_ID/open.lock"
+  : >> "$EXIT_OPEN_LOCK"
+  zmodload zsh/system
+  zsystem flock -f exit_open_fd "$EXIT_OPEN_LOCK"
+  T send-keys -t "$EXIT_WIN" "$exit_code" Enter
+  wait_until lifecycle_exit_count "$EXIT_ID" 1
+  assert_exit "$?" "0" "exit $exit_code publishes while its action is still waiting"
+  assert_eq "$(T show -wqv -t "$EXIT_WIN" @ws_session)" "" "exit $exit_code source is no longer deliverable"
+  assert_eq "$(T show -wqv -t "$EXIT_WIN" @ws_main)" "" "exit $exit_code clears its idle delivery tag"
+  out="$("$WS" send "$EXIT_ID" "during exit $exit_code" 2>&1)"
+  assert_exit "$?" "1" "exit $exit_code send reports unavailable resume"
+  assert_contains "$(cat "$WS_HOME/sessions/$EXIT_ID/inbox")" "during exit $exit_code" "exit $exit_code send stays durable"
+  exec {exit_open_fd}>&-
+  wait_until pane_received "$EXIT_TARGET_ID" "[ws terminal]"$'\n'"exit action $exit_code"
+  assert_exit "$?" "0" "exit $exit_code action finishes after delivery guard"
+  EXIT_TARGET_WIN="$(jq -r '.window' "$WS_HOME/sessions/$EXIT_TARGET_ID/meta")"
+  if [[ "$exit_code" == 17 ]]; then
+    assert_contains "$(wait_pane "$EXIT_WIN" 'agent exited (17)')" 'agent exited (17)' "exit guard preserves crash prompt"
+    T send-keys -t "$EXIT_WIN" Enter
+  fi
+done
+echo "ws exit path: an old wrapper cannot untag a resumed or reassigned window"
+"$WS" add api/exit-path --detach
+EXIT_OLD_WIN="$(windows_of "$EXIT_WT")"
+assert_contains "$(wait_pane "$EXIT_OLD_WIN" FAKE-claude)" "FAKE-claude" "old generation ready"
+EXIT_ID="$(T display -p -t "$EXIT_OLD_WIN" '#{@ws_session}')"
+T set -wu -t "$EXIT_OLD_WIN" @ws_session
+"$WS" open "$EXIT_ID" --detach
+EXIT_NEW_WIN="$(jq -r '.window' "$WS_HOME/sessions/$EXIT_ID/meta")"
+assert_contains "$(wait_pane "$EXIT_NEW_WIN" FAKE-claude)" "FAKE-claude" "new generation ready"
+hook api/exit-path "$EXIT_NEW_WIN" stop </dev/null >/dev/null
+# Reassign the old tab's delivery tags too: this wrapper no longer owns either tag.
+T set -w -t "$EXIT_OLD_WIN" @ws_session "$EXIT_TARGET_ID" \; set -w -t "$EXIT_OLD_WIN" @ws_main working
+T send-keys -t "$EXIT_OLD_WIN" 17 Enter
+wait_until lifecycle_exit_count "$EXIT_ID" 1
+assert_exit "$?" "0" "old generation exit still publishes"
+assert_eq "$(T show -wqv -t "$EXIT_NEW_WIN" @ws_session)" "$EXIT_ID" "old exit preserves resumed session tag"
+assert_eq "$(T show -wqv -t "$EXIT_NEW_WIN" @ws_main)" idle "old exit preserves resumed delivery state"
+assert_eq "$(T show -wqv -t "$EXIT_OLD_WIN" @ws_session)" "$EXIT_TARGET_ID" "old exit preserves reassigned session tag"
+assert_eq "$(T show -wqv -t "$EXIT_OLD_WIN" @ws_main)" working "old exit preserves reassigned delivery state"
+T kill-window -t "$EXIT_OLD_WIN"
+
+echo "ws exit path: HUP stops delivery even when the pane remains open"
+"$WS" new --repo "$REPO" --branch exit-hup --detach
+EXIT_HUP_WIN="$(windows_of "$WS_ROOT/api/exit-hup")"
+assert_contains "$(wait_pane "$EXIT_HUP_WIN" FAKE-claude)" "FAKE-claude" "HUP source ready"
+EXIT_HUP_ID="$(T display -p -t "$EXIT_HUP_WIN" '#{@ws_session}')"
+hook api/exit-hup "$EXIT_HUP_WIN" stop </dev/null >/dev/null
+EXIT_PANE_PID="$(T display -p -t "$EXIT_HUP_WIN" '#{pane_pid}')"
+EXIT_WRAPPER_PID="$(ps -Ao pid,ppid,command | awk -v p="$EXIT_PANE_PID" -v id="$EXIT_HUP_ID" '$2 == p && index($0, "_agent " id " ") {print $1}')"
+[[ "$EXIT_WRAPPER_PID" != <-> ]] || kill -HUP "$EXIT_WRAPPER_PID"
+wait_until lifecycle_exit_count "$EXIT_HUP_ID" 1
+assert_exit "$?" "0" "HUP publishes its lifecycle event"
+assert_eq "$(jq -r '.code' "$WS_HOME/sessions/$EXIT_HUP_ID/events")" 129 "HUP records termination code"
+assert_eq "$(T show -wqv -t "$EXIT_HUP_WIN" @ws_session)" "" "HUP clears session delivery tag"
+assert_eq "$(T show -wqv -t "$EXIT_HUP_WIN" @ws_main)" "" "HUP clears idle delivery tag"
+"$WS" rm api/exit-hup --force --delete-branch >/dev/null
+"$WS" rm api/exit-path --force --delete-branch >/dev/null
+"$WS" rm api/delivery --force --delete-branch >/dev/null
+# --- end exit path ---
+
 # --- M1 done vs pending inbox ---
 echo "ws done: a spawned session keeps accepted messages deliverable until Stop"
 M1_TID="$(WS_SESSION="$DONE_ID" "$WS" on "$DONE_ID" done --spawn 'Finish after checking follow-ups')"

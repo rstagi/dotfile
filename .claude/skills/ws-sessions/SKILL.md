@@ -117,6 +117,7 @@ ws on 123 exit --send-to me 'Session {id} exited. Inspect its status and output 
 ```
 
 `exit` includes clean exits and crashes; it does not establish successful work. A
+finished tab stops accepting messages before exit actions run; sends resume the session. A
 spawned session that runs `ws done` emits only done: closing its own tab is cleanup, not
 an exit. Wait on `done` for spawned results; `exit` from a spawned session means it ended
 without declaring done. Send dependency cycles, including self-waits, are rejected.
