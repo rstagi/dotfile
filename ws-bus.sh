@@ -51,6 +51,7 @@ cmd_on() {
   mkdir -p -m 700 "$WS_TRIGGERS" || return 1
   tid="$(with_lock "$WS_TRIGGERS/registry" ws_bus_register_trigger "$sources" "$event" "$action" "$target" "$template" "$sender" "$wt" "$agent")" || return 1
   print -r -- "$tid"
+  # Already-satisfied sources fire now; report this registration's own action failure.
   ws_bus_evaluate_trigger "$tid"
 }
 
@@ -75,10 +76,14 @@ cmd_done() {
   [[ -z "$source" || "$source" == - || ( -f "$source" && -r "$source" ) ]] \
     || die "done: cannot read output file: $source"
   with_lock "$WS_SESSIONS/$id/output" ws_bus_done_locked "$id" "$source" || return 1
+  # Emit (and evaluate triggers) only after releasing the output lock.
+  ws_bus_event "$id" done "$(jq -nc --arg output "$WS_SESSIONS/$id/output.md" '{output:$output}')" || return 1
   if jq -e '.spawned == true' "$WS_SESSIONS/$id/meta" >/dev/null; then
     win="$(ws_bus_window "$id")"
     if [[ -n "$win" ]]; then
       # Publish first and release the lifecycle lock before killing our own process group.
+      # The kill skips the launch wrapper's `ws _end`: free the slot row here.
+      session_remove "$(jq -r '.path' "$WS_SESSIONS/$id/meta")" "$(jq -r '.slot' "$WS_SESSIONS/$id/meta")"
       cmd_dismiss "$win"
       tmux_ kill-window -t "$win"
     fi
@@ -106,7 +111,7 @@ cmd_send() {
     set -- "$1" "$2"
   fi
   [[ $# == 2 ]] || die "send: expected [--force] <id|name> <message|->"
-  local id message="$2" sender=terminal lifecycle
+  local id message="$2" sender=terminal
   id="$(ws_bus_resolve "$1")" || die "no such session: $1"
   if [[ -n "${WS_SESSION:-}" ]]; then
     sender="#$(cmd_whoami)" || return 1
@@ -116,25 +121,22 @@ cmd_send() {
     message="${message%.}"
   fi
   [[ -n "$message" ]] || die "send: empty message"
-  lifecycle="$(jq -r '.status' "$WS_SESSIONS/$id/meta")" || return 1
-  if [[ "$lifecycle" == done ]]; then
-    print -u2 "ws: session #$id is done; --force required to send"
-    (( force )) || return 1
-  fi
   message="[ws $sender]"$'\n'"$message"
-  local win lock lockfd queued=0
+  local win lock lockfd
+  # Durable first: a slow TUI or busy hook lock can delay, never drop, the message.
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_enqueue "$id" "$message" "$force" || return 1
   win="$(ws_bus_window "$id")"
   if [[ -z "$win" ]]; then
-    # Retain the message even if resume fails or the TUI cannot become ready in time.
-    with_lock "$WS_SESSIONS/$id/inbox" ws_bus_enqueue "$id" "$message" || return 1
-    queued=1
     (ws_bus_open "$id" 1) || die "send: message queued; cannot resume session #$id"
     win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open"
     ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+  elif [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle && -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
+    ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
   fi
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-  { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
-  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" "$queued"
+  { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
+    die "send: message queued; session #$id busy"
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
   local rc=$?
   exec {lockfd}>&-
   return "$rc"
@@ -180,9 +182,9 @@ ws_bus_register_trigger() {
   fi
   local tid=0
   [[ ! -f "$WS_TRIGGERS/counter" ]] || read -r tid < "$WS_TRIGGERS/counter"
-  [[ "$tid" == <-> ]] || return 1
+  [[ "$tid" == <-> ]] || { print -u2 'ws: on: invalid trigger counter'; return 1; }
   (( tid += 1 ))
-  print -r -- "$tid" > "$WS_TRIGGERS/counter" || return 1
+  print -r -- "$tid" > "$WS_TRIGGERS/counter.tmp" && mv "$WS_TRIGGERS/counter.tmp" "$WS_TRIGGERS/counter" || return 1
   jq -n --arg id "$tid" --argjson sources "$1" --arg event "$2" --arg action "$3" --arg target "$4" \
     --arg template "$5" --arg sender "$6" --arg wt "$7" --arg agent "$8" \
     '{id:$id,sources:$sources,event:$event,action:$action,target:$target,template:$template,sender:$sender,
@@ -221,7 +223,7 @@ ws_bus_evaluate() {
   local record tid
   for record in "$WS_TRIGGERS"/<->.json(Nn); do
     tid="$(jq -r --arg id "$1" --arg event "$2" 'select(.status == "pending" and .event == $event and (.sources | index($id))) | .id' "$record")"
-    [[ -z "$tid" ]] || ws_bus_evaluate_trigger "$tid"
+    [[ -z "$tid" ]] || ws_bus_evaluate_trigger "$tid" # failures are recorded; keep going
   done
   return 0
 }
@@ -250,8 +252,9 @@ ws_bus_fire_trigger() {
   done
   template="$(jq -rj '.template' "$record"; print -n .)"
   template="${template%.}"
-  message="$(jq -nrj --arg template "$template" --arg ids "${(j:,:)ids}" --arg output "$output" \
-    '$template | gsub("\\{(?<key>id|output)\\}"; if .key == "id" then $ids else $output end)'; print -n .)"
+  # Output via stdin: large results must not hit ARG_MAX.
+  message="$(print -rn -- "$output" | jq -Rsrj --arg template "$template" --arg ids "${(j:,:)ids}" \
+    '. as $output | $template | gsub("\\{(?<key>id|output)\\}"; if .key == "id" then $ids else $output end)'; print -n .)"
   message="${message%.}"
   target="$(jq -r '.target' "$record")"
   sender="$(jq -r '.sender' "$record")"
@@ -261,14 +264,15 @@ ws_bus_fire_trigger() {
   if [[ "$action" == spawn ]]; then
     ws_bus_spawn_trigger "$record" "$message" >/dev/null
   else
-    print -rn -- "$message" | (WS_SESSION="$sender" cmd_send "$target" -) >/dev/null
+    # Registering the trigger is the explicit override for done targets.
+    print -rn -- "$message" | (WS_SESSION="$sender" cmd_send --force "$target" - 2>/dev/null) >/dev/null
   fi
   rc=$?
   if (( rc )); then
     jq --argjson rc "$rc" '.status = "failed" | .exit_code = $rc' "$record" > "$record.tmp" && mv "$record.tmp" "$record"
     print -u2 "ws: trigger #$1 action failed; see $record"
   fi
-  return 0
+  return "$rc"
 }
 
 # Allocate through normal workspace slots and mark origin before the agent can run.
@@ -287,9 +291,9 @@ ws_bus_spawn_trigger() {
   open_session "$wt" "$slot" "$agent" "" "$prompt"
 }
 
-# Output publication, status and event order are serialized across repeat declarations.
+# Output publication and status are serialized across repeat declarations; cmd_done emits after.
 ws_bus_done_locked() {
-  local id="$1" source="$2" dir="$WS_SESSIONS/$1" tmp detail
+  local id="$1" source="$2" dir="$WS_SESSIONS/$1" tmp
   tmp="$(mktemp "$dir/.output.XXXXXX")" || return 1
   if [[ -n "$source" ]] && ! cat -- "$source" > "$tmp"; then
     rm -f "$tmp"
@@ -299,9 +303,7 @@ ws_bus_done_locked() {
     rm -f "$tmp"
     return 1
   fi
-  ws_bus_update "$id" '.status = "done"' || return 1
-  detail="$(jq -nc --arg output "$dir/output.md" '{output:$output}')" || return 1
-  ws_bus_event "$id" done "$detail"
+  with_lock "$dir/inbox" ws_bus_update "$id" '.status = "done"' || return 1
 }
 
 # Single lifecycle append boundary: subscribers attach here after the durable JSONL write.
@@ -336,6 +338,12 @@ ws_bus_run_agent() {
   # EOF may finish the child just before the tty's HUP arrives. Protect publication,
   # including its subprocesses, rather than restoring the default HUP action early.
   trap '' HUP INT
+  # A crashed tab only shows the close prompt: untag it so sends queue and resume instead of
+  # pasting there. @ws_state stays for the wrapper's dismiss.
+  local win
+  if (( code )) && win="$(ws_bus_window "$id")"; then
+    tmux_ set -wu -t "$win" @ws_session \; set -wu -t "$win" @ws_main 2>/dev/null
+  fi
   ws_bus_exit "$id" "$code" </dev/null
 
   return "$code"
@@ -362,23 +370,44 @@ ws_bus_send_locked() {
     # before input, so the resulting UserPromptSubmit remains newer than this watermark.
     zmodload zsh/datetime
     local seq="$(realtime_us "$EPOCHREALTIME")"
-    ws_bus_idle_locked "$id" "$win" || return 1
+    ws_bus_idle_locked "$id" "$win" || { print -u2 "ws: send: message queued; session #$id agent pane unavailable"; return 1; }
     tmux_ set -w -t "$win" @ws_seq "$seq" \; set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
   fi
 }
 
+# Lifecycle check shares the inbox lock with done's status write: no enqueue after done.
+ws_bus_send_enqueue() {
+  local id="$1" message="$2" force="$3" lifecycle
+  lifecycle="$(jq -r '.status' "$WS_SESSIONS/$id/meta")" || return 1
+  if [[ "$lifecycle" == done ]]; then
+    print -u2 "ws: session #$id is done; --force required to send"
+    (( force )) || return 1
+  fi
+  ws_bus_enqueue "$id" "$message"
+}
+
+# Called under the inbox lock. Message via stdin: large payloads must not hit ARG_MAX.
 ws_bus_enqueue() {
-  jq -nc --arg message "$2" '{message:$message}' >> "$WS_SESSIONS/$1/inbox"
+  ws_bus_reclaim "$1" || return 1
+  print -rn -- "$2" | jq -Rsc '{message:.}' >> "$WS_SESSIONS/$1/inbox"
+}
+
+# Under the inbox lock: a Stop killed before its reply landed left inbox.inflight; requeue it first.
+ws_bus_reclaim() {
+  local inbox="$WS_SESSIONS/$1/inbox"
+  [[ -e "$inbox.inflight" ]] || return 0
+  cat "$inbox.inflight" "$inbox" > "$inbox.tmp" && mv "$inbox.tmp" "$inbox" && rm -f "$inbox.inflight"
 }
 
 # tmux 3.8 exposes the TUI's bracketed-paste mode. A freshly resumed tab starts in a
 # shell: never paste there before the agent enables input. Stop may already have consumed
 # the queued message during startup, which also counts as delivery.
 ws_bus_wait_ready() {
-  local id="$1" win="$2" attempt ready
+  local id="$1" win="$2" attempt ready pane
   for attempt in {1..50}; do
     [[ -s "$WS_SESSIONS/$id/inbox" ]] || return 0
-    ready="$(tmux_ display -p -t "$win" '#{bracket_paste_flag}' 2>/dev/null)" || return 1
+    pane="$(ws_bus_pane "$win")" || return 1
+    ready="$(tmux_ display -p -t "$pane" '#{bracket_paste_flag}' 2>/dev/null)" || return 1
     [[ "$ready" != 1 ]] || return 0
     sleep 0.1
   done
@@ -396,12 +425,15 @@ ws_bus_stop() {
   with_lock "$WS_SESSIONS/$id/inbox" ws_bus_stop_locked "$id"
 }
 
+# Drained messages stay in inbox.inflight until the reply is written (at-least-once).
 ws_bus_stop_locked() {
   local inbox="$WS_SESSIONS/$1/inbox" reply
+  ws_bus_reclaim "$1" || return 1
   [[ -s "$inbox" ]] || { print '{}'; return 0; }
-  reply="$(jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inbox")" || return 1
-  : > "$inbox" || return 1
-  print -r -- "$reply"
+  mv "$inbox" "$inbox.inflight" && : > "$inbox" || return 1
+  reply="$(jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inbox.inflight")" || return 1
+  print -r -- "$reply" || return 1
+  rm -f "$inbox.inflight"
 }
 
 # Fallback for cancellation, legacy hooks or an active Stop guard. Only a verified idle
@@ -424,7 +456,7 @@ ws_bus_idle_locked() {
 # Named buffers isolate concurrent senders; raw paste preserves LF inside bracketed input.
 ws_bus_paste() {
   local id="$1" win="$2" message="$3" buffer="ws-$1-$$" pane
-  pane="$(tmux_ display -p -t "$win" '#{pane_id}')" || return 1
+  pane="$(ws_bus_pane "$win")" || return 1
   print -rn -- "$message" | tmux_ load-buffer -b "$buffer" - || return 1
   if ! tmux_ paste-buffer -d -p -r -b "$buffer" -t "$pane"; then
     tmux_ delete-buffer -b "$buffer" 2>/dev/null
@@ -432,6 +464,20 @@ ws_bus_paste() {
   fi
   sleep 0.3
   tmux_ send-keys -t "$pane" Enter
+}
+
+# The agent's own pane (@ws_pane), never the active one: a user may split the tab with a
+# shell. Fails if it left the window; untracked legacy tabs qualify only when unsplit.
+ws_bus_pane() {
+  local win="$1" pane panes
+  pane="$(tmux_ show -wqv -t "$win" @ws_pane)"
+  panes="$(tmux_ list-panes -t "$win" -F '#{pane_id}' 2>/dev/null)" || return 1
+  if [[ -z "$pane" ]]; then
+    [[ "$panes" != *$'\n'* ]] || return 1
+    pane="$panes"
+  fi
+  [[ -n "$pane" && $'\n'"$panes"$'\n' == *$'\n'"$pane"$'\n'* ]] || return 1
+  print -r -- "$pane"
 }
 
 ws_bus_name_locked() {
@@ -515,7 +561,7 @@ ws_bus_allocate_locked() {
   [[ ! -f "$WS_SESSIONS/counter" ]] || read -r id < "$WS_SESSIONS/counter"
   [[ "$id" == <-> ]] || { print -u2 'ws: invalid session counter'; return 1; }
   (( id += 1 ))
-  print -r -- "$id" > "$WS_SESSIONS/counter" || return 1
+  print -r -- "$id" > "$WS_SESSIONS/counter.tmp" && mv "$WS_SESSIONS/counter.tmp" "$WS_SESSIONS/counter" || return 1
   dir="$WS_SESSIONS/$id"
   mkdir -m 700 "$dir" || return 1
   jq -n --arg id "$id" --arg wt "$wt" --arg workspace "$(workspace_name "$wt")" \

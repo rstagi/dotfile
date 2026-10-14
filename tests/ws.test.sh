@@ -3,7 +3,7 @@
 # against a private tmux server (-L) with fake agent bins, so it never touches the user's.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+ROOT="$(cd "$HERE/.." && pwd -P)" # physical: ws.sh records ${0:A}
 source "$HERE/lib.sh"
 
 TMP="$(mktemp -d)"
@@ -30,7 +30,12 @@ mkdir -p "$TMP/bin"
 # Fake delivery TUI records bytes submitted outside bracketed paste, including multiline input.
 cat > "$TMP/paste-agent.py" <<'PY_AGENT'
 import json, os, time, tty
-time.sleep(0.6) # delayed startup exposes paste before the resumed TUI is ready
+delay = 0.6 # delayed startup exposes paste before the resumed TUI is ready
+try: # one-shot override: a test's next TUI starts slower than the hook-lock timeout
+    with open(os.environ["WS_HOME"] + "/tui-delay") as f: delay = float(f.read())
+    os.remove(os.environ["WS_HOME"] + "/tui-delay")
+except FileNotFoundError: pass
+time.sleep(delay)
 tty.setraw(0)
 print("\033[?2004h", end="", flush=True)
 print("PASTE-READY", flush=True)
@@ -294,6 +299,15 @@ assert_eq "$(state)" "idle" "main Stop w/o subagents goes idle"
 assert_contains "$(jq -c '.hooks | keys' "$WS_HOME/claude-settings.json")" "SubagentStop" "claude settings hook subagent lifecycle"
 hook api/feat-login "$WIN" waiting </dev/null
 
+echo "ws hook: early hooks (before @ws_session is tagged) use the launch WS_SESSION"
+T set -wu -t "$WIN" @ws_session
+print -r -- '{"message":"early message"}' >> "$WS_HOME/sessions/1/inbox"
+reply="$(print '{}' | WS_SESSION=1 hook api/feat-login "$WIN" stop)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason' 2>/dev/null)" "early message" "untagged window delivers via WS_SESSION"
+: > "$WS_HOME/sessions/1/inbox"
+T set -w -t "$WIN" @ws_session 1
+hook api/feat-login "$WIN" waiting </dev/null
+
 echo "ws list: rows for open and window-less workspaces"
 git -C "$REPO" worktree add -q -b orphan "$WS_ROOT/api/orphan"
 out="$("$WS" list)"
@@ -339,6 +353,27 @@ assert_agent_preamble claude 1
 assert_agent_preamble codex "$CODEX_ID"
 assert_eq "$(session_of "$(slot_window "$WT" 2)")" "api/feat-login" "restored into one worktree session"
 assert_contains "$(wait_pane "$(slot_window "$WT" 1)" FAKE-claude)" "ID=1 WHOAMI=1" "workspace resume keeps the same named global identity"
+
+echo "ws agent_command: prompts stay positional; codex hooks survive a spaced WS_BIN"
+# agent_argv <agent> <resume> <prompt> — JSON argv of the generated launch command.
+agent_argv() {
+  ( source "$WS"
+    WS_BIN="$TMP/ws bin/it's ws.sh" WS_HOME="$TMP/argv-home" GROK_HOME="$TMP/argv-grok"
+    dump() { python3 -c 'import json,sys; json.dump(sys.argv[1:],sys.stdout)' "$@"; }
+    claude() { dump "$@"; }; codex() { dump "$@"; }; grok() { dump "$@"; }
+    eval "$(agent_command "$1" "$2" "$3" 9)" )
+}
+for a in claude codex grok; do
+  assert_eq "$(agent_argv "$a" "" --help | jq -r '.[-2:] | join(" ")')" "-- --help" "$a option-like prompt follows --"
+  assert_eq "$(agent_argv "$a" r1 completion | jq -r '.[-2:] | join(" ")')" "-- completion" "$a resume prompt follows --"
+  assert_eq "$(agent_argv "$a" "" "" | jq -r 'index("--")')" "null" "$a without prompt has no --"
+done
+assert_eq "$(agent_argv codex r1 hi | jq -r '.[:2] | join(" ")')" "resume r1" "codex resume subcommand stays first"
+hook_cmd="$(agent_argv codex "" "" | python3 -c '
+import json, re, sys
+arg = next(a for a in json.load(sys.stdin) if a.startswith("hooks.Stop="))
+print(json.loads(re.search(r"command=(\"(?:[^\"\\\\]|\\\\.)*\")", arg).group(1)))')"
+assert_eq "$(zsh -fc 'print -rl -- ${(Q)${(z)1}}' _ "$hook_cmd")" "$TMP/ws bin/it's ws.sh"$'\nhook\nstop' "codex hook command shell-quotes a spaced WS_BIN"
 
 echo "ws grok: launched w/ --always-approve + global ws hook file; resumed by GROK_SESSION_ID"
 "$WS" new --repo "$REPO" --branch grokky --agent grok --detach
@@ -1419,6 +1454,69 @@ wait "$send_slow_pid"
 assert_eq "$(T display -p -t "$FRESH_WIN" '#{@ws_state}')" "working" "older Stop never idles a newer pasted turn"
 assert_eq "$(cat "$TMP/send-slow.out")" "{}" "stale Stop still returns valid allow JSON"
 
+echo "ws send: a split tab pastes only into the recorded agent pane"
+hook api/delivery "$FRESH_WIN" idle </dev/null
+SPLIT_PANE="$(T split-window -d -P -F '#{pane_id}' -t "$FRESH_WIN" "cat > '$TMP/split-shell.out'")"
+T select-pane -t "$SPLIT_PANE"
+WS_SESSION=1 "$WS" send "$FRESH_ID" "agent pane only"
+assert_exit "$?" "0" "send to split tab succeeds"
+wait_until pane_received "$FRESH_ID" $'[ws #1]\nagent pane only'
+assert_eq "$(tail -1 "$WS_HOME/pane-$FRESH_ID.jsonl" | jq -r '.text')" $'[ws #1]\nagent pane only' "agent pane receives message"
+assert_eq "$(cat "$TMP/split-shell.out" 2>/dev/null)" "" "selected shell pane never receives input"
+T kill-pane -t "$SPLIT_PANE"
+
+echo "ws send: a vanished agent pane keeps the message queued"
+AGENT_PANE="$(T show -wqv -t "$FRESH_WIN" @ws_pane)"
+T set -w -t "$FRESH_WIN" @ws_pane %99999
+hook api/delivery "$FRESH_WIN" idle </dev/null
+out="$(WS_SESSION=1 "$WS" send "$FRESH_ID" "no pane" 2>&1)"
+assert_exit "$?" "1" "missing agent pane refuses paste"
+assert_contains "$out" "message queued" "missing pane explains pending delivery"
+assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$FRESH_ID/inbox")" $'[ws #1]\nno pane' "missing pane retains inbox"
+T set -w -t "$FRESH_WIN" @ws_pane "$AGENT_PANE"
+print '{}' | hook api/delivery "$FRESH_WIN" stop >/dev/null
+
+echo "ws send: done declared while send waits for the inbox lock is honored"
+META="$WS_HOME/sessions/$FRESH_ID/meta"
+cp "$META" "$TMP/fresh-meta"
+: >> "$WS_HOME/sessions/$FRESH_ID/inbox.lock"
+zsh -c 'zmodload zsh/system; zsystem flock "$1" && sleep 1.5' _ "$WS_HOME/sessions/$FRESH_ID/inbox.lock" &
+race_lock_pid=$!
+sleep 0.3
+WS_SESSION=1 "$WS" send "$FRESH_ID" "after done" > "$TMP/race.out" 2>&1 &
+race_send_pid=$!
+sleep 0.3
+jq '.status = "done"' "$META" > "$META.fixture" && mv "$META.fixture" "$META"
+wait "$race_send_pid"
+assert_exit "$?" "1" "send re-checks done under the inbox lock"
+assert_contains "$(cat "$TMP/race.out")" "--force required" "racing send explains done guard"
+assert_eq "$([[ -s "$WS_HOME/sessions/$FRESH_ID/inbox" ]] && print pending)" "" "unforced send never queues for a done session"
+wait "$race_lock_pid"
+cp "$TMP/fresh-meta" "$META"
+
+echo "ws send: overlapping sends to a slow-starting tab never drop a message"
+print 3.6 > "$WS_HOME/tui-delay"
+"$WS" add api/delivery --agent claude --detach
+SLOW_WIN="$(slot_window "$SEND_WT" 5)"
+SLOW_ID="$(T display -p -t "$SLOW_WIN" '#{@ws_session}')"
+WS_SESSION=1 "$WS" send "$SLOW_ID" "overlap-1" > "$TMP/overlap-1.log" 2>&1 &
+overlap_1=$!
+sleep 0.2
+WS_SESSION=1 "$WS" send "$SLOW_ID" "overlap-2" > "$TMP/overlap-2.log" 2>&1 &
+overlap_2=$!
+wait "$overlap_1"; overlap_1_rc=$?
+wait "$overlap_2"; overlap_2_rc=$?
+for i in 1 2; do
+  rc_var="overlap_${i}_rc"
+  (( ${(P)rc_var} == 0 )) || assert_contains "$(cat "$TMP/overlap-$i.log")" "message queued" "overlap sender $i failure is reported"
+done
+overlap_seen() { [[ "$(cat "$WS_HOME/pane-$SLOW_ID.jsonl" "$WS_HOME/sessions/$SLOW_ID/inbox" 2>/dev/null)" == *overlap-1*overlap-2* ]]; }
+wait_until overlap_seen
+for i in 1 2; do
+  assert_contains "$(cat "$WS_HOME/pane-$SLOW_ID.jsonl" "$WS_HOME/sessions/$SLOW_ID/inbox" 2>/dev/null)" "overlap-$i" "overlap message $i delivered or queued"
+done
+rm -f "$WS_HOME/tui-delay"
+
 echo "ws send: failed resume retains the message and reports it queued"
 META="$WS_HOME/sessions/$FRESH_ID/meta"
 jq --arg missing "$TMP/missing-workspace" '.path = $missing' "$META" > "$META.fixture"
@@ -1501,6 +1599,7 @@ wait_until lifecycle_exit_count "$DONE_ID" 2
 assert_exit "$?" "0" "failed agent exit appends lifecycle event"
 assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[1].code' "$WS_HOME/sessions/$DONE_ID/events")" "17" "failed exit retains actual nonzero code"
 assert_contains "$(wait_pane "$DONE_WIN" 'agent exited (17)')" "agent exited (17)" "failure keeps existing close/resume behavior"
+assert_eq "$(T display -p -t "$DONE_WIN" '#{@ws_session}')" "" "crashed tab no longer resolves as the live session"
 T send-keys -t "$DONE_WIN" Enter
 
 # A shell tab adopted with ws claude must report exits as well as ws new/add tabs.
@@ -1536,6 +1635,7 @@ T send-keys -t "$SPAWN_WIN" done Enter
 spawn_done_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
 wait_until spawn_done_closed "$SPAWN_ID"
 assert_exit "$?" "0" "spawned tab closes when its agent declares done"
+assert_eq "$(awk -F '\t' -v id="$SPAWN_ID" '$4 == id' "$(git -C "$DONE_WT" rev-parse --absolute-git-dir)/ws-sessions")" "" "spawned done frees its workspace slot row"
 assert_eq "$(cat "$WS_HOME/sessions/$SPAWN_ID/output.md")" "agent result" "spawned output is durable before tab closes"
 assert_eq "$(jq -sr 'map(select(.event == "done")) | length' "$WS_HOME/sessions/$SPAWN_ID/events")" "1" "spawned completion appends one done event"
 assert_eq "$("$WS" sessions "$SPAWN_ID" | cut -f6)" "done" "closing spawned tab preserves done status"
@@ -1617,6 +1717,21 @@ for pid in $repeat_pids; do wait "$pid"; assert_exit "$?" "0" "concurrent repeat
 reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"already $SOURCE_A,$SOURCE_B" "already-satisfied trigger delivers exactly once"
 assert_eq "$(hook api/triggers "$TARGET_WIN" stop </dev/null)" "{}" "repeat completion never queues another action"
+
+echo "ws on: send triggers reach done targets; registration is the explicit override"
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_B" done --send-to "$SOURCE_A" 'to done {id}' >/dev/null
+assert_exit "$?" "0" "trigger to done target fires"
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"to done $SOURCE_B" "done target receives trigger send"
+
+echo "ws stop: in-flight inbox from an interrupted Stop is redelivered first"
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+print -r -- '{"message":"stale"}' > "$WS_HOME/sessions/$SOURCE_A/inbox.inflight"
+print -rn -- fresh | "$WS" send --force "$SOURCE_A" - 2>/dev/null
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'stale\n\n[ws terminal]\nfresh' "stale in-flight messages precede new ones"
+assert_eq "$([[ -e "$WS_HOME/sessions/$SOURCE_A/inbox.inflight" ]] && print yes)" "" "in-flight file removed after reply"
 
 echo "ws on: rejects direct and transitive cycles; removal cancels a pending action"
 CYCLE_TID="$("$WS" on "$SOURCE_A" exit --send-to "$TARGET_ID" cycle-forward)"

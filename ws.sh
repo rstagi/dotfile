@@ -407,6 +407,7 @@ cmd_hook() {
   if [[ "$last" != <-> ]] || (( last < seq )); then
     if [[ "$event" == stop ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+      id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
       reply="$(ws_bus_stop "$id" "$payload")" || reply='{}'
       if [[ "$reply" == *'"decision":"block"'* ]]; then
         state="$(hook_state working "" "$prev")"
@@ -418,6 +419,7 @@ cmd_hook() {
     fi
     if [[ "$state" == idle ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+      id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
       if ws_bus_idle "$id" "$win"; then
         state="$(hook_state working "" "$prev")"
       fi
@@ -556,7 +558,7 @@ open_session_locked() {
 
 # Marks a tab as an agent session: what windows_for, cmd_list and hooks key on.
 tag_window() {
-  local win="$1" wt="$2" slot="$3" agent="$4" tab="$4" id
+  local win="$1" wt="$2" slot="$3" agent="$4" tab="$4" id pane
   id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || return 1
   (( slot > 1 )) && tab+="#$slot"
   tmux_ rename-window -t "$win" "$tab"
@@ -565,6 +567,11 @@ tag_window() {
   tmux_ set -w -t "$win" @ws_session "$id"
   tmux_ set -w -t "$win" @ws_agent "$agent"
   tmux_ set -w -t "$win" @ws_state idle
+  # Agent pane: the caller's when it runs here (ws run), else the new tab's only pane.
+  pane="${TMUX_PANE:-}"
+  [[ -n "$pane" && "$(tmux_ display -p -t "$pane" '#{window_id}' 2>/dev/null)" == "$win" ]] ||
+    pane="$(tmux_ display -p -t "$win" '#{pane_id}')"
+  tmux_ set -w -t "$win" @ws_pane "$pane"
   ws_bus_update "$id" --arg win "$win" '.window = $win | if .status == "closed" then .status = "active" else . end'
   tmux_ set -w -t "$win" automatic-rename off
   tmux_ set -w -t "$win" window-status-format "#I $(state_format) #W"
@@ -582,6 +589,7 @@ untag_window() {
   done
 }
 
+# Prompt goes after `--` so option-like or subcommand-named prompts stay positional.
 agent_command() {
   local agent="$1" resume="$2" prompt="$3" id="$4"
   local preamble="You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions."
@@ -591,7 +599,7 @@ agent_command() {
     local cmd="claude --dangerously-skip-permissions --settings ${(q)WS_HOME}/claude-settings.json"
     cmd+=" --append-system-prompt ${(q)preamble}"
     [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
-    [[ -z "$prompt" ]] || cmd+=" ${(q)prompt}"
+    [[ -z "$prompt" ]] || cmd+=" -- ${(q)prompt}"
     print -r -- "$cmd"
     ;;
   codex)
@@ -601,10 +609,12 @@ agent_command() {
     cmd+=" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
     local instructions="developer_instructions=$(jq -rn --arg text "$preamble" '$text | @json')"
     cmd+=" -c ${(q)instructions}"
+    local hook
     for ev st in UserPromptSubmit working PreToolUse working PostToolUse working PermissionRequest waiting Stop stop Interrupt idle; do
-      cmd+=" -c 'hooks.$ev=[{hooks=[{type=\"command\",command=\"$WS_BIN hook $st\"}]}]'"
+      hook="hooks.$ev=[{hooks=[{type=\"command\",command=$(jq -rn --arg c "${(q)WS_BIN} hook $st" '$c | @json')}]}]"
+      cmd+=" -c ${(q)hook}"
     done
-    [[ -z "$prompt" ]] || cmd+=" ${(q)prompt}"
+    [[ -z "$prompt" ]] || cmd+=" -- ${(q)prompt}"
     print -r -- "$cmd"
     ;;
   grok)
@@ -612,7 +622,7 @@ agent_command() {
     local cmd="grok --always-approve"
     cmd+=" --rules ${(q)preamble}"
     [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
-    [[ -z "$prompt" ]] || cmd+=" ${(q)prompt}"
+    [[ -z "$prompt" ]] || cmd+=" -- ${(q)prompt}"
     print -r -- "$cmd"
     ;;
   esac
