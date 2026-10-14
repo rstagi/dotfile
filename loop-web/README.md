@@ -14,7 +14,7 @@ daemon watching `.loop/` on disk. Status is therefore **authoritative, never sta
 orchestrator's `state.json` bookkeeping lags (a monotone `todo<claimed<running<done<merged`
 lattice — ranks never regress). Every loop is kept **forever** in a per-loop JSON store
 (`~/.loop/loops/<runId>.json`), reviewable after its worktree is gone; a header **selector**
-switches between loops. Kestral is an **opt-in linked backend**, not a requirement.
+switches between loops.
 
 It reads `.loop/` and folds pushed events. The one write path is the node drawer's
 steering-note editor, which writes or clears the same `notes/<phase>.md` /

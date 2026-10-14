@@ -7,7 +7,7 @@ shape. Keep the inline markers stable; they are parsed, not just displayed.
 
 The plan lives on disk in a flattened `.loop/` dir (this `plan.md` sits beside `state.json`).
 Every plan is backed by the central Loop Observatory daemon (`http://localhost:7717`) — the
-base backend; Kestral is an **opt-in linked** backend (plans are local-only by default).
+only backend.
 
 Repository checkouts are deliberately absent from the plan. Plans carry GitHub
 `owner/repo` slugs only; each machine resolves them through `~/.loop/repos.json` via
@@ -27,7 +27,7 @@ between repositories.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.
 - `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
-  the daemon always, and to the linked Kestral task when the plan is linked.
+  the daemon.
 - `Repository:` is mandatory on every work phase when `## Repositories` exists and must match
   one declared slug. A PR-review phase covers every repository and omits `Repository:`.
   Repository `Verify:` is mandatory; a work phase `Verify:` overrides it.
@@ -37,6 +37,9 @@ between repositories.
   openly rather than claiming a bound the evidence cannot support.
 - Legacy plans without `## Repositories` normalize to one synthetic `primary` repository;
   their scalar Loop config `Verify` / `PR` fields remain executable.
+- Legacy plans may still carry `kestral*` header keys, `**Kestral project:**` /
+  `**Plan doc:**` / `**Effort task:**` header lines, or `**Task:**` phase lines — readers
+  ignore them.
 
 ## Document template
 
@@ -44,18 +47,11 @@ between repositories.
 > It is **not** a target shape — most real plans are a single lane (`[lane: A]` on every
 > phase) with no "Parallel execution guide" section. Do not add lanes to match this example.
 
-> **Linked-only header lines:** the `**Kestral project:**`, `**Plan doc:**`, and
-> `**Effort task:**` lines below appear in the rendered plan ONLY when it is linked to
-> Kestral; omit all three in local-only plans.
-
 ```markdown
 # <Effort name> — Multi-Phase Plan
 
 **Status:** planning | in progress | integrating | done
 **Last updated:** <YYYY-MM-DD> by <host: Claude Code | Codex> (<worktree/branch>)
-**Kestral project:** [<project name>](project-url) <!-- linked only -->
-**Plan doc:** [<title>](doc-url)  ·  workContextId: `<id>` <!-- linked only -->
-**Effort task:** [<slug> - <title>](task-url) — phases are its subtasks <!-- linked only -->
 
 ## Loop config
 
@@ -88,12 +84,11 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 ## Phases
 
 > Phase headings and branch names below are **descriptive** — they name what the phase
-> *does*, not its position. The `Phase N` label lives only in the marker/tags, never in the
+> *does*, not its position. The `Phase N` label lives only in the heading, never in the
 > branch, worktree, commit, or PR name. (See "Naming" in the Rules section.)
 
 ### Phase 1 — Add OAuth token refresh endpoint `[lane: A]` `[status: todo]`
 - **Repository:** `owner/api`
-- **Task:** [<slug> - <title>](task-url)
 - **Depends on:** none
 - **Parallelizable with:** Phase 2 (independent)
 - **Suggested branch:** `feat/oauth-token-refresh`
@@ -105,7 +100,6 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 
 ### Phase 2 — Migrate invoice retry to a state machine `[lane: B]` `[status: todo]`
 - **Repository:** `owner/api`
-- **Task:** [<slug> - <title>](task-url)
 - **Depends on:** none
 - **Parallelizable with:** Phase 1 (independent)
 - **Suggested branch:** `refactor/invoice-retry-state`
@@ -116,7 +110,6 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 
 ### Phase 3 — Use refreshed tokens in the API client `[lane: A]` `[status: todo]`
 - **Repository:** `owner/web`
-- **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 1
 - **Parallelizable with:** Phase 2 (independent)
 - **Suggested branch:** `feat/api-client-token-refresh`
@@ -126,7 +119,6 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 
 ### Phase 4 — Integrate auth + billing paths and run e2e `[lane: integration]` `[status: todo]`
 - **Repository:** `owner/web`
-- **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 3, Phase 2
 - **Parallelizable with:** none — integration point
 - **Suggested branch:** `chore/integrate-auth-billing`
@@ -135,7 +127,6 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 - **Estimate:** <min–max min · confidence · basis>
 
 ### Phase 5 — Review pull requests `[lane: review]` `[status: todo]` `[kind: pr-review]` `[review: medium]`
-- **Task:** [<slug> - <title>](task-url)
 - **Depends on:** Phase 4
 - **Parallelizable with:** none — review barrier
 - **Done when:** every repository PR has a non-blocking review verdict
@@ -160,17 +151,12 @@ coordinates so the other skills can act on it without re-searching:
 <!-- loop-plan
 planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
 daemon: http://localhost:7717
-kestralProject: <name>            # these four keys present ONLY when the plan is linked to Kestral
-kestralProjectId: <id>
-kestralWorkContextId: <doc id>
-kestralDocUrl: <url>
 -->
 ```
 
 Keep this comment as the first lines of `.loop/plan.md`. `planId` and `daemon` are **always**
-present. The four `kestral*` keys appear **only** when the plan is linked to Kestral —
-LINKED ⇔ `kestralWorkContextId` present. `loop-handoff` reads this header to push (to the
-daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
+present. `loop-handoff` reads this header to push to the daemon; `loop-pickup` writes it after
+fetching.
 
 ## Rules
 
@@ -178,7 +164,7 @@ daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
   execution and even a completed review do not freeze it. Phase numbers are stable identities,
   while document order is presentation/execution order, so IDs may be non-monotonic after an
   insertion. Allocate the next unused number; never renumber or reuse an existing phase once
-  execution starts because notes, events, tasks, and state are keyed by that number.
+  execution starts because notes, events, and state are keyed by that number.
 - **Every executable plan ends with an explicit PR-review phase.** `loop-execute` owns
   `[kind: pr-review]` phases; lane runners never claim them. When work is added while the last
   review is still pending, place the new work block immediately before that review and update
@@ -206,25 +192,17 @@ daemon always, to Kestral when linked); `loop-pickup` writes it after fetching.
   Split phases whose likely upper bound exceeds 25 minutes without making artificial
   parallel lanes. The runner's 30-minute cutoff is a checkpoint, not proof that a phase
   will finish in one attempt.
-- **One parent effort task per plan; work and review phases are its subtasks.** The plan maps
-  to a single
-  Kestral parent task (tag `multiphase-plan`, linked from the doc's `**Effort task:**`
-  line); each phase is a subtask of it (`parentTaskId`), never a sibling top-level task.
 - **Loop mode ships one PR per repository.** Per-phase Suggested branches are short-lived
   lane branches cut from that repository's integration tip and merged back; no per-phase
   PRs; `[status: done]` = merged into the phase repository's integration branch.
-- **Plan doc and Kestral tasks cross-reference.** Each phase's **Task:** line links its
-  subtask; each subtask carries `tags: ["phase:<N>", "lane:<X>"]`.
-- **Status is kept in lockstep across its sinks:** the `[status: …]` marker in the doc and the
-  daemon (`loop-handoff` mirrors it there via `loop-plan.sh push` always), plus the linked
-  task's Kestral status when the plan is linked. `loop-handoff` updates all of them.
+- **Status is kept in lockstep:** the `[status: …]` marker in the doc and the daemon
+  (`loop-handoff` mirrors it there via `loop-plan.sh push`).
 - **Naming: describe the work, never the index.** Phase titles, `Suggested branch`,
   worktrees, commits, and PRs must say *what the change does* — never `phase-4`,
   `product-split-phase-4`, `<effort>-phase-N`, or a bare number. The phase↔branch link is
-  already carried by the `phase:<N>` task tag and the plan doc, so it does not belong in the
-  branch name.
+  already carried by the plan doc, so it does not belong in the branch name.
   - **Phase title** — an imperative outcome: "Add OAuth token refresh endpoint", not
-    "Phase 1" or "Auth stuff". This title seeds the task title and usually the PR title.
+    "Phase 1" or "Auth stuff". This title usually seeds the PR title.
   - **Suggested branch** — `<type>/<imperative-outcome-slug>`, kebab-case, where `<type>` is
     a conventional prefix (`feat`, `fix`, `refactor`, `chore`, `docs`, `test`). E.g.
     `feat/oauth-token-refresh`, `refactor/invoice-retry-state`. Keep it under ~50 chars, no

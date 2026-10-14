@@ -47,7 +47,6 @@ export type LoopStatus = "planned" | "active" | "paused" | "finished" | "archive
 export interface RegisterInfo {
   runId: string;
   effort?: string | null;
-  projectId?: string | null;
   /** Absolute path to `.loop` (may no longer exist once the worktree is gone). */
   loopDir?: string | null;
   /** Absolute path to the plan markdown. */
@@ -143,7 +142,6 @@ export interface LoopRecord {
   schemaVersion: number;
   runId: string;
   effort: string | null;
-  projectId: string | null;
   loopDir: string | null;
   planFile: string | null;
   integrationBranch: string | null;

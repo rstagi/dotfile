@@ -36,7 +36,6 @@ describe("reduceLoop — register", () => {
       info: {
         runId: "run-1",
         effort: "Checkout revamp",
-        projectId: "proj_shop",
         loopDir: "/repo/.loop",
         planFile: "/repo/.loop/plan.md",
         integrationBranch: "feat/checkout",

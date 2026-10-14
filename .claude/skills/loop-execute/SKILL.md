@@ -2,7 +2,7 @@
 name: loop-execute
 description: >-
   Loop engineering: autonomously execute an editable multi-phase plan registered on the Loop
-  daemon; Kestral link optional) end-to-end — spawn a fresh headless runner per phase (Codex
+  daemon end-to-end — spawn a fresh headless runner per phase (Codex
   or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into its
   repository integration branch, escalate stuck work (retry → stronger model → HIL pause),
   open one effort PR per repository, execute each explicit review phase as a tiered adversarial
@@ -19,11 +19,11 @@ argument-hint: "<project / plan doc> | resume | status | abort"
 
 # Loop Execute
 
-The execution engine for `multiphase-plan`. The plan backend is the **Loop daemon** (a
-Kestral link is optional; default local-only). The human plans once and may keep editing;
+The execution engine for `multiphase-plan`. The plan backend is the **Loop daemon** (+
+`.loop/plan.md`). The human plans once and may keep editing;
 this skill runs work phases through pickup → implement → handoff and treats explicit review
-phases as orchestrator-owned barriers. Each headless runner runs the pickup/handoff auto modes itself
-(both engines carry the Kestral MCP when the plan is linked); you — the orchestrator session
+phases as orchestrator-owned barriers. Each headless runner runs the pickup/handoff auto modes itself;
+you — the orchestrator session
 — are the sole writer of the plan document and the integration branch, and the policy brain.
 Scripts do the mechanics. The full contract (dir layout,
 status.json, exit codes, chains, prompts) is `references/loop-protocol.md` — read it
@@ -66,23 +66,17 @@ inline in single-tier)"; steps **1-3, 3b, 8** are supervise/single-tier.
 (registered on the Loop daemon or in `.loop/plan.md`) authored by `multiphase-plan` with
 Loop config + repository blocks: shared integration branch, concurrency, and mandatory
 Verify per repository. Missing repository verify → ask; never invent one. Legacy scalar
-plans normalize to the synthetic `primary` repository. **Kestral only when the plan is LINKED:** if the plan
-carries a Kestral link, the Kestral MCP must work in-session (`whoami`) AND you must probe
-headless Kestral once per engine before launching lanes (runners claim their own Kestral
-tasks only in linked mode) — a one-shot `codex exec` / `claude -p` asking for Kestral
-`whoami`; an auth failure there means every lane dies silently, fix it first. For a
-local-only plan, skip the probe entirely. Long runs: remind the user once to `caffeinate`
+plans normalize to the synthetic `primary` repository. Long runs: remind the user once to `caffeinate`
 the Mac; do not manage power yourself.
 
 ## Workflow
 
 ### 1. Preflight
 
-Resolve the plan LOCAL → daemon → Kestral-if-linked: `.loop/plan.md` header → the daemon
-(`loop-plan.sh get --plan-id <id>`, else `loop-plan.sh list`) → Kestral **only when linked**
-(argument → `.loop/plan.md` header → ask, like `loop-pickup` step 1). Parse phases, kinds,
-lanes, repositories, `Depends on` edges, statuses, and per-phase `Verify`; when linked,
-re-fetch from Kestral and reconcile against live task statuses. Validate: DAG acyclic;
+Resolve the plan LOCAL → daemon: `.loop/plan.md` header → the daemon
+(`loop-plan.sh get --plan-id <id>`, else `loop-plan.sh list`; argument → ask, like
+`loop-pickup` step 1). Parse phases, kinds, lanes, repositories, `Depends on` edges,
+statuses, and per-phase `Verify`. Validate: DAG acyclic;
 every phase has *Done when*; every work phase has exactly one known repository; the final
 document phase is `[kind: pr-review]`. Legacy plans without explicit kinds retain their
 synthetic terminal review. Resolve each `owner/repo` through
@@ -103,7 +97,7 @@ gate so the gate's no-further-contact promise holds.
 
 ### 2. One confirm gate, then autonomy
 
-Show the user: the backend (local-only vs Kestral-linked), repository → checkout/default
+Show the user: the plan id, repository → checkout/default
 branch/integration branch/create-vs-adopt/verify table (adopt: the adopted worktree path and
 its commits ahead of default — they become part of the PR), phase/kind/lane/repository table, chains +
 budget/timeouts from `loop-models.conf`, concurrency (the plan's **Concurrency** line
@@ -165,10 +159,9 @@ session hands the heavy work to a detached orchestrator and stays thin:
 
 ### 4. Schedule *(run by the `sub` instance — or inline in single-tier)*
 
-At every safe scheduling boundary, re-read the newest plan (daemon; Kestral too when linked)
+At every safe scheduling boundary, re-read the newest plan (daemon)
 and reconcile it into `state.phases` without replacing existing entries. Phase numbers are
-stable identities; document order is the sequence. Add each new phase as `todo` (and create
-its linked subtask when applicable), then repush. Preserve completed and running state.
+stable identities; document order is the sequence. Add each new phase as `todo`, then repush. Preserve completed and running state.
 
 Enforce review topology as one coherent plan edit:
 
@@ -190,8 +183,7 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
    tip**. Reuse it only when the prior lane phase used the same repository. On a repository
    hop, remove the old worktree and create the next from the target repository tip.
 2. Generate `runs/<phase-slug>-a<K>/prompt.md` from the protocol's skeleton — it opens
-   with `loop-pickup --auto` (the runner claims its own task; both engines have the
-   Kestral MCP) and closes with `loop-handoff --auto ... status:in-progress` +
+   with `loop-pickup --auto` (the runner claims its own phase) and closes with `loop-handoff --auto ... status:in-progress` +
    status.json. Include the verbatim phase block + plan Goal/decisions +
    `notes/<phaseNumber>.md` verbatim on **every** attempt, including the first. Retry-only
    context (`answers/`, verify.log tails, HIL answers) remains separate.
@@ -248,7 +240,7 @@ Switch on the exit code (protocol table). The extra checks only you can do:
   `human-preference`, or `uncertain`. Inspect the actual question and relevant plan before
   acting, and inspect relevant code before a code-backed answer. A `human-preference` label
   never raises HIL by itself. Shadow, error, low-confidence, and `uncertain` advice use the
-  existing plan/Project Brain/code path. Validate the disposition with
+  existing plan/code path. Validate the disposition with
   `loop-jev-question.mjs`; it rejects evidence-free answers and HIL outside L4. Persist its
   typed suggestion-versus-action record atomically as `<runDir>/question-decision.json`, emit
   it with `loop_emit_jev_decision`, and only then act. Resume either kind **in a fresh attempt dir**
@@ -282,10 +274,8 @@ its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
 
 - **0** → run `loop-handoff --auto phase:<N> status:done lane:<X> engine:<engine>`
   inline — the orchestrator context of that skill (you are the plan's sole writer; runners
-  already posted their task-scoped sync). **Linked:** it flips markers, repushes the plan doc
-  (`update_document`), updates the task (`update_task_status`), and posts a progress comment
-  noting lane + engine. **Local-only:** it instead flips the plan's `[status: done]` marker +
-  `loop-plan.sh push`, appends `.loop/progress.md`, and `loop-plan.sh note` (no Kestral).
+  already posted their phase-scoped notes). It flips the plan's `[status: done]` marker +
+  `loop-plan.sh push`, appends `.loop/progress.md`, and `loop-plan.sh note` noting lane + engine.
   Cleanup removes the worktree on a repository hop; otherwise it may switch to the next lane
   branch. First merge in each repository → `gh pr create --draft` from that repository's
   integration branch, PR URL into `state.repositories[slug]` + its plan block. Later merges
@@ -327,15 +317,9 @@ Re-fetch and reconcile the plan before spawning reviewers. If new work was inser
 this pending review, clear `REVIEW_READY` and resume scheduling. Otherwise mark every
 repository PR ready on the first review round; later rounds reuse those PRs. Each PR body
 contains the Goal and only
-that repository's phases/task links plus a progress digest. Then record completion:
-
-- **Linked:** link each work-phase task only to its repository PR (dedup via state); the
-  aggregate review-phase task links the plan/effort rather than arbitrarily choosing one PR.
-  Move statuses to awaiting-review and plan **Status: integrating** via `update_document` (repush),
-  `trigger_brain_build`.
-- **Local-only:** flip plan **Status: integrating** + `loop-plan.sh push`, append
-  `.loop/progress.md` (no Kestral) — the daemon learns completion from `loop-state.sh finish`'s
-  `loop.finish` below.
+that repository's phases plus a progress digest. Then record completion: flip plan
+**Status: integrating** + `loop-plan.sh push`, append `.loop/progress.md` — the daemon learns
+completion from `loop-state.sh finish`'s `loop.finish` below.
 
 Sweep remaining lane worktrees. Re-read `notes/<reviewPhase>.md` plus legacy repository
 review-note aliases, honor them against each integration worktree throughout this review phase,
@@ -392,7 +376,7 @@ merge every PR. Notify once with final PRs/verdicts, unlock, stop.
 ### 9. `resume` / `status` / `abort`
 
 - **resume** — re-lock with the state's run id, then reconcile per protocol (git >
-  plan/daemon > state, + Kestral when linked): finish/abort any in-progress merge first;
+  plan/daemon > state): finish/abort any in-progress merge first;
   re-attach or fail dead attempts;
   repair status drift. Sweep `notes/<N>.md` for every phase already `done|merged`; this is
   idempotent housekeeping, not badge correctness. Never double-spawn a phase with a live pid. Call `loop-state.sh
@@ -415,7 +399,7 @@ loop-state.sh occupancy --dir .loop \
 (the `<k>` and the exact command are in your spawn prompt). When it reports **≥
 `LOOP_ORCH_RECYCLE_TOKENS`** (exit 10) **AND you are at a safe phase boundary** — no runner
 mid-attempt without a written `status.json`, no merge in progress — then: flush durable state
-(state.json via `loop-state.sh set`, Kestral, git are already externalized), write
+(state.json via `loop-state.sh set`, plan/daemon, git are already externalized), write
 `sub/handoff.md` (open exit-10 rounds + their `sessionId`s, pending merge-runner promotions =
 runDir + lane-branch awaiting a `phase.merged`, per-lane notes, why-stopped), then write
 `sub/status.json {outcome:"recycle", summary, tokens:<n>, recycleIndex:<k>}` and **exit**.
@@ -453,12 +437,11 @@ derives NOTE visibility from both file presence and unfinished lifecycle.
 
 - Never force-push anything; integration pushes are fast-forward via loop-merge, except step
   3's initial branch push and verified remediation commits pushed by the Opus coordinator.
-- Never steal a Kestral claim (409) or a foreign lock — both mean a colleague exists.
+- Never steal a foreign lock — it means a colleague exists.
 - Single plan-writer: only the orchestrator pushes the plan — to the daemon via
-  `loop-plan.sh push` and/or Kestral via `update_document` — and links PRs; runners emit
-  events/notes only (the task-scoped pickup/handoff auto ops) and never push git or call
-  `update_document`. The Opus remediation coordinator is an orchestrator-delegate for verified
-  integration-branch commits/pushes only; it never writes the plan or Kestral.
+  `loop-plan.sh push`; runners emit events/notes only (the phase-scoped pickup/handoff auto
+  ops) and never push git or the plan. The Opus remediation coordinator is an orchestrator-delegate for verified
+  integration-branch commits/pushes only; it never writes the plan.
 - Every prompt, transcript, and decision lands under `.loop/` — if it isn't in
   state.json or events.jsonl, it didn't happen (crash-resume depends on this).
 - Budget: `--max-budget-usd` per attempt is the ceiling; on repeated 40s across lanes,

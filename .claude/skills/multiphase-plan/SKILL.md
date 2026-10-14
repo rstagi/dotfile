@@ -3,22 +3,19 @@ name: multiphase-plan
 description: >-
   Turn a goal into a multi-phase implementation plan, marking any genuinely independent
   lanes that could run in separate Conductor worktrees (and staying fully sequential when
-  the work doesn't parallelize), then register it on the local Loop daemon as the base
-  shared source of truth — with an optional, opt-in publish to Kestral. Use when asked to
-  "plan this out", "make a multi-phase plan", "break this into parallel phases", "put a
-  plan on Kestral" (Kestral publish is opt-in), or before spinning up parallel worktrees
-  for a larger effort. For Loop plans, estimate and size phases to fit one 30-minute
-  execution attempt where the work can be bounded. The draft is cross-checked by an
-  adversarial plan review (Codex + Claude + Grok) unless invoked as `light <goal>`.
-argument-hint: "[light] <goal, or existing Kestral project name> (optional)"
+  the work doesn't parallelize), then register it on the local Loop daemon as the shared
+  source of truth. Use when asked to "plan this out", "make a multi-phase plan", "break
+  this into parallel phases", or before spinning up parallel worktrees for a larger effort.
+  For Loop plans, estimate and size phases to fit one 30-minute execution attempt where the
+  work can be bounded. The draft is cross-checked by an adversarial plan review (Codex + Claude + Grok) unless invoked as `light <goal>`.
+argument-hint: "[light] <goal> (optional)"
 ---
 
 # Multi-Phase Plan
 
 Produce a correct phased plan, and register it on the local **Loop daemon**
-(http://localhost:7717) as the base shared source of truth so any coding agent — **Claude
-Code or Codex**, in any worktree — can pick it up and continue; optionally link it to
-**Kestral** as well. *Where the work genuinely allows it*, mark phases into **lanes** that
+(http://localhost:7717) as the shared source of truth so any coding agent — **Claude
+Code or Codex**, in any worktree — can pick it up and continue. *Where the work genuinely allows it*, mark phases into **lanes** that
 can be worked concurrently in separate worktrees (Conductor). Pairs with `loop-pickup`
 (start a lane in a fresh worktree) and `loop-handoff` (reconcile progress and repush the
 plan).
@@ -41,14 +38,7 @@ user only for a decision the review surfaced that genuinely needs them (step 3).
 ## Prerequisites
 
 `jq` and the **Loop daemon** (http://localhost:7717). The daemon is auto-ensured for you by
-`loop-plan.sh register` / `loop-emit.sh`, so no manual setup is needed for a local-only plan.
-
-The **Kestral** MCP server is needed **only when the user opts to link this plan to
-Kestral**. When linking, auth is handled by the MCP connection (OAuth) — proceed directly.
-If a call returns auth failure (401, `unauthorized`, or `Not authenticated`), tell the user
-to reconnect through their host UI (Claude Code: `/mcp` → reconnect; Codex: Settings → MCP
-Servers → Authenticate) and stop. Keep Kestral IDs internal in user-facing output; show
-`slug - title` for tasks and readable names + URLs for projects/documents.
+`loop-plan.sh register` / `loop-emit.sh`, so no manual setup is needed.
 
 ## Workflow
 
@@ -60,10 +50,6 @@ work well — **do not plan blind**:
 - Explore the codebase for the areas the work touches (dispatch an `Explore`/general
   agent or read the relevant files). Note the modules, seams, and shared files that
   phases will contend over — this drives the parallelization analysis.
-- *If the effort may already be Kestral-tracked* (the user named a project, or you'll likely
-  link it), pull existing Kestral context: `search_operations`→`search_projects`/`find_documents`
-  for a related project, brief, or prior plan (or invoke `kestral-context`). Skip this for a
-  purely local plan.
 - **Question gate — ask everything now, once.** After exploring, list every unknown that
   would change the plan and ask them all in **one batch** (`AskUserQuestion` in Claude Code;
   a numbered list elsewhere), each with your recommended default. Cover whatever is not
@@ -73,7 +59,6 @@ work well — **do not plan blind**:
   - repositories touched and each repository's `Verify:` gate (never invent one)
   - integration branch, when the default would be wrong
   - review tier (`shallow`/`medium`/`max`, rounds) — propose one from size and risk
-  - link to **Kestral** too? (default: no — local-only)
 
   Settle the "silly" things here — naming, which repo, which command runs the tests — so the
   adversarial review spends its effort on the plan's real weaknesses. Ask a follow-up batch
@@ -91,8 +76,8 @@ Author the plan in the **canonical plan format** (see
   *Done when* (acceptance criteria). Decompose the work into the phases it *naturally* has
   — the phases you'd write with no parallelism in mind at all. Order them; record
   `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
-  refresh endpoint"), never "Phase 1" or a vague label — the title seeds the Kestral task
-  title and usually the PR title.
+  refresh endpoint"), never "Phase 1" or a vague label — the title usually seeds the PR
+  title.
 - **Terminal review phase** — every executable plan ends with one explicit
   `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
   It represents the bounded per-repository reviews run by `loop-execute`; it has no
@@ -147,11 +132,10 @@ Author the plan in the **canonical plan format** (see
   for missing repository gates; never invent them. When the effort runs under
   `loop-execute`, emit Loop config + Repositories per `references/plan-format.md`.
 - **Suggested branch** per phase — a **descriptive** `<type>/<imperative-outcome-slug>`
-  (e.g. `feat/oauth-token-refresh`, `refactor/invoice-retry-state`), so `loop-pickup` and
-  `kestral-sync` claim it deterministically and the worktree/commits/PR all read clearly.
+  (e.g. `feat/oauth-token-refresh`, `refactor/invoice-retry-state`), so `loop-pickup`
+  claims it deterministically and the worktree/commits/PR all read clearly.
   **Name the work, not the index:** never `phase-4`, `<effort>-phase-N`, or a bare number —
-  the phase↔branch link is carried by the `phase:<N>` task tag and this plan doc, so it must
-  not clutter the branch name. See "Naming" in `references/plan-format.md`. Exception:
+  the phase↔branch link is carried by this plan doc, so it must not clutter the branch name. See "Naming" in `references/plan-format.md`. Exception:
   phases that split one vertical slice (see **Slices, not layers**) share a single branch —
   name it after the capability, not the layer.
 
@@ -196,13 +180,12 @@ user a compact disposition table (`finding · reviewers · accept/reject · why`
 that need a **user decision** (scope, product trade-off, a missing gate) go back to the user,
 batched into one question; settle everything else yourself. Then continue to step 4.
 
-### 4. Register on the daemon (the base backend)
+### 4. Register on the daemon
 
-**This always runs** — local-only is the default, every plan lives on the daemon. Write the
+**This always runs** — every plan lives on the daemon. Write the
 plan markdown to `.loop/plan.md` in the current worktree (already there unless `light`), prefixed with the canonical
 `<!-- loop-plan -->` header (see `references/plan-format.md`). Mint the `planId`
-(`loop-<effort-slug>-<date>-<HHMMSS|rand>`), set `daemon: http://localhost:7717`, and
-**omit the four `kestral*` keys for now** — this plan starts unlinked:
+(`loop-<effort-slug>-<date>-<HHMMSS|rand>`) and set `daemon: http://localhost:7717`:
 
     <!-- loop-plan
     planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
@@ -218,84 +201,25 @@ Then register it:
 immediately and lets `loop-handoff` repush from here. Mention the user can add `.loop/` to
 `.gitignore` if they don't want the plan committed.
 
-### 5. Kestral link (from the step-1 answers)
+The review tier was settled in step 1 — don't ask again. (It stays changeable later, before
+the review phase starts: rewrite its `` `[review: …]` `` / `` `[rounds: …]` `` tags and
+`loop-plan.sh push`, or `m` on the review phase in `loop-top`.) Only if step 1 left it open —
+e.g. the user skipped it — ask it now, in one message.
 
-The review tier and the Kestral choice were settled in step 1 — don't ask again. (The tier
-stays changeable later, before the review phase starts: rewrite its `` `[review: …]` `` /
-`` `[rounds: …]` `` tags and `loop-plan.sh push`, or `m` on the review phase in `loop-top`.)
-Only if step 1 left one open — e.g. the user skipped it — ask it now, in one message.
-
-Link to Kestral **only** if the user said yes, or already asked for Kestral in the original
-request (e.g. "put a plan on Kestral"). Otherwise go to **Report** — the daemon plan +
-`.loop/plan.md` are the source of truth.
-
-### 6. When linked to Kestral
-
-Run the full Kestral flow (unchanged). Kestral stays authoritative for the plan doc + tasks;
-the daemon is **always written too** (dual-write, Kestral second) so `.loop/plan.md` ends up
-carrying the linked coordinates.
-
-**Resolve the target project.** `search_operations`→`search_projects({ query })` with the
-goal keywords.
-
-- **Existing project fits** → use its `projectId` + `url` (confirm with the user which one).
-- **No fit / new effort** → create one: `execute_operation("create_project", { title, description })`.
-  For a from-scratch effort with lots of source context to import, prefer invoking
-  `kestral-setup` (it builds the project + Project Brain from connected tools); come back
-  here to attach the plan.
-
-**Publish to Kestral:**
-
-1. **Plan document:** `execute_operation("create_document", { title: "<Effort> — Multi-Phase Plan", content: "<canonical markdown>", projectId })`.
-   Capture the returned document id (`workContextId`) and `url`.
-2. **One parent effort task + phase subtasks** (1 plan = 1 task with N subtasks — never N
-   top-level tasks):
-   1. Parent: `execute_operation("create_task", { projectId, title, description, priority,
-      tags: ["multiphase-plan"] })` — `title` = the imperative effort outcome, `description`
-      = goal summary + lane overview + link to the plan doc. Capture its `id`/`slug`/`url`.
-   2. One subtask per phase: `create_task` with `parentTaskId` = the parent's id, `title` =
-      phase title, `description` = the phase's *Depends on* / *Parallelizable with* /
-      *Touches* / *Done when* / *Estimate* / *Suggested branch* + plan-doc link, `priority`, and
-      `tags: ["phase:<N>", "lane:<X>"]` (Kestral has no native phase/dependency fields —
-      tags + the plan doc carry that structure). Create subtasks individually: the
-      `subtasks` param on `create_task` accepts bare title strings only, and
-      `create_tasks_batch` can't attach to a parent. If the dedupe gate blocks a legitimate
-      phase (near-title of existing work), retry with `duplicatePolicy: "create_anyway"` +
-      `overrideReason`. Use `list_statuses` if you need a non-default starting status.
-      Capture each returned `slug` + `url`.
-3. **Back-link tasks into the plan:** `execute_operation("update_document", { workContextId, content })`
-   — add an `**Effort task:**` line to the doc header linking the parent, and fill each
-   phase's **Task:** line with `[<slug> - <title>](task-url)` now that the subtasks exist.
-   The plan doc and the tasks must cross-reference.
-4. **Trigger brain:** `execute_operation("trigger_brain_build", { projectId })` so the
-   Project Brain absorbs the new plan + tasks.
-
-**Write the linked coordinates back to the daemon.** Add the four `kestral*` keys —
-`kestralProject`, `kestralProjectId`, `kestralWorkContextId`, `kestralDocUrl` — to the
-`.loop/plan.md` header, then run `loop-plan.sh push` (re-reads the plan file and overwrites
-the daemon copy) so the daemon carries the linked coordinates. The plan is now **linked**
-(⇔ `kestralWorkContextId` present).
-
-### 7. Report
+### 5. Report
 
 State the shape honestly — do not imply parallelism that isn't there. Fill every `<…>` in
-the templates below with the real captured value (planId, project name, doc / project URLs,
-phase & lane counts) — never print a literal placeholder. State the **backend** honestly:
-`local daemon` for an unlinked plan, `local daemon + Kestral` when linked (drop the
-**Kestral:** line entirely for a local-only plan). The pickup/execute argument is the
-**planId** (or effort name) for a local-only plan; for a linked plan the **Kestral project
-name** works too.
+the templates below with the real captured value (planId, phase & lane counts) — never print
+a literal placeholder. The pickup/execute argument is the **planId** (or effort name).
 
 **Single-lane (sequential) plan — the common case:**
 
 > **Plan registered** · N phases, sequential · plan review: `<n accepted / n findings>` (or `light`).
 > State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
-> **Kestral** *(linked only):* [<Effort> — Multi-Phase Plan](doc-url) on [<project name>](project-url)
 >
 > This work is sequential — each phase builds on the last, so it runs in one worktree in
-> order. Start with **Phase 1**: run **`/loop-pickup <planId>`** (Codex: **`$loop-pickup`**;
-> a linked plan's **<project name>** works too). When a phase advances, run
-> **`/loop-handoff`** to repush the plan.
+> order. Start with **Phase 1**: run **`/loop-pickup <planId>`** (Codex: **`$loop-pickup`**).
+> When a phase advances, run **`/loop-handoff`** to repush the plan.
 >
 > **Run the loop:** **`/loop-execute <planId>`** (Codex: **`$loop-execute`**),
 > hands-off once registered.
@@ -304,7 +228,6 @@ name** works too.
 
 > **Plan registered** · N phases in M lanes · plan review: `<n accepted / n findings>` (or `light`).
 > State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
-> **Kestral** *(linked only):* [<Effort> — Multi-Phase Plan](doc-url) on [<project name>](project-url)
 >
 > **Parallel lanes:**
 > - **Lane A** (worktree 1): Phase 1 → Phase 3 — start now.
@@ -312,8 +235,8 @@ name** works too.
 > - **Integration:** Phase 4 merges A + B (single worktree, after both).
 > - **Conflict watch:** Phases 2 & 3 both touch `src/api/*` — rebase before merge.
 >
-> In each new Conductor worktree, run **`/loop-pickup <planId>`** (Codex: **`$loop-pickup`**;
-> a linked plan's **<project name>** works too) and claim its lane. When a lane advances, run
+> In each new Conductor worktree, run **`/loop-pickup <planId>`** (Codex: **`$loop-pickup`**)
+> and claim its lane. When a lane advances, run
 > **`/loop-handoff`** to reconcile and repush the plan.
 >
 > **Run the loop:** **`/loop-execute <planId>`** (Codex: **`$loop-execute`**) runs all lanes
@@ -325,9 +248,8 @@ parallelism rather than presenting it as the required structure.
 
 ## Cross-agent notes
 
-The durable contract is the **daemon plan (planId) + `.loop/plan.md`** — and the **Kestral
-plan document + phase tasks when linked** — not this chat, so a Codex agent in another
+The durable contract is the **daemon plan (planId) + `.loop/plan.md`** — not this chat, so a Codex agent in another
 worktree resumes from the same state a Claude Code agent wrote. Keep the plan mechanics to
-`loop-plan.sh` + Kestral MCP operations + git + local files only; do not rely on any
+`loop-plan.sh` + git + local files only; do not rely on any
 host-specific feature. Reference both invocation styles (`/name` for Claude Code,
 `$name` for Codex).

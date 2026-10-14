@@ -1,15 +1,12 @@
 {
   "runId": "loop-checkout-revamp-2026-08-03",
   "effort": "Checkout revamp",
-  "projectId": "proj_shop",
-  "workContextId": "doc_checkout",
   "integrationBranch": "feat/checkout-revamp",
   "integrationWorktree": "/Users/dev/.loop/worktrees/shop-integration",
   "prUrl": "https://github.com/acme/shop/pull/128",
   "phases": {
     "1": {
       "slug": "payments-gateway",
-      "taskId": "t1",
       "lane": "A",
       "branch": "feat/payments-gateway",
       "worktree": null,
@@ -22,7 +19,6 @@
     },
     "2": {
       "slug": "cart-state-machine",
-      "taskId": "t2",
       "lane": "B",
       "branch": "refactor/cart-state",
       "worktree": "/Users/dev/.loop/worktrees/shop-refactor-cart-state",
@@ -35,7 +31,6 @@
     },
     "3": {
       "slug": "wire-checkout",
-      "taskId": "t3",
       "lane": "A",
       "branch": "feat/wire-checkout",
       "worktree": "/Users/dev/.loop/worktrees/shop-feat-wire-checkout",
@@ -48,7 +43,6 @@
     },
     "4": {
       "slug": "integrate-checkout",
-      "taskId": "t4",
       "lane": "integration",
       "branch": "chore/integrate-checkout",
       "worktree": null,
@@ -56,6 +50,5 @@
       "attempt": 0,
       "questionRounds": 0
     }
-  },
-  "linkedPrTasks": []
+  }
 }

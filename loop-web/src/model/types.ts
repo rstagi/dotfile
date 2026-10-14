@@ -45,7 +45,6 @@ export interface StatusJson {
 export interface StatePhase {
   kind?: PlanPhaseKind;
   slug?: string;
-  taskId?: string;
   lane?: string;
   repository?: string;
   branch?: string;
@@ -85,14 +84,11 @@ export type PhaseStateStatus =
 export interface StateJson {
   runId?: string;
   effort?: string;
-  projectId?: string;
-  workContextId?: string;
   integrationBranch?: string;
   integrationWorktree?: string;
   prUrl?: string | null;
   repositories?: Record<string, StateRepository>;
   phases?: Record<string, StatePhase>;
-  linkedPrTasks?: string[];
   /** PR-review verdict promoted by the orchestrator (`loop-state.sh set`). Structural (no
    * cross-import) so the daemon reducer can fold it; the drawer renders the full report. */
   review?: {
@@ -198,7 +194,6 @@ export interface PlanPhase {
   touches: string | null;
   doneWhen: string | null;
   verify: string | null;
-  taskUrl: string | null;
   notes: string | null;
   /** PR-review phases only: `[review: tier]` (default medium) + `[rounds: N]` (null = tier default). */
   review: ReviewConfig | null;

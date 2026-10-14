@@ -63,7 +63,7 @@ emit_register() {
   loop_ensure_daemon
   jq -c --arg loopDir "$loop_abs" --arg planFile "$plan_file" --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{loopDir:$loopDir, planFile:$planFile, effort:(.effort//null),
-      projectId:(.projectId//null), integrationBranch:(.integrationBranch//null),
+      integrationBranch:(.integrationBranch//null),
       startedAt:$started}' "$STATE" | loop_emit "$run_id" register
   loop_emit "$run_id" state < "$STATE"
 }

@@ -2,8 +2,7 @@
 set -u -o pipefail
 
 # Loop Engineering — plan helper: register/push a multi-phase plan on the central Loop
-# Observatory daemon (the base backend for EVERY plan) and post progress notes to it. The
-# daemon is Kestral-free; Kestral is an opt-in LINKED backend layered on top by the skills.
+# Observatory daemon (the sole backend for EVERY plan) and post progress notes to it.
 #
 # Usage:
 #   loop-plan.sh register [--dir .loop] [--plan-file <f>] [--plan-id <id>] [--effort <name>]
@@ -18,7 +17,7 @@ set -u -o pipefail
 #   loop-plan.sh list
 #     GET /api/loops → a compact `runId · status · effort` table.
 #   loop-plan.sh note --plan-id <id> [--phase <n>] --body <text>
-#     POST a progress.note event — the unlinked substitute for a Kestral progress comment,
+#     POST a progress.note event — a phase progress comment,
 #     visible cross-worktree on the loop timeline (jq-built, injection-safe).
 
 DIR=".loop"

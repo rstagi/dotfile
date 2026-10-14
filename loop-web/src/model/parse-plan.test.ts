@@ -4,17 +4,12 @@ import { parsePlan } from "./parse-plan.ts";
 const MULTI_LANE = `<!-- loop-plan
 planId: loop-widget-revamp-2026-08-01
 daemon: http://localhost:7717
-kestralProject: Widgets
-kestralProjectId: proj_1
-kestralWorkContextId: doc_9
-kestralDocUrl: https://kestral.example/doc_9
 -->
 
 # Widget revamp — Multi-Phase Plan
 
 **Status:** in progress
 **Last updated:** 2026-08-01 by Codex (feat/widget-core)
-**Kestral project:** [Widgets](https://kestral.example/proj_1)
 
 ## Loop config
 
@@ -29,7 +24,6 @@ Rebuild widgets.
 ## Phases
 
 ### Phase 1 — Add the widget core \`[lane: A]\` \`[status: done]\`
-- **Task:** [core - Add core](https://kestral.example/t1)
 - **Depends on:** none
 - **Suggested branch:** \`feat/widget-core\`
 - **Touches:** src/core
@@ -37,7 +31,6 @@ Rebuild widgets.
 - **Verify:** \`npm run test:core\`
 
 ### Phase 2 — Migrate retries to a state machine \`[lane: B]\` \`[status: in-progress]\`
-- **Task:** [retry - Retry SM](https://kestral.example/t2)
 - **Depends on:** none
 - **Suggested branch:** \`refactor/retry-state\`
 - **Done when:** retries deterministic
@@ -106,6 +99,21 @@ describe("parsePlan — header", () => {
     expect(parsePlan(MULTI_LANE).updatedAt).toBe(
       "2026-08-01 by Codex (feat/widget-core)",
     );
+  });
+});
+
+describe("parsePlan — legacy Kestral markers", () => {
+  it("ignores kestral* header keys, Kestral header lines and Task lines", () => {
+    const legacy = MULTI_LANE.replace(
+      "daemon: http://localhost:7717\n",
+      "daemon: http://localhost:7717\nkestralProject: Widgets\nkestralWorkContextId: doc_9\n",
+    )
+      .replace("**Status:** in progress\n", "**Status:** in progress\n**Kestral project:** [Widgets](https://k.example/p)\n")
+      .replace("- **Depends on:** none\n", "- **Task:** [core - Add core](https://k.example/t1)\n- **Depends on:** none\n");
+    const plan = parsePlan(legacy);
+    expect(plan.phases.map((p) => p.number)).toEqual(parsePlan(MULTI_LANE).phases.map((p) => p.number));
+    expect(plan.phases[0].dependsOn).toEqual([]);
+    expect(plan.status).toBe("in progress");
   });
 });
 
@@ -218,12 +226,11 @@ describe("parsePlan — phases", () => {
     expect(dep("Phases 2, 3")).toEqual(["2", "3"]); // plural, enumerated
     expect(dep("Phase 1 (prose), Phase 2")).toEqual(["1", "2"]); // trailing prose, deduped in order
   });
-  it("captures per-phase fields (branch, verify, doneWhen, task, notes)", () => {
+  it("captures per-phase fields (branch, verify, doneWhen, notes)", () => {
     const p1 = parsePlan(MULTI_LANE).phases[0];
     expect(p1.suggestedBranch).toBe("feat/widget-core");
     expect(p1.verify).toBe("npm run test:core");
     expect(p1.doneWhen).toBe("core compiles");
-    expect(p1.taskUrl).toBe("https://kestral.example/t1");
     const p3 = parsePlan(MULTI_LANE).phases[2];
     expect(p3.notes).toBe("same PR as Phase 1");
     expect(p3.verify).toBeNull();

@@ -109,7 +109,7 @@ build_sub_prompt() {
   cat <<EOF
 You are a headless sub-orchestrator (instance $k) for a two-tier self-recycling loop,
 run id $RUN_ID. Invoke the \`loop-execute\` skill in headless \`sub\` mode: start by running
-\`loop-execute resume\` to reconcile git > plan/daemon > state (+ Kestral when linked) and
+\`loop-execute resume\` to reconcile git > plan/daemon > state and
 re-attach to any live phase runners (NEVER double-spawn a phase whose run dir has a live pid).
 $handoff_note
 Each tick, self-measure occupancy:

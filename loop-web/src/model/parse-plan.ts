@@ -252,7 +252,6 @@ function buildPhase(
     touches: bulletValue(raw.body, "Touches"),
     doneWhen: bulletValue(raw.body, "Done when"),
     verify: stripBackticks(bulletValue(raw.body, "Verify")),
-    taskUrl: extractUrl(bulletValue(raw.body, "Task")),
     notes: bulletValue(raw.body, "Notes"),
     review: kind === "pr-review" ? parseReviewConfig(raw.heading, raw.num, warnings) : null,
   };

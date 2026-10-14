@@ -26,8 +26,8 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 
 ## Roles
 
-- **Orchestrator** — owns the plan **document** (sole `update_document` writer — parallel
-  repushes are last-writer-wins), post-merge task status flips, PR creation/linking, all
+- **Orchestrator** — owns the plan **document** (sole `loop-plan.sh push` writer — parallel
+  repushes are last-writer-wins), post-merge phase status flips, PR creation, all
   pushes to repository integration branches, scheduling, escalation, HIL. In the two-tier model this
   role is **split across two modes** (§ Two-tier orchestration): a THIN `supervise` main (the
   interactive Claude Code session the user talks to — preflight/init/lock, HIL answering,
@@ -45,13 +45,11 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   --finish`, then writes `status.json`. Keeps the conflict diff out of the SUB's context
   (§ Merge policy — skeleton there).
 - **Runner** — one headless agent process (`codex exec` or `claude -p`) working one phase
-  attempt inside a lane worktree. Both hosts have the Kestral MCP (Claude: user plugin;
-  Codex: `kestral@kestral-plugins` plugin) and the skills installed. A runner opens with
-  `loop-pickup --auto` (claims its own task, loads context) and closes with
-  `loop-handoff --auto` — **task-scoped ops only**: task status + progress comment via
-  Kestral when **linked**, or a local `.loop/plan.md` copy marker update + `loop-plan.sh
-  note` when **unlinked**. Runners NEVER: push, open PRs, call `update_document` or any
-  plan-doc/PR-link operation, touch files outside their worktree, or ask the user. A
+  attempt inside a lane worktree. Both hosts have the skills installed. A runner opens with
+  `loop-pickup --auto` (claims its own phase, loads context) and closes with
+  `loop-handoff --auto` — **phase-scoped ops only**: a local `.loop/plan.md` copy marker
+  update + `loop-plan.sh note`. Runners NEVER: push, open PRs, push the plan document,
+  touch files outside their worktree, or ask the user. A
   runner's final act is writing `status.json`.
 - **Adversarial review runner** — per tier (§ PR review phase pipeline): shallow one Opus
   reviewer; medium Sol (Codex) + Opus (Claude Code); max Astra (Codex) + Fable (Claude Code).
@@ -71,7 +69,7 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 
 The plan is mutable until humans merge the PRs. Reconcile it at every safe scheduling and
 review boundary. Phase numbers are stable identities used by state, notes, events, run dirs,
-and linked tasks; document order is the displayed/executed order. Allocate the next unused
+and the plan; document order is the displayed/executed order. Allocate the next unused
 number and never renumber, reuse, move, or reopen a completed phase.
 
 Every new-format executable plan ends in `[kind: pr-review]`:
@@ -81,7 +79,7 @@ Every new-format executable plan ends in `[kind: pr-review]`:
 
 Merge new phase entries into `state.phases` as `todo`; never replace existing entries.
 Edits that conflict with a live runner wait for a safe boundary or raise HIL. Push the fully
-reconciled document atomically to the daemon and, when linked, Kestral. Legacy no-kind plans
+reconciled document atomically to the daemon. Legacy no-kind plans
 continue to use one synthetic terminal review.
 
 ## Directory layout
@@ -93,7 +91,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
 .loop/
   state.json                 # orchestrator bookkeeping (loop-state.sh, atomic writes)
   plan.md                    # the plan document, beside state.json (register/push planText source)
-  progress.md                # unlinked-mode progress stream (loop-plan.sh note / handoff --auto append)
+  progress.md                # progress stream (loop-plan.sh note / handoff --auto append)
   events.jsonl               # append-only journal: {ts, event, phase, repository?, detail}
   lock/                      # mkdir-lock; owner = run id (sessions have no stable pid);
                              # same owner re-locks freely, another owner needs --force
@@ -156,7 +154,7 @@ finishes. This makes missed best-effort file cleanup harmless.
 
 Endpoints (POST bodies are JSON built injection-safely with `jq`):
 
-- `POST /api/loops/:runId/register` `{ loopDir, planFile?, effort?, projectId?, integrationBranch?, startedAt?, planText? }` — server reads plan.md from `planFile` if `planText` omitted.
+- `POST /api/loops/:runId/register` `{ loopDir, planFile?, effort?, integrationBranch?, startedAt?, planText? }` — server reads plan.md from `planFile` if `planText` omitted.
 - `POST /api/loops/:runId/state` — the full state.json contents.
 - `POST /api/loops/:runId/event` `{ event, phase?, repository?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — folded verbatim.
 - `POST /api/loops/:runId/finish` accepts v2 `{ status?, finishedAt?, repositories:{slug:{prUrl?,review?}} }`; legacy scalar `prUrl/review` remains accepted. For explicit plans it is ignored until the terminal review phase is `done|merged`.
@@ -189,13 +187,13 @@ completed phase ranks remain monotone.
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
-| `progress.note` | loop-plan.sh note / loop-handoff --auto (unlinked) | phase, detail |
+| `progress.note` | loop-plan.sh note / loop-handoff --auto | phase, detail |
 | `control.pause` / `control.resume` / `control.model` | daemon (POST /control) | phase?, detail |
 | `loop.paused` / `loop.resumed` | loop-orchestrator.sh | — |
 | `note.applied` | loop-runner.sh (live note resume) | phase, repository |
 | `jev.decision` | runner (route) or SUB (question/risk) | phase, attempt, stage, mode, candidate, confidence/probabilities, appliedAction, fallbackReason, resolvedModel, evidenceChecked/evidenceSources, questionRound, head, required/completed/remaining gates, focus, ts |
 
-`progress.note` is the unlinked-mode progress narration — kept on the timeline, promotes
+`progress.note` is the progress narration — kept on the timeline, promotes
 nothing in the lattice.
 
 Unknown/legacy event names fall back to keyword matching, so today's free-form
@@ -220,7 +218,7 @@ fields — keep the shape:
 ```json
 {
   "runId": "loop-<effort-slug>-<date>-<HHMMSS|rand>",
-  "effort": "...", "projectId": "...", "workContextId": "...",
+  "effort": "...",
   "repositories": {
     "owner/api": {
       "sourceRoot": "<mapped checkout>", "defaultBranch": "main", "baseSha": "<sha>",
@@ -233,13 +231,12 @@ fields — keep the shape:
     }
   },
   "phases": {
-    "3": { "kind": "work|pr-review", "slug": "<task-slug>", "taskId": "...", "lane": "A", "repository": "owner/api|all",
+    "3": { "kind": "work|pr-review", "slug": "<phase-slug>", "lane": "A", "repository": "owner/api|all",
            "branch": "feat/api-client-token-refresh", "worktree": "<abs path or null>",
            "status": "todo|claimed|running|paused|merged|blocked|done",
            "attempt": 2, "runDir": ".loop/runs/<phase-slug>-a2",
            "pid": 4242, "sessionId": "<from meta.json>", "questionRounds": 0 }
-  },
-  "linkedPrTasks": []
+  }
 }
 ```
 
@@ -380,14 +377,14 @@ or a merge in progress), keep going, even past 200k, and recycle **asap** once e
 a persisted checkpoint. **No token hard-kill.**
 
 **Handoff = single-consumption.** At a safe boundary the SUB flushes durable state (state.json,
-Kestral, git are already externalized), writes `sub/handoff.md`, and exits with `sub/status.json
+plan/daemon, git are already externalized), writes `sub/handoff.md`, and exits with `sub/status.json
 {outcome:"recycle"}`. The successor reads `sub/handoff.md` **exactly once** at startup, then it
 is archived to `sub/handoff.consumed-<k>.md`; `plan.md` + `state.json` stay freely re-readable.
 This is a purpose-built recycle handoff — **NOT** the `loop-handoff` skill (that one is
-plan-doc/task-status scoped and marks phases *done*: wrong semantics for a mid-run recycle).
+plan-doc/phase-status scoped and marks phases *done*: wrong semantics for a mid-run recycle).
 `handoff.md` carries: open exit-10 question rounds + their `sessionId`s; pending merge-runner
 promotions (runDir + lane-branch awaiting a `phase.merged`); per-lane notes; and why-stopped.
-Everything else the successor rebuilds by reconciling **git > Kestral > state**.
+Everything else the successor rebuilds by reconciling **git > plan/daemon > state**.
 
 ### SUB `status.json` (sub-orchestrator → loop-orchestrator.sh)
 
@@ -677,11 +674,11 @@ live. You are in worktree <path> on branch <branch> (cut from <integration>). RU
 <abs path>.
 
 FIRST: run `$loop-pickup --auto <project> phase:<N>` (Claude: `/loop-pickup`) — it
-claims your task and loads context. If it returns `REFUSED: <reason>`, write
+claims your phase and loads context. If it returns `REFUSED: <reason>`, write
 RUN_DIR/status.json with outcome "blocked" and the reason as details, and stop.
 
-RULES: never push; never open PRs; Kestral only through the pickup/handoff auto skills
-(never update the plan document or link PRs); never ask the user in prose; stay inside
+RULES: never push; never open PRs; plan state only through the pickup/handoff auto skills
+(never push the plan document); never ask the user in prose; stay inside
 this worktree. Commit per logical step with descriptive messages. Follow the repo's
 CLAUDE.md conventions (TDD where it applies).
 
@@ -931,26 +928,23 @@ on their ~2s watchdog tick.
 1. Write `hil/<phase-slug>.md`: context, attempt table (engine → outcome), ONE blocking
    question, options A/B/C + recommendation, "reply in the orchestrator chat or write
    `hil/<phase-slug>.answer.md`".
-2. Post the same content as a comment on the phase's Kestral task; flip the phase to
-   `[status: blocked]` and repush the plan doc.
+2. Flip the phase to `[status: blocked]` and repush the plan doc.
 3. `loop-notify.sh --level question --run-id <runId> --event hil.raise --title "HIL: <phase>" --body "<question>"`.
 4. Ask in-session (AskUserQuestion / plain question). Other lanes keep running. On answer:
    phase back to ready with the answer injected; status back to `in-progress`.
 
 ## Backend mapping
 
-Two backends. The **central daemon is always the base**; **Kestral is opt-in (linked mode)**
-— the default is local-only. Either way the split holds: **runners** own task-scoped ops via
-the auto skills; the **orchestrator** owns the plan document and everything cross-task. Each
-operation has an unlinked (local) and a linked (Kestral) form:
+One backend: the **central daemon** + `.loop/plan.md`. **Runners** own phase-scoped ops via
+the auto skills; the **orchestrator** owns the plan document and everything cross-phase:
 
-| Operation | Unlinked (local) | Linked (Kestral) |
-|-----------|------------------|-------------------|
-| Claim (runner, via `loop-pickup --auto`) | orchestrator pre-creates the lane branch; the phase flips to `claimed` in state.json (`loop-state.sh`) + a `[status: claimed]` marker in `.loop/plan.md`; lane collisions are caught by the branch/worktree conflict-check, not a task claim. | `claim_task_and_branch { taskId, branchName: <lane branch> }` on the pre-created branch — re-claiming your own branch is a no-op; a 409 means someone else owns it → `REFUSED` → status.json `blocked` → HIL, never steal. The claim performs no git action. |
-| Runner handoff (via `loop-handoff --auto ... status:in-progress`) | `loop-plan.sh note --plan-id <runId> --phase <N> --body <progress>` (a `progress.note` event) + update the `[status: ...]` marker in the local `.loop/plan.md` copy; **task-scoped only** — no plan-doc rewrite, no PR links. | task progress comment + status kept task-scoped; **never** `update_document`, never PR links. |
-| Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + `loop-plan.sh push` (re-register/overwrite the plan on the daemon) + a `progress.note`. | `update_task_status` (statusKey via `list_statuses`) + `post_progress_comment` (2–4 conversational lines, noting lane + engine) + flip `[status: done]` in the plan doc + append Progress log + `update_document`. |
-| PR link (orchestrator, at effort completion) | record each `repositories[slug].prUrl`; no per-task link. | `link_pr_to_task` once per phase task using only its repository PR (dedup via state). |
-| Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every staged pipeline reaches its final Opus review; plan remains `integrating`. | statuses → awaiting review; plan `integrating`; `trigger_brain_build`. |
+| Operation | Behaviour |
+|-----------|-----------|
+| Claim (runner, via `loop-pickup --auto`) | orchestrator pre-creates the lane branch; the phase flips to `claimed` in state.json (`loop-state.sh`) + a `[status: claimed]` marker in `.loop/plan.md`; lane collisions are caught by the branch/worktree conflict-check. |
+| Runner handoff (via `loop-handoff --auto ... status:in-progress`) | `loop-plan.sh note --plan-id <runId> --phase <N> --body <progress>` (a `progress.note` event) + update the `[status: ...]` marker in the local `.loop/plan.md` copy; **phase-scoped only** — no plan-doc rewrite. |
+| Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + `loop-plan.sh push` (re-register/overwrite the plan on the daemon) + a `progress.note`. |
+| PR link (orchestrator, at effort completion) | record each `repositories[slug].prUrl`. |
+| Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every staged pipeline reaches its final Opus review; plan remains `integrating`. |
 
 "done" in loop mode = merged into the phase repository's integration branch. Humans merge
 one PR per repository.
@@ -959,14 +953,14 @@ one PR per repository.
 
 `loop-execute resume`: re-acquire the lock with the run id from state.json (a different
 owner means another orchestrator claims this effort — stop and ask before `--force`), then
-reconcile the sources — **git > plan/daemon > state.json (+ Kestral when linked)** (git is
+reconcile the sources — **git > plan/daemon > state.json** (git is
 truth for code, the plan/daemon for claims + phase status, state for attempt bookkeeping):
 
 - attempt marked running: pid alive → re-attach (watch transcript mtime; stale >25m → kill,
   treat as 124); pid dead + status.json present → process it normally; pid dead + none →
   failed attempt.
 - `MERGE_HEAD` in any repository integration worktree → finish or abort before anything else.
-- Phase `done` in the plan/daemon (or Kestral when linked) but lane branch not merged (or
+- Phase `done` in the plan/daemon but lane branch not merged (or
   vice versa) → repair from git.
 - Review pipeline stage: live pid → re-attach; completed `status.json` → advance; remediation
   commit already on the remote integration branch → do not repeat it; final GitHub review marker
