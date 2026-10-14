@@ -1637,7 +1637,7 @@ AGENT_PANE="$(T show -wqv -t "$FRESH_WIN" @ws_pane)"
 T set -w -t "$FRESH_WIN" @ws_pane %99999
 hook api/delivery "$FRESH_WIN" idle </dev/null
 out="$(WS_SESSION=1 "$WS" send "$FRESH_ID" "no pane" 2>&1)"
-assert_exit "$?" "1" "missing agent pane refuses paste"
+assert_exit "$?" "75" "missing agent pane refuses paste (queued, exit 75)"
 assert_contains "$out" "message queued" "missing pane explains pending delivery"
 assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$FRESH_ID/inbox")" $'[ws #1]\nno pane' "missing pane retains inbox"
 T set -w -t "$FRESH_WIN" @ws_pane "$AGENT_PANE"
@@ -1960,7 +1960,7 @@ for exit_code in 0 17; do
   assert_eq "$(T show -wqv -t "$EXIT_WIN" @ws_session)" "" "exit $exit_code source is no longer deliverable"
   assert_eq "$(T show -wqv -t "$EXIT_WIN" @ws_main)" "" "exit $exit_code clears its idle delivery tag"
   out="$("$WS" send "$EXIT_ID" "during exit $exit_code" 2>&1)"
-  assert_exit "$?" "1" "exit $exit_code send reports unavailable resume"
+  assert_exit "$?" "75" "exit $exit_code send reports unavailable resume"
   assert_contains "$(cat "$WS_HOME/sessions/$EXIT_ID/inbox")" "during exit $exit_code" "exit $exit_code send stays durable"
   exec {exit_open_fd}>&-
   wait_until pane_received "$EXIT_TARGET_ID" "[ws terminal]"$'\n'"exit action $exit_code"
@@ -1991,6 +1991,24 @@ assert_eq "$(T show -wqv -t "$EXIT_NEW_WIN" @ws_main)" idle "old exit preserves 
 assert_eq "$(T show -wqv -t "$EXIT_OLD_WIN" @ws_session)" "$EXIT_TARGET_ID" "old exit preserves reassigned session tag"
 assert_eq "$(T show -wqv -t "$EXIT_OLD_WIN" @ws_main)" working "old exit preserves reassigned delivery state"
 T kill-window -t "$EXIT_OLD_WIN"
+
+echo "ws exit path: old wrapper cleanup spares a session resumed in a new window"
+"$WS" new --repo "$REPO" --branch exit-gen --detach
+EXIT_GEN_WT="$WS_ROOT/api/exit-gen"
+EXIT_GEN_WIN="$(windows_of "$EXIT_GEN_WT")"
+EXIT_GEN_ID="$(T display -p -t "$EXIT_GEN_WIN" '#{@ws_session}')"
+EXIT_GEN_SLOT="$(T display -p -t "$EXIT_GEN_WIN" '#{@ws_slot}')"
+EXIT_GEN_META="$WS_HOME/sessions/$EXIT_GEN_ID/meta"
+EXIT_GEN_ROWS="$(git -C "$EXIT_GEN_WT" rev-parse --absolute-git-dir)/ws-sessions"
+# Simulate `ws open` re-pointing the ID to a new window while the old wrapper waits.
+jq '.window = "@resumed"' "$EXIT_GEN_META" > "$EXIT_GEN_META.tmp" && mv "$EXIT_GEN_META.tmp" "$EXIT_GEN_META"
+"$WS" _end "$EXIT_GEN_WT" "$EXIT_GEN_SLOT" "$EXIT_GEN_ID" "$EXIT_GEN_WIN"
+assert_eq "$(jq -r '.window, .status' "$EXIT_GEN_META")" $'@resumed\nactive' "stale cleanup keeps resumed meta"
+assert_eq "$(awk -F '\t' -v s="$EXIT_GEN_SLOT" '$1 == s {print $4}' "$EXIT_GEN_ROWS")" "$EXIT_GEN_ID" "stale cleanup keeps resumed slot row"
+"$WS" _end "$EXIT_GEN_WT" "$EXIT_GEN_SLOT" "$EXIT_GEN_ID" "@resumed"
+assert_eq "$(jq -r '.window, .status' "$EXIT_GEN_META")" $'\nclosed' "matching-generation cleanup clears meta"
+assert_eq "$(awk -F '\t' -v s="$EXIT_GEN_SLOT" '$1 == s' "$EXIT_GEN_ROWS")" "" "matching-generation cleanup removes slot row"
+"$WS" rm api/exit-gen --force --delete-branch >/dev/null
 
 echo "ws exit path: HUP stops delivery even when the pane remains open"
 "$WS" new --repo "$REPO" --branch exit-hup --detach
@@ -2185,6 +2203,62 @@ assert_eq "$(resume_row "$G1_OLD" sid-old)" "1	claude	sid-new	$G1_NEW" "stale ho
 rm -f "$TMP/g1-ws-sessions" "$TMP/g1-ws-sessions.lock"
 # --- end G1 ---
 
+# --- G3b: stale-launch hooks, pid-reuse inflight reclaim, Stop lock budget ---
+g3b_resume() { jq -r '.resume_id // empty' "$WS_HOME/sessions/$1/meta"; }
+echo "ws hook: a delayed hook from an older launch on a reused pane touches nothing"
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+print -rn -- for-new-launch | "$WS" send --force "$SOURCE_A" - 2>/dev/null
+G3B_INBOX="$(cat "$WS_HOME/sessions/$SOURCE_A/inbox")"
+G3B_RESUME="$(g3b_resume "$SOURCE_A")"
+reply="$(print -r -- '{"session_id":"sid-stale-launch"}' | WS_SESSION="$SOURCE_B" hook api/triggers "$SOURCE_A_WIN" stop)"
+assert_eq "$reply" "{}" "stale Stop replies {}"
+assert_eq "$(cat "$WS_HOME/sessions/$SOURCE_A/inbox")" "$G3B_INBOX" "stale Stop leaves the pane's inbox untouched"
+assert_eq "$(inflight_count "$SOURCE_A")" "0" "stale Stop drains nothing in flight"
+assert_eq "$(g3b_resume "$SOURCE_A")" "$G3B_RESUME" "stale Stop keeps the pane's resume id"
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws terminal]\nfor-new-launch' "current launch still receives its inbox"
+
+echo "ws stop: an old in-flight file whose pid was reused is reclaimed"
+sleep 30 &
+g3b_pid=$!
+print -r -- '{"message":"pid-reused"}' > "$WS_HOME/sessions/$SOURCE_A/inbox.inflight.$g3b_pid"
+touch -t 202001010000 "$WS_HOME/sessions/$SOURCE_A/inbox.inflight.$g3b_pid"
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "pid-reused" "stale in-flight file is redelivered despite a live pid"
+assert_eq "$(inflight_count "$SOURCE_A")" "0" "stale in-flight file reclaimed"
+echo "ws done: reclaims stale in-flight files before refusing"
+print -r -- '{"message":"pid-reused-done"}' > "$WS_HOME/sessions/$SOURCE_A/inbox.inflight.$g3b_pid"
+touch -t 202001010000 "$WS_HOME/sessions/$SOURCE_A/inbox.inflight.$g3b_pid"
+WS_SESSION="$SOURCE_A" "$WS" done 2>/dev/null
+assert_exit "$?" "1" "done still refuses while messages are pending"
+assert_eq "$(inflight_count "$SOURCE_A")" "0" "done requeued the stale in-flight file"
+assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$SOURCE_A/inbox")" "pid-reused-done" "requeued message waits in the inbox"
+kill "$g3b_pid"; wait "$g3b_pid" 2>/dev/null
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "pid-reused-done" "next Stop delivers the requeued message"
+
+echo "ws hook: Stop stays inside the hook timeout when resume-id locks are held"
+G3B_META="$WS_HOME/sessions/$SOURCE_A/meta"
+G3B_SESS="$(git -C "$(T display -p -t "$SOURCE_A_WIN" '#{@ws_path}')" rev-parse --absolute-git-dir)/ws-sessions"
+: >> "$G3B_META.lock"; : >> "$G3B_SESS.lock"
+zsh -c 'zmodload zsh/system; zsystem flock -f a "$1.lock" && zsystem flock -f b "$2.lock" && : > "$3" && sleep 8' g3b "$G3B_META" "$G3B_SESS" "$TMP/g3b-held" &
+g3b_holder=$!
+wait_until test -e "$TMP/g3b-held"
+G3B_RESUME="$(g3b_resume "$SOURCE_A")"
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+zmodload zsh/datetime
+g3b_t0=$EPOCHREALTIME
+reply="$(print -r -- '{"session_id":"sid-under-contention"}' | hook api/triggers "$SOURCE_A_WIN" stop 2>/dev/null)"
+g3b_elapsed=$(( EPOCHREALTIME - g3b_t0 ))
+assert_eq "$reply" "{}" "contended Stop still replies"
+assert_eq "$(( g3b_elapsed < 2 ))" "1" "contended Stop finishes well under 5s (took ${g3b_elapsed}s)"
+assert_eq "$(g3b_resume "$SOURCE_A")" "$G3B_RESUME" "contended Stop skips the resume-id update"
+kill "$g3b_holder"; wait "$g3b_holder" 2>/dev/null
+rm -f "$TMP/g3b-held"
+# --- end G3b ---
+
 echo "ws on: rejects direct and transitive cycles; removal cancels a pending action"
 CYCLE_TID="$("$WS" on "$SOURCE_A" exit --send-to "$TARGET_ID" cycle-forward)"
 assert_exit "$?" "0" "forward dependency registers"
@@ -2306,6 +2380,29 @@ assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/$BROKEN_TID.j
 rm -rf "$WS_HOME/sessions/$BROKEN_ID"
 T send-keys -t "$EMPTY_WIN" Enter
 # --- end G2 trigger failures ---
+
+# --- G4: queued-not-delivered sends are not failures ---
+echo "ws send/on: a durably queued but undelivered send exits 75 and triggers record queued"
+QUEUED_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$DEFAULT_WIN.lock"
+rm -f "$TMP/queued-held" "$TMP/queued-release"
+(zmodload zsh/system; : >> "$QUEUED_LOCK"; zsystem flock -f queued_fd "$QUEUED_LOCK"; : > "$TMP/queued-held"
+  while [[ ! -e "$TMP/queued-release" ]]; do sleep 0.05; done) &
+queued_holder=$!
+wait_until test -e "$TMP/queued-held"
+out="$(WS_SESSION=1 "$WS" send "$DEFAULT_ID" "queued direct" 2>&1)"
+assert_exit "$?" "75" "busy target: direct send exits 75 (queued, not delivered)"
+assert_contains "$out" "message queued" "queued send keeps its warning"
+out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --send-to me 'queued trigger' 2>&1)"
+assert_exit "$?" "0" "ws on: queued inline action is not a failure"
+QUEUED_TID="${${(f)out}[1]}"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$QUEUED_TID.json" 2>/dev/null)" "queued" "queued action archived as queued"
+assert_contains "$(jq -r '.warning // ""' "$WS_HOME/triggers/archive/$QUEUED_TID.json" 2>/dev/null)" "message queued" "queued record keeps the warning"
+: > "$TMP/queued-release"
+wait "$queued_holder"
+reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null | jq -r '.reason // empty')"
+assert_eq "$(print -r -- "$reply" | grep -c '^queued direct$')" "1" "queued direct send delivered exactly once"
+assert_eq "$(print -r -- "$reply" | grep -c '^queued trigger$')" "1" "queued trigger send delivered exactly once"
+# --- end G4 queued sends ---
 
 echo "ws on: validates source lists, events and action options without creating triggers"
 for bad_sources in '' ',' "$SOURCE_B," ",$SOURCE_B" "$SOURCE_B,,${TARGET_ID}" no-such-session; do

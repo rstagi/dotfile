@@ -127,33 +127,40 @@ cmd_send() {
   fi
   [[ -n "$message" ]] || die "send: empty message"
   message="[ws $sender]"$'\n'"$message"
-  local win lock lockfd rc attempt
+  # 75 (EX_TEMPFAIL): durably queued, not yet delivered. A later Stop/idle delivers it: never re-send.
+  local win lock lockfd rc attempt queued=75
   # Durable first: a slow TUI or busy hook lock can delay, never drop, the message.
   with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_enqueue "$id" "$message" "$force" || return 1
   # The window may close while we wait for its hook lock: re-resolve (and resume) once.
   for attempt in 1 2; do
     win="$(ws_bus_window "$id")"
     if [[ -z "$win" ]]; then
-      (ws_bus_open "$id" 1) || die "send: message queued; cannot resume session #$id"
-      win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open"
-      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+      if ! (ws_bus_open "$id" 1); then
+        # A vanished workspace can never resume: a genuine failure, not a pending delivery.
+        resolve_workspace "$(jq -r '.path' "$WS_SESSIONS/$id/meta")" >/dev/null ||
+          die "send: message queued; session #$id cannot resume: workspace no longer exists"
+        die "send: message queued; cannot resume session #$id" "$queued"
+      fi
+      win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open" "$queued"
+      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready" "$queued"
     elif [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle && -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
-      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready" "$queued"
     fi
     lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
     { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
-      die "send: message queued; session #$id busy"
+      die "send: message queued; session #$id busy" "$queued"
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
     rc=$?
     exec {lockfd}>&-
     if (( rc == 4 )); then
       # Readiness changed after the unlocked check: release both locks before waiting.
-      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready" "$queued"
     elif (( rc != 3 )); then
-      return "$rc"
+      (( rc == 0 )) || return "$queued" # pane unavailable or inbox lock timeout: still queued
+      return 0
     fi
   done
-  die "send: message queued; session #$id not delivered"
+  die "send: message queued; session #$id not delivered" "$queued"
 }
 
 cmd_whoami() {
@@ -352,7 +359,13 @@ ws_bus_fire_trigger() {
     print -rn -- "$message" | (WS_SESSION="$sender" cmd_send --force "$target" - 2>"$errfile") >/dev/null
   fi
   rc=$?
-  if (( rc )); then
+  if [[ "$action" != spawn ]] && (( rc == 75 )); then
+    # Durably queued, delivered by a later Stop/idle: not a failure, and must not be re-sent.
+    jq --rawfile warning "$errfile" '.status = "queued" | .warning = $warning' \
+      "$record" > "$record.tmp" && mv "$record.tmp" "$record"
+    print -u2 "ws: trigger #$1 message queued, not yet delivered: $(tail -1 "$errfile"); see $WS_TRIGGERS/archive/$1.json"
+    rc=0
+  elif (( rc )); then
     jq --argjson rc "$rc" --rawfile error "$errfile" '.status = "failed" | .exit_code = $rc | .error = $error' \
       "$record" > "$record.tmp" && mv "$record.tmp" "$record"
     print -u2 "ws: trigger #$1 action failed: $(tail -1 "$errfile"); see $WS_TRIGGERS/archive/$1.json"
@@ -406,6 +419,7 @@ ws_bus_done_locked() {
 # Share the enqueue lock: accepted work must be delivered before completion can close a tab.
 ws_bus_publish_done_locked() {
   local id="$1" tmp="$2" dir="$WS_SESSIONS/$1"
+  ws_bus_reclaim_orphans "$id" || return 1 # dead/expired Stop copies must not block forever
   local -a inflight=("$dir"/inbox.inflight*(N))
   if [[ -s "$dir/inbox" ]] || (( $#inflight )); then
     print -u2 "ws: done: pending messages; finish this turn so the Stop hook delivers them, then retry ws done"
@@ -581,12 +595,14 @@ ws_bus_ack() {
 
 # Under the inbox lock: requeues the legacy in-flight file and those of dead Stop hooks.
 # A live owner's reply may still land, so its file stays; our own pid's is a reused one.
+# Past 2x the 5s hook timeout no owner is alive: a live pid there is a reused one.
 ws_bus_reclaim_orphans() {
   local inbox="$WS_SESSIONS/$1/inbox" f
+  local -a expired=("$inbox".inflight.<->(Nms+10))
   ws_bus_reclaim "$1" || return 1
   ws_bus_paste_expire "$1" || return 1
   for f in "$inbox".inflight.<->(N); do
-    [[ "${f##*.}" != $$ ]] && kill -0 "${f##*.}" 2>/dev/null && continue
+    [[ "${f##*.}" != $$ ]] && (( ! ${expired[(Ie)$f]} )) && kill -0 "${f##*.}" 2>/dev/null && continue
     cat "$f" "$inbox" > "$inbox.tmp" && mv "$inbox.tmp" "$inbox" && rm -f "$f" || return 1
   done
 }
@@ -807,6 +823,18 @@ ws_bus_update_locked() {
   jq "$@" "$meta" > "$meta.tmp" && mv "$meta.tmp" "$meta"
 }
 
+# ws_bus_close <id> [<window>] — with a window, closes only that generation (check-and-clear
+# under the meta lock): 3 = meta re-pointed to another window (resumed), left untouched.
 ws_bus_close() {
-  ws_bus_update "$1" '.window = "" | if .status == "active" then .status = "closed" else . end'
+  local id="$1" win="${2:-}"
+  [[ -n "$win" ]] || { ws_bus_update "$id" '.window = "" | if .status == "active" then .status = "closed" else . end'; return; }
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
+  with_lock "$WS_SESSIONS/$id/meta" ws_bus_close_owned_locked "$WS_SESSIONS/$id/meta" "$win"
+}
+
+ws_bus_close_owned_locked() {
+  local meta="$1" win="$2" cur
+  cur="$(jq -r '.window // ""' "$meta")" || return 1
+  [[ -z "$cur" || "$cur" == "$win" ]] || return 3
+  ws_bus_update_locked "$meta" '.window = "" | if .status == "active" then .status = "closed" else . end'
 }

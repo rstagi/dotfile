@@ -53,8 +53,10 @@ never arrives. Paste + Enter submits
 any unsent text a human typed into the target's input along with the message. Codex
 launches set `-c developer_instructions=...`, overriding configured developer
 instructions. Stopped targets resume
-before delivery. If resume fails, the message remains queued: inspect the session before
-resending, to avoid duplicates.
+before delivery. Exit 75 (`message queued` warning; busy, starting or temporarily
+unresumable target) means durably queued, not yet delivered: a later Stop or idle
+delivers it. It is not a failure; never re-send it. Exit 1 is a genuine failure (bad or
+unresumable target, enqueue failed); inspect the session before resending.
 
 Check `ws sessions <target>` or `ws show <target>` before messaging. Prefer reading a
 done session's output or starting follow-up work in another session. Do not message
@@ -130,7 +132,8 @@ only done: closing its own tab is cleanup, not
 an exit. Wait on `done` for spawned results; `exit` from a spawned session means it ended
 without declaring done. Send dependency cycles, including self-waits, are rejected.
 Trigger actions fire once; a failed action is not retried automatically and its stderr is
-kept in the record's `error`. Output-only templates (including whitespace around
+kept in the record's `error`. A send queued but not yet delivered is archived as
+`queued` (warning in `warning`), is not a failure and must not be re-sent. Output-only templates (including whitespace around
 `{output}`) are rejected at registration because `ws done` may omit output. Include
 text or `{id}` alongside `{output}` so the continuation always has content.
 
@@ -141,6 +144,6 @@ ws on --rm 7                 # cancel pending trigger 7
 
 Only pending triggers appear in `ws triggers`. If a continuation does not arrive,
 inspect source/target status and `$WS_HOME/triggers/<trigger-id>.json` (pending) or
-`$WS_HOME/triggers/archive/<trigger-id>.json` (fired/failed; default `~/.ws/triggers/`)
+`$WS_HOME/triggers/archive/<trigger-id>.json` (fired/queued/failed; default `~/.ws/triggers/`)
 before registering a replacement. Never edit registry files to
 change lifecycle or retrigger actions.

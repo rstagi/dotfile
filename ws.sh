@@ -414,7 +414,15 @@ cmd_hook() {
   [[ "$event" != stop ]] || reply='{}'
   [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   [[ "$event" == (working|idle|stop|cancel|waiting|subagent-start|subagent-stop) ]] || return 0
-  record_resume_id "$payload"
+  # A reused pane now hosts another session: a delayed hook from the old launch must not
+  # touch the new one's resume id, state or inbox.
+  local pane_session="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)"
+  if [[ -n "${WS_SESSION:-}" && -n "$pane_session" && "$pane_session" != "$WS_SESSION" ]]; then
+    [[ -z "$reply" ]] || print -r -- "$reply"
+    return 0
+  fi
+  # Stop shares a 5s hook timeout with the hook and inbox locks: never wait on resume ids.
+  record_resume_id "$payload" "$([[ "$event" == stop ]] && print 0 || print 3)"
   local win lock lockfd prev last state agent_id="" applied=0
   [[ -n "$payload" ]] && agent_id="$(print -r -- "$payload" | jq -r '.agent_id // empty' 2>/dev/null)"
   agent_id="${agent_id//[^A-Za-z0-9_-]/_}"
@@ -587,7 +595,7 @@ open_session_locked() {
   fi
   # Non-interactive agent shells (codex/grok `zsh -lc`) lack the `ws` alias: put a `ws` on PATH.
   [[ "$WS_HOME/bin/ws" -ef "$WS_BIN" ]] || { mkdir -p "$WS_HOME/bin" && ln -sfn "$WS_BIN" "$WS_HOME/bin/ws"; } 2>/dev/null
-  run="PATH=${(q)WS_HOME}/bin:\$PATH; ${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  run="PATH=${(q)WS_HOME}/bin:\$PATH; ${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot $id \"\$TMUX_PANE\"; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
     -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" -e "WS_BIN=$WS_BIN"
     -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" ${(z)WS_AGENT_SHELL} "$run")
@@ -974,18 +982,29 @@ session_append() {
   print -r -- "$slot"
 }
 
+# session_remove <wt> <slot> [<id> <window|pane>] — with an exiting generation (launch
+# wrapper `_end`), a slot re-pointed meanwhile (`ws open` resumed the ID elsewhere, or
+# the slot was reused) is left to its new owner.
 session_remove() {
-  local wt="$1" slot="$2" f
+  local wt="$1" slot="$2" gid="${3:-}" win="${4:-}" f
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  with_lock "$f" session_remove_locked "$f" "$slot"
+  [[ "$win" != %* ]] || win="$(tmux_ display -p -t "$win" '#{window_id}' 2>/dev/null)"
+  with_lock "$f" session_remove_locked "$f" "$slot" "$gid" "$win"
 }
 
 session_remove_locked() {
-  local f="$1" slot="$2" id
+  local f="$1" slot="$2" gid="$3" win="$4" id
   id="$(awk -F '\t' -v s="$slot" '$1 == s {print $4}' "$f")"
+  if [[ -n "$gid" ]]; then
+    [[ -z "$id" || "$id" == "$gid" ]] || return 0
+    if [[ "$gid" == <-> && -n "$win" ]]; then
+      ws_bus_close "$gid" "$win"
+      (( $? != 3 )) || return 0
+    fi
+  fi
   rewrite "$f" -F '\t' -v s="$slot" '$1 != s' || return 1
-  [[ "$id" != <-> ]] || ws_bus_close "$id"
+  [[ "$id" != <-> || ( -n "$win" && "$id" == "$gid" ) ]] || ws_bus_close "$id"
   return 0
 }
 
@@ -994,7 +1013,7 @@ session_remove_locked() {
 # slot/id are read before the lock: a stale hook after slot reuse must never take over the
 # row of the slot's new owner, so only an unowned row or our own is updated.
 record_resume_id() {
-  local sid wt slot agent f id
+  local sid wt slot agent f id meta t="${2:-3}" # t: lock wait (s); contention skips the update
   sid="$(print -r -- "$1" | jq -r '.session_id // empty' 2>/dev/null)"
   [[ -n "$sid" ]] || sid="${GROK_SESSION_ID:-}" # grok hooks: id in env if not in the payload
   [[ -n "$sid" ]] || return 0
@@ -1005,12 +1024,17 @@ record_resume_id() {
   [[ -n "$wt" && -n "$slot" ]] || return 0
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  if [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" && "$(jq -r '.resume_id' "$WS_SESSIONS/$id/meta")" != "$sid" ]]; then
-    ws_bus_update "$id" --arg resume "$sid" '.resume_id = $resume' || return 0
+  meta="$WS_SESSIONS/$id/meta"
+  if [[ "$id" == <-> && -f "$meta" && "$(jq -r '.resume_id' "$meta")" != "$sid" ]]; then
+    : >> "$meta.lock"
+    (zsystem flock -t "$t" -i 0.01 "$meta.lock" 2>/dev/null &&
+      ws_bus_update_locked "$meta" --arg resume "$sid" '.resume_id = $resume') || return 0
   fi
   grep -qxF -- "$slot	${agent:-claude}	$sid	$id" "$f" && return 0
-  with_lock "$f" rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" -v g="$id" \
-    '$1 == s { found = 1; if ($4 == "" || $4 == g) { $3 = id; if (g != "") $4 = g } } { print } END { if (!found) print s, a, id, g }'
+  : >> "$f.lock"
+  (zsystem flock -t "$t" -i 0.01 "$f.lock" 2>/dev/null || exit 0
+    rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" -v g="$id" \
+      '$1 == s { found = 1; if ($4 == "" || $4 == g) { $3 = id; if (g != "") $4 = g } } { print } END { if (!found) print s, a, id, g }')
 }
 
 # with_lock <file> <cmd...> — runs cmd holding <file>.lock: parallel tool calls fire hooks
