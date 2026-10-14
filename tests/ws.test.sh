@@ -1522,6 +1522,18 @@ assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$HUP_ID/events")" $'exit\n
 kill -KILL "$HUP_PID" "${HUP_CHILDREN[@]}" 2>/dev/null
 "$WS" rm api/delivery --force --delete-branch >/dev/null
 
+echo "ws lifecycle: interactive launch shells keep the crash prompt and actual exit code"
+for agent in claude codex grok; do
+  WS_AGENT_SHELL="zsh -fic" "$WS" new --repo "$REPO" --branch "interactive-$agent" --agent "$agent" --detach
+  INTERACTIVE_WIN="$(windows_of "$WS_ROOT/api/interactive-$agent")"
+  assert_contains "$(wait_pane "$INTERACTIVE_WIN" "FAKE-$agent")" "FAKE-$agent" "$agent interactive shell starts TUI"
+  INTERACTIVE_ID="$(T display -p -t "$INTERACTIVE_WIN" '#{@ws_session}')"
+  T send-keys -t "$INTERACTIVE_WIN" 17 Enter
+  assert_contains "$(wait_pane "$INTERACTIVE_WIN" 'agent exited (17)')" 'agent exited (17)' "$agent interactive shell keeps crash prompt"
+  assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$INTERACTIVE_ID/events")" $'exit\n17' "$agent interactive shell records actual exit"
+  "$WS" rm "api/interactive-$agent" --force --delete-branch >/dev/null
+done
+
 "$WS" rm api/lifecycle --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"

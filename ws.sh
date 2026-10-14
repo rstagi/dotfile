@@ -529,7 +529,7 @@ open_session_locked() {
   run="${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
     -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}"
-    -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" /bin/zsh -fc "$run")
+    -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
     win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")" || return 1
