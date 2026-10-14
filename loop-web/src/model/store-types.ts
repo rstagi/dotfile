@@ -188,6 +188,9 @@ export interface PhaseCounts {
 }
 
 export interface LoopSummary {
+  milestone: number;
+  milestoneTotal: number;
+  awaitingMerge: NonNullable<StateJson["awaitingMerge"]> | null;
   runId: string;
   effort: string | null;
   status: LoopStatus;

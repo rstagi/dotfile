@@ -151,7 +151,7 @@ function splitRuns(runs: RawRunDir[]): {
     }
   }
   reviewRuns.sort((a, b) => a.k - b.k);
-  for (const list of Object.values(reviewRunsByRepository)) list.sort((a, b) => a.k - b.k);
+  for (const list of Object.values(reviewRunsByRepository)) list.sort((a, b) => Number(a.phase ?? 0) - Number(b.phase ?? 0) || a.k - b.k);
   return { reviewRuns, reviewRunsByRepository, attemptDirs };
 }
 

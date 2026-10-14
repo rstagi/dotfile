@@ -185,6 +185,64 @@ EOF
     ids="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$EDIT_PID/snapshot" | jq -r '[.graph.nodes[].id] | join(",")')"
     assert_eq "$ids" "plan,1,2,3,4" "snapshot keeps the prior review inline and adds a terminal review"
 
+    echo "loop-plan: milestones — parked gate, current projections, and plan metadata"
+    MILE="$TMP/milestones/.loop"; mkdir -p "$MILE"
+    cat > "$MILE/plan.md" <<'EOF'
+<!-- loop-plan
+planId: loop-milestones-e2e
+daemon: http://localhost:7717
+-->
+# Releases — Multi-Phase Plan
+## Repositories
+### `acme/api`
+- **PR:** https://github.com/acme/api/pull/99
+## Milestone 1 — First release
+- **Integration branch:** `feat/first`
+- **PR:** https://github.com/acme/api/pull/1
+### Phase 1 — First work `[lane: A]` `[status: done]`
+- **Repository:** `acme/api`
+### Phase 2 — First gate `[lane: review]` `[status: done]` `[kind: pr-review]` `[gate: merge]`
+- **Depends on:** Phase 1
+## Milestone 2 — Second release
+- **Integration branch:** `feat/second`
+### Phase 3 — Second work `[lane: A]` `[status: todo]`
+- **Repository:** `acme/api`
+- **Depends on:** Phase 2
+### Phase 4 — Second review `[lane: review]` `[status: todo]` `[kind: pr-review]`
+- **Depends on:** Phase 3
+EOF
+    MILE_PID="$(plan register --dir "$MILE")"
+    curl -sf -X POST --data-binary '{"milestone":1,"awaitingMerge":{"milestone":1,"prs":{"acme/api":"https://github.com/acme/api/pull/1"}},"repositories":{"acme/api":{"prUrl":"https://github.com/acme/api/pull/1"}}}' \
+      "$LOOP_DAEMON_URL/api/loops/$MILE_PID/state" >/dev/null
+    milestone_plan="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$MILE_PID/plan")"
+    assert_eq "$(print -r -- "$milestone_plan" | jq -r '[.status,.milestone,.milestoneTotal,.awaitingMerge.prs["acme/api"]] | map(tostring) | join(" ")')" \
+      "awaiting-merge 1 2 https://github.com/acme/api/pull/1" "plan endpoint exposes milestone gate coordinates"
+
+    # A newer finished loop must not hide a parked gate in back-compat snapshots.
+    FIN="$TMP/new-finished/.loop"; mkdir -p "$FIN"
+    curl -sf -X POST --data-binary "$(jq -cn --arg dir "$FIN" '{loopDir:$dir}')" \
+      "$LOOP_DAEMON_URL/api/loops/loop-new-finished/register" >/dev/null
+    curl -sf -X POST --data-binary '{}' "$LOOP_DAEMON_URL/api/loops/loop-new-finished/finish" >/dev/null
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/snapshot" | jq -r '.effort.name')" \
+      "Releases" "awaiting-merge counts as active-ish for default selection"
+
+    ARC="$TMP/archived-active/.loop"; mkdir -p "$ARC"
+    curl -sf -X POST --data-binary "$(jq -cn --arg dir "$ARC" '{loopDir:$dir}')" \
+      "$LOOP_DAEMON_URL/api/loops/loop-archived-active/register" >/dev/null
+    curl -sf -X POST --data-binary '{"phases":{"1":{"status":"running"}}}' \
+      "$LOOP_DAEMON_URL/api/loops/loop-archived-active/state" >/dev/null
+    curl -sf -X POST --data-binary '{}' "$LOOP_DAEMON_URL/api/loops/loop-archived-active/archive" >/dev/null
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/snapshot" | jq -r '.effort.name')" \
+      "Releases" "manually archived loops do not hide a live milestone gate"
+
+    curl -sf -X POST --data-binary '{"milestone":2,"awaitingMerge":null,"milestones":{"1":{"prs":{"acme/api":"https://github.com/acme/api/pull/1"}}},"repositories":{"acme/api":{"integrationBranch":"feat/second","prUrl":null,"review":null}}}' \
+      "$LOOP_DAEMON_URL/api/loops/$MILE_PID/state" >/dev/null
+    milestone_snap="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$MILE_PID/snapshot")"
+    assert_eq "$(print -r -- "$milestone_snap" | jq -r '[.effort.milestone,.effort.milestoneTotal,.effort.pr,.plan.repositories[0].pr] | map(tostring) | join(" ")')" \
+      "2 2 null null" "HTTP snapshot never falls back to the prior milestone or repository PR"
+    assert_eq "$(print -r -- "$milestone_snap" | jq -r '.graph.nodes[] | select(.id=="2") | .prs["acme/api"]')" \
+      "https://github.com/acme/api/pull/1" "historical gate retains its recorded PR through HTTP"
+
     echo "loop-plan: control — pause/resume (loop + phase) and model override via POST /control"
     CTL="$TMP/control/.loop"; mkdir -p "$CTL"
     cat > "$CTL/plan.md" <<'EOF'

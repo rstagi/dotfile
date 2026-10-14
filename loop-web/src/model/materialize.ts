@@ -31,15 +31,30 @@ export function materialize(record: LoopRecord, live: LoopInput | null, opts: Ma
     // reference otherwise, so a current snapshot short-circuits untouched).
     const hasCurrentFields = Object.prototype.hasOwnProperty.call(frozen, "subOrch")
       && Array.isArray(frozen.effort?.repositories)
-      && Array.isArray(frozen.decisions);
-    return hasCurrentFields
-      ? frozen
-      : { ...frozen, effort: { ...frozen.effort, repositories: frozen.effort?.repositories ?? [] },
-          subOrch: frozen.subOrch ?? null, pendingHil: frozen.pendingHil ?? 0,
-          decisions: frozen.decisions ?? [], jev: frozen.jev ?? null,
-          graph: { ...frozen.graph, nodes: (frozen.graph?.nodes ?? []).map((node) => ({
-            ...node, decisions: node.decisions ?? [],
-          })) } };
+      && Array.isArray(frozen.decisions)
+      && typeof frozen.effort?.milestone === "number"
+      && Array.isArray(frozen.plan?.milestones);
+    if (hasCurrentFields) return frozen;
+    const defaults = render(record, EMPTY_LIVE, opts);
+    return {
+      ...frozen,
+      effort: {
+        ...defaults.effort, ...frozen.effort,
+        repositories: frozen.effort?.repositories ?? defaults.effort.repositories,
+      },
+      plan: {
+        ...defaults.plan, ...frozen.plan,
+        milestones: frozen.plan?.milestones ?? defaults.plan.milestones,
+        phaseSummary: (frozen.plan?.phaseSummary ?? defaults.plan.phaseSummary).map((phase) => ({
+          ...phase, milestone: phase.milestone ?? 1,
+        })),
+      },
+      subOrch: frozen.subOrch ?? null, pendingHil: frozen.pendingHil ?? 0,
+      decisions: frozen.decisions ?? [], jev: frozen.jev ?? null,
+      graph: { ...frozen.graph, nodes: (frozen.graph?.nodes ?? []).map((node) => ({
+        ...node, decisions: node.decisions ?? [],
+      })) },
+    };
   }
   return render(record, live, opts);
 }
@@ -53,6 +68,9 @@ export function summarize(record: LoopRecord): LoopSummary {
   }));
   return {
     runId: record.runId,
+    milestone: record.lastState?.milestone ?? 1,
+    milestoneTotal: Math.max(1, parsePlan(record.planText ?? FALLBACK_PLAN).milestones.length),
+    awaitingMerge: record.lastState?.awaitingMerge ?? null,
     effort: record.effort,
     status: record.status,
     integrationBranch: record.integrationBranch,

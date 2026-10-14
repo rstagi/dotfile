@@ -161,6 +161,20 @@ describe("materialize — archived loop (live = null)", () => {
     });
   });
 
+  it("backfills milestone metadata on snapshots frozen before milestone support", () => {
+    const rec = fold("r", register, stateAll);
+    const frozen = JSON.parse(JSON.stringify(materialize(rec, emptyLive)));
+    delete frozen.effort.milestone;
+    delete frozen.effort.milestoneTotal;
+    delete frozen.effort.awaitingMerge;
+    delete frozen.plan.milestones;
+    for (const phase of frozen.plan.phaseSummary) delete phase.milestone;
+    const archived = materialize({ ...rec, lastSnapshot: frozen }, null);
+    expect(archived.effort).toMatchObject({ milestone: 1, milestoneTotal: 1, awaitingMerge: null });
+    expect(archived.plan.milestones).toHaveLength(1);
+    expect(archived.plan.phaseSummary.every((phase) => phase.milestone === 1)).toBe(true);
+  });
+
   it("still returns a valid snapshot when no lastSnapshot was stored", () => {
     const rec = fold("r", register, stateAll);
     const snap = materialize(rec, null, { now: 1, nowIso: "2026-08-03T10:00:00Z" });
@@ -263,5 +277,47 @@ describe("materialize — control files", () => {
     const snap = materialize(rec, emptyLive);
     expect(snap.paused).toBe(false);
     expect(snap.graph.nodes.find((n) => n.id === "3")?.ui).toBe("paused");
+  });
+});
+
+describe("materialize — milestone summary", () => {
+  it("reports the merge gate in both summary and snapshot, then clears it on advancement", () => {
+    const planText = `# Releases — Multi-Phase Plan
+## Repositories
+### \`acme/api\`
+## Milestone 1 — First
+- **Integration branch:** \`feat/first\`
+- **PR:** https://github.com/acme/api/pull/1
+### Phase 1 — First work [lane: A] [status: done]
+- **Repository:** \`acme/api\`
+### Phase 2 — First review [lane: review] [status: done] [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 1
+## Milestone 2 — Second
+- **Integration branch:** \`feat/second\`
+### Phase 3 — Second work [lane: A] [status: todo]
+- **Repository:** \`acme/api\`
+- **Depends on:** Phase 2
+### Phase 4 — Second review [lane: review] [status: todo] [kind: pr-review]
+- **Depends on:** Phase 3
+`;
+    const awaitingMerge = { milestone: 1, prs: { "acme/api": "https://github.com/acme/api/pull/1" } };
+    const parked = fold("r", { kind: "register", info: { runId: "r", planText } }, {
+      kind: "state", state: { milestone: 1, awaitingMerge,
+        repositories: { "acme/api": { prUrl: awaitingMerge.prs["acme/api"] } } },
+    });
+    expect(summarize(parked)).toMatchObject({ status: "awaiting-merge", milestone: 1, milestoneTotal: 2, awaitingMerge });
+    expect(materialize(parked, emptyLive).effort).toMatchObject({ milestone: 1, milestoneTotal: 2, awaitingMerge });
+
+    const advanced = reduceLoop(parked, { kind: "state", state: { milestone: 2, awaitingMerge: null,
+      milestones: { "1": { prs: awaitingMerge.prs } },
+      repositories: { "acme/api": { integrationBranch: "feat/second", prUrl: null, review: null } },
+    } });
+    expect(summarize(advanced)).toMatchObject({ milestone: 2, milestoneTotal: 2, awaitingMerge: null, prUrl: null, reviewOutcome: null });
+    const snap = materialize(advanced, { ...emptyLive, runs: [{
+      name: "review-p2-acme--api-a12", meta: null, status: JSON.stringify({ outcome: "blocked" }),
+      spawnLog: null, transcriptMtime: null, metaMtime: null,
+    }] });
+    expect(snap.effort).toMatchObject({ milestone: 2, milestoneTotal: 2, awaitingMerge: null, pr: null, integrationBranch: "feat/second" });
+    expect(snap.plan.milestones[0].prs).toEqual(awaitingMerge.prs);
   });
 });
