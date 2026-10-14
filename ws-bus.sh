@@ -36,7 +36,7 @@ cmd_send() {
     # Retain the message even if resume fails or the TUI cannot become ready in time.
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_enqueue "$id" "$message" || return 1
     queued=1
-    ws_bus_open "$id" 1 || die "send: message queued; cannot resume session #$id"
+    (ws_bus_open "$id" 1) || die "send: message queued; cannot resume session #$id"
     win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open"
     ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
   fi
@@ -54,6 +54,9 @@ ws_bus_send_locked() {
   state="$(tmux_ show -wqv -t "$win" @ws_state)"
   (( queued )) || ws_bus_enqueue "$id" "$message" || return 1
   if [[ "$state" == idle && -s "$WS_SESSIONS/$id/inbox" ]]; then
+    if [[ -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
+      ws_bus_wait_ready "$id" "$win" || { print -u2 "ws: send: message queued; session #$id input not ready"; return 1; }
+    fi
     ws_bus_idle_locked "$id" "$win" || return 1
     tmux_ set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
   fi

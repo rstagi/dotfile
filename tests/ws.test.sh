@@ -1350,6 +1350,25 @@ assert_exit "$?" "1" "empty stdin refused"
 "$WS" send "$BUS_ID" 2>/dev/null
 assert_exit "$?" "1" "missing message refused"
 
+echo "ws send: startup safety also applies to a newly opened live target"
+"$WS" add api/delivery --agent claude --detach
+FRESH_WIN="$(slot_window "$SEND_WT" 4)"
+FRESH_ID="$(T display -p -t "$FRESH_WIN" '#{@ws_session}')"
+WS_SESSION=1 "$WS" send "$FRESH_ID" "fresh target"
+assert_exit "$?" "0" "send waits for a new target's TUI before submitting"
+wait_until pane_received "$FRESH_ID" $'[ws #1]\nfresh target'
+assert_eq "$(tail -1 "$WS_HOME/pane-$FRESH_ID.jsonl" 2>/dev/null | jq -r '.text')" $'[ws #1]\nfresh target' "startup input is never discarded by terminal initialization"
+
+echo "ws send: failed resume retains the message and reports it queued"
+META="$WS_HOME/sessions/$FRESH_ID/meta"
+jq --arg missing "$TMP/missing-workspace" '.path = $missing' "$META" > "$META.fixture"
+mv "$META.fixture" "$META"
+T kill-window -t "$FRESH_WIN"
+out="$(WS_SESSION=1 "$WS" send "$FRESH_ID" "retain on failure" 2>&1)"
+assert_exit "$?" "1" "missing workspace refuses resume"
+assert_contains "$out" "message queued" "failure explains that delivery remains pending"
+assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$FRESH_ID/inbox")" $'[ws #1]\nretain on failure' "failed resume leaves a durable sender-prefixed message"
+
 "$WS" rm api/delivery --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
