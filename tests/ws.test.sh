@@ -50,6 +50,12 @@ own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
 [ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
+if [ "\$line" = done ]; then
+  printf 'agent result\\n' | "\$WS_TEST_CLI" done -
+  echo DONE-RETURNED
+  read line
+fi
+exit "\${line:-0}"
 EOF
   chmod +x "$TMP/bin/$agent"
 done
@@ -1384,6 +1390,153 @@ assert_contains "$out" "message queued" "failure explains that delivery remains 
 assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$FRESH_ID/inbox")" $'[ws #1]\nretain on failure' "failed resume leaves a durable sender-prefixed message"
 
 "$WS" rm api/delivery --force --delete-branch >/dev/null
+
+echo "ws done: file output is durable; user-opened tab stays; show resolves names"
+"$WS" new --repo "$REPO" --branch lifecycle --detach
+DONE_WT="$WS_ROOT/api/lifecycle"
+DONE_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$DONE_WIN" FAKE-claude)" "FAKE-claude" "lifecycle agent ready"
+DONE_ID="$(T display -p -t "$DONE_WIN" '#{@ws_session}')"
+WS_SESSION="$DONE_ID" "$WS" name finisher
+printf '# Result\n\nquoted "value" $literal\n\n' > "$TMP/result file.md"
+WS_SESSION="$DONE_ID" "$WS" done --output "$TMP/result file.md"
+assert_exit "$?" "0" "done accepts output file"
+cmp -s "$TMP/result file.md" "$WS_HOME/sessions/$DONE_ID/output.md"
+assert_exit "$?" "0" "done preserves exact output bytes"
+assert_eq "$("$WS" sessions "$DONE_ID" | cut -f6)" "done" "done records lifecycle status"
+assert_eq "$(windows_of "$DONE_WT")" "$DONE_WIN" "user-opened tab stays after done"
+assert_eq "$(jq -r '.event' "$WS_HOME/sessions/$DONE_ID/events")" "done" "done appends lifecycle event"
+jq -e --arg id "$DONE_ID" --arg output "$WS_HOME/sessions/$DONE_ID/output.md" \
+  '.id == $id and .output == $output and (.at | type == "string")' "$WS_HOME/sessions/$DONE_ID/events" >/dev/null
+assert_exit "$?" "0" "done event identifies source, output and time"
+out="$("$WS" show finisher)"
+assert_exit "$?" "0" "show accepts session name"
+assert_contains "$out" "status: done" "show reports lifecycle status"
+assert_contains "$out" "output: $WS_HOME/sessions/$DONE_ID/output.md" "show reports durable output path"
+echo "ws done: repeated declarations replace output, including stdin and empty default"
+printf 'replacement\n\n' | WS_SESSION="$DONE_ID" "$WS" done -
+assert_exit "$?" "0" "done accepts stdin shorthand"
+assert_eq "$(cat "$WS_HOME/sessions/$DONE_ID/output.md"; print -n .)" $'replacement\n\n.' "repeat overwrites output preserving trailing newlines"
+assert_eq "$(jq -sr 'map(.event) | join(",")' "$WS_HOME/sessions/$DONE_ID/events")" "done,done" "repeat appends another done event"
+printf 'explicit stdin' | WS_SESSION="$DONE_ID" "$WS" done --output -
+assert_exit "$?" "0" "done accepts explicit stdin output"
+assert_eq "$(cat "$WS_HOME/sessions/$DONE_ID/output.md")" "explicit stdin" "explicit stdin replaces previous output"
+WS_SESSION="$DONE_ID" "$WS" done
+assert_exit "$?" "0" "done without output succeeds without reading stdin"
+assert_eq "$(wc -c < "$WS_HOME/sessions/$DONE_ID/output.md" | tr -d ' ')" "0" "default done writes empty output"
+assert_eq "$(jq -s length "$WS_HOME/sessions/$DONE_ID/events")" "4" "each declaration appends one event"
+
+echo "ws done/show: invalid input leaves lifecycle intact"
+for args in '--output' '--bad' '--output missing-file' 'extra argument'; do
+  WS_SESSION="$DONE_ID" "$WS" done ${=args} 2>/dev/null
+  assert_exit "$?" "1" "invalid done rejected: $args"
+done
+env -u WS_SESSION "$WS" done 2>/dev/null
+assert_exit "$?" "1" "done outside a session is refused"
+WS_SESSION=999999 "$WS" done 2>/dev/null
+assert_exit "$?" "1" "done with unknown identity is refused"
+assert_eq "$(jq -s length "$WS_HOME/sessions/$DONE_ID/events")" "4" "invalid declarations append no events"
+assert_eq "$(wc -c < "$WS_HOME/sessions/$DONE_ID/output.md" | tr -d ' ')" "0" "invalid declarations preserve output"
+"$WS" show no-such-session 2>/dev/null
+assert_exit "$?" "1" "show rejects missing session"
+"$WS" show 2>/dev/null
+assert_exit "$?" "1" "show requires target"
+out="$("$WS" send "$DONE_ID" should-refuse 2>&1)"
+assert_exit "$?" "1" "send rejects session declared done through CLI"
+assert_contains "$out" "--force required" "send explains done guard"
+
+echo "ws lifecycle: agent exit emits its actual code and preserves done output"
+lifecycle_exit_count() { [[ "$(jq -sr 'map(select(.event == "exit")) | length' "$WS_HOME/sessions/$1/events")" == "$2" ]]; }
+T send-keys -t "$DONE_WIN" Enter
+wait_until lifecycle_exit_count "$DONE_ID" 1
+assert_exit "$?" "0" "normal agent exit appends lifecycle event"
+assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[0].code' "$WS_HOME/sessions/$DONE_ID/events")" "0" "normal exit event records code zero"
+assert_eq "$("$WS" sessions "$DONE_ID" | cut -f5,6)" $'stopped\tdone' "agent exit preserves done lifecycle"
+assert_contains "$("$WS" show "$DONE_ID")" "output: $WS_HOME/sessions/$DONE_ID/output.md" "output stays addressable after agent exit"
+"$WS" open "$DONE_ID" --detach
+DONE_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$DONE_WIN" FAKE-claude)" "FAKE-claude" "done identity can resume"
+T send-keys -t "$DONE_WIN" 17 Enter
+wait_until lifecycle_exit_count "$DONE_ID" 2
+assert_exit "$?" "0" "failed agent exit appends lifecycle event"
+assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[1].code' "$WS_HOME/sessions/$DONE_ID/events")" "17" "failed exit retains actual nonzero code"
+assert_contains "$(wait_pane "$DONE_WIN" 'agent exited (17)')" "agent exited (17)" "failure keeps existing close/resume behavior"
+T send-keys -t "$DONE_WIN" Enter
+
+# A shell tab adopted with ws claude must report exits as well as ws new/add tabs.
+MANUAL_WIN="$(T new-window -d -P -F '#{window_id}' -t keepalive: -c "$DONE_WT" \
+  "zsh -fc '\"$WS\" claude; echo EXIT=\$?; sleep 30'")"
+assert_contains "$(wait_pane "$MANUAL_WIN" FAKE-claude)" "FAKE-claude" "manually opened agent ready"
+MANUAL_ID="$(T display -p -t "$MANUAL_WIN" '#{@ws_session}')"
+T send-keys -t "$MANUAL_WIN" Enter
+assert_contains "$(wait_pane "$MANUAL_WIN" EXIT=0)" "EXIT=0" "adopted tab returns to shell"
+assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$MANUAL_ID/events")" $'exit\n0' "adopted tab also emits actual process exit"
+T kill-window -t "$MANUAL_WIN"
+
+echo "ws lifecycle: closing a manually adopted tab reports SIGHUP too"
+MANUAL_WIN="$(T new-window -d -P -F '#{window_id}' -t keepalive: -c "$DONE_WT" \
+  "zsh -fc '\"$WS\" claude; sleep 30'")"
+assert_contains "$(wait_pane "$MANUAL_WIN" FAKE-claude)" "FAKE-claude" "adopted closure fixture ready"
+MANUAL_ID="$(T display -p -t "$MANUAL_WIN" '#{@ws_session}')"
+T kill-window -t "$MANUAL_WIN"
+wait_until lifecycle_exit_count "$MANUAL_ID" 1
+assert_exit "$?" "0" "closing adopted tab emits termination"
+jq -se 'length == 1 and .[0].event == "exit" and (.[0].code == 0 or .[0].code == 129)' "$WS_HOME/sessions/$MANUAL_ID/events" >/dev/null
+assert_exit "$?" "0" "adopted closure records actual EOF or SIGHUP exit once"
+
+echo "ws done: spawned agent closes its own tab after publishing output"
+"$WS" add api/lifecycle --detach
+SPAWN_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$SPAWN_WIN" FAKE-claude)" "FAKE-claude" "spawn fixture ready"
+SPAWN_ID="$(T display -p -t "$SPAWN_WIN" '#{@ws_session}')"
+META="$WS_HOME/sessions/$SPAWN_ID/meta"
+jq '.spawned = true | .resume_id = "spawn-resume"' "$META" > "$META.fixture"
+mv "$META.fixture" "$META"
+T send-keys -t "$SPAWN_WIN" done Enter
+spawn_done_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
+wait_until spawn_done_closed "$SPAWN_ID"
+assert_exit "$?" "0" "spawned tab closes when its agent declares done"
+assert_eq "$(cat "$WS_HOME/sessions/$SPAWN_ID/output.md")" "agent result" "spawned output is durable before tab closes"
+assert_eq "$(jq -sr 'map(select(.event == "done")) | length' "$WS_HOME/sessions/$SPAWN_ID/events")" "1" "spawned completion appends one done event"
+assert_eq "$("$WS" sessions "$SPAWN_ID" | cut -f6)" "done" "closing spawned tab preserves done status"
+assert_contains "$("$WS" show "$SPAWN_ID")" "output: $WS_HOME/sessions/$SPAWN_ID/output.md" "closed spawned result is addressable"
+wait_until lifecycle_exit_count "$SPAWN_ID" 1
+assert_exit "$?" "0" "spawned closure also reports agent termination"
+assert_eq "$(jq -sr 'map(.event) | join(",")' "$WS_HOME/sessions/$SPAWN_ID/events")" "done,exit" "completion is durable before spawned exit event"
+jq -se 'map(select(.event == "exit")) | length == 1 and (.[0].code == 0 or .[0].code == 129)' "$WS_HOME/sessions/$SPAWN_ID/events" >/dev/null
+assert_exit "$?" "0" "spawned closure records actual EOF or SIGHUP exit code"
+"$WS" open "$SPAWN_ID" --detach
+assert_contains "$(wait_pane "$(windows_of "$DONE_WT")" FAKE-claude)" "--resume spawn-resume" "closed spawned identity retains agent resume data"
+
+echo "ws lifecycle: tab closure reports exit while a TUI still holds the tty"
+"$WS" new --repo "$REPO" --branch delivery --detach
+HUP_WT="$WS_ROOT/api/delivery"
+HUP_WIN="$(windows_of "$HUP_WT")"
+assert_contains "$(wait_pane "$HUP_WIN" PASTE-READY)" "PASTE-READY" "closure TUI ready"
+HUP_ID="$(T display -p -t "$HUP_WIN" '#{@ws_session}')"
+HUP_PID="$(T display -p -t "$HUP_WIN" '#{pane_pid}')"
+# Retain only this private fixture's direct children for cleanup if the exit contract fails.
+HUP_CHILDREN=( ${(f)"$(ps -Ao pid,ppid | awk -v p="$HUP_PID" '$2 == p {print $1}')"} )
+T kill-window -t "$HUP_WIN"
+wait_until lifecycle_exit_count "$HUP_ID" 1
+assert_exit "$?" "0" "TUI closure emits an exit without waiting for terminal reads"
+assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$HUP_ID/events")" $'exit\n129' "TUI closure records SIGHUP once"
+kill -KILL "$HUP_PID" "${HUP_CHILDREN[@]}" 2>/dev/null
+"$WS" rm api/delivery --force --delete-branch >/dev/null
+
+echo "ws lifecycle: interactive launch shells keep the crash prompt and actual exit code"
+for agent in claude codex grok; do
+  WS_AGENT_SHELL="zsh -fic" "$WS" new --repo "$REPO" --branch "interactive-$agent" --agent "$agent" --detach
+  INTERACTIVE_WIN="$(windows_of "$WS_ROOT/api/interactive-$agent")"
+  assert_contains "$(wait_pane "$INTERACTIVE_WIN" "FAKE-$agent")" "FAKE-$agent" "$agent interactive shell starts TUI"
+  INTERACTIVE_ID="$(T display -p -t "$INTERACTIVE_WIN" '#{@ws_session}')"
+  T send-keys -t "$INTERACTIVE_WIN" 17 Enter
+  assert_contains "$(wait_pane "$INTERACTIVE_WIN" 'agent exited (17)')" 'agent exited (17)' "$agent interactive shell keeps crash prompt"
+  assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$INTERACTIVE_ID/events")" $'exit\n17' "$agent interactive shell records actual exit"
+  "$WS" rm "api/interactive-$agent" --force --delete-branch >/dev/null
+done
+
+"$WS" rm api/lifecycle --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach

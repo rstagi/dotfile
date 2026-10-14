@@ -21,6 +21,10 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws name <label>            name your session (unique; usable in place of its id)
 #   ws send [--force] <id|name> <msg|->   sender-prefixed message (or stdin): paste idle, queue busy
 #                              done needs --force; stopped sessions resume before delivery
+#   ws done [--output <file>|-]   declare own session done; replace output.md (default empty)
+#                              --output - also reads stdin; repeat appends another done event
+#                              spawned tabs close after publication; user-opened tabs stay
+#   ws show <id|name>           session metadata, lifecycle status and output path
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
@@ -75,6 +79,8 @@ main() {
   sessions) cmd_sessions "$@" ;;
   name) cmd_name "$@" ;;
   send) cmd_send "$@" ;;
+  done) cmd_done "$@" ;;
+  show) cmd_show "$@" ;;
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
   _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause
@@ -87,6 +93,7 @@ main() {
   _unread) toggle_unread "$@" ;;
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
+  _agent) ws_bus_run_agent "$@" ;;
   _build-notifier) build_notifier ;;
   -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
@@ -189,7 +196,7 @@ cmd_run() {
   tag_window "$win" "$wt" "$slot" "$agent"
   cmd="$(agent_command "$agent" "")"
   (( $# )) && cmd+=" ${(j: :)${(q)@}}"
-  WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ${(z)WS_AGENT_SHELL} "$cmd"
+  WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ws_bus_run_agent "$id" "$cmd"
   s=$?
   cmd_dismiss "$TMUX_PANE"
   (( s == 0 )) && session_remove "$wt" "$slot" # else kept for resume, as for a killed tab
@@ -519,9 +526,10 @@ open_session_locked() {
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
   cmd="$(agent_command "$agent" "$resume")"
-  run="$cmd; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  run="${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
-    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" ${(z)WS_AGENT_SHELL} "$run")
+    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}"
+    -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
     win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")" || return 1
