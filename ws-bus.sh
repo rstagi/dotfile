@@ -186,15 +186,22 @@ ws_bus_register_trigger() {
     print -u2 "ws: on: dependency cycle rejected"
     return 1
   fi
-  local tid=0
+  local tid=0 id offset offsets='{}'
+  # Snapshot complete event records under each source's append lock. Exits before
+  # this registration must not satisfy a new watcher on a resumed session.
+  for id in "${(@f)$(print -r -- "$1" | jq -r '.[]')}"; do
+    offset="$(with_lock "$WS_SESSIONS/$id/events" jq -s 'length' "$WS_SESSIONS/$id/events")" || return 1
+    offsets="$(jq -nc --argjson offsets "$offsets" --arg id "$id" --argjson offset "$offset" \
+      '$offsets + {($id):$offset}')" || return 1
+  done
   [[ ! -f "$WS_TRIGGERS/counter" ]] || read -r tid < "$WS_TRIGGERS/counter"
   [[ "$tid" == <-> ]] || { print -u2 'ws: on: invalid trigger counter'; return 1; }
   (( tid += 1 ))
   print -r -- "$tid" > "$WS_TRIGGERS/counter.tmp" && mv "$WS_TRIGGERS/counter.tmp" "$WS_TRIGGERS/counter" || return 1
   jq -n --arg id "$tid" --argjson sources "$1" --arg event "$2" --arg action "$3" --arg target "$4" \
-    --arg template "$5" --arg sender "$6" --arg wt "$7" --arg agent "$8" \
+    --arg template "$5" --arg sender "$6" --arg wt "$7" --arg agent "$8" --argjson offsets "$offsets" \
     '{id:$id,sources:$sources,event:$event,action:$action,target:$target,template:$template,sender:$sender,
-      path:$wt,agent:$agent,status:"pending"}' \
+      path:$wt,agent:$agent,status:"pending",event_offsets:$offsets}' \
     > "$WS_TRIGGERS/$tid.json.tmp" && mv "$WS_TRIGGERS/$tid.json.tmp" "$WS_TRIGGERS/$tid.json" || return 1
   print -r -- "$tid"
 }
@@ -239,13 +246,16 @@ ws_bus_evaluate_trigger() {
 }
 
 ws_bus_fire_trigger() {
-  local record="$WS_TRIGGERS/$1.json" id event target sender template output="" piece message action rc errfile
+  local record="$WS_TRIGGERS/$1.json" id event offset target sender template output="" piece message action rc errfile
   [[ -f "$record" ]] || return 0
   [[ "$(jq -r '.status' "$record")" == pending ]] || return 0
   event="$(jq -r '.event' "$record")"
   local -a ids=("${(@f)$(jq -r '.sources[]' "$record")}")
   for id in "${ids[@]}"; do
-    jq -se --arg event "$event" 'any(.[]; .event == $event)' "$WS_SESSIONS/$id/events" >/dev/null || return 0
+    offset=0 # done retains already-recorded completion fan-in; legacy triggers start at zero.
+    [[ "$event" != exit ]] || offset="$(jq -r --arg id "$id" '.event_offsets[$id] // 0' "$record")"
+    jq -se --arg event "$event" --argjson offset "$offset" 'any(.[$offset:][]; .event == $event)' \
+      "$WS_SESSIONS/$id/events" >/dev/null || return 0
   done
   for id in "${ids[@]}"; do
     piece=""

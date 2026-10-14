@@ -1679,10 +1679,14 @@ assert_contains "$out" "--force required" "send explains done guard"
 
 echo "ws lifecycle: agent exit emits its actual code and preserves done output"
 lifecycle_exit_count() { [[ "$(jq -sr 'map(select(.event == "exit")) | length' "$WS_HOME/sessions/$1/events")" == "$2" ]]; }
+lifecycle_done_stopped() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
 T send-keys -t "$DONE_WIN" Enter
 wait_until lifecycle_exit_count "$DONE_ID" 1
 assert_exit "$?" "0" "normal agent exit appends lifecycle event"
 assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[0].code' "$WS_HOME/sessions/$DONE_ID/events")" "0" "normal exit event records code zero"
+# Exit publication precedes the launch wrapper's _end cleanup; wait for both transitions.
+wait_until lifecycle_done_stopped "$DONE_ID"
+assert_exit "$?" "0" "normal exit settles stopped with done lifecycle"
 assert_eq "$("$WS" sessions "$DONE_ID" | cut -f5,6)" $'stopped\tdone' "agent exit preserves done lifecycle"
 assert_contains "$("$WS" show "$DONE_ID")" "output: $WS_HOME/sessions/$DONE_ID/output.md" "output stays addressable after agent exit"
 "$WS" open "$DONE_ID" --detach
@@ -2144,6 +2148,30 @@ WS_TEST_WAIT=5 wait_until agent_env_lines
 ENV_LINE="$(sed -n 2p "$WS_HOME/agent-env" 2>/dev/null)"
 assert_eq "$([[ "${ENV_LINE%%|*}" -ef "$WS" ]] && print yes)" "yes" "ws on agent PATH resolves to ws.sh"
 assert_eq "${ENV_LINE#*|}" "$WS" "agent env exports WS_BIN"
+
+# --- M2 stale exit: resumed sources wait for a new exit ---
+echo "ws on: old exits do not satisfy a new watcher on a resumed session"
+"$WS" open "$SOURCE_A" --detach >/dev/null
+M2_SOURCE_WIN="$(jq -r '.window' "$WS_HOME/sessions/$SOURCE_A/meta")"
+assert_contains "$(wait_pane "$M2_SOURCE_WIN" FAKE-claude)" "WHOAMI=$SOURCE_A" "stale-exit source resumes with the same id"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+M2_TID="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_A" exit --send-to me 'new exit {id}')"
+assert_exit "$?" "0" "resumed source exit watcher registers"
+assert_contains "$("$WS" triggers)" "$M2_TID"$'\t'"$SOURCE_A"$'\texit\tsend' "old exit leaves new watcher pending"
+assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "registration delivers nothing for an old exit"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+T send-keys -t "$M2_SOURCE_WIN" Enter
+wait_until lifecycle_exit_count "$SOURCE_A" 2
+m2_trigger_finished() {
+  [[ -z "$("$WS" triggers | awk -F '\t' -v id="$M2_TID" '$1 == id')" &&
+     "$("$WS" sessions "$SOURCE_A" | cut -f5)" == stopped ]]
+}
+wait_until m2_trigger_finished
+assert_exit "$?" "0" "next exit fires the pending watcher"
+reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n'"new exit $SOURCE_A" "next exit delivers the continuation"
+assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "exit watcher delivers once"
+# --- end M2 stale exit ---
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 
