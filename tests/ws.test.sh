@@ -1674,6 +1674,46 @@ for i in 1 2; do
 done
 rm -f "$WS_HOME/tui-delay"
 
+# --- delivery robustness: readiness and lock diagnostics ---
+echo "ws send: readiness races release the inbox lock before waiting for input"
+ROBUST_BEFORE="$(windows_of "$SEND_WT")"
+print 8 > "$WS_HOME/tui-delay"
+"$WS" add api/delivery --agent claude --detach
+ROBUST_READY_WIN="$(windows_of "$SEND_WT" | grep -vxF -f <(print -r -- "$ROBUST_BEFORE"))"
+ROBUST_READY_ID="$(T show -wqv -t "$ROBUST_READY_WIN" @ws_session)"
+T set -w -t "$ROBUST_READY_WIN" @ws_main idle
+ROBUST_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$ROBUST_READY_WIN.lock"
+(zmodload zsh/system; : >> "$ROBUST_LOCK"; zsystem flock -f robust_fd "$ROBUST_LOCK"; : > "$TMP/robust-ready-held"; sleep 2.5) &
+robust_holder=$!
+wait_until test -e "$TMP/robust-ready-held"
+(WS_SESSION=1 "$WS" send "$ROBUST_READY_ID" "after readiness race" > "$TMP/robust-ready.out" 2>&1; print $? > "$TMP/robust-ready.rc") &
+robust_sender=$!
+wait_until test -s "$WS_HOME/sessions/$ROBUST_READY_ID/inbox"
+sleep 1 # sender has passed its unlocked main-state read and is waiting for the hook lock
+T set -wu -t "$ROBUST_READY_WIN" @ws_main # races the sender's unlocked readiness check
+wait "$robust_holder"
+sleep 0.3 # sender now sees the missing main state under its hook/inbox locks
+out="$(WS_SESSION="$ROBUST_READY_ID" "$WS" done 2>&1)"
+assert_exit "$?" "1" "done refuses work while readiness waits"
+assert_contains "$out" "pending messages" "readiness wait leaves the inbox lock available to done"
+wait "$robust_sender"
+assert_exit "$(cat "$TMP/robust-ready.rc")" "0" "send retries readiness after releasing its locks"
+wait_until pane_received "$ROBUST_READY_ID" $'[ws #1]\nafter readiness race'
+assert_exit "$?" "0" "unlocked readiness retry eventually delivers"
+T kill-window -t "$ROBUST_READY_WIN"
+rm -f "$WS_HOME/tui-delay"
+
+echo "ws send: inbox lock timeout reports the lock instead of failing silently"
+ROBUST_INBOX_LOCK="$WS_HOME/sessions/$SEND_ID/inbox.lock"
+(zmodload zsh/system; : >> "$ROBUST_INBOX_LOCK"; zsystem flock -f robust_fd "$ROBUST_INBOX_LOCK"; : > "$TMP/robust-inbox-held"; sleep 4) &
+robust_holder=$!
+wait_until test -e "$TMP/robust-inbox-held"
+out="$(WS_SESSION=1 "$WS" send "$SEND_ID" "lock timeout" 2>&1)"
+assert_exit "$?" "1" "contended inbox lock times out"
+assert_contains "$out" "timed out waiting for lock" "lock timeout emits a diagnostic"
+wait "$robust_holder"
+# --- end delivery robustness: readiness and lock diagnostics ---
+
 echo "ws send: failed resume retains the message and reports it queued"
 META="$WS_HOME/sessions/$FRESH_ID/meta"
 jq --arg missing "$TMP/missing-workspace" '.path = $missing' "$META" > "$META.fixture"

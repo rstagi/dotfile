@@ -1014,7 +1014,7 @@ with_lock() {
   local f="$1"
   shift
   : >> "$f.lock" # flock won't create it
-  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || exit 1; "$@")
+  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $f.lock"; exit 1; }; "$@")
 }
 
 # rewrite <file> <awk args...> — replaces the file with awk's output, atomically.

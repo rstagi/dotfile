@@ -143,7 +143,12 @@ cmd_send() {
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
     rc=$?
     exec {lockfd}>&-
-    (( rc == 3 )) || return "$rc"
+    if (( rc == 4 )); then
+      # Readiness changed after the unlocked check: release both locks before waiting.
+      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+    elif (( rc != 3 )); then
+      return "$rc"
+    fi
   done
   die "send: message queued; session #$id not delivered"
 }
@@ -401,7 +406,7 @@ ws_bus_exit() {
 
 # Both send and Stop hold the window's hook lock before the inbox lock: no idle/queue race.
 ws_bus_send_locked() {
-  local id="$1" win="$2" message="$3" queued="${4:-0}" state
+  local id="$1" win="$2" message="$3" queued="${4:-0}" state pane
   (( queued )) || ws_bus_enqueue "$id" "$message" || return 1
   # Revalidate under the hook lock: a closed/retagged window or unknown state is not a live
   # busy target. 3 = queued, caller re-resolves (resume) instead of reporting delivery.
@@ -410,7 +415,9 @@ ws_bus_send_locked() {
   [[ -n "$state" ]] || return 3
   if [[ "$state" == idle && -s "$WS_SESSIONS/$id/inbox" ]]; then
     if [[ -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
-      ws_bus_wait_ready "$id" "$win" || { print -u2 "ws: send: message queued; session #$id input not ready"; return 1; }
+      # One nonblocking check under lock; 4 asks cmd_send to wait unlocked and retry.
+      pane="$(ws_bus_pane "$win")" || return 4
+      [[ "$(tmux_ display -p -t "$pane" '#{bracket_paste_flag}' 2>/dev/null)" == 1 ]] || return 4
     fi
     [[ ! -e "$WS_SESSIONS/$id/inbox.inflight.paste" ]] || return 0 # awaiting prompt acknowledgement
     ws_bus_idle_locked "$id" "$win" || { print -u2 "ws: send: message queued; session #$id agent pane unavailable"; return 1; }
@@ -467,7 +474,7 @@ ws_bus_stop() {
   local id="$1" inbox="$WS_SESSIONS/$1/inbox"
   [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || { print '{}'; return 0; }
   : >> "$inbox.lock"
-  (zsystem flock -t 1 -i 0.01 "$inbox.lock" 2>/dev/null || exit 1; ws_bus_stop_locked "$id")
+  (zsystem flock -t 1 -i 0.01 "$inbox.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $inbox.lock"; exit 1; }; ws_bus_stop_locked "$id")
 }
 
 # Drained messages stay in inbox.inflight.<hook pid> until the hook has written the reply
