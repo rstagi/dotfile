@@ -13,6 +13,12 @@ mkdir -p "$TMP/bin" "$TMP/home"
 
 cat > "$TMP/bin/gh" <<'EOF'
 #!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  [ "$3" = https://github.com/acme/api/pull/123 ] && [ "$4" = --json ] && [ "$5" = state ] || exit 99
+  [ "${FAKE_PR_FAILURE:-0}" = 0 ] || exit "$FAKE_PR_FAILURE"
+  printf '{"state":"%s"}\n' "${FAKE_PR_STATE:-OPEN}"
+  exit 0
+fi
 printf '%s\n' "${FAKE_DEFAULT_BRANCH:-main}"
 EOF
 chmod +x "$TMP/bin/gh"
@@ -326,5 +332,21 @@ $ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$M2_WT" --a
 assert_exit "$?" "1" "invalid adopted flag refused"
 $ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$TMP/missing" --adopted false >/dev/null 2>&1
 assert_exit "$?" "4" "missing path outside run root still refused"
+
+echo "loop-repo: pr-state reports GitHub state through the gh boundary"
+PR_URL=https://github.com/acme/api/pull/123
+for pr_state in OPEN MERGED CLOSED; do
+  out="$(FAKE_PR_STATE="$pr_state" $ROOT/loop-repo.sh pr-state --pr "$PR_URL")"
+  assert_exit "$?" "0" "pr-state accepts $pr_state"
+  assert_eq "$out" "${(L)pr_state}" "pr-state normalizes $pr_state"
+done
+out="$(FAKE_PR_FAILURE=7 $ROOT/loop-repo.sh pr-state --pr "$PR_URL" 2>/dev/null)"
+assert_exit "$?" "3" "pr-state fails when gh fails"
+assert_eq "$out" "" "gh failure never prints a success state"
+$ROOT/loop-repo.sh pr-state >/dev/null 2>&1
+assert_exit "$?" "1" "pr-state requires a PR URL"
+out="$(FAKE_PR_STATE=UNKNOWN $ROOT/loop-repo.sh pr-state --pr "$PR_URL" 2>/dev/null)"
+assert_exit "$?" "3" "pr-state refuses unexpected GitHub state"
+assert_eq "$out" "" "unknown state never prints a success state"
 
 test_summary

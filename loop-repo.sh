@@ -11,7 +11,7 @@ CMD="${1:-}"
 
 REGISTRY="${LOOP_REPO_REGISTRY:-${HOME}/.loop/repos.json}"
 WORKTREE_ROOT="${LOOP_WORKTREE_ROOT:-${HOME}/.loop/worktrees}"
-REPO="" RUN_ID="" INTEGRATION_BRANCH="" MILESTONE=1 WORKTREE="" ADOPTED="" POSITIONAL=()
+REPO="" RUN_ID="" INTEGRATION_BRANCH="" MILESTONE=1 WORKTREE="" ADOPTED="" PR="" POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,6 +21,7 @@ while [[ $# -gt 0 ]]; do
   --milestone) MILESTONE="$2"; shift 2 ;;
   --worktree) WORKTREE="$2"; shift 2 ;;
   --adopted) ADOPTED="$2"; shift 2 ;;
+  --pr) PR="$2"; shift 2 ;;
   *) POSITIONAL+=("$1"); shift ;;
   esac
 done
@@ -310,7 +311,13 @@ prepare)
 retire)
   retire_worktree
   ;;
+pr-state)
+  [[ -n "$PR" ]] || die "pr-state requires --pr"
+  pr_json="$(gh pr view "$PR" --json state)" || die "could not read PR state: $PR" 3
+  print -r -- "$pr_json" | jq -er '.state | ascii_downcase | select(. == "open" or . == "merged" or . == "closed")' \
+    || die "GitHub returned an invalid PR state: $PR" 3
+  ;;
 *)
-  die "unknown command '$CMD' (map|get|list|unmap|check|prepare|retire)"
+  die "unknown command '$CMD' (map|get|list|unmap|check|prepare|retire|pr-state)"
   ;;
 esac
