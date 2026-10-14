@@ -4,7 +4,7 @@
 WS_SESSIONS="$WS_HOME/sessions"
 WS_TRIGGERS="$WS_HOME/triggers"
 
-# Trigger ids are independent of session ids. Records retain fired actions for diagnostics.
+# Trigger ids are independent of session ids. Terminal records are archived for diagnostics.
 cmd_on() {
   if [[ "${1:-}" == --rm ]]; then
     [[ $# == 2 && "$2" == <-> ]] || die "on --rm: expected <trigger-id>"
@@ -304,10 +304,17 @@ ws_bus_fire_trigger() {
   if (( rc )); then
     jq --argjson rc "$rc" --rawfile error "$errfile" '.status = "failed" | .exit_code = $rc | .error = $error' \
       "$record" > "$record.tmp" && mv "$record.tmp" "$record"
-    print -u2 "ws: trigger #$1 action failed: $(tail -1 "$errfile"); see $record"
+    print -u2 "ws: trigger #$1 action failed: $(tail -1 "$errfile"); see $WS_TRIGGERS/archive/$1.json"
   fi
   rm -f "$errfile"
+  ws_bus_archive_trigger "$1" || return 1
   return "$rc"
+}
+
+# Called under the trigger lock, after the action has finished updating its record.
+ws_bus_archive_trigger() {
+  mkdir -p -m 700 "$WS_TRIGGERS/archive" &&
+    mv "$WS_TRIGGERS/$1.json" "$WS_TRIGGERS/archive/$1.json"
 }
 
 # Allocate through normal workspace slots and mark origin before the agent can run.

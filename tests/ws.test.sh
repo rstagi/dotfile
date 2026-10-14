@@ -1798,7 +1798,7 @@ done
 echo "ws done: a spawned session keeps accepted messages deliverable until Stop"
 M1_TID="$(WS_SESSION="$DONE_ID" "$WS" on "$DONE_ID" done --spawn 'Finish after checking follow-ups')"
 assert_exit "$?" "0" "M1 spawns a tracked child through a done trigger"
-M1_ID="$(jq -r '.spawned_session' "$WS_HOME/triggers/$M1_TID.json")"
+M1_ID="$(jq -r '.spawned_session' "$WS_HOME/triggers/archive/$M1_TID.json")"
 M1_WIN="$(jq -r '.window' "$WS_HOME/sessions/$M1_ID/meta")"
 assert_contains "$(wait_pane "$M1_WIN" FAKE-claude)" "FAKE-claude" "M1 spawned agent ready"
 hook api/lifecycle "$M1_WIN" working </dev/null
@@ -2057,8 +2057,8 @@ jq -n --arg id "$BROKEN_ID" '{id:$id,name:"",workspace:"api/gone",agent:"claude"
 out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --send-to "$BROKEN_ID" unreachable 2>&1)"
 assert_exit "$?" "1" "unreachable trigger target fails"
 BROKEN_TID="${${(f)out}[1]}"
-assert_eq "$(jq -r '.status' "$WS_HOME/triggers/$BROKEN_TID.json")" "failed" "failed action is marked failed"
-assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/$BROKEN_TID.json")" "no longer exists" "failed action record keeps stderr"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$BROKEN_TID.json")" "failed" "failed action is marked failed"
+assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/$BROKEN_TID.json")" "no longer exists" "failed action record keeps stderr"
 rm -rf "$WS_HOME/sessions/$BROKEN_ID"
 T send-keys -t "$EMPTY_WIN" Enter
 # --- end G2 trigger failures ---
@@ -2195,6 +2195,12 @@ for edge_template in '{output}' $' \t{output} {output}\n'; do
   assert_eq "$(cat "$WS_HOME/triggers/counter")" "$edge_counter" "empty template leaves no pending trigger"
   [[ "$(cat "$WS_HOME/triggers/counter")" == "$edge_counter" ]] || "$WS" on --rm "$(cat "$WS_HOME/triggers/counter")"
 done
+echo "ws on: trigger edges archive terminal actions outside the active registry"
+assert_eq "$([[ -f "$WS_HOME/triggers/$TID.json" ]] && print active)" "" "fired trigger is pruned from the active registry"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$TID.json" 2>/dev/null)" "fired" "archive preserves the fired trigger for diagnostics"
+assert_eq "$([[ -f "$WS_HOME/triggers/$BROKEN_TID.json" ]] && print active)" "" "failed trigger is pruned from the active registry"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$BROKEN_TID.json" 2>/dev/null)" "failed" "archive preserves the failed action"
+assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/$BROKEN_TID.json" 2>/dev/null)" "no longer exists" "archive keeps the failure reason"
 # --- end trigger edges ---
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null

@@ -135,6 +135,7 @@ ws on --rm 7                 # cancel pending trigger 7
 ```
 
 Only pending triggers appear in `ws triggers`. If a continuation does not arrive,
-inspect source/target status and `$WS_HOME/triggers/<trigger-id>.json` (default
-`~/.ws/triggers/`) before registering a replacement. Never edit registry files to
+inspect source/target status and `$WS_HOME/triggers/<trigger-id>.json` (pending) or
+`$WS_HOME/triggers/archive/<trigger-id>.json` (fired/failed; default `~/.ws/triggers/`)
+before registering a replacement. Never edit registry files to
 change lifecycle or retrigger actions.
