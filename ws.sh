@@ -21,6 +21,9 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws name <label>            name your session (unique; usable in place of its id)
 #   ws send [--force] <id|name> <msg|->   sender-prefixed message (or stdin): paste idle, queue busy
 #                              done needs --force; stopped sessions resume before delivery
+#   ws done [--output <file>|-]   declare own session done; replace output.md (default empty)
+#                              --output - also reads stdin; repeat appends another done event
+#   ws show <id|name>           session metadata, lifecycle status and output path
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
@@ -75,6 +78,8 @@ main() {
   sessions) cmd_sessions "$@" ;;
   name) cmd_name "$@" ;;
   send) cmd_send "$@" ;;
+  done) cmd_done "$@" ;;
+  show) cmd_show "$@" ;;
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
   _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause

@@ -1385,6 +1385,62 @@ assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$FRESH_ID/inbox")" $'[ws #1]\nr
 
 "$WS" rm api/delivery --force --delete-branch >/dev/null
 
+echo "ws done: file output is durable; user-opened tab stays; show resolves names"
+"$WS" new --repo "$REPO" --branch lifecycle --detach
+DONE_WT="$WS_ROOT/api/lifecycle"
+DONE_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$DONE_WIN" FAKE-claude)" "FAKE-claude" "lifecycle agent ready"
+DONE_ID="$(T display -p -t "$DONE_WIN" '#{@ws_session}')"
+WS_SESSION="$DONE_ID" "$WS" name finisher
+printf '# Result\n\nquoted "value" $literal\n\n' > "$TMP/result file.md"
+WS_SESSION="$DONE_ID" "$WS" done --output "$TMP/result file.md"
+assert_exit "$?" "0" "done accepts output file"
+cmp -s "$TMP/result file.md" "$WS_HOME/sessions/$DONE_ID/output.md"
+assert_exit "$?" "0" "done preserves exact output bytes"
+assert_eq "$("$WS" sessions "$DONE_ID" | cut -f6)" "done" "done records lifecycle status"
+assert_eq "$(windows_of "$DONE_WT")" "$DONE_WIN" "user-opened tab stays after done"
+assert_eq "$(jq -r '.event' "$WS_HOME/sessions/$DONE_ID/events")" "done" "done appends lifecycle event"
+jq -e --arg id "$DONE_ID" --arg output "$WS_HOME/sessions/$DONE_ID/output.md" \
+  '.id == $id and .output == $output and (.at | type == "string")' "$WS_HOME/sessions/$DONE_ID/events" >/dev/null
+assert_exit "$?" "0" "done event identifies source, output and time"
+out="$("$WS" show finisher)"
+assert_exit "$?" "0" "show accepts session name"
+assert_contains "$out" "status: done" "show reports lifecycle status"
+assert_contains "$out" "output: $WS_HOME/sessions/$DONE_ID/output.md" "show reports durable output path"
+echo "ws done: repeated declarations replace output, including stdin and empty default"
+printf 'replacement\n\n' | WS_SESSION="$DONE_ID" "$WS" done -
+assert_exit "$?" "0" "done accepts stdin shorthand"
+assert_eq "$(cat "$WS_HOME/sessions/$DONE_ID/output.md"; print -n .)" $'replacement\n\n.' "repeat overwrites output preserving trailing newlines"
+assert_eq "$(jq -sr 'map(.event) | join(",")' "$WS_HOME/sessions/$DONE_ID/events")" "done,done" "repeat appends another done event"
+printf 'explicit stdin' | WS_SESSION="$DONE_ID" "$WS" done --output -
+assert_exit "$?" "0" "done accepts explicit stdin output"
+assert_eq "$(cat "$WS_HOME/sessions/$DONE_ID/output.md")" "explicit stdin" "explicit stdin replaces previous output"
+WS_SESSION="$DONE_ID" "$WS" done
+assert_exit "$?" "0" "done without output succeeds without reading stdin"
+assert_eq "$(wc -c < "$WS_HOME/sessions/$DONE_ID/output.md" | tr -d ' ')" "0" "default done writes empty output"
+assert_eq "$(jq -s length "$WS_HOME/sessions/$DONE_ID/events")" "4" "each declaration appends one event"
+
+echo "ws done/show: invalid input leaves lifecycle intact"
+for args in '--output' '--bad' '--output missing-file' 'extra argument'; do
+  WS_SESSION="$DONE_ID" "$WS" done ${=args} 2>/dev/null
+  assert_exit "$?" "1" "invalid done rejected: $args"
+done
+env -u WS_SESSION "$WS" done 2>/dev/null
+assert_exit "$?" "1" "done outside a session is refused"
+WS_SESSION=999999 "$WS" done 2>/dev/null
+assert_exit "$?" "1" "done with unknown identity is refused"
+assert_eq "$(jq -s length "$WS_HOME/sessions/$DONE_ID/events")" "4" "invalid declarations append no events"
+assert_eq "$(wc -c < "$WS_HOME/sessions/$DONE_ID/output.md" | tr -d ' ')" "0" "invalid declarations preserve output"
+"$WS" show no-such-session 2>/dev/null
+assert_exit "$?" "1" "show rejects missing session"
+"$WS" show 2>/dev/null
+assert_exit "$?" "1" "show requires target"
+out="$("$WS" send "$DONE_ID" should-refuse 2>&1)"
+assert_exit "$?" "1" "send rejects session declared done through CLI"
+assert_contains "$out" "--force required" "send explains done guard"
+
+"$WS" rm api/lifecycle --force --delete-branch >/dev/null
+
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach
 print dirty >> "$WT/file.txt"

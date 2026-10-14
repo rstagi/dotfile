@@ -1,7 +1,62 @@
 #!/bin/zsh
-# Global session registry and message delivery, sourced by ws.sh. Workspace slots remain local; ids never reuse.
+# Global session registry, lifecycle and message delivery, sourced by ws.sh. Workspace slots remain local; ids never reuse.
 # Live state comes from tmux; metadata keeps durable identity and lifecycle status.
 WS_SESSIONS="$WS_HOME/sessions"
+
+cmd_done() {
+  local source="" id
+  case "$#:${1:-}" in
+  0:) ;;
+  1:-) source=- ;;
+  2:--output) source="$2" ;;
+  *) die "done: expected [--output <file>|-]" ;;
+  esac
+  id="$(cmd_whoami)" || return 1
+  [[ -z "$source" || "$source" == - || ( -f "$source" && -r "$source" ) ]] \
+    || die "done: cannot read output file: $source"
+  with_lock "$WS_SESSIONS/$id/output" ws_bus_done_locked "$id" "$source"
+}
+
+# Output publication, status and event order are serialized across repeat declarations.
+ws_bus_done_locked() {
+  local id="$1" source="$2" dir="$WS_SESSIONS/$1" tmp detail
+  tmp="$(mktemp "$dir/.output.XXXXXX")" || return 1
+  if [[ -n "$source" ]] && ! cat -- "$source" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! mv "$tmp" "$dir/output.md"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  ws_bus_update "$id" '.status = "done"' || return 1
+  detail="$(jq -nc --arg output "$dir/output.md" '{output:$output}')" || return 1
+  ws_bus_event "$id" done "$detail"
+}
+
+cmd_show() {
+  [[ $# == 1 ]] || die "show: expected <id|name>"
+  local id output=""
+  id="$(ws_bus_resolve "$1")" || die "no such session: $1"
+  [[ ! -f "$WS_SESSIONS/$id/output.md" ]] || output="$WS_SESSIONS/$id/output.md"
+  jq -r --arg output "$output" '
+    "id: \(.id)\nname: \(.name)\nworkspace: \(.workspace)\nagent: \(.agent)\nstatus: \(.status)\noutput: \($output)"
+  ' "$WS_SESSIONS/$id/meta"
+}
+
+# Single lifecycle append boundary: subscribers attach here after the durable JSONL write.
+# Event payloads carry id/event/at plus event-specific fields (done: output; exit: code).
+ws_bus_event() {
+  local id="$1" event="$2" detail="${3:-\{\}}" record
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
+  record="$(jq -nc --arg id "$id" --arg event "$event" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson detail "$detail" '$detail + {id:$id,event:$event,at:$at}')" || return 1
+  with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record"
+}
+
+ws_bus_event_locked() {
+  print -r -- "$2" >> "$WS_SESSIONS/$1/events"
+}
 
 cmd_send() {
   local force=0
