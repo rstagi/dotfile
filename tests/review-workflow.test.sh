@@ -76,4 +76,24 @@ assert_contains "$PROTOCOL" 'a parked loop keeps `sub/REVIEW_READY`' "two-tier: 
 assert_contains "$PROTOCOL" '| Milestone gate (supervise, after the gate review aggregates) |' "backend mapping: parking"
 assert_contains "$PROTOCOL" 'while `state.awaitingMerge` is set' "crash-resume: no respawn while parked"
 
+echo "review workflow: milestone resume after a merge"
+assert_contains "$SKILL" '**Milestone resume**' "step 9 documents the milestone resume"
+assert_contains "$SKILL" '`loop-milestone.sh check --state .loop/state.json`: exit 3 (open) → report each open' "open gate PR → report + stop"
+assert_contains "$SKILL" 'exit 4 (closed unmerged) → open a HIL' "closed-unmerged gate PR → HIL"
+assert_contains "$SKILL" 'exit 1 (gh/state error) → report it, stop' "gh error → report + stop"
+assert_contains "$SKILL" '`loop-milestone.sh advance --state .loop/state.json --next <N>' "advance runs after a merged check"
+assert_contains "$SKILL" 'Apply the printed patch with exactly one `loop-state.sh set`' "patch applied with a single set"
+assert_contains "$SKILL" 'switch `RUNTIME_ROOT` to it' "self-hosted runtime root switches to the new worktree"
+assert_contains "$SKILL" 'plan Status back to `in progress` + `loop-plan.sh push`' "resume repushes the plan as in progress"
+assert_contains "$SKILL" 'remove
+   `sub/REVIEW_READY`' "resume clears REVIEW_READY"
+assert_contains "$SKILL" '`loop-state.sh log milestone.resumed`' "resume emits milestone.resumed"
+assert_contains "$SKILL" 'respawn the
+   orchestrator for the new milestone' "resume respawns the orchestrator"
+assert_contains "$SKILL" 'rebuild `awaitingMerge {milestone, prs{slug:url}}`' "crash-resume recovers the park from a done gate review"
+assert_contains "$PROTOCOL" 'permanently shipped: never re-check them' "merged milestones are never re-checked"
+assert_contains "$PROTOCOL" 'recover `awaitingMerge` from the gate review' "protocol: recover awaitingMerge"
+assert_contains "$PROTOCOL" '`loop-milestone.sh advance` interrupted' "protocol: interrupted advance re-runs idempotently"
+assert_contains "$PROTOCOL" 'resume that advances the milestone switches `RUNTIME_ROOT`' "protocol: runtime root switch"
+
 test_summary
