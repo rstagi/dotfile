@@ -260,14 +260,46 @@ write_grok_hooks() {
     }}' > "$GROK_HOOKS"
 }
 
-# Re-points the Claude settings file and the global Grok hooks at the current WS_BIN after ws
-# moved (both embed its absolute path). Touches only files that already exist, and writes
-# nothing when they already name WS_BIN, so it is cheap enough to run on every startup.
+# Re-points what embeds the absolute WS_BIN after ws moved: the Claude settings file, the global
+# Grok hooks, the $WS_HOME/bin/ws link and (via configure_bindings) the tmux key bindings.
+# Touches only files that already exist. At startup it acts only on what is broken (the path
+# embedded in a file is missing or not executable), so a second live copy of ws, such as another
+# dotfile worktree, never steals hooks that still point at a working install. `--force`
+# (`ws _migrate-hooks`, install.sh) re-points everything that does not name this WS_BIN.
 hooks_migrate() {
-  local needle
-  needle="$(jq -rn --arg h "${(q)WS_BIN} hook " '$h | @json')"
-  needle="${needle[1,-2]}" # opening quote kept: a longer path ending in WS_BIN must not match
-  [[ ! -f "$WS_HOME/claude-settings.json" ]] || grep -qF -- "$needle" "$WS_HOME/claude-settings.json" || write_claude_settings
-  [[ ! -f "$GROK_HOOKS" ]] || grep -qF -- "$needle" "$GROK_HOOKS" || write_grok_hooks
+  local force=0 rc=0 moved=0 link="$WS_HOME/bin/ws"
+  [[ "${1:-}" != --force ]] || force=1
+  if hooks_file_stale "$WS_HOME/claude-settings.json" $force; then
+    write_claude_settings || rc=1
+    moved=1
+  fi
+  if hooks_file_stale "$GROK_HOOKS" $force; then
+    write_grok_hooks || rc=1
+    moved=1
+  fi
+  if [[ -L "$link" && -x "$WS_BIN" ]] && { (( force )) && [[ ! "$link" -ef "$WS_BIN" ]] || [[ ! -e "$link" ]]; }; then
+    ln -sfn "$WS_BIN" "$link" 2>/dev/null && moved=1
+  fi
+  # Bindings embed WS_BIN too; a no-op without a tmux server (bound when the first session starts).
+  if [[ -x "$WS_BIN" ]] && (( force || moved )); then configure_bindings; fi
+  (( force )) && return $rc
+  return 0
+}
+
+# hooks_file_stale <file> <force> — 0 when <file> exists and needs rewriting. Forced: it does not
+# name WS_BIN. Otherwise: the ws it names is gone.
+hooks_file_stale() {
+  [[ -f "$1" ]] || return 1
+  if (( $2 )); then
+    local needle
+    needle="$(jq -rn --arg h "${(q)WS_BIN} hook " '$h | @json')"
+    needle="${needle[1,-2]}" # opening quote kept: a longer path ending in WS_BIN must not match
+    grep -qF -- "$needle" "$1" && return 1
+    return 0
+  fi
+  local cmd bin
+  cmd="$(jq -r '.hooks.Stop[0].hooks[0].command // empty' "$1" 2>/dev/null)"
+  bin="${(Q)${(z)cmd}[1]}"
+  [[ -f "$bin" && -x "$bin" ]] && return 1
   return 0
 }

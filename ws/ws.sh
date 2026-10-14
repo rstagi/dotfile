@@ -45,7 +45,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              (working|idle|stop|cancel|waiting|subagent-start|subagent-stop)
 #                              cancel requires the current turn id; unknown/stale ids are ignored
 #   ws _dismiss <window|pane>  tab seen or agent exited: emit `closed` if a notification is open
-#   ws _migrate-hooks          re-point existing claude-settings.json / Grok hooks at this ws (install.sh)
+#   ws _migrate-hooks          re-point claude-settings.json / Grok hooks / bin link / tmux bindings at this ws (install.sh)
 #
 # Workspace slots live in <worktree git dir>/ws-sessions (slot, agent, resume id, global id).
 # Global identities live in $WS_HOME/sessions/<id>/. A killed tab resumes on `ws open`;
@@ -87,7 +87,7 @@ source "${WS_BIN:h}/lib/triggers.sh"
 main() {
   local cmd="${1:-}"
   [[ $# -gt 0 ]] && shift
-  case "$cmd" in "" | new | add | open | pick) hooks_migrate ;; esac # cheap no-op unless ws moved
+  case "$cmd" in "" | new | add | open | pick) hooks_migrate ;; esac # cheap no-op unless the ws these name is gone
   case "$cmd" in
   "") cmd_attach ;;
   new) cmd_new "$@" ;;
@@ -121,7 +121,7 @@ main() {
   _evaluate) ws_bus_evaluate_event "$@" ;;
   _deliver-retry) ws_bus_deliver_retry "$@" ;;
   _hook-retry) hook_retry "$@" ;;
-  _migrate-hooks) hooks_migrate ;;
+  _migrate-hooks) hooks_migrate --force ;;
   _build-notifier) build_notifier ;;
   -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;

@@ -2,7 +2,7 @@
 # ws tests: hook-file migration after ws moved (ws _migrate-hooks and startup), in a private WS_HOME/GROK_HOME.
 # Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
 # because workspaces, tabs and global session ids carry over between areas.
-[[ -n "${WS_TESTS_SUITE:-}" ]] || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
+(( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 # stale_hooks <ws-bin> — writes claude-settings.json + Grok hooks that name <ws-bin>.
 stale_hooks() {
@@ -49,3 +49,59 @@ assert_eq "$(hook_stop_cmd "$MIG_HOME/claude-settings.json")" "${(q)WS} hook sto
 stale_hooks "/old/dotfile/ws.sh"
 migrate hook working </dev/null >/dev/null 2>&1
 assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "/old/dotfile/ws.sh hook stop" "the hook hot path never rewrites hook files"
+
+echo "ws migrate: startup leaves hooks that name another working ws alone"
+OTHER_WS="$TMP/other-dotfile/ws/ws.sh"
+mkdir -p "${OTHER_WS:h}" && printf '#!/bin/sh\n' > "$OTHER_WS" && chmod +x "$OTHER_WS"
+stale_hooks "$OTHER_WS"
+migrate open no/such-workspace 2>/dev/null
+assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "$OTHER_WS hook stop" "open keeps Grok hooks naming a working ws"
+assert_eq "$(hook_stop_cmd "$MIG_HOME/claude-settings.json")" "$OTHER_WS hook stop" "open keeps claude-settings.json naming a working ws"
+migrate add no/such-workspace 2>/dev/null
+assert_exit "$?" "1" "add of an unknown workspace still fails"
+assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "$OTHER_WS hook stop" "add keeps Grok hooks naming a working ws"
+migrate new --repo "$TMP/not-a-repo" --branch x 2>/dev/null
+assert_exit "$?" "1" "new of a non-repo still fails"
+assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "$OTHER_WS hook stop" "new keeps Grok hooks naming a working ws"
+migrate _migrate-hooks
+assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "${(q)WS} hook stop" "_migrate-hooks forces the re-point"
+assert_eq "$(hook_stop_cmd "$MIG_HOME/claude-settings.json")" "${(q)WS} hook stop" "_migrate-hooks forces claude-settings.json too"
+
+echo "ws migrate: add and new migrate hooks whose ws is gone"
+stale_hooks "/old/dotfile/ws.sh"
+migrate add no/such-workspace 2>/dev/null
+assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "${(q)WS} hook stop" "add re-points Grok hooks"
+stale_hooks "/old/dotfile/ws.sh"
+migrate new --repo "$TMP/not-a-repo" --branch x 2>/dev/null
+assert_eq "$(hook_stop_cmd "$MIG_HOME/claude-settings.json")" "${(q)WS} hook stop" "new re-points claude-settings.json"
+
+echo "ws migrate: the bin link and tmux bindings follow a move"
+mkdir -p "$MIG_HOME/bin"
+ln -sfn "$TMP/gone/ws.sh" "$MIG_HOME/bin/ws"
+T new-session -d -s mig-bind 2>/dev/null
+T bind-key a run-shell "/old/dotfile/ws.sh add"
+stale_hooks "/old/dotfile/ws.sh"
+migrate open no/such-workspace 2>/dev/null
+assert_eq "$([[ "$MIG_HOME/bin/ws" -ef "$WS" ]] && print yes)" "yes" "dangling bin/ws is re-linked"
+assert_eq "$(T list-keys -T prefix a | grep -cF -- "$WS")" "1" "startup re-binds tmux keys after a move"
+ln -sfn "$OTHER_WS" "$MIG_HOME/bin/ws"
+T bind-key a run-shell "/old/dotfile/ws.sh add"
+stale_hooks "$OTHER_WS"
+migrate open no/such-workspace 2>/dev/null
+assert_eq "$(readlink "$MIG_HOME/bin/ws")" "$OTHER_WS" "a working bin/ws link is left alone"
+assert_eq "$(T list-keys -T prefix a | grep -cF -- "/old/dotfile/ws.sh")" "1" "nothing moved: bindings untouched"
+migrate _migrate-hooks
+assert_eq "$([[ "$MIG_HOME/bin/ws" -ef "$WS" ]] && print yes)" "yes" "_migrate-hooks re-links bin/ws"
+assert_eq "$(T list-keys -T prefix a | grep -cF -- "$WS")" "1" "_migrate-hooks re-binds tmux keys"
+T kill-session -t mig-bind 2>/dev/null
+
+echo "ws migrate: an unusable ws cannot be wired into Grok but still migrates Claude settings"
+COPY="$TMP/ws-copy"
+cp -R "$ROOT/ws" "$COPY" && chmod -x "$COPY/ws.sh"
+stale_hooks "/old/dotfile/ws.sh"
+WS_HOME="$MIG_HOME" GROK_HOME="$MIG_GROK" zsh "$COPY/ws.sh" _migrate-hooks 2>/dev/null
+assert_exit "$?" "1" "_migrate-hooks reports the Grok failure"
+assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "/old/dotfile/ws.sh hook stop" "Grok hooks are not wired to a non-executable ws"
+assert_eq "$(hook_stop_cmd "$MIG_HOME/claude-settings.json")" "${(q)COPY}/ws.sh hook stop" "claude-settings.json still migrates"
+WS_HOME="$MIG_HOME" GROK_HOME="$MIG_GROK" zsh "$COPY/ws.sh" open no/such-workspace 2>/dev/null
+assert_exit "$?" "1" "startup survives the Grok failure (open itself fails as usual)"
