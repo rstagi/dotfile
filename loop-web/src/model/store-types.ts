@@ -36,9 +36,10 @@ export interface PhaseOverlay {
 // ---------------------------------------------------------------------------------------
 
 /** `planned` = plan registered but no run started yet (a register-only record) · `active` =
- * running · `paused` = a HIL request is open · `finished` = loop.finish seen · `archived` =
+ * running · `paused` = a HIL request is open · `awaiting-merge` = a milestone gate is open ·
+ * `finished` = loop.finish seen · `archived` =
  * finished AND its loop dir is gone (set by the server, not the reducer). */
-export type LoopStatus = "planned" | "active" | "paused" | "finished" | "archived";
+export type LoopStatus = "planned" | "active" | "paused" | "awaiting-merge" | "finished" | "archived";
 
 // ---------------------------------------------------------------------------------------
 // Ingests — the messages the reducer folds
@@ -133,6 +134,8 @@ export interface RepositoryRecord {
   integrationWorktree: string | null;
   prUrl: string | null;
   review: ReviewInfo | null;
+  /** Optional on records persisted before milestone support. */
+  reviewPipeline?: StateJson["reviewPipeline"];
 }
 
 /** Per-loop event cap — drop oldest to bound disk (Resolved decision #2). */
@@ -145,6 +148,9 @@ export interface LoopRecord {
   loopDir: string | null;
   planFile: string | null;
   integrationBranch: string | null;
+  /** Optional on records persisted before milestone support. */
+  integrationWorktree?: string | null;
+  reviewPipeline?: StateJson["reviewPipeline"];
   startedAt: string | null;
   finishedAt: string | null;
   status: LoopStatus;
