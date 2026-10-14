@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Workspaces: git worktree + tmux session create/rm/list/merge, repo setup and name resolution. Sourced by ws.sh.
+# Workspaces: git worktree + tmux session create/rm/list/merge, repo setup and name resolution. Sourced by ws/ws.sh.
 
 cmd_new() {
   local repo="" branch="" agent="claude" detach=0

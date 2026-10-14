@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Agent tabs: open/resume sessions, per-agent command building, slot registry and tab lookup. Sourced by ws.sh.
+# Agent tabs: open/resume sessions, per-agent command building, slot registry and tab lookup. Sourced by ws/ws.sh.
 
 # Opens one agent tab in the worktree's tmux session (creating the session if needed) and
 # prints its window id. The tab closes with the agent; a clean exit (0) forgets the session,

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Session triggers: done/exit events, one-shot fan-in `ws on` registry and evaluation. Sourced by ws.sh.
+# Session triggers: done/exit events, one-shot fan-in `ws on` registry and evaluation. Sourced by ws/ws.sh.
 WS_TRIGGERS="$WS_HOME/triggers"
 
 # Trigger ids are independent of session ids. Terminal records are archived for diagnostics.

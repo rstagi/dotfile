@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Session bus: global registry/identity, send, inbox, delivery and retry, agent run/exit lifecycle. Sourced by ws.sh.
+# Session bus: global registry/identity, send, inbox, delivery and retry, agent run/exit lifecycle. Sourced by ws/ws.sh.
 # Workspace slots remain local; ids never reuse. Live state comes from tmux; metadata keeps durable identity and lifecycle status.
 WS_SESSIONS="$WS_HOME/sessions"
 

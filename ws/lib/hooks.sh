@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Agent hooks: `ws hook` ingest, ownership checks and the claude/grok hook config writers. Sourced by ws.sh.
+# Agent hooks: `ws hook` ingest, ownership checks and the claude/grok hook config writers. Sourced by ws/ws.sh.
 
 # Agent hooks call this from inside a session window: sets the window's state and records
 # the agent's session id (for resume). Best effort, always exits 0. Stop may request a

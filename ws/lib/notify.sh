@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Notifications: event emission, adapters (terminal-notifier, osascript, boringnotch, custom) and notifier build. Sourced by ws.sh.
+# Notifications: event emission, adapters (terminal-notifier, osascript, boringnotch, custom) and notifier build. Sourced by ws/ws.sh.
 
 # emit_notify_event <state> <prev> <payload> <seq> [target] — send one v1 JSON event on stdin
 # to the configured adapter. target (window/pane) defaults to the hook's pane. `closed` marks

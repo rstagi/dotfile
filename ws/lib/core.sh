@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Core helpers: errors, tmux wrappers, locks, atomic rewrites, focus and window tagging. Sourced by ws.sh.
+# Core helpers: errors, tmux wrappers, locks, atomic rewrites, focus and window tagging. Sourced by ws/ws.sh.
 
 die() { print -u2 "ws: $1"; exit "${2:-1}"; }
 

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Picker and tmux key bindings: grouped rows, summary, repo discovery, pins and preview. Sourced by ws.sh.
+# Picker and tmux key bindings: grouped rows, summary, repo discovery, pins and preview. Sourced by ws/ws.sh.
 
 cmd_attach() {
   configure_bindings
