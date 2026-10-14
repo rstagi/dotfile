@@ -1612,10 +1612,14 @@ assert_contains "$out" "--force required" "send explains done guard"
 
 echo "ws lifecycle: agent exit emits its actual code and preserves done output"
 lifecycle_exit_count() { [[ "$(jq -sr 'map(select(.event == "exit")) | length' "$WS_HOME/sessions/$1/events")" == "$2" ]]; }
+lifecycle_done_stopped() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
 T send-keys -t "$DONE_WIN" Enter
 wait_until lifecycle_exit_count "$DONE_ID" 1
 assert_exit "$?" "0" "normal agent exit appends lifecycle event"
 assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[0].code' "$WS_HOME/sessions/$DONE_ID/events")" "0" "normal exit event records code zero"
+# Exit publication precedes the launch wrapper's _end cleanup; wait for both transitions.
+wait_until lifecycle_done_stopped "$DONE_ID"
+assert_exit "$?" "0" "normal exit settles stopped with done lifecycle"
 assert_eq "$("$WS" sessions "$DONE_ID" | cut -f5,6)" $'stopped\tdone' "agent exit preserves done lifecycle"
 assert_contains "$("$WS" show "$DONE_ID")" "output: $WS_HOME/sessions/$DONE_ID/output.md" "output stays addressable after agent exit"
 "$WS" open "$DONE_ID" --detach
