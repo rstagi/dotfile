@@ -137,5 +137,21 @@ assert_eq "$(count_transcripts)" "1" "one SUB instance after unpause"
 assert_contains "$(cat "$SUB/prompt-1.md")" "control/pause-<N>" "SUB prompt explains per-phase pause files"
 assert_contains "$(cat "$SUB/prompt-1.md")" "exit 30" "SUB prompt explains runner exit 30 = paused"
 rm -rf "$DIR/control"
+echo "orchestrator: blocked at a milestone merge gate → SUB prompt + info notify, not an error"
+reset
+FAKE_OUTCOMES="complete" orch
+assert_contains "$(cat "$SUB/prompt-1.md")" 'state.awaitingMerge' "SUB prompt tells the SUB to block while parked"
+assert_contains "$(cat "$SUB/prompt-1.md")" 'outcome "blocked"' "SUB prompt names the blocked outcome"
+reset
+echo '{"awaitingMerge":{"milestone":1,"prs":{"o/r":"https://github.com/o/r/pull/1"}}}' > "$DIR/state.json"
+FAKE_OUTCOMES="blocked" orch
+assert_exit "$RC" "2" "blocked while parked → exit 2 (handled)"
+assert_contains "$(cat "$NOTIFY_LOG")" "info" "parked block notifies at info level"
+assert_eq "$(grep -c error "$NOTIFY_LOG")" "0" "parked block is not an error notification"
+rm -f "$DIR/state.json"
+reset
+FAKE_OUTCOMES="blocked" orch
+assert_exit "$RC" "2" "plain blocked → exit 2"
+assert_contains "$(cat "$NOTIFY_LOG")" "error" "plain blocked still notifies error"
 
 test_summary
