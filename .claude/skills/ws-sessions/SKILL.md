@@ -45,7 +45,11 @@ Idle targets receive bracketed paste and Enter; working/waiting targets queue me
 durably for Stop-hook continuation (or the next idle fallback). Cancellation delivers
 only when its turn id matches the current turn and the whole tab is idle. Stale or
 idless cancel/Interrupt hooks leave state and inbox unchanged; queued messages wait
-for a later Stop or verified idle. Paste + Enter submits
+for a later Stop or verified idle. Grok session-end Stops leave messages queued for resume.
+Idle paste stays in flight until a newer `UserPromptSubmit` confirms it; paste alone
+does not mark the turn working. Unconfirmed batches requeue after `WS_PASTE_ACK_TIMEOUT`
+(seconds, default 10), for a later send or Stop. Delivery may repeat if confirmation
+never arrives. Paste + Enter submits
 any unsent text a human typed into the target's input along with the message. Codex
 launches set `-c developer_instructions=...`, overriding configured developer
 instructions. Stopped targets resume

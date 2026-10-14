@@ -23,6 +23,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws name <label>            name your session (unique; usable in place of its id)
 #   ws send [--force] <id|name> <msg|->   sender-prefixed message (or stdin): paste idle, queue busy
 #                              done needs --force; stopped sessions resume before delivery
+#                              idle paste awaits prompt confirmation; timeout requeues (WS_PASTE_ACK_TIMEOUT=10)
 #   ws done [--output <file>|-]   declare own session done; replace output.md (default empty)
 #                              --output - also reads stdin; repeat appends another done event
 #                              pending inbox/in-flight messages refuse done; let Stop deliver first
@@ -106,6 +107,7 @@ main() {
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
   _agent) ws_bus_run_agent "$@" ;;
+  _paste-timeout) ws_bus_paste_timeout "$@" ;;
   _build-notifier) build_notifier ;;
   -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
@@ -402,6 +404,11 @@ cmd_hook() {
     StopCancelled|stop_cancelled|Interrupt) event=cancel ;;
     esac
   fi
+  # Grok parses but ignores Stop decisions when its channel closes: preserve queued work.
+  if [[ "$event" == stop && "$(print -r -- "$payload" | jq -r '.reason // empty' 2>/dev/null)" == (channel_closed|shutdown) ]]; then
+    print '{}'
+    return 0
+  fi
   local reply=""
   [[ "$event" != stop ]] || reply='{}'
   [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
@@ -414,6 +421,13 @@ cmd_hook() {
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
   { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
+  # A tool hook may overtake a delayed prompt hook's state update. Delivery ack only
+  # compares against the paste watermark; stale state must not discard that confirmation.
+  if [[ "$event" == working && -z "$agent_id" && "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
+    local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+    id="${id:-${WS_SESSION:-}}"
+    [[ "$id" != <-> ]] || with_lock "$WS_SESSIONS/$id/inbox" ws_bus_paste_ack "$id" "$seq"
+  fi
   if [[ "$last" != <-> ]] || (( last < seq )); then
     # Cancel reports can start after the next prompt: the entry-time watermark alone
     # cannot order them. Without a matching turn id, neither state nor input is safe.
@@ -446,7 +460,7 @@ cmd_hook() {
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
       id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
       if ws_bus_idle "$id" "$win"; then
-        state="$(hook_state working "" "$prev")"
+        seq="$(tmux_ show -wqv -t "$win" @ws_seq)" # paste watermark; state awaits UserPromptSubmit
       fi
     fi
     tmux_ set -w -t "$TMUX_PANE" @ws_seq "$seq" \; set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
@@ -1004,7 +1018,7 @@ with_lock() {
   local f="$1"
   shift
   : >> "$f.lock" # flock won't create it
-  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || exit 1; "$@")
+  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $f.lock"; exit 1; }; "$@")
 }
 
 # rewrite <file> <awk args...> — replaces the file with awk's output, atomically.

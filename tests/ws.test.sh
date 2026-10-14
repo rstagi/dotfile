@@ -29,7 +29,7 @@ T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 mkdir -p "$TMP/bin"
 # Fake delivery TUI records bytes submitted outside bracketed paste, including multiline input.
 cat > "$TMP/paste-agent.py" <<'PY_AGENT'
-import json, os, time, tty
+import json, os, subprocess, time, tty
 delay = 0.6 # delayed startup exposes paste before the resumed TUI is ready
 try: # one-shot override: a test's next TUI starts slower than the hook-lock timeout
     with open(os.environ["WS_HOME"] + "/tui-delay") as f: delay = float(f.read())
@@ -44,6 +44,9 @@ while True:
     ch = os.read(0, 1)
     buf += ch
     if ch == b"\r" and not (b"\033[200~" in buf and b"\033[201~" not in buf):
+        if not os.path.exists(os.environ["WS_HOME"] + "/no-submit-" + os.environ["WS_SESSION"]):
+            subprocess.run([os.environ["WS_TEST_CLI"], "hook", "working"],
+                           input=b'{"hook_event_name":"UserPromptSubmit"}', check=True)
         with open(os.environ["WS_HOME"] + "/pane-" + os.environ["WS_SESSION"] + ".jsonl", "a") as f:
             f.write(json.dumps({"raw": buf.decode(), "text": buf[:-1].replace(b"\033[200~", b"").replace(b"\033[201~", b"").decode()}) + "\n")
         buf = b""
@@ -1451,6 +1454,81 @@ for agent field slot in claude prompt_id 1 codex turn_id 2 grok promptId 3; do
   print '{}' | hook api/delivery "$M3_WIN" stop >/dev/null
 done
 
+# --- delivery robustness: session-end Stop ---
+echo "ws hook: Grok session-end Stop leaves accepted work for resume"
+ROBUST_WIN="$(slot_window "$SEND_WT" 3)"
+ROBUST_ID="$(T display -p -t "$ROBUST_WIN" '#{@ws_session}')"
+hook api/delivery "$ROBUST_WIN" working </dev/null
+WS_SESSION=1 "$WS" send "$ROBUST_ID" "survive session end"
+ROBUST_INBOX="$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox")"
+for reason in channel_closed shutdown; do
+  reply="$(jq -nc --arg reason "$reason" '{hook_event_name:"Stop",reason:$reason}' | hook api/delivery "$ROBUST_WIN" stop)"
+  assert_eq "$reply" "{}" "$reason allows session end without continuation"
+  assert_eq "$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox")" "$ROBUST_INBOX" "$reason retains the accepted inbox"
+done
+reply="$(print '{"hook_event_name":"Stop"}' | hook api/delivery "$ROBUST_WIN" stop)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws #1]\nsurvive session end' "ordinary Stop still delivers retained work"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+# --- end delivery robustness: session-end Stop ---
+
+# --- delivery robustness: idle paste acknowledgement ---
+echo "ws send: idle paste awaits a newer prompt submission before acknowledgement"
+wait_until test -s "$WS_HOME/argv-$ROBUST_ID.json"
+hook api/delivery "$ROBUST_WIN" idle </dev/null
+: > "$WS_HOME/no-submit-$ROBUST_ID" # model a picker consuming Enter without a prompt hook
+mkfifo "$TMP/robust-prompt.in"
+exec {robust_w}<>"$TMP/robust-prompt.in"
+(exec {robust_w}>&-; hook api/delivery "$ROBUST_WIN" working < "$TMP/robust-prompt.in") &
+robust_stale_pid=$!
+sleep 0.3
+(exec {robust_w}>&-; WS_SESSION=1 "$WS" send "$ROBUST_ID" "await confirmation")
+wait_until pane_received "$ROBUST_ID" $'[ws #1]\nawait confirmation'
+assert_eq "$(T show -wqv -t "$ROBUST_WIN" @ws_state)" "idle" "paste alone never forces working"
+ROBUST_PENDING="$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" 2>/dev/null)"
+assert_contains "$ROBUST_PENDING" "await confirmation" "unconfirmed paste stays durably in flight"
+print -r -- '{"hook_event_name":"UserPromptSubmit"}' >&$robust_w
+exec {robust_w}>&-
+wait "$robust_stale_pid"
+assert_eq "$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" 2>/dev/null)" "$ROBUST_PENDING" "older prompt hook cannot ack a newer paste"
+print '{"hook_event_name":"PreToolUse"}' | hook api/delivery "$ROBUST_WIN" working
+assert_eq "$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" 2>/dev/null)" "$ROBUST_PENDING" "tool hook cannot ack an unconfirmed paste"
+print '{"hook_event_name":"UserPromptSubmit"}' | hook api/delivery "$ROBUST_WIN" working
+assert_eq "$([[ -e "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" ]] && print pending)" "" "newer prompt submission acknowledges the pasted batch"
+assert_eq "$(T show -wqv -t "$ROBUST_WIN" @ws_state)" "working" "confirmed submission marks working"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+
+echo "ws send: an overtaken prompt hook still confirms its earlier paste"
+WS_SESSION=1 "$WS" send "$ROBUST_ID" "overtaken confirmation"
+wait_until pane_received "$ROBUST_ID" $'[ws #1]\novertaken confirmation'
+mkfifo "$TMP/robust-overtaken.in"
+exec {robust_w}<>"$TMP/robust-overtaken.in"
+(exec {robust_w}>&-; hook api/delivery "$ROBUST_WIN" working < "$TMP/robust-overtaken.in") &
+robust_stale_pid=$!
+sleep 0.5
+print '{"hook_event_name":"PreToolUse"}' | hook api/delivery "$ROBUST_WIN" working
+print -r -- '{"hook_event_name":"UserPromptSubmit"}' >&$robust_w
+exec {robust_w}>&-
+wait "$robust_stale_pid"
+assert_eq "$([[ -e "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" ]] && print pending)" "" "newer prompt acknowledges even when another hook overtakes its state update"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+
+echo "ws send: swallowed Enter times out and requeues without forcing working"
+WS_PASTE_ACK_TIMEOUT=1.5 WS_SESSION=1 "$WS" send "$ROBUST_ID" "swallowed Enter"
+wait_until pane_received "$ROBUST_ID" $'[ws #1]\nswallowed Enter'
+ROBUST_PANE="$(cat "$WS_HOME/pane-$ROBUST_ID.jsonl")"
+WS_SESSION=1 "$WS" send "$ROBUST_ID" "queued after paste"
+assert_eq "$(cat "$WS_HOME/pane-$ROBUST_ID.jsonl")" "$ROBUST_PANE" "sends during unconfirmed paste queue without a second Enter"
+wait_until test -s "$WS_HOME/sessions/$ROBUST_ID/inbox"
+wait_until test ! -e "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste"
+assert_exit "$?" "0" "timeout requeues the unconfirmed batch"
+assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$ROBUST_ID/inbox")" $'[ws #1]\nswallowed Enter\n[ws #1]\nqueued after paste' "timeout retains both messages in delivery order"
+assert_eq "$(T show -wqv -t "$ROBUST_WIN" @ws_state)" "idle" "timeout leaves the unconfirmed tab idle"
+reply="$(print '{}' | hook api/delivery "$ROBUST_WIN" stop)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws #1]\nswallowed Enter\n\n[ws #1]\nqueued after paste' "later Stop delivers the timed-out batch and queued sends"
+rm -f "$WS_HOME/no-submit-$ROBUST_ID"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+# --- end delivery robustness: idle paste acknowledgement ---
+
 echo "ws send: concurrent senders retain every queued message"
 hook api/delivery "$SEND_WIN" working </dev/null
 send_pids=()
@@ -1521,6 +1599,8 @@ send_slow_pid=$!
 sleep 0.5 # Stop captures its sequence before blocking on payload input.
 (exec {send_slow_w}>&-; WS_SESSION=1 "$WS" send "$FRESH_ID" "newer turn")
 assert_exit "$?" "0" "new message submits while old Stop awaits payload"
+wait_until pane_received "$FRESH_ID" $'[ws #1]\nnewer turn'
+assert_exit "$?" "0" "newer pasted turn confirms prompt submission"
 exec {send_slow_w}>&-
 wait "$send_slow_pid"
 assert_eq "$(T display -p -t "$FRESH_WIN" '#{@ws_state}')" "working" "older Stop never idles a newer pasted turn"
@@ -1610,6 +1690,46 @@ for i in 1 2; do
   assert_contains "$(cat "$WS_HOME/pane-$SLOW_ID.jsonl" "$WS_HOME/sessions/$SLOW_ID/inbox" 2>/dev/null)" "overlap-$i" "overlap message $i delivered or queued"
 done
 rm -f "$WS_HOME/tui-delay"
+
+# --- delivery robustness: readiness and lock diagnostics ---
+echo "ws send: readiness races release the inbox lock before waiting for input"
+ROBUST_BEFORE="$(windows_of "$SEND_WT")"
+print 8 > "$WS_HOME/tui-delay"
+"$WS" add api/delivery --agent claude --detach
+ROBUST_READY_WIN="$(windows_of "$SEND_WT" | grep -vxF -f <(print -r -- "$ROBUST_BEFORE"))"
+ROBUST_READY_ID="$(T show -wqv -t "$ROBUST_READY_WIN" @ws_session)"
+T set -w -t "$ROBUST_READY_WIN" @ws_main idle
+ROBUST_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$ROBUST_READY_WIN.lock"
+(zmodload zsh/system; : >> "$ROBUST_LOCK"; zsystem flock -f robust_fd "$ROBUST_LOCK"; : > "$TMP/robust-ready-held"; sleep 2.5) &
+robust_holder=$!
+wait_until test -e "$TMP/robust-ready-held"
+(WS_SESSION=1 "$WS" send "$ROBUST_READY_ID" "after readiness race" > "$TMP/robust-ready.out" 2>&1; print $? > "$TMP/robust-ready.rc") &
+robust_sender=$!
+wait_until test -s "$WS_HOME/sessions/$ROBUST_READY_ID/inbox"
+sleep 1 # sender has passed its unlocked main-state read and is waiting for the hook lock
+T set -wu -t "$ROBUST_READY_WIN" @ws_main # races the sender's unlocked readiness check
+wait "$robust_holder"
+sleep 0.3 # sender now sees the missing main state under its hook/inbox locks
+out="$(WS_SESSION="$ROBUST_READY_ID" "$WS" done 2>&1)"
+assert_exit "$?" "1" "done refuses work while readiness waits"
+assert_contains "$out" "pending messages" "readiness wait leaves the inbox lock available to done"
+wait "$robust_sender"
+assert_exit "$(cat "$TMP/robust-ready.rc")" "0" "send retries readiness after releasing its locks"
+wait_until pane_received "$ROBUST_READY_ID" $'[ws #1]\nafter readiness race'
+assert_exit "$?" "0" "unlocked readiness retry eventually delivers"
+T kill-window -t "$ROBUST_READY_WIN"
+rm -f "$WS_HOME/tui-delay"
+
+echo "ws send: inbox lock timeout reports the lock instead of failing silently"
+ROBUST_INBOX_LOCK="$WS_HOME/sessions/$SEND_ID/inbox.lock"
+(zmodload zsh/system; : >> "$ROBUST_INBOX_LOCK"; zsystem flock -f robust_fd "$ROBUST_INBOX_LOCK"; : > "$TMP/robust-inbox-held"; sleep 4) &
+robust_holder=$!
+wait_until test -e "$TMP/robust-inbox-held"
+out="$(WS_SESSION=1 "$WS" send "$SEND_ID" "lock timeout" 2>&1)"
+assert_exit "$?" "1" "contended inbox lock times out"
+assert_contains "$out" "timed out waiting for lock" "lock timeout emits a diagnostic"
+wait "$robust_holder"
+# --- end delivery robustness: readiness and lock diagnostics ---
 
 echo "ws send: failed resume retains the message and reports it queued"
 META="$WS_HOME/sessions/$FRESH_ID/meta"
