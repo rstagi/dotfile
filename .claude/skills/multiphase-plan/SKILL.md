@@ -8,8 +8,9 @@ description: >-
   "plan this out", "make a multi-phase plan", "break this into parallel phases", "put a
   plan on Kestral" (Kestral publish is opt-in), or before spinning up parallel worktrees
   for a larger effort. For Loop plans, estimate and size phases to fit one 30-minute
-  execution attempt where the work can be bounded.
-argument-hint: "<goal, or existing Kestral project name> (optional)"
+  execution attempt where the work can be bounded. The draft is cross-checked by an
+  adversarial plan review (Codex + Claude + Grok) unless invoked as `light <goal>`.
+argument-hint: "[light] <goal, or existing Kestral project name> (optional)"
 ---
 
 # Multi-Phase Plan
@@ -27,6 +28,15 @@ work. Parallelism is an *observation* about that plan (some phases happen to be
 independent), never a *goal* you bend the plan toward. A fully sequential, single-lane plan
 is a normal, expected, good outcome — most plans are mostly sequential. More lanes is not
 better.
+
+**Modes.** By default the drafted plan goes through an **adversarial plan review** (step 3)
+before it is registered. If the argument starts with the word `light` (e.g.
+`/multiphase-plan light add a --json flag`), strip it from the goal and skip step 3 — use it
+for small or low-risk plans.
+
+**Front-load the interaction.** All questions go to the user in step 1, before drafting. From
+step 2 on, work autonomously through review and registration to the report; come back to the
+user only for a decision the review surfaced that genuinely needs them (step 3).
 
 ## Prerequisites
 
@@ -54,9 +64,22 @@ work well — **do not plan blind**:
   link it), pull existing Kestral context: `search_operations`→`search_projects`/`find_documents`
   for a related project, brief, or prior plan (or invoke `kestral-context`). Skip this for a
   purely local plan.
-- If the goal is thin or ambiguous, ask **2–4 sharp questions** before planning (scope,
-  constraints, definition of done, hard sequencing). Offer `grilling` if the user wants
-  the plan stress-tested first.
+- **Question gate — ask everything now, once.** After exploring, list every unknown that
+  would change the plan and ask them all in **one batch** (`AskUserQuestion` in Claude Code;
+  a numbered list elsewhere), each with your recommended default. Cover whatever is not
+  already settled by the request or the code:
+  - scope & non-goals; definition of done
+  - hard constraints and sequencing (deadlines, must-land-first, compatibility)
+  - repositories touched and each repository's `Verify:` gate (never invent one)
+  - integration branch, when the default would be wrong
+  - review tier (`shallow`/`medium`/`max`, rounds) — propose one from size and risk
+  - link to **Kestral** too? (default: no — local-only)
+
+  Settle the "silly" things here — naming, which repo, which command runs the tests — so the
+  adversarial review spends its effort on the plan's real weaknesses. Ask a follow-up batch
+  only if an answer opens a new unknown. Don't ask what the code or the request already
+  answers; if nothing is open, say so and move on. Offer `grilling` if the user wants the
+  plan stress-tested first.
 
 ### 2. Draft the phased plan
 
@@ -154,10 +177,29 @@ sequential, produce a single-lane plan and say so plainly; that is a success, no
 shortfall. Silent over-parallelization causes merge pain and is the exact failure this gate
 exists to prevent.
 
-### 3. Register on the daemon (the base backend)
+### 3. Adversarial plan review (skipped in `light` mode)
+
+Write the draft to `.loop/plan.md` (with the header from step 4) and run three independent,
+read-only reviewers — Sol (Codex), Opus (Claude), Grok — in parallel, one round:
+
+    ~/dotfile/loop-plan-review.sh run     # defaults: --dir .loop, --plan-file .loop/plan.md, --worktree .
+
+It blocks until all three finish (≤15 min each; models/effort in `loop-models.conf`
+`CHAIN_PLAN_REVIEW_*`) and prints one `<reviewer> \t <exit> \t <report.md|->` row per
+reviewer. Exit 2 = no usable report: tell the user and continue unreviewed. A failed
+reviewer is noted, not retried. Grok sends the repository to xAI.
+
+**Reconcile here, in this chat.** Read every report. For each finding, check it against the
+code yourself, then accept (edit the plan) or reject (one-line reason). Merge duplicates
+across reviewers — agreement between providers raises confidence, but isn't proof. Show the
+user a compact disposition table (`finding · reviewers · accept/reject · why`). Only findings
+that need a **user decision** (scope, product trade-off, a missing gate) go back to the user,
+batched into one question; settle everything else yourself. Then continue to step 4.
+
+### 4. Register on the daemon (the base backend)
 
 **This always runs** — local-only is the default, every plan lives on the daemon. Write the
-plan markdown to `.loop/plan.md` in the current worktree, prefixed with the canonical
+plan markdown to `.loop/plan.md` in the current worktree (already there unless `light`), prefixed with the canonical
 `<!-- loop-plan -->` header (see `references/plan-format.md`). Mint the `planId`
 (`loop-<effort-slug>-<date>-<HHMMSS|rand>`), set `daemon: http://localhost:7717`, and
 **omit the four `kestral*` keys for now** — this plan starts unlinked:
@@ -176,26 +218,18 @@ Then register it:
 immediately and lets `loop-handoff` repush from here. Mention the user can add `.loop/` to
 `.gitignore` if they don't want the plan committed.
 
-### 4. Confirm — and choose whether to link Kestral
+### 5. Kestral link (from the step-1 answers)
 
-The plan is now live locally. One gate before any Kestral write:
+The review tier and the Kestral choice were settled in step 1 — don't ask again. (The tier
+stays changeable later, before the review phase starts: rewrite its `` `[review: …]` `` /
+`` `[rounds: …]` `` tags and `loop-plan.sh push`, or `m` on the review phase in `loop-top`.)
+Only if step 1 left one open — e.g. the user skipped it — ask it now, in one message.
 
-> Plan registered on the local daemon · planId **`<id>`**.
-> Review tier: **`<tier>` ×`<rounds>`** — `<one-line why>`. Change it? (`shallow` ×1 ·
-> `medium` ×3 · `max` ×3, optionally with rounds)
-> Link this plan to **Kestral** too (creates a project + plan doc + phase tasks)?
-> (default: **no** — local-only)
+Link to Kestral **only** if the user said yes, or already asked for Kestral in the original
+request (e.g. "put a plan on Kestral"). Otherwise go to **Report** — the daemon plan +
+`.loop/plan.md` are the source of truth.
 
-Skip the review-tier line when the request already named a tier. If the user picks another
-tier, rewrite the review phase's `` `[review: …]` `` / `` `[rounds: …]` `` tags in
-`.loop/plan.md` and repush with `loop-plan.sh push` (it stays changeable later — before the review
-phase starts — from `loop-top`: `m` on the review phase).
-
-Link to Kestral **only** if the user says yes, or already asked for Kestral in the original
-request (e.g. "put a plan on Kestral"). Otherwise stop here and go to **Report** — the
-daemon plan + `.loop/plan.md` are the source of truth.
-
-### 5. When linked to Kestral
+### 6. When linked to Kestral
 
 Run the full Kestral flow (unchanged). Kestral stays authoritative for the plan doc + tasks;
 the daemon is **always written too** (dual-write, Kestral second) so `.loop/plan.md` ends up
@@ -242,7 +276,7 @@ goal keywords.
 the daemon copy) so the daemon carries the linked coordinates. The plan is now **linked**
 (⇔ `kestralWorkContextId` present).
 
-### 6. Report
+### 7. Report
 
 State the shape honestly — do not imply parallelism that isn't there. Fill every `<…>` in
 the templates below with the real captured value (planId, project name, doc / project URLs,
@@ -254,7 +288,7 @@ name** works too.
 
 **Single-lane (sequential) plan — the common case:**
 
-> **Plan registered** · N phases, sequential.
+> **Plan registered** · N phases, sequential · plan review: `<n accepted / n findings>` (or `light`).
 > State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
 > **Kestral** *(linked only):* [<Effort> — Multi-Phase Plan](doc-url) on [<project name>](project-url)
 >
@@ -268,7 +302,7 @@ name** works too.
 
 **Multi-lane plan — only when phases passed the Independence test:**
 
-> **Plan registered** · N phases in M lanes.
+> **Plan registered** · N phases in M lanes · plan review: `<n accepted / n findings>` (or `light`).
 > State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
 > **Kestral** *(linked only):* [<Effort> — Multi-Phase Plan](doc-url) on [<project name>](project-url)
 >

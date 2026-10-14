@@ -351,6 +351,23 @@ assert_exit "$RC" "1" "shallow has no adversary C (usage error)"
 run_review review-adv-a rate-limit --review-tier huge
 assert_exit "$RC" "1" "unknown tier is a usage error"
 
+echo "runner: plan review — Sol + Opus + Grok at high, no fallback"
+run_review plan-review-a done
+assert_exit "$RC" "0" "plan reviewer A completes"
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "plan reviewer A is Sol"
+assert_contains "$INVOCATIONS" 'model_reasoning_effort="high"' "plan reviewer A runs at high"
+assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "plan reviewer A has no fallback"
+run_review plan-review-b
+assert_exit "$RC" "0" "plan reviewer B completes"
+assert_contains "$INVOCATIONS" 'claude -p --model opus ' "plan reviewer B is Opus"
+assert_contains "$INVOCATIONS" '--effort high' "plan reviewer B runs at high"
+run_review plan-review-c
+assert_exit "$RC" "0" "plan reviewer C completes"
+assert_contains "$INVOCATIONS" 'grok --prompt-file ' "plan reviewer C is Grok"
+assert_contains "$INVOCATIONS" '--effort high' "plan reviewer C runs at high"
+run_review plan-review-d
+assert_exit "$RC" "1" "unknown plan reviewer is a usage error"
+
 echo "runner: legacy chain names keep in-flight loops working (max tier)"
 run_review review-astra done
 assert_exit "$RC" "0" "legacy review-astra completes"

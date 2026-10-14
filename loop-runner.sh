@@ -8,7 +8,8 @@ set -u -o pipefail
 #
 # Usage:
 #   loop-runner.sh --worktree <path> --run-dir <abs path> --prompt-file <f>
-#     [--chain task|escalate|review-adv-a|review-adv-b|review-adv-c|review-fix|review-final]
+#     [--chain task|escalate|review-adv-a|review-adv-b|review-adv-c|review-fix|review-final
+#              |plan-review-a|plan-review-b|plan-review-c]
 #     [--review-tier shallow|medium|max]   (review chains; default LOOP_REVIEW_TIER_DEFAULT)
 #     [--timeout <s>] [--verify-cmd <cmd>]
 #     [--resume <sessionId> --engine codex|claude|grok] [--models-conf <f>] [--budget <usd>]
@@ -133,6 +134,12 @@ review-adv-a|review-adv-b|review-adv-c|review-fix|review-final)
   else
     TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}"
   fi
+  ;;
+plan-review-a|plan-review-b|plan-review-c)
+  plan_role="${(U)CHAIN_NAME#plan-review-}"
+  chain=("${(@P)${:-CHAIN_PLAN_REVIEW_$plan_role}}")
+  EFFORT="${(P)${:-EFFORT_PLAN_REVIEW_$plan_role}:-}"
+  TIMEOUT="${TIMEOUT:-${LOOP_TIMEOUT_PLAN_REVIEW:-$LOOP_TIMEOUT_REVIEW}}"
   ;;
 *) echo "loop-runner: unknown chain '$CHAIN_NAME'" >&2; exit 1 ;;
 esac
