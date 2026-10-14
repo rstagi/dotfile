@@ -2,6 +2,10 @@
 # ws.sh — terminal workspace manager (worktree + one tmux window per agent session). Runs
 # against a private tmux server (-L) with fake agent bins, so it never touches the user's.
 set -u
+# Every ws tab exports WS_*: a suite launched from one must not inherit its identity.
+for inherited in ${(k)parameters}; do
+  [[ "$inherited" != WS_* ]] || unset "$inherited"
+done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd -P)" # physical: ws.sh records ${0:A}
 source "$HERE/lib.sh"
@@ -1726,6 +1730,18 @@ for i in 1 2; do
 done
 rm -f "$WS_HOME/tui-delay"
 
+echo "ws send (F7): a message queued on a slow-starting idle tab is delivered without a re-send"
+F7_BEFORE="$(windows_of "$SEND_WT")"
+print 4 > "$WS_HOME/tui-delay"
+"$WS" add api/delivery --agent claude --detach
+F7_WIN="$(windows_of "$SEND_WT" | grep -vxF -f <(print -r -- "$F7_BEFORE"))"
+F7_ID="$(T show -wqv -t "$F7_WIN" @ws_session)"
+WS_READY_TIMEOUT=1 WS_DELIVER_RETRY_INTERVAL=1 WS_SESSION=1 "$WS" send "$F7_ID" "f7 late" >/dev/null 2>&1
+assert_exit "$?" "75" "slow-start send reports queued"
+wait_until pane_received "$F7_ID" "[ws #1]"$'\n'"f7 late"
+assert_exit "$?" "0" "bounded retry delivers once the TUI is ready"
+rm -f "$WS_HOME/tui-delay"
+
 # --- delivery robustness: readiness and lock diagnostics ---
 echo "ws send: readiness races release the inbox lock before waiting for input"
 ROBUST_BEFORE="$(windows_of "$SEND_WT")"
@@ -2655,6 +2671,8 @@ cp "$WS_HOME/triggers/archive/$TID.json" "$WS_HOME/triggers/$TID.json"
 : > "$TMP/edge-jq-calls"
 PATH="$TMP/edge-bin:$PATH" WS_EDGE_JQ="$edge_jq" WS_EDGE_JQ_CALLS="$TMP/edge-jq-calls" WS_SESSION="$SOURCE_A" "$WS" done
 assert_exit "$?" "0" "done succeeds with many unrelated pending triggers"
+edge_retired() { [[ ! -f "$WS_HOME/triggers/$TID.json" ]]; }
+wait_until edge_retired # evaluation runs in a detached worker
 edge_calls="$(wc -l < "$TMP/edge-jq-calls")"
 assert_eq "$(( edge_calls < 20 ))" "1" "event evaluation uses bounded jq processes across unrelated triggers"
 assert_eq "$([[ -f "$WS_HOME/triggers/$TID.json" ]] && print active)" "" "legacy fired record is retired on the next event"
@@ -2681,6 +2699,7 @@ for corrupt_record in '{' '{"status":"pending","event":"done","action":"send","s
   out="$(WS_SESSION="$SOURCE_A" "$WS" done 2>&1)"
   assert_exit "$?" "0" "done succeeds despite a corrupt sibling trigger"
   assert_contains "$out" "999998.json" "corrupt trigger record is named in a warning"
+  wait_until test -f "$WS_HOME/triggers/archive/999997.json"
   assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/999997.json" 2>/dev/null)" "fired" "healthy trigger fires beside a corrupt one"
   reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
   assert_contains "$(print -r -- "$reply" | jq -r '.reason // empty')" "healthy edge" "healthy trigger delivers beside a corrupt one"
@@ -2697,6 +2716,7 @@ jq -n --arg source "$SOURCE_A" --arg target "$DEFAULT_ID" \
   > "$WS_HOME/triggers/999995.json"
 WS_SESSION="$SOURCE_A" "$WS" done 2>/dev/null
 assert_exit "$?" "0" "done succeeds when a legacy trigger expands to empty"
+wait_until test -f "$WS_HOME/triggers/archive/999995.json"
 assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/999995.json" 2>/dev/null)" "failed" "empty expansion archives the trigger as failed"
 assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/999995.json" 2>/dev/null)" "empty" "empty expansion records its error"
 # A fired record whose action is still running holds its lock: unrelated events skip it.
@@ -2831,6 +2851,55 @@ assert_eq "$([[ -e "$TMP/g2-probe" ]] && print clean)" "clean" "tab shell input 
 T kill-window -t "$G2_WIN"
 # --- end G2 bus hardening ---
 # --- end trigger edges ---
+
+# --- review fixes: pane ownership, async done, lock bootstrap, delayed delivery, stop lock ---
+echo "ws hook (F1): a hook from a split pane never acts for the tab's agent"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+(unset WS_SESSION; "$WS" send "$DEFAULT_ID" 'split-pane-msg' 2>/dev/null)
+F1_PANE="$(T split-window -d -P -F '#{pane_id}' -t "$DEFAULT_WIN")"
+reply="$(WS_SESSION="$DEFAULT_ID" WS_WORKSPACE=api/triggers TMUX_PANE="$F1_PANE" "$WS" hook stop </dev/null)"
+assert_eq "$reply" "{}" "split-pane Stop gets an empty reply"
+assert_contains "$(cat "$WS_HOME/sessions/$DEFAULT_ID/inbox" 2>/dev/null)" "split-pane-msg" "split-pane Stop leaves the owner's inbox"
+T kill-pane -t "$F1_PANE" 2>/dev/null
+reply="$(WS_SESSION="$DEFAULT_ID" WS_WORKSPACE=api/triggers TMUX_PANE="$(T show -wqv -t "$DEFAULT_WIN" @ws_pane)" "$WS" hook stop </dev/null)"
+assert_contains "$reply" "split-pane-msg" "owning pane's Stop still drains the inbox"
+
+echo "ws done (F2/F6): fresh installs are quiet and triggers evaluate off the agent's call"
+F2_BEFORE="$(windows_of "$TRIGGER_WT")"
+"$WS" add api/triggers --detach
+F2_WIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$F2_BEFORE"))"
+F2_SRC="$(T display -p -t "$F2_WIN" '#{@ws_session}')"
+mv "$WS_HOME/triggers" "$TMP/triggers-aside"
+out="$(WS_SESSION="$F2_SRC" "$WS" done </dev/null 2>&1)"
+assert_exit "$?" "0" "done succeeds before any trigger directory exists"
+assert_eq "$out" "" "fresh install prints no lock errors"
+rm -rf "$WS_HOME/triggers"
+mv "$TMP/triggers-aside" "$WS_HOME/triggers"
+hook api/triggers "$DEFAULT_WIN" idle </dev/null
+F2_TID="$("$WS" on "$SOURCE_A" done --send-to "$DEFAULT_ID" 'f2 msg')"
+zmodload zsh/datetime
+f2_start=$EPOCHREALTIME
+WS_READY_TIMEOUT=4 WS_SESSION="$SOURCE_A" "$WS" done </dev/null >/dev/null 2>&1
+assert_eq "$(( EPOCHREALTIME - f2_start < 2 ))" "1" "done returns before its trigger action finishes"
+WS_TEST_WAIT=15 wait_until test -f "$WS_HOME/triggers/archive/$F2_TID.json"
+assert_exit "$?" "0" "detached worker still fires the trigger"
+
+echo "ws hook (F8): a Stop that waits on the hook lock still settles the tab and drains the inbox"
+F8_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$DEFAULT_WIN.lock"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+(unset WS_SESSION; "$WS" send "$DEFAULT_ID" 'f8 msg' 2>/dev/null)
+rm -f "$TMP/f8-held" "$TMP/f8-release"
+(zmodload zsh/system; : >> "$F8_LOCK"; zsystem flock -f f8_fd "$F8_LOCK"; : > "$TMP/f8-held"
+  while [[ ! -e "$TMP/f8-release" ]]; do sleep 0.05; done) &
+f8_holder=$!
+wait_until test -e "$TMP/f8-held"
+(sleep 6; : > "$TMP/f8-release") &
+hook api/triggers "$DEFAULT_WIN" stop </dev/null >/dev/null
+f8_settled() { [[ "$(T show -wqv -t "$DEFAULT_WIN" @ws_state)" != working ]]; }
+WS_TEST_WAIT=12 wait_until f8_settled
+assert_exit "$?" "0" "lock-starved Stop does not leave the tab working"
+wait "$f8_holder"
+# --- end review fixes ---
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 

@@ -79,19 +79,19 @@ cmd_done() {
   [[ -z "$source" || "$source" == - || ( -f "$source" && -r "$source" ) ]] \
     || die "done: cannot read output file: $source"
   with_lock "$WS_SESSIONS/$id/output" ws_bus_done_locked "$id" "$source" || return 1
-  # Emit (and evaluate triggers) only after releasing the output lock.
-  ws_bus_event "$id" done "$(jq -nc --arg output "$WS_SESSIONS/$id/output.md" '{output:$output}')" || return 1
+  # Mark a spawned tab's HUP as cleanup first, not a crash: ws_bus_exit skips its exit event.
+  # Publish before killing our own process group. Triggers evaluate in a detached worker so a
+  # killed tool call can neither stall sibling fan-in nor leave this tab undone.
   if jq -e '.spawned == true' "$WS_SESSIONS/$id/meta" >/dev/null; then
     win="$(ws_bus_window "$id")"
-    if [[ -n "$win" ]]; then
-      # Publish first and release the lifecycle lock before killing our own process group.
-      # Mark this tab's HUP as cleanup, not a crash: ws_bus_exit skips its exit event.
-      ws_bus_update "$id" --arg win "$win" '.done_window = $win'
-      # The kill skips the launch wrapper's `ws _end`: free the slot row here.
-      session_remove "$(jq -r '.path' "$WS_SESSIONS/$id/meta")" "$(jq -r '.slot' "$WS_SESSIONS/$id/meta")"
-      cmd_dismiss "$win"
-      tmux_ kill-window -t "$win"
-    fi
+    [[ -z "$win" ]] || ws_bus_update "$id" --arg win "$win" '.done_window = $win'
+  fi
+  ws_bus_event "$id" done "$(jq -nc --arg output "$WS_SESSIONS/$id/output.md" '{output:$output}')" defer || return 1
+  if [[ -n "${win:-}" ]]; then
+    # The kill skips the launch wrapper's `ws _end`: free the slot row here.
+    session_remove "$(jq -r '.path' "$WS_SESSIONS/$id/meta")" "$(jq -r '.slot' "$WS_SESSIONS/$id/meta")"
+    cmd_dismiss "$win"
+    tmux_ kill-window -t "$win"
   fi
 }
 
@@ -103,6 +103,37 @@ cmd_show() {
   jq -r --arg output "$output" '
     "id: \(.id)\nname: \(.name)\nworkspace: \(.workspace)\nagent: \(.agent)\nstatus: \(.status)\noutput: \($output)"
   ' "$WS_SESSIONS/$id/meta"
+}
+
+# 75 after enqueue: a bounded detached retry covers an idle target that fires no hook.
+ws_bus_queued_die() {
+  local id="$1"
+  shift
+  ws_bus_deliver_later "$id"
+  die "$1" 75
+}
+
+ws_bus_deliver_later() {
+  ws_bus_detach "$WS_BIN" _deliver-retry "$1"
+}
+
+# Retry delivery of a queued inbox while the target sits idle. Working targets drain through
+# their Stop hook; a gone window or empty inbox ends it. Bounded: retries x interval.
+ws_bus_deliver_retry() {
+  local id="$1" tries="${WS_DELIVER_RETRIES:-12}" i win lock lockfd rc
+  for (( i = 0; i < tries; i++ )); do
+    sleep "${WS_DELIVER_RETRY_INTERVAL:-5}"
+    [[ -s "$WS_SESSIONS/$id/inbox" ]] || return 0
+    win="$(ws_bus_window "$id")"
+    [[ -n "$win" ]] || return 0
+    [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle ]] || continue
+    lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+    { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || continue
+    with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "" 1
+    rc=$?
+    exec {lockfd}>&-
+    (( rc == 3 || rc == 4 )) || return 0
+  done
 }
 
 cmd_send() {
@@ -130,7 +161,8 @@ cmd_send() {
   [[ "$message" != '[ws '* ]] || message=" $message"
   message="${message//"${nl}[ws "/"${nl} [ws "}"
   message="[ws $sender]"$'\n'"$message"
-  # 75 (EX_TEMPFAIL): durably queued, not yet delivered. A later Stop/idle delivers it: never re-send.
+  # 75 (EX_TEMPFAIL): durably queued, not yet delivered. A later Stop/idle or the bounded
+  # background retry delivers it: never re-send.
   local win lock lockfd rc attempt queued=75
   # Durable first: a slow TUI or busy hook lock can delay, never drop, the message.
   with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_enqueue "$id" "$message" "$force" || return 1
@@ -142,28 +174,28 @@ cmd_send() {
         # A vanished workspace can never resume: a genuine failure, not a pending delivery.
         resolve_workspace "$(jq -r '.path' "$WS_SESSIONS/$id/meta")" >/dev/null ||
           die "send: message queued; session #$id cannot resume: workspace no longer exists"
-        die "send: message queued; cannot resume session #$id" "$queued"
+        ws_bus_queued_die "$id" "send: message queued; cannot resume session #$id"
       fi
-      win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open" "$queued"
-      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready" "$queued"
+      win="$(ws_bus_window "$id")" || ws_bus_queued_die "$id" "send: message queued; session #$id did not open"
+      ws_bus_wait_ready "$id" "$win" || ws_bus_queued_die "$id" "send: message queued; session #$id input not ready"
     elif [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle && -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
-      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready" "$queued"
+      ws_bus_wait_ready "$id" "$win" || ws_bus_queued_die "$id" "send: message queued; session #$id input not ready"
     fi
     lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
     { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
-      die "send: message queued; session #$id busy" "$queued"
+      ws_bus_queued_die "$id" "send: message queued; session #$id busy"
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
     rc=$?
     exec {lockfd}>&-
     if (( rc == 4 )); then
       # Readiness changed after the unlocked check: release both locks before waiting.
-      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready" "$queued"
+      ws_bus_wait_ready "$id" "$win" || ws_bus_queued_die "$id" "send: message queued; session #$id input not ready"
     elif (( rc != 3 )); then
-      (( rc == 0 )) || return "$queued" # pane unavailable or inbox lock timeout: still queued
+      (( rc == 0 )) || { ws_bus_deliver_later "$id"; return "$queued"; } # pane unavailable or inbox lock timeout: still queued
       return 0
     fi
   done
-  die "send: message queued; session #$id not delivered" "$queued"
+  ws_bus_queued_die "$id" "send: message queued; session #$id not delivered"
 }
 
 cmd_whoami() {
@@ -447,8 +479,9 @@ ws_bus_publish_done_locked() {
 # Single lifecycle append boundary: subscribers attach here after the durable JSONL write.
 # Event payloads carry id/event/at plus event-specific fields (done: output; exit: code).
 ws_bus_event() {
-  local id="$1" event="$2" detail="${3:-}" record tids
+  local id="$1" event="$2" detail="${3:-}" defer="${4:-}" record tids
   [[ -n "$detail" ]] || detail='{}'
+  mkdir -p -m 700 "$WS_TRIGGERS" 2>/dev/null # before `ws on`, the registry lock needs its directory
   [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
   record="$(jq -nc --arg id "$id" --arg event "$event" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson detail "$detail" '$detail + {id:$id,event:$event,at:$at}')" || return 1
@@ -459,9 +492,27 @@ ws_bus_event() {
     with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record" || return 1
     tids="$(ws_bus_evaluate_list "$id" "$event")"
   fi
+  if [[ "$defer" == defer ]]; then # the worker re-lists: records are idempotent while pending
+    [[ -z "$tids" ]] || ws_bus_detach "$WS_BIN" _evaluate "$id" "$event"
+    return 0
+  fi
   # The event is published: subscriber failures are reported, never the event's status.
   ws_bus_evaluate_run "$tids" || print -u2 "ws: event #$id $event: trigger evaluation failed"
   return 0
+}
+
+# Detached worker for a deferred event: fire whatever subscribers are pending now.
+ws_bus_evaluate_event() {
+  ws_bus_evaluate_run "$(ws_bus_evaluate_list "$1" "$2")"
+}
+
+# Run a command in its own session: it survives the caller's tab being killed.
+ws_bus_detach() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' -- "$@" </dev/null >/dev/null 2>&1 &!
+  else
+    "$@" </dev/null >/dev/null 2>&1 &!
+  fi
 }
 
 # Fails only if the append failed; the subscriber listing is best-effort.

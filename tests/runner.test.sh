@@ -519,7 +519,7 @@ cat > "$TMP/suite/tests/environment.test.sh" <<'EOF'
 #!/bin/zsh
 for inherited in ${(k)parameters}; do
   case "$inherited" in
-    LOOP_*|CLICOLOR*|FORCE_COLOR|NO_COLOR|TYPESAFE_API_KEY) exit 1 ;;
+    LOOP_*|WS_*|CLICOLOR*|FORCE_COLOR|NO_COLOR|TYPESAFE_API_KEY) exit 1 ;;
   esac
 done
 [[ "${SUITE_SENTINEL:-}" == preserved ]]
@@ -527,9 +527,10 @@ EOF
 env LOOP_JEV_MODE=shadow LOOP_JEV_MODE_EXPLICIT=0 LOOP_JEV_CUSTOM=inherited \
   LOOP_SUB=1 LOOP_SUB_DIR=/unused LOOP_SUB_CUSTOM=inherited LOOP_CONTROL_POLL_SEC=99 \
   LOOP_DAEMON_URL=http://127.0.0.1:9 CLICOLOR=1 CLICOLOR_FORCE=1 CLICOLOR_CUSTOM=1 \
+  WS_SESSION=1 WS_WORKSPACE=x/y WS_CUSTOM=inherited \
   FORCE_COLOR=1 NO_COLOR=1 TYPESAFE_API_KEY=fake-key SUITE_SENTINEL=preserved \
   zsh "$TMP/suite/tests/run.sh" > "$TMP/suite.out" 2>&1
-assert_exit "$?" "0" "suite strips loop and color settings while preserving unrelated variables"
+assert_exit "$?" "0" "suite strips loop, ws and color settings while preserving unrelated variables"
 # --- end suite environment isolation ---
 
 test_summary

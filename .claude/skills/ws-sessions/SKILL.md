@@ -56,8 +56,8 @@ any unsent text a human typed into the target's input along with the message. Co
 launches set `-c developer_instructions=...`, overriding configured developer
 instructions. Stopped targets resume
 before delivery. Exit 75 (`message queued` warning; busy, starting or temporarily
-unresumable target) means durably queued, not yet delivered: a later Stop or idle
-delivers it. It is not a failure; never re-send it. Exit 1 is a genuine failure (bad or
+unresumable target) means durably queued, not yet delivered: a later Stop or idle, or ws's bounded
+background retry for an idle target, delivers it. It is not a failure; never re-send it. Exit 1 is a genuine failure (bad or
 unresumable target, enqueue failed); inspect the session before resending.
 
 Check `ws sessions <target>` or `ws show <target>` before messaging. Prefer reading a

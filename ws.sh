@@ -109,6 +109,9 @@ main() {
   _end) session_remove "$@" ;;
   _agent) ws_bus_run_agent "$@" ;;
   _paste-timeout) ws_bus_paste_timeout "$@" ;;
+  _evaluate) ws_bus_evaluate_event "$@" ;;
+  _deliver-retry) ws_bus_deliver_retry "$@" ;;
+  _hook-retry) hook_retry "$@" ;;
   _build-notifier) build_notifier ;;
   -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
@@ -428,7 +431,15 @@ cmd_hook() {
   agent_id="${agent_id//[^A-Za-z0-9_-]/_}"
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-  { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
+  # Stop waits longest (3s hook lock + 1s inbox lock stay under the 5s hook timeout) and, if
+  # starved, hands settling the tab to a detached retry rather than dropping the event.
+  local lock_wait=2
+  [[ "$event" != stop ]] || lock_wait=3
+  { : >>"$lock" && zsystem flock -t "$lock_wait" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || {
+    [[ "$event" != stop ]] || ws_bus_detach "$WS_BIN" _hook-retry "$(tmux_ show -wqv -t "$TMUX_PANE" @ws_seq 2>/dev/null)"
+    [[ -z "$reply" ]] || print -r -- "$reply"
+    return 0
+  }
   IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
   # A tool hook may overtake a delayed prompt hook's state update. Delivery ack only
   # compares against the paste watermark; stale state must not discard that confirmation.
@@ -492,13 +503,32 @@ cmd_hook() {
   return 0
 }
 
+# Detached retry for a Stop that never got the hook lock: the TUI is no longer blocked, so
+# settle the tab as idle (draining its inbox by paste) unless a newer hook already moved it.
+hook_retry() {
+  local seq0="${1:-}" i
+  for i in {1..15}; do
+    sleep 1
+    [[ "$(tmux_ show -wqv -t "$TMUX_PANE" @ws_seq 2>/dev/null)" == "$seq0" &&
+      "$(tmux_ show -wqv -t "$TMUX_PANE" @ws_state 2>/dev/null)" == working ]] || return 0
+    print -r -- '{"hook_event_name":"idle"}' | cmd_hook idle >/dev/null 2>&1
+  done
+}
+
 # A pane whose @ws_session moved on (reused tab), or was untagged by exit cleanup while the
 # registry points elsewhere (resumed/closed), no longer belongs to this launch's WS_SESSION.
 # Only a pre-tag hook whose registry window is this very pane may fall back to WS_SESSION.
 hook_owns_pane() {
   [[ -n "${WS_SESSION:-}" ]] || return 0
-  local pane_session="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)" win
-  [[ -z "$pane_session" ]] || { [[ "$pane_session" == "$WS_SESSION" ]]; return; }
+  local pane_session="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)" win agent_pane
+  if [[ -n "$pane_session" ]]; then
+    [[ "$pane_session" == "$WS_SESSION" ]] || return 1
+    # WS_SESSION leaks into split panes via the tmux session env: only the tab's agent pane
+    # (and, by sharing its TMUX_PANE, that agent's children) acts for the tab.
+    agent_pane="$(tmux_ show -wqv -t "$TMUX_PANE" @ws_pane 2>/dev/null)"
+    [[ -z "$agent_pane" || "$agent_pane" == "$TMUX_PANE" ]]
+    return
+  fi
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || return 1
   [[ -n "$win" && "$(jq -r '.window // ""' "$WS_SESSIONS/$WS_SESSION/meta" 2>/dev/null)" == "$win" ]]
 }

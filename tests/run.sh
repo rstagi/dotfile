@@ -5,7 +5,7 @@
 set -u
 for inherited in ${(k)parameters}; do
   case "$inherited" in
-    LOOP_*|CLICOLOR*|FORCE_COLOR|NO_COLOR|TYPESAFE_API_KEY) unset "$inherited" ;;
+    LOOP_*|WS_*|CLICOLOR*|FORCE_COLOR|NO_COLOR|TYPESAFE_API_KEY) unset "$inherited" ;;
   esac
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
