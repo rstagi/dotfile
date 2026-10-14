@@ -1,7 +1,52 @@
 #!/bin/zsh
-# Global session registry, sourced by ws.sh. Workspace slots remain local; ids never reuse.
+# Global session registry and message delivery, sourced by ws.sh. Workspace slots remain local; ids never reuse.
 # Live state comes from tmux; metadata keeps durable identity and lifecycle status.
 WS_SESSIONS="$WS_HOME/sessions"
+
+cmd_send() {
+  local force=0
+  [[ "${1:-}" != --force ]] || { force=1; shift; }
+  if [[ $# == 3 && "$2" == --force ]]; then
+    force=1
+    set -- "$1" "$3"
+  elif [[ $# == 3 && "$3" == --force ]]; then
+    force=1
+    set -- "$1" "$2"
+  fi
+  [[ $# == 2 ]] || die "send: expected [--force] <id|name> <message|->"
+  local id message="$2" sender=terminal lifecycle
+  id="$(ws_bus_resolve "$1")" || die "no such session: $1"
+  if [[ -n "${WS_SESSION:-}" ]]; then
+    sender="#$(cmd_whoami)" || return 1
+  fi
+  if [[ "$message" == - ]]; then
+    message="$(cat; print -n .)"
+    message="${message%.}"
+  fi
+  [[ -n "$message" ]] || die "send: empty message"
+  lifecycle="$(jq -r '.status' "$WS_SESSIONS/$id/meta")" || return 1
+  if [[ "$lifecycle" == done ]]; then
+    print -u2 "ws: session #$id is done; --force required to send"
+    (( force )) || return 1
+  fi
+  message="[ws $sender]"$'\n'"$message"
+  local win lock lockfd queued=0
+  win="$(ws_bus_window "$id")"
+  if [[ -z "$win" ]]; then
+    # Retain the message even if resume fails or the TUI cannot become ready in time.
+    with_lock "$WS_SESSIONS/$id/inbox" ws_bus_enqueue "$id" "$message" || return 1
+    queued=1
+    (ws_bus_open "$id" 1) || die "send: message queued; cannot resume session #$id"
+    win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open"
+    ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+  fi
+  lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+  { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" "$queued"
+  local rc=$?
+  exec {lockfd}>&-
+  return "$rc"
+}
 
 cmd_whoami() {
   local id="${WS_SESSION:-}"
@@ -16,13 +61,6 @@ cmd_name() {
   [[ "$label" == [A-Za-z]* && "$label" != *[^A-Za-z0-9_.-]* && "$label" != me ]] \
     || die "name: use a letter followed by letters, digits, dots, underscores or hyphens (me is reserved)"
   with_lock "$WS_SESSIONS/names" ws_bus_name_locked "$id" "$label"
-}
-
-ws_bus_name_locked() {
-  local id="$1" label="$2" existing
-  existing="$(ws_bus_resolve "$label")"
-  [[ -z "$existing" || "$existing" == "$id" ]] || { print -u2 "ws: name already in use: $label"; return 1; }
-  ws_bus_update "$id" --arg name "$label" '.name = $name'
 }
 
 # TSV: id, name, workspace, agent, state, status. A missing tab is stopped, not done.
@@ -40,6 +78,98 @@ cmd_sessions() {
     fi
     jq -r --arg state "$state" '[.id, .name, .workspace, .agent, $state, .status] | @tsv' "$meta"
   done
+}
+
+# Both send and Stop hold the window's hook lock before the inbox lock: no idle/queue race.
+ws_bus_send_locked() {
+  local id="$1" win="$2" message="$3" queued="${4:-0}" state
+  state="$(tmux_ show -wqv -t "$win" @ws_state)"
+  (( queued )) || ws_bus_enqueue "$id" "$message" || return 1
+  if [[ "$state" == idle && -s "$WS_SESSIONS/$id/inbox" ]]; then
+    if [[ -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
+      ws_bus_wait_ready "$id" "$win" || { print -u2 "ws: send: message queued; session #$id input not ready"; return 1; }
+    fi
+    # Order the submitted turn against hooks that entered before this paste. Capture
+    # before input, so the resulting UserPromptSubmit remains newer than this watermark.
+    zmodload zsh/datetime
+    local seq="$(realtime_us "$EPOCHREALTIME")"
+    ws_bus_idle_locked "$id" "$win" || return 1
+    tmux_ set -w -t "$win" @ws_seq "$seq" \; set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
+  fi
+}
+
+ws_bus_enqueue() {
+  jq -nc --arg message "$2" '{message:$message}' >> "$WS_SESSIONS/$1/inbox"
+}
+
+# tmux 3.8 exposes the TUI's bracketed-paste mode. A freshly resumed tab starts in a
+# shell: never paste there before the agent enables input. Stop may already have consumed
+# the queued message during startup, which also counts as delivery.
+ws_bus_wait_ready() {
+  local id="$1" win="$2" attempt ready
+  for attempt in {1..50}; do
+    [[ -s "$WS_SESSIONS/$id/inbox" ]] || return 0
+    ready="$(tmux_ display -p -t "$win" '#{bracket_paste_flag}' 2>/dev/null)" || return 1
+    [[ "$ready" != 1 ]] || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# A Stop continuation is one-shot. The next Stop with an empty inbox must allow stopping.
+ws_bus_stop() {
+  local id="$1" payload="$2"
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || { print '{}'; return 0; }
+  if print -r -- "$payload" | jq -e '.stop_hook_active == true or .stopHookActive == true' >/dev/null 2>&1; then
+    print '{}'
+    return 0
+  fi
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_stop_locked "$id"
+}
+
+ws_bus_stop_locked() {
+  local inbox="$WS_SESSIONS/$1/inbox" reply
+  [[ -s "$inbox" ]] || { print '{}'; return 0; }
+  reply="$(jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inbox")" || return 1
+  : > "$inbox" || return 1
+  print -r -- "$reply"
+}
+
+# Fallback for cancellation, legacy hooks or an active Stop guard. Only a verified idle
+# tab may receive pane input; callers hold its hook lock while checking/draining the inbox.
+ws_bus_idle() {
+  local id="$1" win="$2"
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" && -s "$WS_SESSIONS/$id/inbox" ]] || return 1
+  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_idle_locked "$id" "$win"
+}
+
+ws_bus_idle_locked() {
+  local id="$1" win="$2" inbox="$WS_SESSIONS/$1/inbox" message
+  [[ -s "$inbox" ]] || return 1
+  message="$(jq -rjs 'map(.message) | join("\n\n")' "$inbox" && print -n .)" || return 1
+  message="${message%.}"
+  ws_bus_paste "$id" "$win" "$message" || return 1
+  : > "$inbox"
+}
+
+# Named buffers isolate concurrent senders; raw paste preserves LF inside bracketed input.
+ws_bus_paste() {
+  local id="$1" win="$2" message="$3" buffer="ws-$1-$$" pane
+  pane="$(tmux_ display -p -t "$win" '#{pane_id}')" || return 1
+  print -rn -- "$message" | tmux_ load-buffer -b "$buffer" - || return 1
+  if ! tmux_ paste-buffer -d -p -r -b "$buffer" -t "$pane"; then
+    tmux_ delete-buffer -b "$buffer" 2>/dev/null
+    return 1
+  fi
+  sleep 0.3
+  tmux_ send-keys -t "$pane" Enter
+}
+
+ws_bus_name_locked() {
+  local id="$1" label="$2" existing
+  existing="$(ws_bus_resolve "$label")"
+  [[ -z "$existing" || "$existing" == "$id" ]] || { print -u2 "ws: name already in use: $label"; return 1; }
+  ws_bus_update "$id" --arg name "$label" '.name = $name'
 }
 
 ws_bus_resolve() {

@@ -27,11 +27,28 @@ T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 
 # Fake agents print their argv, then stay alive until a line arrives (→ clean exit 0).
 mkdir -p "$TMP/bin"
+# Fake delivery TUI records bytes submitted outside bracketed paste, including multiline input.
+cat > "$TMP/paste-agent.py" <<'PY_AGENT'
+import json, os, time, tty
+time.sleep(0.6) # delayed startup exposes paste before the resumed TUI is ready
+tty.setraw(0)
+print("\033[?2004h", end="", flush=True)
+print("PASTE-READY", flush=True)
+buf = b""
+while True:
+    ch = os.read(0, 1)
+    buf += ch
+    if ch == b"\r" and not (b"\033[200~" in buf and b"\033[201~" not in buf):
+        with open(os.environ["WS_HOME"] + "/pane-" + os.environ["WS_SESSION"] + ".jsonl", "a") as f:
+            f.write(json.dumps({"raw": buf.decode(), "text": buf[:-1].replace(b"\033[200~", b"").replace(b"\033[201~", b"").decode()}) + "\n")
+        buf = b""
+PY_AGENT
 for agent in claude codex grok; do
   cat > "$TMP/bin/$agent" <<EOF
 #!/bin/sh
 own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
+[ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
 EOF
   chmod +x "$TMP/bin/$agent"
@@ -1204,6 +1221,169 @@ assert_eq "$([[ -d "$DWT" ]] && print yes)" "" "dirty, force confirmed: worktree
 assert_eq "$(git -C "$MREPO" branch --list feat/dirty)" "" "dirty, force confirmed: branch deleted"
 (cd "$MREPO" && env -u TMUX "$WS" merge </dev/null 2>/dev/null)
 assert_exit "$?" "1" "merge outside a workspace refused"
+
+echo "ws send: idle named target receives one bracketed multiline prompt with sender id"
+"$WS" new --repo "$REPO" --branch delivery --detach
+SEND_WT="$WS_ROOT/api/delivery"
+SEND_WIN="$(windows_of "$SEND_WT")"
+SEND_ID="$(T display -p -t "$SEND_WIN" '#{@ws_session}')"
+assert_contains "$(wait_pane "$SEND_WIN" PASTE-READY)" "PASTE-READY" "fake delivery TUI ready"
+WS_SESSION="$SEND_ID" "$WS" name receiver
+MESSAGE=$'first line\nsecond "quoted" line $literal'
+print -r -- "$MESSAGE" | WS_SESSION=1 "$WS" send receiver -
+assert_exit "$?" "0" "send accepts stdin and target name"
+wait_until test -s "$WS_HOME/pane-$SEND_ID.jsonl"
+assert_eq "$(jq -r '.text' "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null)" $'[ws #1]\nfirst line\nsecond "quoted" line $literal' "sender prefix and multiline text reach pane intact"
+assert_eq "$(jq -r '.raw | startswith("\u001b[200~") and endswith("\u001b[201~\r")' "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null)" "true" "paste is bracketed with separate Enter"
+assert_eq "$(wc -l < "$WS_HOME/pane-$SEND_ID.jsonl" 2>/dev/null | tr -d ' ')" "1" "multiline message submits exactly once"
+echo "ws send: working and waiting sessions consume inbox once through synchronous Stop hooks"
+for agent in claude codex grok; do
+  if [[ "$agent" == claude ]]; then
+    BUS_WIN="$SEND_WIN"
+  else
+    "$WS" add api/delivery --agent "$agent" --detach
+    BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
+    assert_contains "$(wait_pane "$BUS_WIN" PASTE-READY)" "PASTE-READY" "$agent fake TUI ready"
+  fi
+  BUS_ID="$(T display -p -t "$BUS_WIN" '#{@ws_session}')"
+  for busy_state in working waiting; do
+    hook api/delivery "$BUS_WIN" "$busy_state" </dev/null
+    before="$(cat "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null)"
+    WS_SESSION=1 "$WS" send "$BUS_ID" "$agent $busy_state message"
+    assert_exit "$?" "0" "$agent queues while $busy_state"
+    assert_eq "$(cat "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null)" "$before" "$agent busy message never goes into pane input"
+    reply="$(print '{"hook_event_name":"Stop","stop_hook_active":false,"stopHookActive":false}' | hook api/delivery "$BUS_WIN" stop)"
+    assert_eq "$(print -r -- "$reply" | jq -r '.decision' 2>/dev/null)" "block" "$agent Stop requests continuation"
+    assert_eq "$(print -r -- "$reply" | jq -r '.reason' 2>/dev/null)" "[ws #1]"$'\n'"$agent $busy_state message" "$agent Stop delivers sender-prefixed message"
+    assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "working" "$agent block keeps tab working"
+    assert_eq "$([[ -s "$WS_HOME/sessions/$BUS_ID/inbox" ]] && print pending)" "" "$agent Stop consumes durable inbox"
+    reply="$(print '{"hook_event_name":"Stop","stop_hook_active":true,"stopHookActive":true}' | hook api/delivery "$BUS_WIN" stop)"
+    assert_eq "$reply" "{}" "$agent continued Stop never repeats consumed messages"
+    assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "idle" "$agent empty Stop marks idle"
+  done
+done
+assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$WS_HOME/claude-settings.json")" "$WS hook stop" "Claude Stop uses synchronous bus delivery"
+assert_contains "$(T capture-pane -p -t "$(slot_window "$SEND_WT" 2)")" "hook stop" "Codex Stop uses synchronous bus delivery"
+assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$GROK_HOME/hooks/ws.json")" "$WS hook stop" "Grok Stop uses synchronous bus delivery"
+
+pane_received() { [[ "$(tail -1 "$WS_HOME/pane-$1.jsonl" 2>/dev/null | jq -r '.text')" == "$2" ]]; }
+echo "ws send: continuation guards and cancellation fall back to paste on verified idle"
+for agent in claude codex grok; do
+  BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
+  BUS_ID="$(T display -p -t "$BUS_WIN" '#{@ws_session}')"
+  hook api/delivery "$BUS_WIN" working </dev/null
+  WS_SESSION=1 "$WS" send "$BUS_ID" "$agent guarded message"
+  if [[ "$agent" == grok ]]; then active_payload='{"stopHookActive":true}'; else active_payload='{"stop_hook_active":true}'; fi
+  reply="$(print -r -- "$active_payload" | hook api/delivery "$BUS_WIN" stop)"
+  assert_eq "$reply" "{}" "$agent active Stop does not recursively block"
+  wait_until pane_received "$BUS_ID" "[ws #1]"$'\n'"$agent guarded message"
+  assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null | jq -r '.text')" "[ws #1]"$'\n'"$agent guarded message" "$agent guarded inbox falls back to idle paste"
+  assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "working" "$agent pasted continuation is working"
+  hook api/delivery "$BUS_WIN" working </dev/null
+  WS_SESSION=1 "$WS" send "$BUS_ID" "$agent cancelled message"
+  hook api/delivery "$BUS_WIN" idle </dev/null
+  wait_until pane_received "$BUS_ID" "[ws #1]"$'\n'"$agent cancelled message"
+  assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null | jq -r '.text')" "[ws #1]"$'\n'"$agent cancelled message" "$agent cancellation delivers inbox at idle"
+  assert_eq "$([[ -s "$WS_HOME/sessions/$BUS_ID/inbox" ]] && print pending)" "" "$agent fallback consumes inbox"
+done
+
+echo "ws send: a background subagent postpones idle paste until the whole tab is idle"
+hook api/delivery "$SEND_WIN" working </dev/null
+print '{"agent_id":"delivery-bg"}' | hook api/delivery "$SEND_WIN" subagent-start
+WS_SESSION=1 "$WS" send "$SEND_ID" "after background"
+before="$(cat "$WS_HOME/pane-$SEND_ID.jsonl")"
+print '{"stop_hook_active":true}' | hook api/delivery "$SEND_WIN" stop >/dev/null
+assert_eq "$(cat "$WS_HOME/pane-$SEND_ID.jsonl")" "$before" "background activity prevents fallback input"
+print '{"agent_id":"delivery-bg"}' | hook api/delivery "$SEND_WIN" subagent-stop
+wait_until pane_received "$SEND_ID" $'[ws #1]\nafter background'
+assert_eq "$(tail -1 "$WS_HOME/pane-$SEND_ID.jsonl" | jq -r '.text')" $'[ws #1]\nafter background' "last subagent stop drains idle inbox"
+
+echo "ws send: concurrent senders retain every queued message"
+hook api/delivery "$SEND_WIN" working </dev/null
+send_pids=()
+for i in {1..8}; do
+  WS_SESSION=1 "$WS" send "$SEND_ID" "concurrent-$i" > "$TMP/send-$i.log" 2>&1 &
+  send_pids+=($!)
+done
+for pid in $send_pids; do wait "$pid"; assert_exit "$?" "0" "concurrent send succeeds"; done
+reply="$(print '{}' | hook api/delivery "$SEND_WIN" stop)"
+assert_eq "$(print -r -- "$reply" | jq -r '[.reason | scan("concurrent-[1-8]")] | length')" "8" "one Stop delivers all concurrent messages"
+for i in {1..8}; do assert_contains "$reply" "concurrent-$i" "queued sender $i survives"; done
+assert_eq "$(print '{}' | hook api/delivery "$SEND_WIN" stop)" "{}" "concurrent inbox never repeats"
+
+echo "ws send: done sessions warn; force resumes closed spawned sessions by retained id"
+for agent in claude codex grok; do
+  BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
+  BUS_ID="$(T display -p -t "$BUS_WIN" '#{@ws_session}')"
+  META="$WS_HOME/sessions/$BUS_ID/meta"
+  jq '.status = "done" | .spawned = true | .resume_id = "resume-delivery"' "$META" > "$META.fixture"
+  mv "$META.fixture" "$META"
+  T kill-window -t "$BUS_WIN"
+  out="$(WS_SESSION=1 "$WS" send "$BUS_ID" "wake again" 2>&1)"
+  assert_exit "$?" "1" "$agent done send requires force"
+  assert_contains "$out" "done" "$agent done target warns"
+  assert_contains "$out" "--force" "$agent warning explains override"
+  assert_eq "$("$WS" sessions "$BUS_ID" | cut -f5)" "stopped" "$agent rejected send never resumes target"
+  out="$(WS_SESSION=1 "$WS" send "$BUS_ID" "wake again" --force 2>&1)"
+  forced_exit=$?
+  assert_exit "$forced_exit" "0" "$agent force send resumes and delivers"
+  assert_contains "$out" "done" "$agent force send still warns"
+  BUS_WIN="$(jq -r '.window' "$META")"
+  if (( forced_exit == 0 )); then
+    wait_until pane_received "$BUS_ID" $'[ws #1]\nwake again'
+  fi
+  assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" | jq -r '.text')" $'[ws #1]\nwake again' "$agent resumed TUI receives message after delayed startup"
+  assert_contains "$(T capture-pane -p -t "$BUS_WIN" 2>/dev/null)" "resume-delivery" "$agent resumes its recorded conversation"
+  assert_eq "$("$WS" sessions "$BUS_ID" | cut -f6)" "done" "$agent force preserves declared done status"
+done
+
+echo "ws send: terminal sender and validation"
+hook api/delivery "$BUS_WIN" idle </dev/null
+env -u WS_SESSION "$WS" send --force "$BUS_ID" "from terminal" 2>/dev/null
+assert_exit "$?" "0" "force is also accepted before target"
+wait_until pane_received "$BUS_ID" $'[ws terminal]\nfrom terminal'
+assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" | jq -r '.text')" $'[ws terminal]\nfrom terminal' "untracked sender has terminal prefix"
+"$WS" send no-such-session text 2>/dev/null
+assert_exit "$?" "1" "unknown target refused"
+print -n '' | "$WS" send "$BUS_ID" - 2>/dev/null
+assert_exit "$?" "1" "empty stdin refused"
+"$WS" send "$BUS_ID" 2>/dev/null
+assert_exit "$?" "1" "missing message refused"
+
+echo "ws send: startup safety also applies to a newly opened live target"
+"$WS" add api/delivery --agent claude --detach
+FRESH_WIN="$(slot_window "$SEND_WT" 4)"
+FRESH_ID="$(T display -p -t "$FRESH_WIN" '#{@ws_session}')"
+WS_SESSION=1 "$WS" send "$FRESH_ID" "fresh target"
+assert_exit "$?" "0" "send waits for a new target's TUI before submitting"
+wait_until pane_received "$FRESH_ID" $'[ws #1]\nfresh target'
+assert_eq "$(tail -1 "$WS_HOME/pane-$FRESH_ID.jsonl" 2>/dev/null | jq -r '.text')" $'[ws #1]\nfresh target' "startup input is never discarded by terminal initialization"
+
+echo "ws send: a slow older Stop cannot overwrite a newer pasted turn"
+hook api/delivery "$FRESH_WIN" idle </dev/null
+mkfifo "$TMP/send-slow.in"
+exec {send_slow_w}<>"$TMP/send-slow.in"
+(exec {send_slow_w}>&-; hook api/delivery "$FRESH_WIN" stop <"$TMP/send-slow.in" >"$TMP/send-slow.out") &
+send_slow_pid=$!
+sleep 0.5 # Stop captures its sequence before blocking on payload input.
+(exec {send_slow_w}>&-; WS_SESSION=1 "$WS" send "$FRESH_ID" "newer turn")
+assert_exit "$?" "0" "new message submits while old Stop awaits payload"
+exec {send_slow_w}>&-
+wait "$send_slow_pid"
+assert_eq "$(T display -p -t "$FRESH_WIN" '#{@ws_state}')" "working" "older Stop never idles a newer pasted turn"
+assert_eq "$(cat "$TMP/send-slow.out")" "{}" "stale Stop still returns valid allow JSON"
+
+echo "ws send: failed resume retains the message and reports it queued"
+META="$WS_HOME/sessions/$FRESH_ID/meta"
+jq --arg missing "$TMP/missing-workspace" '.path = $missing' "$META" > "$META.fixture"
+mv "$META.fixture" "$META"
+T kill-window -t "$FRESH_WIN"
+out="$(WS_SESSION=1 "$WS" send "$FRESH_ID" "retain on failure" 2>&1)"
+assert_exit "$?" "1" "missing workspace refuses resume"
+assert_contains "$out" "message queued" "failure explains that delivery remains pending"
+assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$FRESH_ID/inbox")" $'[ws #1]\nretain on failure' "failed resume leaves a durable sender-prefixed message"
+
+"$WS" rm api/delivery --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach
