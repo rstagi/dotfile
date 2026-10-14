@@ -318,11 +318,22 @@ ws_bus_done_locked() {
     rm -f "$tmp"
     return 1
   fi
-  if ! mv "$tmp" "$dir/output.md"; then
+  if ! with_lock "$dir/inbox" ws_bus_publish_done_locked "$id" "$tmp"; then
     rm -f "$tmp"
     return 1
   fi
-  with_lock "$dir/inbox" ws_bus_update "$id" '.status = "done"' || return 1
+}
+
+# Share the enqueue lock: accepted work must be delivered before completion can close a tab.
+ws_bus_publish_done_locked() {
+  local id="$1" tmp="$2" dir="$WS_SESSIONS/$1"
+  local -a inflight=("$dir"/inbox.inflight*(N))
+  if [[ -s "$dir/inbox" ]] || (( $#inflight )); then
+    print -u2 "ws: done: pending messages; finish this turn so the Stop hook delivers them, then retry ws done"
+    return 1
+  fi
+  mv "$tmp" "$dir/output.md" || return 1
+  ws_bus_update "$id" '.status = "done"'
 }
 
 # Single lifecycle append boundary: subscribers attach here after the durable JSONL write.

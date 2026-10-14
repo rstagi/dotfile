@@ -1723,6 +1723,42 @@ for agent in claude codex grok; do
   "$WS" rm "api/interactive-$agent" --force --delete-branch >/dev/null
 done
 
+# --- M1 done vs pending inbox ---
+echo "ws done: a spawned session keeps accepted messages deliverable until Stop"
+M1_TID="$(WS_SESSION="$DONE_ID" "$WS" on "$DONE_ID" done --spawn 'Finish after checking follow-ups')"
+assert_exit "$?" "0" "M1 spawns a tracked child through a done trigger"
+M1_ID="$(jq -r '.spawned_session' "$WS_HOME/triggers/$M1_TID.json")"
+M1_WIN="$(jq -r '.window' "$WS_HOME/sessions/$M1_ID/meta")"
+assert_contains "$(wait_pane "$M1_WIN" FAKE-claude)" "FAKE-claude" "M1 spawned agent ready"
+hook api/lifecycle "$M1_WIN" working </dev/null
+WS_SESSION="$DONE_ID" "$WS" send "$M1_ID" 'Check this follow-up before finishing'
+assert_exit "$?" "0" "M1 working child accepts follow-up"
+out="$(printf 'premature result\n' | WS_SESSION="$M1_ID" "$WS" done - 2>&1)"
+assert_exit "$?" "1" "M1 done refuses accepted but undelivered work"
+assert_contains "$out" "pending messages" "M1 refusal explains why completion must wait"
+assert_contains "$out" "Stop hook" "M1 refusal tells the agent how to receive pending work"
+assert_contains "$("$WS" show "$M1_ID")" "status: active" "M1 refused done preserves active lifecycle"
+assert_eq "$(T display -p -t "$M1_WIN" '#{@ws_session}' 2>/dev/null)" "$M1_ID" "M1 refused done keeps spawned tab alive"
+assert_eq "$(jq -s length "$WS_HOME/sessions/$M1_ID/events")" "0" "M1 refused done publishes no lifecycle event"
+assert_eq "$([[ -e "$WS_HOME/sessions/$M1_ID/output.md" ]] && print yes)" "" "M1 refused done publishes no premature output"
+reply="$(hook api/lifecycle "$M1_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DONE_ID]"$'\nCheck this follow-up before finishing' "M1 Stop delivers the accepted follow-up"
+echo "ws done: an interrupted Stop reply still prevents spawned completion"
+WS_SESSION="$DONE_ID" "$WS" send "$M1_ID" 'Recover this interrupted reply'
+assert_exit "$?" "0" "M1 child accepts work before an interrupted Stop"
+hook api/lifecycle "$M1_WIN" stop </dev/null 2>/dev/null | true # close stdout before the reply lands
+out="$(WS_SESSION="$M1_ID" "$WS" done 2>&1)"
+assert_exit "$?" "1" "M1 done refuses an unacked in-flight reply even with an empty inbox"
+assert_contains "$out" "pending messages" "M1 unacked reply explains refusal"
+assert_eq "$(T display -p -t "$M1_WIN" '#{@ws_session}' 2>/dev/null)" "$M1_ID" "M1 unacked reply keeps spawned tab alive"
+reply="$(hook api/lifecycle "$M1_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DONE_ID]"$'\nRecover this interrupted reply' "M1 Stop redelivers the unacked follow-up"
+T send-keys -t "$M1_WIN" done Enter
+wait_until spawn_done_closed "$M1_ID"
+assert_exit "$?" "0" "M1 spawned child completes and closes after delivery"
+assert_eq "$(cat "$WS_HOME/sessions/$M1_ID/output.md")" "agent result" "M1 successful completion publishes final output"
+# --- end M1 done vs pending inbox ---
+
 "$WS" rm api/lifecycle --force --delete-branch >/dev/null
 
 echo "ws on: fan-in waits for all sources and expands outputs in source order"
