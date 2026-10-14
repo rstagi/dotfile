@@ -2042,6 +2042,30 @@ ENV_LINE="$(sed -n 2p "$WS_HOME/agent-env" 2>/dev/null)"
 assert_eq "$([[ "${ENV_LINE%%|*}" -ef "$WS" ]] && print yes)" "yes" "ws on agent PATH resolves to ws.sh"
 assert_eq "${ENV_LINE#*|}" "$WS" "agent env exports WS_BIN"
 
+# --- M2 stale exit: resumed sources wait for a new exit ---
+echo "ws on: old exits do not satisfy a new watcher on a resumed session"
+"$WS" open "$SOURCE_A" --detach >/dev/null
+M2_SOURCE_WIN="$(jq -r '.window' "$WS_HOME/sessions/$SOURCE_A/meta")"
+assert_contains "$(wait_pane "$M2_SOURCE_WIN" FAKE-claude)" "WHOAMI=$SOURCE_A" "stale-exit source resumes with the same id"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+M2_TID="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_A" exit --send-to me 'new exit {id}')"
+assert_exit "$?" "0" "resumed source exit watcher registers"
+assert_contains "$("$WS" triggers)" "$M2_TID"$'\t'"$SOURCE_A"$'\texit\tsend' "old exit leaves new watcher pending"
+assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "registration delivers nothing for an old exit"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+T send-keys -t "$M2_SOURCE_WIN" Enter
+wait_until lifecycle_exit_count "$SOURCE_A" 2
+m2_trigger_finished() {
+  [[ -z "$("$WS" triggers | awk -F '\t' -v id="$M2_TID" '$1 == id')" &&
+     "$("$WS" sessions "$SOURCE_A" | cut -f5)" == stopped ]]
+}
+wait_until m2_trigger_finished
+assert_exit "$?" "0" "next exit fires the pending watcher"
+reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n'"new exit $SOURCE_A" "next exit delivers the continuation"
+assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "exit watcher delivers once"
+# --- end M2 stale exit ---
+
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
