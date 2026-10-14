@@ -289,7 +289,7 @@ describe("parsePlan — legacy Kestral markers", () => {
       .replace("**Status:** in progress\n", "**Status:** in progress\n**Kestral project:** [Widgets](https://k.example/p)\n")
       .replace("- **Depends on:** none\n", "- **Task:** [core - Add core](https://k.example/t1)\n- **Depends on:** none\n");
     const plan = parsePlan(legacy);
-    expect(plan.phases.map((p) => p.number)).toEqual(parsePlan(MULTI_LANE).phases.map((p) => p.number));
+    expect(plan.phases.map((p) => p.phase)).toEqual(parsePlan(MULTI_LANE).phases.map((p) => p.phase));
     expect(plan.phases[0].dependsOn).toEqual([]);
     expect(plan.status).toBe("in progress");
   });
