@@ -5,6 +5,8 @@ zmodload zsh/system # zsystem flock (sessions file)
 # ws — bare-minimum terminal Conductor: one git worktree + one tmux session per workspace,
 # one tab (window) per agent session inside it. Status and resume ids come from Claude Code /
 # Codex / Grok Build hooks — no screen scraping.
+# Every launched/resumed agent gets its global identity and a reminder to run `ws done`
+# when the user's task is complete; ws-sessions teaches messaging and dependent tasks.
 #
 #   ws                         picker (attaches when run outside tmux)
 #   ws new [--repo P] [--branch B] [--agent claude|codex|grok] [--detach]
@@ -200,7 +202,7 @@ cmd_run() {
   slot="$(session_add "$wt" "$agent")" || die "cannot register session"
   id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || die "cannot register session"
   tag_window "$win" "$wt" "$slot" "$agent"
-  cmd="$(agent_command "$agent" "")"
+  cmd="$(agent_command "$agent" "" "" "$id")"
   (( $# )) && cmd+=" ${(j: :)${(q)@}}"
   WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ws_bus_run_agent "$id" "$cmd"
   s=$?
@@ -531,7 +533,7 @@ open_session_locked() {
   name="$(workspace_name "$wt")"
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
-  cmd="$(agent_command "$agent" "$resume" "${6:-}")"
+  cmd="$(agent_command "$agent" "$resume" "${6:-}" "$id")"
   run="${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
     -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}"
@@ -581,11 +583,13 @@ untag_window() {
 }
 
 agent_command() {
-  local agent="$1" resume="$2" prompt="${3:-}"
+  local agent="$1" resume="$2" prompt="$3" id="$4"
+  local preamble="You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions."
   case "$agent" in
   claude)
     write_claude_settings
     local cmd="claude --dangerously-skip-permissions --settings ${(q)WS_HOME}/claude-settings.json"
+    cmd+=" --append-system-prompt ${(q)preamble}"
     [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
     [[ -z "$prompt" ]] || cmd+=" ${(q)prompt}"
     print -r -- "$cmd"
@@ -595,6 +599,8 @@ agent_command() {
     local cmd="codex" ev st
     [[ -n "$resume" ]] && cmd+=" resume ${(q)resume}"
     cmd+=" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+    local instructions="developer_instructions=$(jq -rn --arg text "$preamble" '$text | @json')"
+    cmd+=" -c ${(q)instructions}"
     for ev st in UserPromptSubmit working PreToolUse working PostToolUse working PermissionRequest waiting Stop stop Interrupt idle; do
       cmd+=" -c 'hooks.$ev=[{hooks=[{type=\"command\",command=\"$WS_BIN hook $st\"}]}]'"
     done
@@ -604,6 +610,7 @@ agent_command() {
   grok)
     write_grok_hooks
     local cmd="grok --always-approve"
+    cmd+=" --rules ${(q)preamble}"
     [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
     [[ -z "$prompt" ]] || cmd+=" ${(q)prompt}"
     print -r -- "$cmd"
