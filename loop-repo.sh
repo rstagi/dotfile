@@ -5,6 +5,9 @@ set -u -o pipefail
 # Registry paths stay outside plans so the same owner/repo plan is portable across machines.
 # check/prepare create the integration branch from fetched origin/<default>, or adopt an
 # existing non-default one (clean worktree, ff-only to origin/<default>, never behind its remote).
+# prepare --milestone N defaults to 1; later milestones create branch-scoped worktrees,
+# reusing only their own path on retry. retire removes clean, non-adopted run worktrees;
+# pr-state --pr <url> prints open|merged|closed.
 
 CMD="${1:-}"
 [[ -n "$CMD" ]] && shift
@@ -278,6 +281,8 @@ prepare)
   mode="$(print -r -- "$checked" | jq -r .mode)"
   if [[ "$mode" == reuse ]]; then
     integration_worktree="$(print -r -- "$checked" | jq -r .adoptWorktree)"
+    # Keep the original base and ownership across retries, even after default advances.
+    # Git's per-worktree directory keeps this bookkeeping out of the working tree.
     record="$(git -C "$integration_worktree" rev-parse --absolute-git-dir)/loop-repo-prepare.json"
     if [[ -f "$record" ]]; then
       base_sha="$(jq -er .baseSha "$record")" || die "invalid prepare record: $record" 4

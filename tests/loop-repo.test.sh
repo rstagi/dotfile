@@ -335,10 +335,11 @@ assert_exit "$?" "4" "missing path outside run root still refused"
 
 echo "loop-repo: pr-state reports GitHub state through the gh boundary"
 PR_URL=https://github.com/acme/api/pull/123
-for pr_state in OPEN MERGED CLOSED; do
+for state_pair in OPEN:open MERGED:merged CLOSED:closed; do
+  pr_state="${state_pair%%:*}"
   out="$(FAKE_PR_STATE="$pr_state" $ROOT/loop-repo.sh pr-state --pr "$PR_URL")"
   assert_exit "$?" "0" "pr-state accepts $pr_state"
-  assert_eq "$out" "${(L)pr_state}" "pr-state normalizes $pr_state"
+  assert_eq "$out" "${state_pair#*:}" "pr-state normalizes $pr_state"
 done
 out="$(FAKE_PR_FAILURE=7 $ROOT/loop-repo.sh pr-state --pr "$PR_URL" 2>/dev/null)"
 assert_exit "$?" "3" "pr-state fails when gh fails"
