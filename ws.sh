@@ -686,7 +686,7 @@ agent_command() {
 # No SessionStart: its id has no conversation yet, and `claude --resume <id>` fails on it.
 write_claude_settings() {
   mkdir -p "$WS_HOME"
-  jq -n --arg h "$WS_BIN hook" '
+  jq -n --arg h "${(q)WS_BIN} hook" '
     def run($s): [{hooks: [{type: "command", command: "\($h) \($s)", timeout: 5}]}];
     {hooks: {
       UserPromptSubmit: run("working"),
@@ -705,7 +705,7 @@ write_claude_settings() {
 # trusted there). Harmless outside ws: without WS_WORKSPACE, cmd_hook only answers Stop with {}.
 write_grok_hooks() {
   mkdir -p "${GROK_HOOKS:h}"
-  jq -n --arg h "$WS_BIN hook" '
+  jq -n --arg h "${(q)WS_BIN} hook" '
     def cmd($s): {type: "command", command: "\($h) \($s)", timeout: 5};
     def run($s): [{hooks: [cmd($s)]}];
     {hooks: {
@@ -1118,7 +1118,7 @@ hook_detail_json() {
   print -r -- "$1" | jq -cs '
     (if length == 1 then .[0] else {} end)
     | if type == "object" then
-        [.message, .last_assistant_message, .prompt]
+        [.message, .last_assistant_message, .lastAssistantMessage, .prompt]
         | map(select(type == "string") | select(length > 0))
         | (first // "") | .[:1024]
       else "" end

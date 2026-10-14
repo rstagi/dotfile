@@ -380,6 +380,13 @@ import json, re, sys
 arg = next(a for a in json.load(sys.stdin) if a.startswith("hooks.Stop="))
 print(json.loads(re.search(r"command=(\"(?:[^\"\\\\]|\\\\.)*\")", arg).group(1)))')"
 assert_eq "$(zsh -fc 'print -rl -- ${(Q)${(z)1}}' _ "$hook_cmd")" "$TMP/ws bin/it's ws.sh"$'\nhook\nstop' "codex hook command shell-quotes a spaced WS_BIN"
+( source "$WS"
+  WS_BIN="$TMP/ws bin/it's ws.sh" WS_HOME="$TMP/argv-home" GROK_HOOKS="$TMP/argv-grok/hooks/ws.json"
+  write_claude_settings; write_grok_hooks )
+for f in "$TMP/argv-home/claude-settings.json" "$TMP/argv-grok/hooks/ws.json"; do
+  hook_cmd="$(jq -r '.hooks.Stop[0].hooks[0].command' "$f")"
+  assert_eq "$(zsh -fc 'print -rl -- ${(Q)${(z)1}}' _ "$hook_cmd")" "$TMP/ws bin/it's ws.sh"$'\nhook\nstop' "${f:t} hook command shell-quotes a spaced WS_BIN"
+done
 
 echo "ws grok: launched w/ --always-approve + global ws hook file; resumed by GROK_SESSION_ID"
 "$WS" new --repo "$REPO" --branch grokky --agent grok --detach
@@ -842,6 +849,14 @@ print -r -- '{"hook_event_name":"Stop","last_assistant_message":"Fixed the login
   | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
 wait_until test -s "$FAKE_EVENT_OUT"
 assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Fixed the login flow." "Stop detail is the last assistant message"
+
+echo "ws hook: Grok Stop camelCase lastAssistantMessage is detail"
+hook api/feat-login "$NWIN" working </dev/null
+rm -f "$FAKE_EVENT_OUT"
+print -r -- '{"hookEventName":"Stop","lastAssistantMessage":"Grok finished."}' \
+  | WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle
+wait_until test -s "$FAKE_EVENT_OUT"
+assert_eq "$(jq -r '.detail' "$FAKE_EVENT_OUT")" "Grok finished." "Grok Stop detail is lastAssistantMessage"
 
 echo "ws hook: UserPromptSubmit includes the user's prompt"
 rm -f "$FAKE_EVENT_OUT"
@@ -2469,6 +2484,61 @@ for edge_fixture in {700001..700030}; do
   rm -f "$WS_HOME/triggers/$edge_fixture.json"
 done
 # --- end trigger edge batching ---
+# --- trigger edge record tolerance ---
+echo "ws on: trigger edges tolerate corrupt records and never block on live actions"
+for corrupt_record in '{' '{"status":"pending","event":"done","action":"send","sources":7}'; do
+  print -r -- "$corrupt_record" > "$WS_HOME/triggers/999998.json"
+  jq -n --arg source "$SOURCE_A" --arg target "$DEFAULT_ID" \
+    '{id:"999997",sources:[$source],event:"done",action:"send",target:$target,template:"healthy edge",sender:"",status:"pending"}' \
+    > "$WS_HOME/triggers/999997.json"
+  jq -n --arg source "$SOURCE_B" --arg target "$DEFAULT_ID" \
+    '{id:"999996",sources:[$source],event:"exit",action:"send",target:$target,template:"later edge",sender:"",status:"pending"}' \
+    > "$WS_HOME/triggers/999996.json"
+  out="$("$WS" triggers 2>&1)"
+  assert_exit "$?" "0" "triggers listing survives a corrupt record"
+  assert_contains "$out" "later edge" "triggers listing keeps healthy records"
+  hook api/triggers "$DEFAULT_WIN" working </dev/null # busy target: delivery queues for Stop
+  out="$(WS_SESSION="$SOURCE_A" "$WS" done 2>&1)"
+  assert_exit "$?" "0" "done succeeds despite a corrupt sibling trigger"
+  assert_contains "$out" "999998.json" "corrupt trigger record is named in a warning"
+  assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/999997.json" 2>/dev/null)" "fired" "healthy trigger fires beside a corrupt one"
+  reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
+  assert_contains "$(print -r -- "$reply" | jq -r '.reason // empty')" "healthy edge" "healthy trigger delivers beside a corrupt one"
+  rm -f "$WS_HOME/triggers/999998.json" "$WS_HOME/triggers/999996.json" "$WS_HOME/triggers/999997.json"
+done
+mkdir -p "$WS_HOME/sessions/799999"
+print -r -- '{' > "$WS_HOME/sessions/799999/meta"
+out="$("$WS" show trigger-edge-waiter 2>&1)"
+assert_contains "$out" "id: $DEFAULT_ID" "name lookup survives one corrupt session meta"
+rm -rf "$WS_HOME/sessions/799999"
+# Legacy record whose expansion is empty: fail and archive instead of re-erroring forever.
+jq -n --arg source "$SOURCE_A" --arg target "$DEFAULT_ID" \
+  '{id:"999995",sources:[$source],event:"done",action:"send",target:$target,template:"{output}",sender:"",status:"pending"}' \
+  > "$WS_HOME/triggers/999995.json"
+WS_SESSION="$SOURCE_A" "$WS" done 2>/dev/null
+assert_exit "$?" "0" "done succeeds when a legacy trigger expands to empty"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/999995.json" 2>/dev/null)" "failed" "empty expansion archives the trigger as failed"
+assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/999995.json" 2>/dev/null)" "empty" "empty expansion records its error"
+# A fired record whose action is still running holds its lock: unrelated events skip it.
+jq -n '{id:"999994",sources:["0"],event:"done",action:"send",target:"0",template:"x",sender:"",status:"fired"}' \
+  > "$WS_HOME/triggers/999994.json"
+: > "$WS_HOME/triggers/999994.lock"
+rm -f "$TMP/edge-held"
+zsh -c 'zmodload zsh/system; zsystem flock "$1" && : > "$2" && sleep 8' _ "$WS_HOME/triggers/999994.lock" "$TMP/edge-held" &
+edge_holder=$!
+for _ in {1..100}; do [[ -f "$TMP/edge-held" ]] && break; sleep 0.05; done
+zmodload zsh/datetime
+edge_start=$EPOCHREALTIME
+out="$(WS_SESSION="$SOURCE_A" "$WS" done 2>&1)"
+assert_exit "$?" "0" "done succeeds while an unrelated action is in flight"
+assert_eq "$(( EPOCHREALTIME - edge_start < 2.5 ))" "1" "in-flight action lock does not delay unrelated events"
+assert_eq "$([[ "$out" == *"timed out"* ]] && print timeout)" "" "in-flight action lock is not reported as a timeout"
+assert_eq "$([[ -f "$WS_HOME/triggers/999994.json" ]] && print active)" "active" "in-flight record is left to its action"
+kill "$edge_holder" 2>/dev/null
+wait "$edge_holder" 2>/dev/null
+WS_SESSION="$SOURCE_A" "$WS" done 2>/dev/null
+assert_eq "$([[ -f "$WS_HOME/triggers/999994.json" ]] && print active)" "" "released legacy record is retired on the next event"
+# --- end trigger edge record tolerance ---
 # --- end trigger edges ---
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null

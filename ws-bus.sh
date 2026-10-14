@@ -63,8 +63,8 @@ cmd_triggers() {
   [[ $# == 0 ]] || die "triggers: expected no arguments"
   local -a records=("$WS_TRIGGERS"/<->.json(Nn))
   (( ${#records} )) || return 0
-  { cat "${records[@]}" 2>/dev/null || true; } |
-    jq -r 'select(.status == "pending") | [.id, (.sources | join(",")), .event, .action, .target, .template] | @tsv'
+  ws_bus_jq_records -r 'select(.status == "pending") | [.id, (.sources | join(",")), .event, .action, .target, .template] | @tsv' \
+    -- "${records[@]}"
 }
 
 cmd_done() {
@@ -248,23 +248,56 @@ ws_bus_remove_trigger_locked() {
 }
 
 # Evaluate only subscribers to this source/event, after releasing the append lock.
+# Legacy fired/failed records retire only if unlocked: a held lock is a live action.
 ws_bus_evaluate() {
-  local tid tids
+  local line tids
   local -a records=("$WS_TRIGGERS"/<->.json(Nn))
   (( ${#records} )) || return 0
-  # Archiving may remove a snapshotted path: skip missing files, parse the rest once.
-  tids="$( { cat "${records[@]}" 2>/dev/null || true; } | jq -r --arg id "$1" --arg event "$2" '
-    select(.status == "fired" or .status == "failed" or
-      (.status == "pending" and .event == $event and (.sources | index($id)))) | .id
-  ')" || return 1
-  for tid in "${(@f)tids}"; do
-    [[ -z "$tid" ]] || ws_bus_evaluate_trigger "$tid" # failures are recorded; keep going
+  tids="$(ws_bus_jq_records -r --arg id "$1" --arg event "$2" '
+    if .status == "fired" or .status == "failed" then "retire\t\(.id)"
+    elif .status == "pending" and .event == $event and (.sources | index($id)) then "fire\t\(.id)"
+    else empty end
+  ' -- "${records[@]}")"
+  for line in "${(@f)tids}"; do
+    case "$line" in # failures are recorded; keep going
+      fire$'\t'*) ws_bus_evaluate_trigger "${line#*$'\t'}" ;;
+      retire$'\t'*) ws_bus_retire_trigger "${line#*$'\t'}" ;;
+    esac
+  done
+  return 0
+}
+
+# Parse many JSON records with one jq; if any is unparseable or schema-bad, fall back to
+# one jq per file so a bad record is warned about and skipped, never fatal to the rest.
+# Usage: ws_bus_jq_records <jq args...> -- <files...>. Missing files are skipped.
+ws_bus_jq_records() {
+  local -a args=()
+  local out f
+  while (( $# )) && [[ "$1" != -- ]]; do args+=("$1"); shift; done
+  shift
+  if out="$( { cat "$@" 2>/dev/null || true; } | jq "${args[@]}" 2>/dev/null)"; then
+    [[ -z "$out" ]] || print -r -- "$out"
+    return 0
+  fi
+  for f in "$@"; do
+    [[ -f "$f" ]] || continue
+    if out="$(jq "${args[@]}" "$f" 2>/dev/null)"; then
+      [[ -z "$out" ]] || print -r -- "$out"
+    elif [[ -f "$f" ]]; then
+      print -u2 "ws: skipping unreadable record: $f"
+    fi
   done
   return 0
 }
 
 ws_bus_evaluate_trigger() {
   with_lock "$WS_TRIGGERS/$1" ws_bus_fire_trigger "$1"
+}
+
+# Non-blocking: the firing event holds this lock for its whole action; retry next event.
+ws_bus_retire_trigger() {
+  : >> "$WS_TRIGGERS/$1.lock"
+  (zsystem flock -t 0 "$WS_TRIGGERS/$1.lock" 2>/dev/null || exit 0; ws_bus_fire_trigger "$1")
 }
 
 ws_bus_fire_trigger() {
@@ -298,9 +331,12 @@ ws_bus_fire_trigger() {
   message="$(print -rn -- "$output" | jq -Rsrj --arg template "$template" --arg ids "${(j:,:)ids}" \
     '. as $output | $template | gsub("\\{(?<key>id|output)\\}"; if .key == "id" then $ids else $output end)'; print -n .)"
   message="${message%.}"
-  # An empty expansion is not an action: stay pending, a later output may fill it.
+  # An empty expansion is not an action: fail and archive rather than re-erroring forever.
   if [[ -z "${message//[[:space:]]/}" ]]; then
-    print -u2 "ws: trigger #$1: empty message or prompt after expansion; left pending"
+    jq '.status = "failed" | .error = "empty message or prompt after expansion"' "$record" > "$record.tmp" &&
+      mv "$record.tmp" "$record" || return 1
+    print -u2 "ws: trigger #$1: empty message or prompt after expansion; see $WS_TRIGGERS/archive/$1.json"
+    ws_bus_archive_trigger "$1"
     return 1
   fi
   target="$(jq -r '.target' "$record")"
@@ -388,7 +424,9 @@ ws_bus_event() {
   record="$(jq -nc --arg id "$id" --arg event "$event" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson detail "$detail" '$detail + {id:$id,event:$event,at:$at}')" || return 1
   with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record" || return 1
-  ws_bus_evaluate "$id" "$event"
+  # The event is published: subscriber failures are reported, never the event's status.
+  ws_bus_evaluate "$id" "$event" || print -u2 "ws: event #$id $event: trigger evaluation failed"
+  return 0
 }
 
 ws_bus_event_locked() {
@@ -664,8 +702,8 @@ ws_bus_resolve() {
   [[ -n "$target" ]] || return 1
   local -a records=("$WS_SESSIONS"/<->/meta(N))
   (( ${#records} )) || return 1
-  id="$( { cat "${records[@]}" 2>/dev/null || true; } |
-    jq -sr --arg name "$target" 'map(select(.name == $name))[0].id // empty')" || return 1
+  id="$(ws_bus_jq_records -r --arg name "$target" 'select(.name == $name) | .id' -- "${records[@]}")"
+  id="${id%%$'\n'*}"
   [[ -n "$id" ]] || return 1
   print -r -- "$id"
 }
