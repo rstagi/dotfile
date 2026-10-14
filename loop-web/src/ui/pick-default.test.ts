@@ -52,6 +52,19 @@ describe("pickDefaultRunId", () => {
     ];
     expect(pickDefaultRunId(loops, null)).toBe("act");
   });
+  it("keeps parked merge gates ahead of planned and finished loops, behind active work and HIL", () => {
+    const loops = [
+      entry({ runId: "finished", status: "finished", updatedAt: "2026-10-15T12:00:00Z" }),
+      entry({ runId: "planned", status: "planned", updatedAt: "2026-10-15T11:00:00Z" }),
+      entry({ runId: "old-gate", status: "awaiting-merge", updatedAt: "2026-10-15T08:00:00Z" }),
+      entry({ runId: "gate", status: "awaiting-merge", updatedAt: "2026-10-15T09:00:00Z" }),
+    ];
+    expect(pickDefaultRunId(loops, null)).toBe("gate");
+    expect(pickDefaultRunId([...loops, entry({ runId: "hil", status: "paused" })], null)).toBe("hil");
+    expect(pickDefaultRunId([...loops, entry({ runId: "running", status: "active" })], null)).toBe("running");
+    expect(pickDefaultRunId(loops, "planned")).toBe("planned");
+  });
+
   it("falls back to the most-recent finished loop when none are active or planned", () => {
     const loops = [
       entry({ runId: "f1", status: "finished", updatedAt: "2026-08-01T00:00:00Z" }),

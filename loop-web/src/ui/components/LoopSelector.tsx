@@ -47,7 +47,7 @@ export function LoopSelector({
                   <span className="loopsel__rowmain">
                     <span className="loopsel__rowtop">
                       <span className="loopsel__name">{l.effort ?? l.runId}</span>
-                      <span className="pill">{l.status}</span>
+                      <span className="pill">{l.status.replaceAll("-", " ")}</span>
                     </span>
                     <span className="loopsel__rowsub">
                       <span>{doneCount(l)}/{l.phaseCounts.total} done</span>
@@ -56,6 +56,9 @@ export function LoopSelector({
                     </span>
                     {l.status === "planned" && (
                       <span className="loopsel__hint">plan registered, not started yet</span>
+                    )}
+                    {l.status === "awaiting-merge" && (
+                      <span className="loopsel__hint">merge PRs, then /loop-execute resume</span>
                     )}
                     {l.status === "archived" && (
                       <span className="loopsel__hint">logs may be unavailable</span>

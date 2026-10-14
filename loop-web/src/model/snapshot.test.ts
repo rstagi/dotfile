@@ -139,6 +139,17 @@ describe("buildSnapshot — PR info & review preference", () => {
     expect(snap.effort.pr?.reviewAttempt).toBe(2);
   });
 
+  it("preserves unscoped legacy review runs on milestone-less plans with an explicit review phase", () => {
+    const plan = PLAN + `
+### Phase 3 — Review [lane: review] [status: done] [kind: pr-review]
+- **Depends on:** Phase 2
+`;
+    const snap = buildSnapshot(parsePlan(plan), parseLoop(loop({
+      runs: [run({ name: "review-a2", status: JSON.stringify({ outcome: "done", summary: "Approved" }) })],
+    })));
+    expect(snap.effort.pr).toMatchObject({ outcome: "done", reviewAttempt: 2 });
+  });
+
   it("builds independent repository PR/review summaries", () => {
     const state = JSON.stringify({
       repositories: {

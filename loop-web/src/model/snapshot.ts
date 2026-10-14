@@ -166,7 +166,7 @@ function buildPrInfo(plan: Plan, runtime: Runtime | null, repository: string): P
     : runtime?.reviewRunsByRepository[key] ?? [];
   const reviewPhases = plan.phases.filter((phase) => phase.milestone === milestoneNumber && phase.kind === "pr-review");
   const reviews = allReviews.filter((run) => run.phase == null
-    ? milestoneNumber === 1 && reviewPhases.length === 0
+    ? milestoneNumber === 1
     : reviewPhases.some((phase) => phase.phase === run.phase))
     .sort((a, b) => reviewPhases.findIndex((phase) => phase.phase === a.phase)
       - reviewPhases.findIndex((phase) => phase.phase === b.phase) || a.k - b.k);
