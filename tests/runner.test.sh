@@ -204,11 +204,13 @@ unset LOOP_JEV_MODE LOOP_JEV_CLIENT FAKE_JEV_LOG FAKE_JEV_RESPONSE FAKE_CODEX_OU
 export FAKE_ENGINE_LOG="$TMP/engines.log"
 export FAKE_RUN_DIR="$RUN_DIR"
 
+# --- checkpoint readiness: observe session startup before awaiting the watchdog ---
 echo "runner: phase deadline returns a checkpoint to the orchestrator"
 mkdir -p "$TMP/slow-bin" "$TMP/checkpoint"
 cat > "$TMP/slow-bin/codex" <<'EOF'
 #!/bin/zsh
-[[ "$1" == debug ]] && { print -r -- '{"models":[{"slug":"gpt-6-sol","visibility":"list"}]}'; exit 0; }
+# Simulate slow model discovery before the engine emits its session.
+[[ "$1" == debug ]] && { sleep 1; print -r -- '{"models":[{"slug":"gpt-6-sol","visibility":"list"}]}'; exit 0; }
 print -r -- "codex $*" >> "$FAKE_ENGINE_LOG"
 print -r -- '{"type":"thread.started","thread_id":"checkpoint-session"}'
 sleep 10
@@ -226,7 +228,19 @@ zsh "$ROOT/loop-runner.sh" \
   --run-dir "$TMP/checkpoint" \
   --prompt-file "$TMP/prompt.md" \
   --chain task \
-  --timeout 1 > "$TMP/checkpoint-runner.out" 2>&1
+  --timeout 5 > "$TMP/checkpoint-runner.out" 2>&1 &
+checkpoint_pid=$!
+checkpoint_ready=0
+for checkpoint_poll in {1..60}; do
+  if rg -qF '"thread_id":"checkpoint-session"' "$TMP/checkpoint/transcript.jsonl" 2>/dev/null; then
+    checkpoint_ready=1
+    break
+  fi
+  kill -0 "$checkpoint_pid" 2>/dev/null || break
+  sleep 0.05
+done
+assert_eq "$checkpoint_ready" "1" "checkpoint engine publishes its session before cutoff"
+wait "$checkpoint_pid"
 RC=$?
 assert_exit "$RC" "10" "deadline asks orchestrator for guidance"
 assert_eq "$(jq -r '.outcome' "$TMP/checkpoint/status.json" 2>/dev/null)" "question" "writes question status"
@@ -237,6 +251,7 @@ assert_eq "$(jq -r '.timedOut' "$TMP/checkpoint/meta.json" 2>/dev/null)" "true" 
 assert_eq "$(jq -r '.engine' "$TMP/checkpoint/meta.json" 2>/dev/null)" "codex" "records engine for resume"
 assert_eq "$(jq -r '.sessionId' "$TMP/checkpoint/meta.json" 2>/dev/null)" "checkpoint-session" "keeps session for resume"
 assert_eq "$(rg -c '^claude ' "$FAKE_ENGINE_LOG" 2>/dev/null || echo 0)" "0" "does not start fallback after deadline"
+# --- end checkpoint readiness ---
 
 echo "runner: review stage also checkpoints at its deadline"
 mkdir -p "$TMP/review-checkpoint"
