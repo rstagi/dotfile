@@ -2,6 +2,66 @@
 # Global session registry, lifecycle and message delivery, sourced by ws.sh. Workspace slots remain local; ids never reuse.
 # Live state comes from tmux; metadata keeps durable identity and lifecycle status.
 WS_SESSIONS="$WS_HOME/sessions"
+WS_TRIGGERS="$WS_HOME/triggers"
+
+# Trigger ids are independent of session ids. Records retain fired actions for diagnostics.
+cmd_on() {
+  if [[ "${1:-}" == --rm ]]; then
+    [[ $# == 2 && "$2" == <-> ]] || die "on --rm: expected <trigger-id>"
+    [[ -d "$WS_TRIGGERS" ]] || die "on --rm: no such pending trigger: $2"
+    with_lock "$WS_TRIGGERS/registry" ws_bus_remove_trigger "$2"
+    return $?
+  fi
+  [[ $# -ge 4 ]] || die "on: expected <ids> <done|exit> (--send-to <id|me> <msg> | --spawn <prompt> [--agent A])"
+  local event="$2" target="" sender="" id tid sources action template wt="" agent=claude
+  local -a ids=()
+  [[ "$event" == done || "$event" == exit ]] || die "on: event must be done or exit"
+  case "$3" in
+  --send-to)
+    [[ $# == 5 ]] || die "on: --send-to expects <id|me> <message>"
+    action=send
+    target="$(ws_bus_resolve "$4")" || die "on: no such target session: $4"
+    template="$5"
+    ;;
+  --spawn)
+    [[ $# == 4 || ( $# == 6 && "$5" == --agent ) ]] || die "on: --spawn expects <prompt> [--agent A]"
+    action=spawn
+    template="$4"
+    [[ $# == 4 ]] || agent="$6"
+    (( ${AGENTS[(Ie)$agent]} )) || die "on: unknown agent: $agent"
+    ;;
+  *) die "on: expected --send-to or --spawn" ;;
+  esac
+  [[ -n "$template" ]] || die "on: empty message or prompt"
+  for id in "${(@s:,:)1}"; do
+    id="$(ws_bus_resolve "$id")" || die "on: no such source session"
+    (( ${ids[(Ie)$id]} )) || ids+=("$id")
+  done
+  (( ${#ids} )) || die "on: expected source sessions"
+  [[ -z "${WS_SESSION:-}" ]] || sender="$(cmd_whoami)" || return 1
+  if [[ "$action" == spawn ]]; then
+    if [[ -n "$sender" ]]; then
+      wt="$(jq -r '.path' "$WS_SESSIONS/$sender/meta")"
+    else
+      wt="$(current_workspace)" || die "on: spawn requires a ws worktree"
+    fi
+    wt="$(resolve_workspace "$wt")" || die "on: spawn workspace no longer exists"
+  fi
+  sources="$(printf '%s\n' "${ids[@]}" | jq -Rsc 'split("\n")[:-1]')" || return 1
+  mkdir -p -m 700 "$WS_TRIGGERS" || return 1
+  tid="$(with_lock "$WS_TRIGGERS/registry" ws_bus_register_trigger "$sources" "$event" "$action" "$target" "$template" "$sender" "$wt" "$agent")" || return 1
+  print -r -- "$tid"
+  ws_bus_evaluate_trigger "$tid"
+}
+
+# TSV: trigger id, ordered source ids, event, action, target, template.
+cmd_triggers() {
+  [[ $# == 0 ]] || die "triggers: expected no arguments"
+  local record
+  for record in "$WS_TRIGGERS"/<->.json(Nn); do
+    jq -r 'select(.status == "pending") | [.id, (.sources | join(",")), .event, .action, .target, .template] | @tsv' "$record"
+  done
+}
 
 cmd_done() {
   local source="" id win
@@ -112,6 +172,121 @@ cmd_sessions() {
   done
 }
 
+ws_bus_register_trigger() {
+  # Serialize graph validation with registration/removal; concurrent reverse edges lose.
+  if [[ "$3" == send ]] && ws_bus_trigger_cycle "$1" "$4"; then
+    print -u2 "ws: on: dependency cycle rejected"
+    return 1
+  fi
+  local tid=0
+  [[ ! -f "$WS_TRIGGERS/counter" ]] || read -r tid < "$WS_TRIGGERS/counter"
+  [[ "$tid" == <-> ]] || return 1
+  (( tid += 1 ))
+  print -r -- "$tid" > "$WS_TRIGGERS/counter" || return 1
+  jq -n --arg id "$tid" --argjson sources "$1" --arg event "$2" --arg action "$3" --arg target "$4" \
+    --arg template "$5" --arg sender "$6" --arg wt "$7" --arg agent "$8" \
+    '{id:$id,sources:$sources,event:$event,action:$action,target:$target,template:$template,sender:$sender,
+      path:$wt,agent:$agent,status:"pending"}' \
+    > "$WS_TRIGGERS/$tid.json.tmp" && mv "$WS_TRIGGERS/$tid.json.tmp" "$WS_TRIGGERS/$tid.json" || return 1
+  print -r -- "$tid"
+}
+
+ws_bus_trigger_cycle() {
+  local -a records=("$WS_TRIGGERS"/<->.json(N))
+  print -n '' | jq -se --argjson sources "$1" --arg target "$2" '
+    map(select(.status == "pending" and .action == "send")) as $edges |
+    def reaches($node; $seen):
+      if ($sources | index($node)) != null then true
+      elif ($seen | index($node)) != null then false
+      else any($edges[];
+        if (.sources | index($node)) != null
+        then reaches(.target; $seen + [$node]) else false end)
+      end;
+    reaches($target; [])' "${records[@]}" >/dev/null
+}
+
+ws_bus_remove_trigger() {
+  with_lock "$WS_TRIGGERS/$1" ws_bus_remove_trigger_locked "$1"
+}
+
+ws_bus_remove_trigger_locked() {
+  local record="$WS_TRIGGERS/$1.json"
+  [[ -f "$record" && "$(jq -r '.status' "$record")" == pending ]] \
+    || { print -u2 "ws: on --rm: no such pending trigger: $1"; return 1; }
+  rm -f "$record"
+}
+
+# Evaluate only subscribers to this source/event, after releasing the append lock.
+ws_bus_evaluate() {
+  local record tid
+  for record in "$WS_TRIGGERS"/<->.json(Nn); do
+    tid="$(jq -r --arg id "$1" --arg event "$2" 'select(.status == "pending" and .event == $event and (.sources | index($id))) | .id' "$record")"
+    [[ -z "$tid" ]] || ws_bus_evaluate_trigger "$tid"
+  done
+  return 0
+}
+
+ws_bus_evaluate_trigger() {
+  with_lock "$WS_TRIGGERS/$1" ws_bus_fire_trigger "$1"
+}
+
+ws_bus_fire_trigger() {
+  local record="$WS_TRIGGERS/$1.json" id event target sender template output="" piece message action rc
+  [[ -f "$record" ]] || return 0
+  [[ "$(jq -r '.status' "$record")" == pending ]] || return 0
+  event="$(jq -r '.event' "$record")"
+  local -a ids=("${(@f)$(jq -r '.sources[]' "$record")}")
+  for id in "${ids[@]}"; do
+    jq -se --arg event "$event" 'any(.[]; .event == $event)' "$WS_SESSIONS/$id/events" >/dev/null || return 0
+  done
+  for id in "${ids[@]}"; do
+    piece=""
+    if [[ -f "$WS_SESSIONS/$id/output.md" ]]; then
+      piece="$(cat "$WS_SESSIONS/$id/output.md"; print -n .)"
+      piece="${piece%.}"
+    fi
+    [[ "$id" == "${ids[1]}" ]] || output+=$'\n'
+    output+="$piece"
+  done
+  template="$(jq -rj '.template' "$record"; print -n .)"
+  template="${template%.}"
+  message="$(jq -nrj --arg template "$template" --arg ids "${(j:,:)ids}" --arg output "$output" \
+    '$template | gsub("\\{(?<key>id|output)\\}"; if .key == "id" then $ids else $output end)'; print -n .)"
+  message="${message%.}"
+  target="$(jq -r '.target' "$record")"
+  sender="$(jq -r '.sender' "$record")"
+  # Claim before any side effect. Repeated and simultaneous events cannot execute twice.
+  jq '.status = "fired"' "$record" > "$record.tmp" && mv "$record.tmp" "$record" || return 1
+  action="$(jq -r '.action' "$record")"
+  if [[ "$action" == spawn ]]; then
+    ws_bus_spawn_trigger "$record" "$message" >/dev/null
+  else
+    print -rn -- "$message" | (WS_SESSION="$sender" cmd_send "$target" -) >/dev/null
+  fi
+  rc=$?
+  if (( rc )); then
+    jq --argjson rc "$rc" '.status = "failed" | .exit_code = $rc' "$record" > "$record.tmp" && mv "$record.tmp" "$record"
+    print -u2 "ws: trigger #$1 action failed; see $record"
+  fi
+  return 0
+}
+
+# Allocate through normal workspace slots and mark origin before the agent can run.
+ws_bus_spawn_trigger() {
+  local record="$1" prompt="$2" wt agent slot id tid sender
+  wt="$(jq -r '.path' "$record")"
+  wt="$(resolve_workspace "$wt")" || return 1
+  agent="$(jq -r '.agent' "$record")"
+  tid="$(jq -r '.id' "$record")"
+  sender="$(jq -r '.sender' "$record")"
+  slot="$(session_add "$wt" "$agent")" || return 1
+  id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || return 1
+  ws_bus_update "$id" --arg trigger "$tid" --arg parent "$sender" \
+    '.spawned = true | .trigger = $trigger | .parent = $parent' || return 1
+  jq --arg child "$id" '.spawned_session = $child' "$record" > "$record.tmp" && mv "$record.tmp" "$record" || return 1
+  open_session "$wt" "$slot" "$agent" "" "$prompt"
+}
+
 # Output publication, status and event order are serialized across repeat declarations.
 ws_bus_done_locked() {
   local id="$1" source="$2" dir="$WS_SESSIONS/$1" tmp detail
@@ -137,7 +312,8 @@ ws_bus_event() {
   [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
   record="$(jq -nc --arg id "$id" --arg event "$event" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson detail "$detail" '$detail + {id:$id,event:$event,at:$at}')" || return 1
-  with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record"
+  with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record" || return 1
+  ws_bus_evaluate "$id" "$event"
 }
 
 ws_bus_event_locked() {

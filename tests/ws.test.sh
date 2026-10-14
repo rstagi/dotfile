@@ -48,6 +48,9 @@ for agent in claude codex grok; do
 #!/bin/sh
 own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
+if [ "\$WS_WORKSPACE" = api/triggers ]; then
+  python3 -c 'import json,sys; json.dump(sys.argv[1:],sys.stdout)' "\$@" > "\$WS_HOME/argv-\$WS_SESSION.json"
+fi
 [ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
 if [ "\$line" = done ]; then
@@ -1537,6 +1540,157 @@ for agent in claude codex grok; do
 done
 
 "$WS" rm api/lifecycle --force --delete-branch >/dev/null
+
+echo "ws on: fan-in waits for all sources and expands outputs in source order"
+"$WS" new --repo "$REPO" --branch triggers --detach
+TRIGGER_WT="$WS_ROOT/api/triggers"
+SOURCE_A_WIN="$(windows_of "$TRIGGER_WT")"
+SOURCE_A="$(T display -p -t "$SOURCE_A_WIN" '#{@ws_session}')"
+"$WS" add api/triggers --detach
+SOURCE_B_WIN="$(slot_window "$TRIGGER_WT" 2)"
+SOURCE_B="$(T display -p -t "$SOURCE_B_WIN" '#{@ws_session}')"
+"$WS" add api/triggers --detach
+TARGET_WIN="$(slot_window "$TRIGGER_WT" 3)"
+TARGET_ID="$(T display -p -t "$TARGET_WIN" '#{@ws_session}')"
+assert_contains "$(wait_pane "$TARGET_WIN" FAKE-claude)" "FAKE-claude" "trigger target ready"
+hook api/triggers "$TARGET_WIN" working </dev/null
+TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_A,$SOURCE_B" done --send-to me 'results {id}: {output}')"
+assert_exit "$?" "0" "fan-in trigger registers"
+assert_contains "$("$WS" triggers)" "$TID"$'\t'"$SOURCE_A,$SOURCE_B"$'\tdone\tsend' "pending trigger is listed"
+printf 'alpha "quoted" $literal' | WS_SESSION="$SOURCE_A" "$WS" done -
+assert_exit "$?" "0" "first source completion publishes"
+reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
+assert_eq "$reply" "{}" "first source alone does not deliver"
+hook api/triggers "$TARGET_WIN" working </dev/null
+printf beta | WS_SESSION="$SOURCE_B" "$WS" done -
+assert_exit "$?" "0" "last source completion publishes and fires"
+reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"results $SOURCE_A,$SOURCE_B: alpha \"quoted\" \$literal"$'\n'"beta" "fan-in expands literal output text and ordered ids"
+assert_eq "$("$WS" triggers)" "" "fired trigger is no longer pending"
+echo "ws on: already-satisfied registration fires once, even when events repeat concurrently"
+hook api/triggers "$TARGET_WIN" working </dev/null
+SATISFIED_TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_A,$SOURCE_B" done --send-to me 'already {id}')"
+assert_exit "$?" "0" "already-done fan-in registers and fires immediately"
+repeat_pids=()
+for source_id in "$SOURCE_A" "$SOURCE_B"; do
+  WS_SESSION="$source_id" "$WS" done > "$TMP/repeat-$source_id.log" 2>&1 &
+  repeat_pids+=($!)
+done
+for pid in $repeat_pids; do wait "$pid"; assert_exit "$?" "0" "concurrent repeat completion succeeds"; done
+reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"already $SOURCE_A,$SOURCE_B" "already-satisfied trigger delivers exactly once"
+assert_eq "$(hook api/triggers "$TARGET_WIN" stop </dev/null)" "{}" "repeat completion never queues another action"
+
+echo "ws on: rejects direct and transitive cycles; removal cancels a pending action"
+CYCLE_TID="$("$WS" on "$SOURCE_A" exit --send-to "$TARGET_ID" cycle-forward)"
+assert_exit "$?" "0" "forward dependency registers"
+out="$("$WS" on "$TARGET_ID" exit --send-to "$SOURCE_A" cycle-backward 2>&1)"
+assert_exit "$?" "1" "reverse edge forming a cycle is rejected"
+assert_contains "$out" "cycle" "cycle error explains rejection"
+"$WS" on "$TARGET_ID" done --send-to "$TARGET_ID" self-cycle 2>/dev/null
+assert_exit "$?" "1" "direct self-dependency is rejected"
+"$WS" on "$TARGET_ID,$SOURCE_B" done --send-to "$TARGET_ID" fan-in-cycle 2>/dev/null
+assert_exit "$?" "1" "fan-in cannot include its own target"
+CHAIN_TID="$("$WS" on "$TARGET_ID" exit --send-to "$SOURCE_B" cycle-chain)"
+out="$("$WS" on "$SOURCE_B" exit --send-to "$SOURCE_A" cycle-end 2>&1)"
+assert_exit "$?" "1" "three-session cycle is rejected"
+assert_contains "$out" "cycle" "transitive cycle is explained"
+"$WS" on --rm "$CHAIN_TID"
+assert_exit "$?" "0" "removes pending chain trigger"
+"$WS" on --rm "$CYCLE_TID"
+assert_exit "$?" "0" "removes pending trigger"
+assert_eq "$("$WS" triggers)" "" "removed triggers are absent"
+"$WS" on --rm "$CYCLE_TID" 2>/dev/null
+assert_exit "$?" "1" "removing an absent trigger is rejected"
+hook api/triggers "$TARGET_WIN" working </dev/null
+T send-keys -t "$SOURCE_A_WIN" Enter
+wait_until lifecycle_exit_count "$SOURCE_A" 1
+assert_eq "$(hook api/triggers "$TARGET_WIN" stop </dev/null)" "{}" "cancelled trigger never delivers"
+
+echo "ws on: spawn expands a literal prompt and starts a tracked child in the same worktree"
+printf 'spawn result {id} {output}' | WS_SESSION="$SOURCE_B" "$WS" done -
+SPAWN_PROMPT=$'Follow "quoted" $literal\nsource {id}: {output}; $(touch never-execute-ws-prompt)'
+for spawn_agent in claude codex grok; do
+  before_ids="$("$WS" sessions | cut -f1 | paste -sd, -)"
+  SPAWN_TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_B" done --spawn "$SPAWN_PROMPT" --agent "$spawn_agent")"
+  assert_exit "$?" "0" "$spawn_agent spawn trigger registers and fires"
+  CHILD_ID="$("$WS" sessions | awk -F '\t' -v a="$spawn_agent" -v ids="$before_ids" '$3 == "api/triggers" && $4 == a { if (index("," ids ",", "," $1 ",") == 0) print $1 }')"
+  assert_eq "${CHILD_ID:+found}" "found" "$spawn_agent spawn creates one new session"
+  if [[ -n "$CHILD_ID" ]]; then
+    CHILD_WIN="$(jq -r '.window' "$WS_HOME/sessions/$CHILD_ID/meta")"
+    assert_contains "$(wait_pane "$CHILD_WIN" "FAKE-$spawn_agent")" "WHOAMI=$CHILD_ID" "$spawn_agent child has WS_SESSION and can query it"
+    wait_until test -s "$WS_HOME/argv-$CHILD_ID.json"
+    assert_eq "$(jq -r '.[-1]' "$WS_HOME/argv-$CHILD_ID.json")" "Follow \"quoted\" \$literal"$'\n'"source $SOURCE_B: spawn result {id} {output}; \$(touch never-execute-ws-prompt)" "$spawn_agent initial prompt is one literal final argument"
+    assert_eq "$(jq -r '.spawned' "$WS_HOME/sessions/$CHILD_ID/meta")" "true" "$spawn_agent child is marked spawned"
+    assert_eq "$(jq -r '.path' "$WS_HOME/sessions/$CHILD_ID/meta")" "$TRIGGER_WT" "$spawn_agent child uses registering session worktree"
+    T send-keys -t "$CHILD_WIN" done Enter
+    wait_until spawn_done_closed "$CHILD_ID"
+    assert_exit "$?" "0" "$spawn_agent spawned child closes on done"
+    assert_eq "$(cat "$WS_HOME/sessions/$CHILD_ID/output.md")" "agent result" "$spawn_agent child publishes output before closure"
+  fi
+done
+assert_eq "$([[ -e "$TRIGGER_WT/never-execute-ws-prompt" ]] && print yes)" "" "spawn prompt never executes shell substitution"
+
+echo "ws on: concurrent last-source exits spawn once and default agent is claude"
+DEFAULT_TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_B" done --spawn default-child)"
+assert_exit "$?" "0" "spawn accepts omitted agent"
+DEFAULT_ID="$("$WS" sessions | awk -F '\t' '$3 == "api/triggers" && $5 != "stopped" && $1 != "'"$TARGET_ID"'" && $1 != "'"$SOURCE_B"'" {print $1}')"
+assert_eq "$("$WS" sessions "$DEFAULT_ID" | cut -f4)" "claude" "spawn defaults to claude"
+DEFAULT_WIN="$(jq -r '.window' "$WS_HOME/sessions/$DEFAULT_ID/meta")"
+assert_contains "$(wait_pane "$DEFAULT_WIN" FAKE-claude)" "default-child" "default child receives initial prompt"
+exit_before="$("$WS" sessions | wc -l | tr -d ' ')"
+EXIT_TID="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B,$TARGET_ID" exit --spawn 'after exit {id}' --agent codex)"
+assert_exit "$?" "0" "exit fan-in registers while both sources are live"
+assert_eq "$("$WS" sessions | wc -l | tr -d ' ')" "$exit_before" "exit trigger does not confuse done with exit"
+assert_contains "$("$WS" triggers)" "$EXIT_TID"$'\t'"$SOURCE_B,$TARGET_ID"$'\texit\tspawn' "pending spawn trigger is listed"
+T send-keys -t "$SOURCE_B_WIN" Enter &
+exit_a_pid=$!
+T send-keys -t "$TARGET_WIN" Enter &
+exit_b_pid=$!
+wait "$exit_a_pid"; wait "$exit_b_pid"
+wait_until lifecycle_exit_count "$SOURCE_B" 1
+wait_until lifecycle_exit_count "$TARGET_ID" 1
+exit_child_ready() { [[ "$("$WS" sessions | awk -F '\t' '$3 == "api/triggers" && $4 == "codex" && $5 != "stopped" {print $1}')" == <-> ]]; }
+wait_until exit_child_ready
+assert_exit "$?" "0" "concurrent exits start one codex child"
+EXIT_CHILD="$("$WS" sessions | awk -F '\t' '$3 == "api/triggers" && $4 == "codex" && $5 != "stopped" {print $1}')"
+assert_eq "$("$WS" sessions | wc -l | tr -d ' ')" "$((exit_before + 1))" "two racing evaluations allocate exactly one child"
+assert_contains "$(wait_pane "$(jq -r '.window' "$WS_HOME/sessions/$EXIT_CHILD/meta")" FAKE-codex)" "after exit $SOURCE_B,$TARGET_ID" "exit child receives expanded source ids"
+assert_eq "$("$WS" triggers)" "" "exit action is no longer pending"
+
+echo "ws on: sends a literal dash instead of interpreting the trigger message as stdin"
+hook api/triggers "$DEFAULT_WIN" working </dev/null
+DASH_TID="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --send-to me - </dev/null)"
+assert_exit "$?" "0" "literal dash trigger registers"
+reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n-' "trigger dash is delivered literally"
+
+echo "ws on: validates source lists, events and action options without creating triggers"
+for bad_sources in '' ',' "$SOURCE_B," ",$SOURCE_B" "$SOURCE_B,,${TARGET_ID}" no-such-session; do
+  "$WS" on "$bad_sources" done --send-to "$DEFAULT_ID" invalid 2>/dev/null
+  assert_exit "$?" "1" "invalid source list rejected: $bad_sources"
+done
+"$WS" on "$SOURCE_B" idle --send-to "$DEFAULT_ID" invalid 2>/dev/null
+assert_exit "$?" "1" "unsupported lifecycle event rejected"
+"$WS" on "$SOURCE_B" done --send-to missing-target invalid 2>/dev/null
+assert_exit "$?" "1" "unknown target rejected"
+"$WS" on "$SOURCE_B" done --send-to "$DEFAULT_ID" '' 2>/dev/null
+assert_exit "$?" "1" "empty message rejected"
+WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn '' 2>/dev/null
+assert_exit "$?" "1" "empty spawn prompt rejected"
+WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn invalid --agent invalid 2>/dev/null
+assert_exit "$?" "1" "unknown spawn agent rejected"
+WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn invalid --send-to "$DEFAULT_ID" 2>/dev/null
+assert_exit "$?" "1" "mixed send/spawn options rejected"
+(cd "$REPO" && env -u WS_SESSION -u TMUX -u WS_WORKSPACE "$WS" on "$SOURCE_B" done --spawn invalid 2>/dev/null)
+assert_exit "$?" "1" "terminal spawn outside ws worktree rejected"
+"$WS" triggers unexpected 2>/dev/null
+assert_exit "$?" "1" "triggers rejects unexpected arguments"
+"$WS" on --rm ../counter 2>/dev/null
+assert_exit "$?" "1" "remove rejects unsafe trigger ids"
+assert_eq "$("$WS" triggers)" "" "invalid registrations create no pending triggers"
+
+"$WS" rm api/triggers --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
 "$WS" add api/feat-login --detach
