@@ -93,7 +93,7 @@ main() {
   _unread) toggle_unread "$@" ;;
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
-  _exit) ws_bus_exit "$@" ;;
+  _agent) ws_bus_run_agent "$@" ;;
   _build-notifier) build_notifier ;;
   -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
@@ -517,7 +517,7 @@ open_session() {
 
 open_session_locked() {
   local wt="$1" slot="$2" agent="$3" resume="$4" id="$5"
-  local name tab cmd run sess win hup
+  local name tab cmd run sess win
   if win="$(ws_bus_window "$id")"; then
     print -r -- "$win"
     return 0
@@ -526,11 +526,10 @@ open_session_locked() {
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
   cmd="$(agent_command "$agent" "$resume")"
-  # The closed macOS pty can hang a new shell: detach all handler I/O before recording HUP.
-  hup="${(q)WS_BIN} _exit $id 129 </dev/null >/dev/null 2>&1; exit 129"
-  run="trap ${(q)hup} HUP; $cmd; s=\$?; trap - HUP; ${(q)WS_BIN} _exit $id \"\$s\"; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  run="${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
-    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" ${(z)WS_AGENT_SHELL} "$run")
+    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}"
+    -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" /bin/zsh -fc "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
     win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")" || return 1

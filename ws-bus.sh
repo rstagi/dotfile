@@ -144,14 +144,20 @@ ws_bus_event_locked() {
   print -r -- "$2" >> "$WS_SESSIONS/$1/events"
 }
 
-# Adopted tabs run through this watcher so their exits have the same lifecycle contract.
+# A background child plus wait lets HUP interrupt supervision even if the TUI holds the
+# closed tty. Explicit stdin preserves interactive input; only the watcher ignores Ctrl-C.
 ws_bus_run_agent() {
   setopt localtraps
-  local id="$1" command="$2" code
-  trap 'ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
-  ${(z)WS_AGENT_SHELL} "$command"
+  local id="$1" command="$2" code agent_pid input_fd
+  exec {input_fd}<&0
+  ${(z)WS_AGENT_SHELL} "$command" <&$input_fd &
+  agent_pid=$!
+  exec {input_fd}<&-
+  trap 'kill -HUP "$agent_pid" 2>/dev/null; ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
+  trap '' INT
+  wait "$agent_pid"
   code=$?
-  trap - HUP
+  trap - HUP INT
   ws_bus_exit "$id" "$code"
   return "$code"
 }

@@ -1506,6 +1506,22 @@ assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[0].code' "$WS_HOME/sessio
 "$WS" open "$SPAWN_ID" --detach
 assert_contains "$(wait_pane "$(windows_of "$DONE_WT")" FAKE-claude)" "--resume spawn-resume" "closed spawned identity retains agent resume data"
 
+echo "ws lifecycle: tab closure reports exit while a TUI still holds the tty"
+"$WS" new --repo "$REPO" --branch delivery --detach
+HUP_WT="$WS_ROOT/api/delivery"
+HUP_WIN="$(windows_of "$HUP_WT")"
+assert_contains "$(wait_pane "$HUP_WIN" PASTE-READY)" "PASTE-READY" "closure TUI ready"
+HUP_ID="$(T display -p -t "$HUP_WIN" '#{@ws_session}')"
+HUP_PID="$(T display -p -t "$HUP_WIN" '#{pane_pid}')"
+# Retain only this private fixture's direct children for cleanup if the exit contract fails.
+HUP_CHILDREN=( ${(f)"$(ps -Ao pid,ppid | awk -v p="$HUP_PID" '$2 == p {print $1}')"} )
+T kill-window -t "$HUP_WIN"
+wait_until lifecycle_exit_count "$HUP_ID" 1
+assert_exit "$?" "0" "TUI closure emits an exit without waiting for terminal reads"
+assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$HUP_ID/events")" $'exit\n129' "TUI closure records SIGHUP once"
+kill -KILL "$HUP_PID" "${HUP_CHILDREN[@]}" 2>/dev/null
+"$WS" rm api/delivery --force --delete-branch >/dev/null
+
 "$WS" rm api/lifecycle --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"
