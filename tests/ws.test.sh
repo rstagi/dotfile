@@ -1599,6 +1599,8 @@ send_slow_pid=$!
 sleep 0.5 # Stop captures its sequence before blocking on payload input.
 (exec {send_slow_w}>&-; WS_SESSION=1 "$WS" send "$FRESH_ID" "newer turn")
 assert_exit "$?" "0" "new message submits while old Stop awaits payload"
+wait_until pane_received "$FRESH_ID" $'[ws #1]\nnewer turn'
+assert_exit "$?" "0" "newer pasted turn confirms prompt submission"
 exec {send_slow_w}>&-
 wait "$send_slow_pid"
 assert_eq "$(T display -p -t "$FRESH_WIN" '#{@ws_state}')" "working" "older Stop never idles a newer pasted turn"
