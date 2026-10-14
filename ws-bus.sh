@@ -54,6 +54,14 @@ ws_bus_event() {
   with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record"
 }
 
+# Called by the launch wrapper immediately after wait, before slot cleanup or crash prompt.
+ws_bus_exit() {
+  [[ $# == 2 && "$2" == <-> && "$2" -le 255 ]] || die "_exit: expected <id> <exit-code>"
+  local detail
+  detail="$(jq -nc --argjson code "$2" '{code:$code}')" || return 1
+  ws_bus_event "$1" exit "$detail"
+}
+
 ws_bus_event_locked() {
   print -r -- "$2" >> "$WS_SESSIONS/$1/events"
 }

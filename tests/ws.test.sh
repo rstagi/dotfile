@@ -50,6 +50,7 @@ own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
 [ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
+exit "\${line:-0}"
 EOF
   chmod +x "$TMP/bin/$agent"
 done
@@ -1438,6 +1439,34 @@ assert_exit "$?" "1" "show requires target"
 out="$("$WS" send "$DONE_ID" should-refuse 2>&1)"
 assert_exit "$?" "1" "send rejects session declared done through CLI"
 assert_contains "$out" "--force required" "send explains done guard"
+
+echo "ws lifecycle: agent exit emits its actual code and preserves done output"
+lifecycle_exit_count() { [[ "$(jq -sr 'map(select(.event == "exit")) | length' "$WS_HOME/sessions/$1/events")" == "$2" ]]; }
+T send-keys -t "$DONE_WIN" Enter
+wait_until lifecycle_exit_count "$DONE_ID" 1
+assert_exit "$?" "0" "normal agent exit appends lifecycle event"
+assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[0].code' "$WS_HOME/sessions/$DONE_ID/events")" "0" "normal exit event records code zero"
+assert_eq "$("$WS" sessions "$DONE_ID" | cut -f5,6)" $'stopped\tdone' "agent exit preserves done lifecycle"
+assert_contains "$("$WS" show "$DONE_ID")" "output: $WS_HOME/sessions/$DONE_ID/output.md" "output stays addressable after agent exit"
+"$WS" open "$DONE_ID" --detach
+DONE_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$DONE_WIN" FAKE-claude)" "FAKE-claude" "done identity can resume"
+T send-keys -t "$DONE_WIN" 17 Enter
+wait_until lifecycle_exit_count "$DONE_ID" 2
+assert_exit "$?" "0" "failed agent exit appends lifecycle event"
+assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[1].code' "$WS_HOME/sessions/$DONE_ID/events")" "17" "failed exit retains actual nonzero code"
+assert_contains "$(wait_pane "$DONE_WIN" 'agent exited (17)')" "agent exited (17)" "failure keeps existing close/resume behavior"
+T send-keys -t "$DONE_WIN" Enter
+
+# A shell tab adopted with ws claude must report exits as well as ws new/add tabs.
+MANUAL_WIN="$(T new-window -d -P -F '#{window_id}' -t keepalive: -c "$DONE_WT" \
+  "zsh -fc '\"$WS\" claude; echo EXIT=\$?; sleep 30'")"
+assert_contains "$(wait_pane "$MANUAL_WIN" FAKE-claude)" "FAKE-claude" "manually opened agent ready"
+MANUAL_ID="$(T display -p -t "$MANUAL_WIN" '#{@ws_session}')"
+T send-keys -t "$MANUAL_WIN" Enter
+assert_contains "$(wait_pane "$MANUAL_WIN" EXIT=0)" "EXIT=0" "adopted tab returns to shell"
+assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$MANUAL_ID/events")" $'exit\n0' "adopted tab also emits actual process exit"
+T kill-window -t "$MANUAL_WIN"
 
 "$WS" rm api/lifecycle --force --delete-branch >/dev/null
 
