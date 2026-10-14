@@ -400,6 +400,11 @@ cmd_hook() {
     StopCancelled|stop_cancelled|Interrupt) event=cancel ;;
     esac
   fi
+  # Grok parses but ignores Stop decisions when its channel closes: preserve queued work.
+  if [[ "$event" == stop && "$(print -r -- "$payload" | jq -r '.reason // empty' 2>/dev/null)" == (channel_closed|shutdown) ]]; then
+    print '{}'
+    return 0
+  fi
   local reply=""
   [[ "$event" != stop ]] || reply='{}'
   [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }

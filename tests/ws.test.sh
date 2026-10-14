@@ -1451,6 +1451,23 @@ for agent field slot in claude prompt_id 1 codex turn_id 2 grok promptId 3; do
   print '{}' | hook api/delivery "$M3_WIN" stop >/dev/null
 done
 
+# --- delivery robustness: session-end Stop ---
+echo "ws hook: Grok session-end Stop leaves accepted work for resume"
+ROBUST_WIN="$(slot_window "$SEND_WT" 3)"
+ROBUST_ID="$(T display -p -t "$ROBUST_WIN" '#{@ws_session}')"
+hook api/delivery "$ROBUST_WIN" working </dev/null
+WS_SESSION=1 "$WS" send "$ROBUST_ID" "survive session end"
+ROBUST_INBOX="$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox")"
+for reason in channel_closed shutdown; do
+  reply="$(jq -nc --arg reason "$reason" '{hook_event_name:"Stop",reason:$reason}' | hook api/delivery "$ROBUST_WIN" stop)"
+  assert_eq "$reply" "{}" "$reason allows session end without continuation"
+  assert_eq "$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox")" "$ROBUST_INBOX" "$reason retains the accepted inbox"
+done
+reply="$(print '{"hook_event_name":"Stop"}' | hook api/delivery "$ROBUST_WIN" stop)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws #1]\nsurvive session end' "ordinary Stop still delivers retained work"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+# --- end delivery robustness: session-end Stop ---
+
 echo "ws send: concurrent senders retain every queued message"
 hook api/delivery "$SEND_WIN" working </dev/null
 send_pids=()
