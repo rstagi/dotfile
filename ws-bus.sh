@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Global session registry, sourced by ws.sh. Workspace slots remain local; ids never reuse.
+# Global session registry and message delivery, sourced by ws.sh. Workspace slots remain local; ids never reuse.
 # Live state comes from tmux; metadata keeps durable identity and lifecycle status.
 WS_SESSIONS="$WS_HOME/sessions"
 
@@ -46,6 +46,38 @@ cmd_send() {
   local rc=$?
   exec {lockfd}>&-
   return "$rc"
+}
+
+cmd_whoami() {
+  local id="${WS_SESSION:-}"
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || die "whoami: not inside a ws session"
+  print -r -- "$id"
+}
+
+cmd_name() {
+  [[ $# == 1 ]] || die "name: expected <label>"
+  local label="$1" id="$(cmd_whoami)"
+  [[ -n "$id" ]] || return 1
+  [[ "$label" == [A-Za-z]* && "$label" != *[^A-Za-z0-9_.-]* && "$label" != me ]] \
+    || die "name: use a letter followed by letters, digits, dots, underscores or hyphens (me is reserved)"
+  with_lock "$WS_SESSIONS/names" ws_bus_name_locked "$id" "$label"
+}
+
+# TSV: id, name, workspace, agent, state, status. A missing tab is stopped, not done.
+cmd_sessions() {
+  [[ $# -le 1 ]] || die "sessions: expected [id|name]"
+  local meta id win state selected=""
+  [[ $# == 0 ]] || selected="$(ws_bus_resolve "$1")" || die "no such session: $1"
+  for meta in "$WS_SESSIONS"/<->/meta(Nn); do
+    id="${meta:h:t}"
+    [[ -z "$selected" || "$selected" == "$id" ]] || continue
+    win="$(ws_bus_window "$id")"
+    state=stopped
+    if [[ -n "$win" ]]; then
+      state="$(tmux_ show -wqv -t "$win" @ws_state 2>/dev/null)"
+    fi
+    jq -r --arg state "$state" '[.id, .name, .workspace, .agent, $state, .status] | @tsv' "$meta"
+  done
 }
 
 # Both send and Stop hold the window's hook lock before the inbox lock: no idle/queue race.
@@ -133,43 +165,11 @@ ws_bus_paste() {
   tmux_ send-keys -t "$pane" Enter
 }
 
-cmd_whoami() {
-  local id="${WS_SESSION:-}"
-  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || die "whoami: not inside a ws session"
-  print -r -- "$id"
-}
-
-cmd_name() {
-  [[ $# == 1 ]] || die "name: expected <label>"
-  local label="$1" id="$(cmd_whoami)"
-  [[ -n "$id" ]] || return 1
-  [[ "$label" == [A-Za-z]* && "$label" != *[^A-Za-z0-9_.-]* && "$label" != me ]] \
-    || die "name: use a letter followed by letters, digits, dots, underscores or hyphens (me is reserved)"
-  with_lock "$WS_SESSIONS/names" ws_bus_name_locked "$id" "$label"
-}
-
 ws_bus_name_locked() {
   local id="$1" label="$2" existing
   existing="$(ws_bus_resolve "$label")"
   [[ -z "$existing" || "$existing" == "$id" ]] || { print -u2 "ws: name already in use: $label"; return 1; }
   ws_bus_update "$id" --arg name "$label" '.name = $name'
-}
-
-# TSV: id, name, workspace, agent, state, status. A missing tab is stopped, not done.
-cmd_sessions() {
-  [[ $# -le 1 ]] || die "sessions: expected [id|name]"
-  local meta id win state selected=""
-  [[ $# == 0 ]] || selected="$(ws_bus_resolve "$1")" || die "no such session: $1"
-  for meta in "$WS_SESSIONS"/<->/meta(Nn); do
-    id="${meta:h:t}"
-    [[ -z "$selected" || "$selected" == "$id" ]] || continue
-    win="$(ws_bus_window "$id")"
-    state=stopped
-    if [[ -n "$win" ]]; then
-      state="$(tmux_ show -wqv -t "$win" @ws_state 2>/dev/null)"
-    fi
-    jq -r --arg state "$state" '[.id, .name, .workspace, .agent, $state, .status] | @tsv' "$meta"
-  done
 }
 
 ws_bus_resolve() {
