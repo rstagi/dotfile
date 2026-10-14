@@ -2173,6 +2173,21 @@ assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID
 assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "exit watcher delivers once"
 # --- end M2 stale exit ---
 
+# --- trigger edges ---
+echo "ws on: trigger edges reject a cycle graph that cannot be validated"
+for corrupt_record in '{' '{"status":"pending","action":"send","sources":7}'; do
+  print -r -- "$corrupt_record" > "$WS_HOME/triggers/999999.json"
+  edge_counter="$(cat "$WS_HOME/triggers/counter")"
+  out="$("$WS" on "$SOURCE_A" exit --send-to "$DEFAULT_ID" 'after exit' 2>&1)"
+  assert_exit "$?" "1" "unreadable cycle graph rejects registration"
+  assert_contains "$out" "cannot validate" "cycle graph failure explains rejection"
+  assert_eq "$(cat "$WS_HOME/triggers/counter")" "$edge_counter" "failed validation allocates no trigger"
+  rm -f "$WS_HOME/triggers/999999.json"
+  # Clean up the old behavior's incorrectly accepted trigger during the RED run.
+  [[ "$(cat "$WS_HOME/triggers/counter")" == "$edge_counter" ]] || "$WS" on --rm "$(cat "$WS_HOME/triggers/counter")"
+done
+# --- end trigger edges ---
+
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 
 echo "ws rm: refuses dirty, removes clean worktree + all its windows"

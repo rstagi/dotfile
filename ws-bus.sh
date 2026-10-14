@@ -182,9 +182,17 @@ cmd_sessions() {
 
 ws_bus_register_trigger() {
   # Serialize graph validation with registration/removal; concurrent reverse edges lose.
-  if [[ "$3" == send ]] && ws_bus_trigger_cycle "$1" "$4"; then
-    print -u2 "ws: on: dependency cycle rejected"
-    return 1
+  local cycle_rc=0
+  if [[ "$3" == send ]]; then
+    ws_bus_trigger_cycle "$1" "$4" || cycle_rc=$?
+    if (( cycle_rc != 1 )); then
+      if (( cycle_rc == 0 )); then
+        print -u2 "ws: on: dependency cycle rejected"
+      else
+        print -u2 "ws: on: cannot validate dependency cycles; registration rejected"
+      fi
+      return 1
+    fi
   fi
   local tid=0 id offset offsets='{}'
   # Snapshot complete event records under each source's append lock. Exits before
