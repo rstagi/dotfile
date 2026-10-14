@@ -22,13 +22,17 @@ home_guard_sandbox() {
   [[ -f "$1/.gitconfig" ]] || printf '[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n' > "$1/.gitconfig"
 }
 
-# home_guard_snapshot — checksum listing of guarded real-HOME files (missing paths tolerated).
+# home_guard_snapshot — checksum listing of guarded real-HOME files (missing paths tolerated),
+# plus the ws bin/ws link target (startup migration can re-point it).
 home_guard_snapshot() {
   local root="${TESTS_REAL_HOME:-$HOME}" p
-  for p in $HOME_GUARD_PATHS; do
-    [[ -e "$root/$p" ]] || continue
-    find "$root/$p" -type f -exec shasum {} + 2>/dev/null
-  done | LC_ALL=C sort
+  {
+    print -r -- "link .ws/bin/ws -> $(readlink "$root/.ws/bin/ws" 2>/dev/null)"
+    for p in $HOME_GUARD_PATHS; do
+      [[ -e "$root/$p" ]] || continue
+      find "$root/$p" -type f -exec shasum {} + 2>/dev/null
+    done
+  } | LC_ALL=C sort
 }
 
 # home_guard_check <snapshot> — non-zero (and a diff on stderr) if guarded files changed.
