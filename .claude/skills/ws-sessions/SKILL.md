@@ -66,6 +66,9 @@ printf 'Completed ABC. Validation: ...\nResult: ...\n' | ws done -
 `ws done --output -` read stdin. Repeating completion replaces output and appends
 another done event; triggers still fire once. There is no undo. Spawned tabs close
 after publication, so do all work and validation before calling it; user-opened tabs stay.
+Pending inbox or in-flight messages make `ws done` fail without publishing output or
+closing the tab. Finish the turn so the Stop hook delivers them, handle the messages,
+then retry `ws done`.
 Finishing a turn or exiting the agent is not a `done` declaration.
 Only the top-level tab agent may run `ws done`: nested or headless children inherit
 `WS_SESSION` and must not declare it. `ws` is on every tab's `PATH` (`$WS_BIN` is ws.sh),

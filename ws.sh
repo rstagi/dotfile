@@ -25,6 +25,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              done needs --force; stopped sessions resume before delivery
 #   ws done [--output <file>|-]   declare own session done; replace output.md (default empty)
 #                              --output - also reads stdin; repeat appends another done event
+#                              pending inbox/in-flight messages refuse done; let Stop deliver first
 #                              spawned tabs close after publication; user-opened tabs stay
 #   ws show <id|name>           session metadata, lifecycle status and output path
 #   ws on <id[,id…]> <done|exit> (--send-to <id|me> <msg> | --spawn <prompt> [--agent A])
