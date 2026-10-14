@@ -39,6 +39,8 @@ const TYPED_EVENTS = new Set([
   "sub.saturation",
   "review.finish",
   "loop.finish",
+  "milestone.awaiting-merge",
+  "milestone.resumed",
   "jev.decision",
   // User controls (POST /control): timeline-only — pause state is read from control/ files.
   "control.pause",
@@ -393,6 +395,7 @@ function rankToStatus(rank: PhaseRank): PhaseStateStatus {
 function deriveStatus(rec: LoopRecord): LoopStatus {
   if (rec.status === "finished" || rec.finishedAt) return "finished";
   if (Object.values(rec.phases).some((o) => o.hilOpen)) return "paused";
+  if (rec.lastState?.awaitingMerge) return "awaiting-merge";
   // A register-only record (no state push, no lifecycle event) is a plan registered but not
   // yet running; the first state push or event flips it to active. No new ingest field needed.
   if (rec.lastState === null && !rec.events.some((event) => event.event !== "jev.decision")) return "planned";

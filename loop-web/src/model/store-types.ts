@@ -36,9 +36,10 @@ export interface PhaseOverlay {
 // ---------------------------------------------------------------------------------------
 
 /** `planned` = plan registered but no run started yet (a register-only record) · `active` =
- * running · `paused` = a HIL request is open · `finished` = loop.finish seen · `archived` =
+ * running · `paused` = a HIL request is open · `awaiting-merge` = a milestone gate is open ·
+ * `finished` = loop.finish seen · `archived` =
  * finished AND its loop dir is gone (set by the server, not the reducer). */
-export type LoopStatus = "planned" | "active" | "paused" | "finished" | "archived";
+export type LoopStatus = "planned" | "active" | "paused" | "awaiting-merge" | "finished" | "archived";
 
 // ---------------------------------------------------------------------------------------
 // Ingests — the messages the reducer folds

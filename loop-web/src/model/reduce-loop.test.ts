@@ -354,6 +354,48 @@ describe("reduceLoop — HIL raise/resolve", () => {
   });
 });
 
+describe("reduceLoop — milestone lifecycle", () => {
+  it.each(["milestone.awaiting-merge", "milestone.resumed"])("keeps %s observational on live ingest and JSONL replay", (event) => {
+    const message = { event, phase: "2", ts: "2026-10-15T00:00:00Z" };
+    const initial = fold("r", stateWith({ "2": { status: "running" } }));
+    const live = reduceLoop(initial, { kind: "event", event: message });
+    const replayed = reduceLoop(live, { kind: "eventsFile", text: JSON.stringify(message) });
+    expect(effectivePhaseStatus(replayed, "2")).toBe("running");
+    expect(replayed.phases).toEqual(initial.phases);
+    expect(replayed.events).toHaveLength(1);
+    expect(replayed.status).toBe("active");
+  });
+
+  it.each([
+    { awaiting: false, hil: false, finished: false, expected: "active" },
+    { awaiting: true, hil: false, finished: false, expected: "awaiting-merge" },
+    { awaiting: false, hil: true, finished: false, expected: "paused" },
+    { awaiting: true, hil: true, finished: false, expected: "paused" },
+    { awaiting: false, hil: false, finished: true, expected: "finished" },
+    { awaiting: true, hil: false, finished: true, expected: "finished" },
+    { awaiting: false, hil: true, finished: true, expected: "finished" },
+    { awaiting: true, hil: true, finished: true, expected: "finished" },
+  ])("derives $expected (awaiting=$awaiting, HIL=$hil, finished=$finished)", ({ awaiting, hil, finished, expected }) => {
+    let rec = fold("r", stateWith({}, {
+      milestone: 1,
+      awaitingMerge: awaiting ? { milestone: 1, prs: { "acme/api": "https://github.com/acme/api/pull/1" } } : null,
+    }));
+    if (hil) rec = reduceLoop(rec, { kind: "event", event: { event: "hil.raise", phase: "2" } });
+    if (finished) rec = reduceLoop(rec, { kind: "finish", info: {} });
+    // Re-derive after finish too: a later state push must preserve its precedence.
+    rec = reduceLoop(rec, { kind: "state", state: rec.lastState! });
+    expect(rec.status).toBe(expected);
+  });
+
+  it("resolves HIL back to the merge gate and becomes active only when state clears the gate", () => {
+    const awaiting = fold("r", stateWith({}, { awaitingMerge: { milestone: 1, prs: {} } }));
+    const paused = reduceLoop(awaiting, { kind: "event", event: { event: "hil.raise", phase: "2" } });
+    const resolved = reduceLoop(paused, { kind: "event", event: { event: "hil.resolve", phase: "2" } });
+    expect(resolved.status).toBe("awaiting-merge");
+    expect(reduceLoop(resolved, stateWith({}, { awaitingMerge: null })).status).toBe("active");
+  });
+});
+
 describe("reduceLoop — sub-orchestrator recycles & occupancy", () => {
   it("folds sub.saturation then sub.recycle into occupancy + subRecycles", () => {
     const rec = fold(

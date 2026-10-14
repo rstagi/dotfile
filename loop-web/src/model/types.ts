@@ -87,6 +87,8 @@ export interface StateJson {
   integrationBranch?: string;
   integrationWorktree?: string;
   prUrl?: string | null;
+  milestone?: number;
+  awaitingMerge?: { milestone: number; prs: Record<string, string> } | null;
   repositories?: Record<string, StateRepository>;
   phases?: Record<string, StatePhase>;
   /** PR-review verdict promoted by the orchestrator (`loop-state.sh set`). Structural (no
