@@ -134,6 +134,8 @@ export interface RepositoryRecord {
   integrationWorktree: string | null;
   prUrl: string | null;
   review: ReviewInfo | null;
+  /** Optional on records persisted before milestone support. */
+  reviewPipeline?: StateJson["reviewPipeline"];
 }
 
 /** Per-loop event cap — drop oldest to bound disk (Resolved decision #2). */
@@ -146,6 +148,9 @@ export interface LoopRecord {
   loopDir: string | null;
   planFile: string | null;
   integrationBranch: string | null;
+  /** Optional on records persisted before milestone support. */
+  integrationWorktree?: string | null;
+  reviewPipeline?: StateJson["reviewPipeline"];
   startedAt: string | null;
   finishedAt: string | null;
   status: LoopStatus;

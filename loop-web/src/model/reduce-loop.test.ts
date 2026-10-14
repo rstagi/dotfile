@@ -29,6 +29,33 @@ const APPENDED_PLAN = `${REVIEWED_PLAN}
 - **Depends on:** Phase 3
 `;
 
+const MILESTONE_PLAN = `# Milestones — Multi-Phase Plan
+## Loop config
+- **Integration branch:** \`feat/global\`
+## Repositories
+### \`acme/api\`
+- **PR:** https://github.com/acme/api/pull/99
+### \`acme/web\`
+## Milestone 1 — First release
+- **Integration branch:** \`feat/first\`
+- **PR (acme/api):** https://github.com/acme/api/pull/1
+### Phase 1 — API \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+### Phase 2 — Web \`[lane: B]\` \`[status: todo]\`
+- **Repository:** \`acme/web\`
+- **Depends on:** none
+### Phase 3 — Gate \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\` \`[gate: merge]\`
+- **Depends on:** Phase 1, Phase 2
+## Milestone 2 — Second release
+- **Integration branch:** \`feat/second\`
+### Phase 4 — API follow-up \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/api\`
+- **Depends on:** Phase 3
+### Phase 5 — Final review \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`
+- **Depends on:** Phase 4
+`;
+
 describe("reduceLoop — register", () => {
   it("seeds identity + planText and marks a register-only loop planned", () => {
     const rec = fold("run-1", {
@@ -355,6 +382,191 @@ describe("reduceLoop — HIL raise/resolve", () => {
 });
 
 describe("reduceLoop — milestone lifecycle", () => {
+  it("uses a repository-section PR only for a milestone-less plan", () => {
+    const explicit = MILESTONE_PLAN.replace("- **PR (acme/api):** https://github.com/acme/api/pull/1\n", "");
+    const implicit = `# Legacy
+## Repositories
+### \`acme/api\`
+- **PR:** https://github.com/acme/api/pull/99
+## Phases
+### Phase 1 — Work \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/api\`
+`;
+    const milestone = fold("r", { kind: "register", info: { runId: "r", planText: explicit } });
+    const legacy = fold("r", { kind: "register", info: { runId: "r", planText: implicit } });
+    expect(milestone.repositories["acme/api"].prUrl).toBeNull();
+    expect(legacy.repositories["acme/api"].prUrl).toBe("https://github.com/acme/api/pull/99");
+  });
+
+  it("preserves all declared repositories and register branch precedence for legacy plans", () => {
+    const planText = `# Legacy
+## Repositories
+### \`acme/api\`
+- **Integration branch:** \`feat/api\`
+### \`acme/web\`
+- **Integration branch:** \`feat/web\`
+- **PR:** https://github.com/acme/web/pull/9
+## Phases
+### Phase 1 — API only \`[lane: A]\` \`[status: todo]\`
+- **Repository:** \`acme/api\`
+`;
+    const rec = fold("r", { kind: "register", info: {
+      runId: "r", planText, integrationBranch: "feat/registered",
+    } });
+    expect(Object.keys(rec.repositories)).toEqual(["acme/api", "acme/web"]);
+    expect(rec.repositories["acme/web"]).toMatchObject({
+      integrationBranch: "feat/web", prUrl: "https://github.com/acme/web/pull/9",
+    });
+    expect(rec.integrationBranch).toBe("feat/registered");
+  });
+
+  it.each<Ingest>([
+    { kind: "finish", info: { finishedAt: "2026-10-15T00:00:00Z" } },
+    { kind: "event", event: { event: "loop.finish", ts: "2026-10-15T00:00:00Z" } },
+  ])("rejects $kind at an intermediate gate until the final phase is done", (finish) => {
+    const gate = fold("r",
+      { kind: "register", info: { runId: "r", planText: MILESTONE_PLAN } },
+      stateWith({ "1": { status: "merged" }, "2": { status: "merged" }, "3": { status: "done" } }, {
+        milestone: 1, awaitingMerge: { milestone: 1, prs: {} },
+      }),
+    );
+    const rejected = reduceLoop(gate, finish);
+    expect(rejected.status).toBe("awaiting-merge");
+    expect(rejected.finishedAt).toBeNull();
+    const final = reduceLoop(rejected, stateWith({ "4": { status: "merged" }, "5": { status: "done" } }, {
+      milestone: 2, awaitingMerge: null,
+    }));
+    expect(reduceLoop(final, finish).status).toBe("finished");
+  });
+
+  it("reads branch/PR from the current milestone and keeps retired participants out on registration", () => {
+    const initial = fold("r", { kind: "register", info: {
+      runId: "r", planText: MILESTONE_PLAN, integrationBranch: "feat/global",
+    } });
+    expect(initial.integrationBranch).toBe("feat/first");
+    expect(initial.repositories["acme/api"]).toMatchObject({
+      integrationBranch: "feat/first", prUrl: "https://github.com/acme/api/pull/1",
+    });
+
+    const advanced = reduceLoop(initial, stateWith({}, {
+      milestone: 2,
+      repositories: { "acme/api": { integrationBranch: "feat/second", prUrl: null } },
+    }));
+    const registered = reduceLoop(advanced, { kind: "register", info: {
+      runId: "r", planText: MILESTONE_PLAN, integrationBranch: "feat/global",
+    } });
+    expect(Object.keys(registered.repositories)).toEqual(["acme/api"]);
+    expect(registered.repositories["acme/api"]).toMatchObject({ integrationBranch: "feat/second", prUrl: null });
+    expect(registered.integrationBranch).toBe("feat/second");
+    expect(registered.prUrl).toBeNull();
+  });
+
+  it("replaces current repository and scalar projections when M1 advances to M2", () => {
+    const first = fold("r", stateWith({ "1": { status: "merged" }, "2": { status: "done" } }, {
+      milestone: 1,
+      integrationBranch: "feat/first",
+      integrationWorktree: "/worktrees/first",
+      prUrl: "https://github.com/acme/api/pull/1",
+      review: { outcome: "done", summary: "M1 approved" },
+      reviewPipeline: { phase: 2, stage: "final" },
+      awaitingMerge: { milestone: 1, prs: { "acme/api": "https://github.com/acme/api/pull/1" } },
+      repositories: {
+        "acme/api": {
+          integrationBranch: "feat/first", integrationWorktree: "/worktrees/first",
+          prUrl: "https://github.com/acme/api/pull/1",
+          review: { outcome: "done", summary: "M1 approved" },
+          reviewPipeline: { phase: 2, stage: "final" },
+        },
+        "acme/web": { integrationBranch: "feat/web-first", prUrl: "https://github.com/acme/web/pull/1" },
+      },
+    }));
+    const advanced = reduceLoop(first, stateWith({ "3": { status: "running" } }, {
+      milestone: 2,
+      awaitingMerge: null,
+      milestones: { "1": { prs: { "acme/api": "https://github.com/acme/api/pull/1" } } },
+      repositories: {
+        "acme/api": {
+          integrationBranch: "feat/second", integrationWorktree: "/worktrees/second",
+          prUrl: null, review: null, reviewPipeline: null,
+        },
+      },
+    }));
+
+    expect(Object.keys(advanced.repositories)).toEqual(["acme/api"]);
+    expect(advanced.repositories["acme/api"]).toMatchObject({
+      integrationBranch: "feat/second", integrationWorktree: "/worktrees/second",
+      prUrl: null, review: null, reviewPipeline: null,
+    });
+    expect(advanced).toMatchObject({
+      integrationBranch: "feat/second", integrationWorktree: "/worktrees/second",
+      prUrl: null, review: null, reviewPipeline: null, status: "active",
+    });
+    expect(advanced.lastState?.milestones?.["1"].prs["acme/api"]).toBe("https://github.com/acme/api/pull/1");
+    expect(effectivePhaseStatus(advanced, "1")).toBe("merged");
+    expect(effectivePhaseStatus(advanced, "2")).toBe("done");
+    expect(effectivePhaseStatus(advanced, "3")).toBe("running");
+    expect(first.status).toBe("awaiting-merge");
+    expect(first.repositories["acme/api"].review?.summary).toBe("M1 approved");
+  });
+
+  it.each([undefined, 1])("retains legacy merge semantics without a milestone change (milestone=%s)", (milestone) => {
+    const initial = fold("r", stateWith({}, {
+      milestone: 1,
+      integrationBranch: "feat/first", integrationWorktree: "/worktrees/first",
+      prUrl: "https://github.com/acme/api/pull/1", review: { outcome: "done" },
+      reviewPipeline: { phase: 2, stage: "final" },
+      repositories: {
+        "acme/api": {
+          integrationBranch: "feat/first", integrationWorktree: "/worktrees/first",
+          prUrl: "https://github.com/acme/api/pull/1", review: { outcome: "done" },
+          reviewPipeline: { phase: 2, stage: "final" },
+        },
+      },
+    }));
+    const repeated = reduceLoop(initial, stateWith({}, {
+      milestone, integrationBranch: null, integrationWorktree: null,
+      prUrl: null, review: null, reviewPipeline: null,
+      repositories: { "acme/api": { prUrl: null, review: null, reviewPipeline: null } },
+    }));
+    expect(repeated.repositories).toEqual(initial.repositories);
+    expect(repeated).toMatchObject({
+      integrationBranch: "feat/first", integrationWorktree: "/worktrees/first",
+      prUrl: "https://github.com/acme/api/pull/1", review: { outcome: "done" },
+      reviewPipeline: { phase: 2, stage: "final" },
+    });
+  });
+
+  it("honours explicit scalar nulls on a switch even when the new repository has values", () => {
+    const rec = fold("r", stateWith({}, { milestone: 1 }), stateWith({}, {
+      milestone: 2,
+      integrationBranch: null, integrationWorktree: null, prUrl: null, review: null, reviewPipeline: null,
+      repositories: {
+        "acme/api": {
+          integrationBranch: "feat/second", integrationWorktree: "/worktrees/second",
+          prUrl: "https://github.com/acme/api/pull/2", review: { outcome: "done" },
+          reviewPipeline: { phase: 5, stage: "final" },
+        },
+      },
+    }));
+    expect(rec).toMatchObject({
+      integrationBranch: null, integrationWorktree: null, prUrl: null, review: null, reviewPipeline: null,
+    });
+    expect(rec.repositories["acme/api"].reviewPipeline).toEqual({ phase: 5, stage: "final" });
+  });
+
+  it("clears omitted projections and participants when a new milestone has no repository state yet", () => {
+    const rec = fold("r", stateWith({}, {
+      milestone: 1, integrationBranch: "feat/first", integrationWorktree: "/worktrees/first",
+      prUrl: "https://github.com/acme/api/pull/1", review: { outcome: "done" },
+      reviewPipeline: { phase: 2, stage: "final" },
+      repositories: { "acme/api": { integrationBranch: "feat/first", prUrl: "https://github.com/acme/api/pull/1" } },
+    }), stateWith({}, { milestone: 2 }));
+    expect(rec.repositories).toEqual({});
+    expect(rec).toMatchObject({
+      integrationBranch: null, integrationWorktree: null, prUrl: null, review: null, reviewPipeline: null,
+    });
+  });
+
   it.each(["milestone.awaiting-merge", "milestone.resumed"])("keeps %s observational on live ingest and JSONL replay", (event) => {
     const message = { event, phase: "2", ts: "2026-10-15T00:00:00Z" };
     const initial = fold("r", stateWith({ "2": { status: "running" } }));

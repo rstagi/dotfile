@@ -64,12 +64,21 @@ export interface StateRepository {
   integrationBranch?: string | null;
   integrationWorktree?: string | null;
   prUrl?: string | null;
+  reviewPipeline?: StateReviewPipeline | null;
   review?: {
     outcome?: string | null;
     summary?: string | null;
     reportPath?: string | null;
     commentUrl?: string | null;
   } | null;
+}
+
+export interface StateReviewPipeline {
+  phase?: number | string;
+  stage?: string;
+  tier?: ReviewTier;
+  rounds?: number;
+  headSha?: string;
 }
 
 export type PhaseStateStatus =
@@ -84,21 +93,18 @@ export type PhaseStateStatus =
 export interface StateJson {
   runId?: string;
   effort?: string;
-  integrationBranch?: string;
-  integrationWorktree?: string;
+  integrationBranch?: string | null;
+  integrationWorktree?: string | null;
   prUrl?: string | null;
   milestone?: number;
   awaitingMerge?: { milestone: number; prs: Record<string, string> } | null;
+  milestones?: Record<string, { prs: Record<string, string> }>;
+  reviewPipeline?: StateReviewPipeline | null;
   repositories?: Record<string, StateRepository>;
   phases?: Record<string, StatePhase>;
   /** PR-review verdict promoted by the orchestrator (`loop-state.sh set`). Structural (no
    * cross-import) so the daemon reducer can fold it; the drawer renders the full report. */
-  review?: {
-    outcome?: string;
-    summary?: string;
-    reportPath?: string;
-    commentUrl?: string;
-  } | null;
+  review?: StateRepository["review"];
 }
 
 /** One row of events.jsonl (loop-state.sh log). */
