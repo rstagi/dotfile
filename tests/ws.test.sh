@@ -2884,6 +2884,28 @@ assert_eq "$(( EPOCHREALTIME - f2_start < 2 ))" "1" "done returns before its tri
 WS_TEST_WAIT=15 wait_until test -f "$WS_HOME/triggers/archive/$F2_TID.json"
 assert_exit "$?" "0" "detached worker still fires the trigger"
 
+echo "ws done (F2): a slow trigger target neither stalls done nor delays done_window"
+F2S_BEFORE="$(windows_of "$TRIGGER_WT")"
+"$WS" add api/triggers --detach
+F2S_WIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$F2S_BEFORE"))"
+F2S_SRC="$(T display -p -t "$F2S_WIN" '#{@ws_session}')"
+F2S_META="$WS_HOME/sessions/$F2S_SRC/meta"
+jq '.spawned = true' "$F2S_META" > "$F2S_META.fixture" && mv "$F2S_META.fixture" "$F2S_META"
+F2S_BEFORE="$(windows_of "$TRIGGER_WT")"
+print 6 > "$WS_HOME/tui-delay"
+"$WS" add api/triggers --detach
+F2S_TWIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$F2S_BEFORE"))"
+F2S_TGT="$(T display -p -t "$F2S_TWIN" '#{@ws_session}')"
+F2S_TID="$("$WS" on "$F2S_SRC" done --send-to "$F2S_TGT" 'f2 slow msg')"
+f2s_start=$EPOCHREALTIME
+WS_READY_TIMEOUT=10 WS_SESSION="$F2S_SRC" "$WS" done </dev/null >/dev/null 2>&1
+assert_eq "$(( EPOCHREALTIME - f2s_start < 2 ))" "1" "done returns while the target is still starting"
+assert_eq "$(jq -r '.done_window // empty' "$F2S_META")" "$F2S_WIN" "done_window is recorded before any trigger runs"
+assert_eq "$([[ -f "$WS_HOME/triggers/$F2S_TID.json" ]] && print pending)" "pending" "slow trigger is still in flight after done returns"
+WS_TEST_WAIT=25 wait_until test -f "$WS_HOME/triggers/archive/$F2S_TID.json"
+assert_exit "$?" "0" "detached worker delivers once the slow target is ready"
+rm -f "$WS_HOME/tui-delay"
+
 echo "ws hook (F8): a Stop that waits on the hook lock still settles the tab and drains the inbox"
 F8_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$DEFAULT_WIN.lock"
 hook api/triggers "$DEFAULT_WIN" working </dev/null
