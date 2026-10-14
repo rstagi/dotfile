@@ -5,7 +5,6 @@
 set -u
 HERE="${0:A:h}"
 source "$HERE/helpers.sh"
-export WS_TESTS_SUITE=1
 
 for area in workspace hooks tabs picker setup notify merge send lifecycle triggers inflight \
   triggers-actions trigger-edges review-fixes rm migrate; do

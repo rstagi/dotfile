@@ -2,7 +2,7 @@
 # ws tests: `ws on` registration, cycles, spawn, failures, queued sends, spawn prompts, ready timeout.
 # Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
 # because workspaces, tabs and global session ids carry over between areas.
-[[ -n "${WS_TESTS_SUITE:-}" ]] || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
+(( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws on: rejects direct and transitive cycles; removal cancels a pending action"
 CYCLE_TID="$("$WS" on "$SOURCE_A" exit --send-to "$TARGET_ID" cycle-forward)"

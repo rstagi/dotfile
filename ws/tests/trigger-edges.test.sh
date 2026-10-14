@@ -2,7 +2,7 @@
 # ws tests: Trigger edge records, batching, tolerance and bus hardening.
 # Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
 # because workspaces, tabs and global session ids carry over between areas.
-[[ -n "${WS_TESTS_SUITE:-}" ]] || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
+(( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 # --- trigger edges ---
 echo "ws on: trigger edges warn and skip a corrupt record during cycle validation"

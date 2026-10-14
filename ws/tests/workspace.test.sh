@@ -2,7 +2,7 @@
 # ws tests: Skill install, workspace creation, global session ids, names and legacy-id migration.
 # Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
 # because workspaces, tabs and global session ids carry over between areas.
-[[ -n "${WS_TESTS_SUITE:-}" ]] || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
+(( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws skill: installer exposes the real session skill to Claude and Codex"
 HOME="$TMP/skillhome" bash "$ROOT/install-agent-skills.sh" --no-ratel > "$TMP/skill-install.log" 2>&1

@@ -14,6 +14,13 @@ source "$ROOT/tests/lib.sh"
 
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
+# Not exported: only this shell (which sourced us) can pass the area files' guard.
+typeset +x WS_TESTS_SANDBOX="$TMP"
+# ws_tests_require_sandbox — area files call it first: refuses to run unless this process really
+# holds the suite's private HOME and WS_HOME (a bare flag could be inherited by a real-HOME run).
+ws_tests_require_sandbox() {
+  [[ -n "${WS_TESTS_SANDBOX:-}" && "$HOME" == "$WS_TESTS_SANDBOX/home" && "${WS_HOME:-}" == "$WS_TESTS_SANDBOX"/* ]]
+}
 # Private HOME + agent config roots (also for subshells overriding GROK_HOME/WS_HOME after
 # `source "$WS"`); the EXIT trap fails the suite if real agent hooks/config changed.
 source "$ROOT/tests/home-guard.sh"

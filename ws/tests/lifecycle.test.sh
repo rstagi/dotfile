@@ -2,7 +2,7 @@
 # ws tests: `ws done`/`show`, exit events, exit path ownership and late/nested hooks.
 # Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
 # because workspaces, tabs and global session ids carry over between areas.
-[[ -n "${WS_TESTS_SUITE:-}" ]] || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
+(( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws done: file output is durable; user-opened tab stays; show resolves names"
 "$WS" new --repo "$REPO" --branch lifecycle --detach
