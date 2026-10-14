@@ -57,8 +57,12 @@ ws_bus_send_locked() {
     if [[ -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
       ws_bus_wait_ready "$id" "$win" || { print -u2 "ws: send: message queued; session #$id input not ready"; return 1; }
     fi
+    # Order the submitted turn against hooks that entered before this paste. Capture
+    # before input, so the resulting UserPromptSubmit remains newer than this watermark.
+    zmodload zsh/datetime
+    local seq="$(realtime_us "$EPOCHREALTIME")"
     ws_bus_idle_locked "$id" "$win" || return 1
-    tmux_ set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
+    tmux_ set -w -t "$win" @ws_seq "$seq" \; set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
   fi
 }
 

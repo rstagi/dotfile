@@ -1359,6 +1359,20 @@ assert_exit "$?" "0" "send waits for a new target's TUI before submitting"
 wait_until pane_received "$FRESH_ID" $'[ws #1]\nfresh target'
 assert_eq "$(tail -1 "$WS_HOME/pane-$FRESH_ID.jsonl" 2>/dev/null | jq -r '.text')" $'[ws #1]\nfresh target' "startup input is never discarded by terminal initialization"
 
+echo "ws send: a slow older Stop cannot overwrite a newer pasted turn"
+hook api/delivery "$FRESH_WIN" idle </dev/null
+mkfifo "$TMP/send-slow.in"
+exec {send_slow_w}<>"$TMP/send-slow.in"
+(exec {send_slow_w}>&-; hook api/delivery "$FRESH_WIN" stop <"$TMP/send-slow.in" >"$TMP/send-slow.out") &
+send_slow_pid=$!
+sleep 0.5 # Stop captures its sequence before blocking on payload input.
+(exec {send_slow_w}>&-; WS_SESSION=1 "$WS" send "$FRESH_ID" "newer turn")
+assert_exit "$?" "0" "new message submits while old Stop awaits payload"
+exec {send_slow_w}>&-
+wait "$send_slow_pid"
+assert_eq "$(T display -p -t "$FRESH_WIN" '#{@ws_state}')" "working" "older Stop never idles a newer pasted turn"
+assert_eq "$(cat "$TMP/send-slow.out")" "{}" "stale Stop still returns valid allow JSON"
+
 echo "ws send: failed resume retains the message and reports it queued"
 META="$WS_HOME/sessions/$FRESH_ID/meta"
 jq --arg missing "$TMP/missing-workspace" '.path = $missing' "$META" > "$META.fixture"
