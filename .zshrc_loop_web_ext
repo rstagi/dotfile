@@ -7,6 +7,8 @@ alias ltop="loop-top"
 alias loop-plan="$HOME/dotfile/loop-plan.sh"
 # Global owner/repo → checkout registry + fresh-remote integration bootstrap.
 alias loop-repo="$HOME/dotfile/loop-repo.sh"
+# Milestone merge gate: check gate PR states, advance (prepare next milestone, print state patch).
+alias loop-milestone="$HOME/dotfile/loop-milestone.sh"
 # Review pipeline shape: tier + rounds → ordered review runs (used by loop-execute supervise).
 alias loop-review="$HOME/dotfile/loop-review.sh"
 # Adversarial plan review: 3 read-only reviewers on a drafted plan (used by multiphase-plan).

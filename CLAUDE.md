@@ -26,7 +26,7 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-review.sh ws/ws.sh ws/lib/*.sh ws/tests/*.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh ws/ws.sh ws/lib/*.sh ws/tests/*.sh
 
 # Loop engineering shell tests (occupancy + orchestrator + loop-top + ws suite; also runs zsh -n over the loop-*.sh and ws files)
 zsh tests/run.sh
@@ -63,6 +63,7 @@ loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-i
 loop-state.sh           Loop engineering: state/lock/journal/daemon + note/notes steering ops
 loop-plan.sh            Loop engineering: register/push a plan on the daemon + progress notes (the only plan backend)
 loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap (or adopt existing branch)
+loop-milestone.sh       Loop engineering: milestone merge gate — check gate PR states, advance (prepare next milestone, print state patch)
 loop-review.sh          Loop engineering: review tier + rounds → ordered review runs (a<k>, stage, chain)
 loop-plan-review.sh     Loop engineering: adversarial plan review — 3 read-only reviewers (Sol/Opus/Grok) on a drafted plan
 loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)
