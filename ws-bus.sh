@@ -363,11 +363,14 @@ ws_bus_event_locked() {
 }
 
 # A background child plus wait lets HUP interrupt supervision even if the TUI holds the
-# closed tty. Explicit stdin preserves interactive input; only the watcher ignores Ctrl-C.
+# closed tty. Explicit stdin preserves interactive input. Reset async zsh's ignored
+# INT/QUIT in the child; the watcher alone ignores Ctrl-C while waiting for its exit code.
 ws_bus_run_agent() {
   setopt localtraps
-  local id="$1" command="$2" code agent_pid input_fd prompt="$WS_SESSIONS/$1/prompt"
+  local id="$1" command="$2" code agent_pid input_fd win="" prompt="$WS_SESSIONS/$1/prompt"
   local -a args
+  # Capture the launch generation, never a later window resumed under this identity.
+  [[ -z "${TMUX_PANE:-}" ]] || win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)"
   # One-shot initial prompt (open_session writes it): literal positional $1 after `--`.
   if [[ -f "$prompt" ]]; then
     args=(ws "$(cat -- "$prompt"; print x)") # x: keep trailing newlines
@@ -376,25 +379,31 @@ ws_bus_run_agent() {
     command+=' -- "$1"'
   fi
   exec {input_fd}<&0
-  ${(z)WS_AGENT_SHELL} "$command" "${args[@]}" <&$input_fd &
+  { trap - INT QUIT; exec ${(z)WS_AGENT_SHELL} "$command" "${args[@]}"; } <&$input_fd &
   agent_pid=$!
   exec {input_fd}<&-
-  trap 'trap "" HUP; kill -HUP "$agent_pid" 2>/dev/null; ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
+  trap 'trap "" HUP; kill -HUP "$agent_pid" 2>/dev/null; ws_bus_untag_agent "$id" "$win"; ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
   trap '' INT
   wait "$agent_pid"
   code=$?
   # EOF may finish the child just before the tty's HUP arrives. Protect publication,
   # including its subprocesses, rather than restoring the default HUP action early.
   trap '' HUP INT
-  # A crashed tab only shows the close prompt: untag it so sends queue and resume instead of
-  # pasting there. @ws_state stays for the wrapper's dismiss.
-  local win
-  if (( code )) && win="$(ws_bus_window "$id")"; then
-    tmux_ set -wu -t "$win" @ws_session \; set -wu -t "$win" @ws_main 2>/dev/null
-  fi
+  # Exit actions may wait for slow targets: stop delivery before publishing any exit.
+  # @ws_state stays for the wrapper's dismiss.
+  ws_bus_untag_agent "$id" "$win"
   ws_bus_exit "$id" "$code" </dev/null
 
   return "$code"
+}
+
+# Only clear this wrapper's window while it still belongs to its session. Evaluate and
+# untag together in tmux so a retagged window cannot be cleared between separate calls.
+ws_bus_untag_agent() {
+  local id="$1" win="$2"
+  [[ -n "$win" ]] || return 0
+  tmux_ if-shell -F -t "$win" "#{==:#{@ws_session},$id}" \
+    "set -wu -t $win @ws_session; set -wu -t $win @ws_main" 2>/dev/null
 }
 
 # Called by the launch wrapper immediately after wait, before slot cleanup or crash prompt.

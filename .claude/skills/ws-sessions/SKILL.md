@@ -120,8 +120,9 @@ ws on 123 exit --send-to me 'Session {id} exited. Inspect its status and output 
 
 `exit` counts only events after registration from every source; past exits, including
 those before a resume, do not satisfy a new watcher. It includes clean exits and crashes
-and does not establish successful work. A spawned session that runs `ws done` emits only
-done: closing its own tab is cleanup, not
+and does not establish successful work. A finished tab stops accepting messages before
+exit actions run; sends resume the session. A spawned session that runs `ws done` emits
+only done: closing its own tab is cleanup, not
 an exit. Wait on `done` for spawned results; `exit` from a spawned session means it ended
 without declaring done. Send dependency cycles, including self-waits, are rejected.
 Trigger actions fire once; a failed action is not retried automatically and its stderr is
