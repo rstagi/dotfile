@@ -4,6 +4,9 @@ import type { LoopListEntry } from "../model/store-types.ts";
 
 function entry(over: Partial<LoopListEntry> & { runId: string }): LoopListEntry {
   return {
+    milestone: 1,
+    milestoneTotal: 1,
+    awaitingMerge: null,
     effort: over.runId,
     status: "active",
     integrationBranch: null,

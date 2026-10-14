@@ -31,11 +31,17 @@ export function buildSnapshot(plan: Plan, runtime: Runtime | null, opts: Snapsho
   const repositories = buildRepositoryInfo(plan, runtime);
   const repositoryPrs = Object.fromEntries(repositories.map((repository) => [repository.slug, repository.pr]));
   const pr = repositories.length === 1 ? repositories[0].pr : null;
+  const overview = buildPlanOverview(plan, runtime, repositories);
   const graph = buildGraph(plan, runtime, { now, pr, repositories: repositoryPrs, decisions });
+  graph.nodes = graph.nodes.map((node) => {
+    if (node.kind !== "pr-review" || !node.phase) return node;
+    const phase = plan.phases.find((entry) => entry.phase === node.phase);
+    return { ...node, prs: overview.milestones.find((entry) => entry.number === phase?.milestone)?.prs ?? {} };
+  });
 
   return {
     effort: buildEffort(plan, runtime, pr, repositories),
-    plan: buildPlanOverview(plan, repositories),
+    plan: overview,
     graph,
     problems: buildProblems(graph.nodes),
     events: buildTimeline(runtime),
@@ -106,9 +112,10 @@ function buildEffort(
   return {
     name: plan.name,
     status: plan.status,
-    integrationBranch: repositories.length === 1
-      ? repositories[0].integrationBranch
-      : runtime?.state?.integrationBranch ?? plan.loopConfig?.integrationBranch ?? null,
+    milestone: runtime?.state?.milestone ?? 1,
+    milestoneTotal: Math.max(1, plan.milestones.length),
+    awaitingMerge: runtime?.state?.awaitingMerge ?? null,
+    integrationBranch: effortIntegrationBranch(plan, runtime, repositories),
     updatedAt: plan.updatedAt,
     pr,
     repositories,
@@ -116,15 +123,24 @@ function buildEffort(
   };
 }
 
+function effortIntegrationBranch(plan: Plan, runtime: Runtime | null, repositories: RepositoryInfo[]): string | null {
+  if (repositories.length === 1) return repositories[0].integrationBranch;
+  if (runtime?.state?.integrationBranch !== undefined) return runtime.state.integrationBranch;
+  const branches = new Set(repositories.map((repository) => repository.integrationBranch));
+  if (branches.size === 1) return repositories[0].integrationBranch;
+  return (runtime?.state?.milestone ?? 1) === 1 ? plan.loopConfig?.integrationBranch ?? null : null;
+}
+
 function buildRepositoryInfo(plan: Plan, runtime: Runtime | null): RepositoryInfo[] {
-  return plan.repositories.map((repository) => {
+  const milestone = plan.milestones.find((entry) => entry.number === (runtime?.state?.milestone ?? 1));
+  return plan.repositories.filter((repository) => !milestone || milestone.participants.includes(repository.slug)).map((repository) => {
     const stateRepository = runtime?.state?.repositories?.[repository.slug];
     return {
       slug: repository.slug,
-      integrationBranch:
-        stateRepository?.integrationBranch ??
-        (repository.slug === "primary" ? runtime?.state?.integrationBranch : null) ??
-        repository.integrationBranch,
+      integrationBranch: stateRepository?.integrationBranch !== undefined
+        ? stateRepository.integrationBranch
+        : (repository.slug === "primary" ? runtime?.state?.integrationBranch : null)
+          ?? (milestone ? milestone.integrationBranches[repository.slug] ?? null : repository.integrationBranch),
       verify: repository.verify,
       pr: buildPrInfo(plan, runtime, repository.slug),
     };
@@ -137,9 +153,23 @@ function buildPrInfo(plan: Plan, runtime: Runtime | null, repository: string): P
   const legacy = repository === "primary";
   const stateRepository = runtime?.state?.repositories?.[repository];
   const planRepository = plan.repositories.find((entry) => entry.slug === repository);
-  const url = stateRepository?.prUrl ?? (legacy ? runtime?.state?.prUrl : null) ?? planRepository?.pr ?? null;
+  const milestoneNumber = runtime?.state?.milestone ?? 1;
+  const milestone = plan.milestones.find((entry) => entry.number === milestoneNumber);
+  const awaiting = runtime?.state?.awaitingMerge;
+  const url = (awaiting?.milestone === milestoneNumber ? awaiting.prs[repository] : null)
+    ?? (stateRepository?.prUrl !== undefined ? stateRepository.prUrl
+      : (legacy ? runtime?.state?.prUrl : null)
+        ?? (milestone ? milestone.prs[repository] ?? null : planRepository?.pr ?? null));
   const key = repositoryKey(repository);
-  const reviews = legacy ? runtime?.reviewRuns ?? [] : runtime?.reviewRunsByRepository[key] ?? [];
+  const allReviews = legacy
+    ? [...runtime?.reviewRuns ?? [], ...Object.values(runtime?.reviewRunsByRepository ?? {}).flat()]
+    : runtime?.reviewRunsByRepository[key] ?? [];
+  const reviewPhases = plan.phases.filter((phase) => phase.milestone === milestoneNumber && phase.kind === "pr-review");
+  const reviews = allReviews.filter((run) => run.phase == null
+    ? milestoneNumber === 1 && reviewPhases.length === 0
+    : reviewPhases.some((phase) => phase.phase === run.phase))
+    .sort((a, b) => reviewPhases.findIndex((phase) => phase.phase === a.phase)
+      - reviewPhases.findIndex((phase) => phase.phase === b.phase) || a.k - b.k);
   const latest = reviews.length ? reviews[reviews.length - 1] : null;
   const stateReview = stateRepository?.review ?? (legacy ? runtime?.state?.review : null) ?? null;
   if (!url && reviews.length === 0 && !stateReview) return null;
@@ -172,23 +202,33 @@ function slugFromRunDir(runDir: string | null): string | null {
 
 // --- plan overview -------------------------------------------------------------------
 
-function buildPlanOverview(plan: Plan, repositories: RepositoryInfo[]): PlanOverview {
+function buildPlanOverview(plan: Plan, runtime: Runtime | null, repositories: RepositoryInfo[]): PlanOverview {
   const lanes = new Set(plan.phases.map((p) => p.lane));
   return {
     name: plan.name,
     status: plan.status,
     updatedAt: plan.updatedAt,
     loopConfig: plan.loopConfig,
+    milestones: plan.milestones.map((milestone) => ({
+      ...milestone,
+      prs: {
+        ...milestone.prs,
+        ...runtime?.state?.milestones?.[String(milestone.number)]?.prs,
+        ...(milestone.number === (runtime?.state?.milestone ?? 1)
+          ? Object.fromEntries(repositories.map((repository) => [repository.slug, repository.pr?.url ?? null])) : {}),
+      },
+    })),
     repositories: plan.repositories.map((repository) => {
       const runtime = repositories.find((entry) => entry.slug === repository.slug);
       return {
         ...repository,
-        integrationBranch: runtime?.integrationBranch ?? repository.integrationBranch,
-        pr: runtime?.pr?.url ?? repository.pr,
+        integrationBranch: runtime?.integrationBranch ?? null,
+        pr: runtime?.pr?.url ?? null,
       };
     }),
     phaseSummary: plan.phases.map((p) => ({
       phase: p.phase,
+      milestone: p.milestone,
       title: p.title,
       kind: p.kind,
       lane: p.lane,

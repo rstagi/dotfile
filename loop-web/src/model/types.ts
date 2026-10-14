@@ -251,6 +251,7 @@ export interface Plan {
 /** One phase row of the whole-plan drawer summary. */
 export interface PlanPhaseSummary {
   phase: string;
+  milestone: number;
   title: string;
   kind: PlanPhaseKind;
   lane: string;
@@ -261,6 +262,7 @@ export interface PlanPhaseSummary {
 
 /** The plan digest carried on every Snapshot — feeds the plan node badges + the plan drawer. */
 export interface PlanOverview {
+  milestones: PlanMilestone[];
   name: string;
   status: string | null;
   updatedAt: string | null;
@@ -457,6 +459,8 @@ export interface GraphNode {
   review?: ReviewConfig | null;
   /** Explicit PR-review nodes: every pipeline run per repository, in order. Optional on older snapshots. */
   reviewStages?: ReviewStageRun[];
+  /** PRs scoped to this review phase’s milestone, including recorded merge history. */
+  prs?: Record<string, string | null>;
 }
 
 export type EdgeKind = "plan-to-lane" | "depends" | "to-review";
@@ -520,6 +524,9 @@ export interface PrInfo {
 }
 
 export interface EffortInfo {
+  milestone: number;
+  milestoneTotal: number;
+  awaitingMerge: NonNullable<StateJson["awaitingMerge"]> | null;
   name: string;
   status: string | null;
   integrationBranch: string | null;

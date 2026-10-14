@@ -241,3 +241,105 @@ describe("buildSnapshot — timeline & loopActive", () => {
     expect(snap.loopActive).toBe(true);
   });
 });
+
+const MILESTONE_PLAN = `# Incremental delivery — Multi-Phase Plan
+**Status:** awaiting merge
+## Loop config
+- **Integration branch:** \`feat/first\`
+## Repositories
+### \`acme/api\`
+- **PR:** https://github.com/acme/api/pull/99
+## Milestone 1 — First release
+- **PR:** https://github.com/acme/api/pull/1
+### Phase 1 — First work [lane: A] [status: done]
+- **Repository:** \`acme/api\`
+### Phase 2 — First gate [lane: review] [status: done] [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 1
+## Milestone 2 — Second release
+- **Integration branch:** \`feat/second\`
+### Phase 3 — Second work [lane: A] [status: done]
+- **Repository:** \`acme/api\`
+- **Depends on:** Phase 2
+### Phase 4 — Second gate [lane: review] [status: in-progress] [kind: pr-review]
+- **Depends on:** Phase 3
+`;
+
+describe("buildSnapshot — milestone projections", () => {
+  it("selects the current review even when the previous milestone has more attempts", () => {
+    const snap = buildSnapshot(parsePlan(MILESTONE_PLAN), parseLoop(loop({
+      state: JSON.stringify({ milestone: 2, repositories: { "acme/api": { prUrl: "https://github.com/acme/api/pull/2" } } }),
+      runs: [
+        run({ name: "review-p2-acme--api-a12", status: JSON.stringify({ outcome: "blocked", summary: "Old findings" }) }),
+        run({ name: "review-p4-acme--api-a1", status: JSON.stringify({ outcome: "done", summary: "New release approved" }) }),
+      ],
+    })));
+    expect(snap.effort.pr).toMatchObject({ url: "https://github.com/acme/api/pull/2", outcome: "done", reviewAttempt: 1 });
+    expect(snap.effort.repositories[0].integrationBranch).toBe("feat/second");
+  });
+
+  it("finds phase-scoped repository review runs for legacy primary plans", () => {
+    const plan = parsePlan(MILESTONE_PLAN
+      .replace(/## Repositories\n### `acme\/api`\n- \*\*PR:\*\* https:\/\/github.com\/acme\/api\/pull\/99\n/, "")
+      .replace(/- \*\*Repository:\*\* `acme\/api`\n/g, ""));
+    const snap = buildSnapshot(plan, parseLoop(loop({
+      state: JSON.stringify({ milestone: 2, prUrl: "https://github.com/acme/api/pull/2" }),
+      runs: [
+        run({ name: "review-p2-acme--api-a12", status: JSON.stringify({ outcome: "blocked" }) }),
+        run({ name: "review-p4-acme--api-a1", status: JSON.stringify({ outcome: "done" }) }),
+      ],
+    })));
+    expect(snap.effort.pr).toMatchObject({ outcome: "done", reviewAttempt: 1, reviewSlug: "review-p4-acme--api" });
+  });
+
+  it("does not resurrect a previous milestone PR or verdict before the current review starts", () => {
+    const snap = buildSnapshot(parsePlan(MILESTONE_PLAN), parseLoop(loop({
+      state: JSON.stringify({ milestone: 2, repositories: { "acme/api": { prUrl: null, review: null } } }),
+      runs: [run({ name: "review-p2-acme--api-a12", status: JSON.stringify({ outcome: "blocked" }) })],
+    })));
+    expect(snap.effort.pr).toBeNull();
+    expect(snap.plan.repositories[0].pr).toBeNull();
+    expect(snap.effort.integrationBranch).toBe("feat/second");
+  });
+
+  it("uses the current milestone branch for plural repositories without a loop-level state branch", () => {
+    const plan = `# Shared releases — Multi-Phase Plan
+## Loop config
+- **Integration branch:** \`feat/first\`
+## Repositories
+### \`acme/api\`
+### \`acme/web\`
+## Milestone 1 — First
+### Phase 1 — First work [lane: A] [status: done]
+- **Repository:** \`acme/api\`
+### Phase 2 — Gate [lane: review] [status: done] [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 1
+## Milestone 2 — Second
+- **Integration branch:** \`feat/second\`
+### Phase 3 — API [lane: A] [status: todo]
+- **Repository:** \`acme/api\`
+- **Depends on:** Phase 2
+### Phase 4 — Web [lane: B] [status: todo]
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 2
+### Phase 5 — Review [lane: review] [status: todo] [kind: pr-review]
+- **Depends on:** Phase 3, Phase 4
+`;
+    const snap = buildSnapshot(parsePlan(plan), parseLoop(loop({ state: JSON.stringify({ milestone: 2 }) })));
+    expect(snap.effort.repositories).toHaveLength(2);
+    expect(snap.effort.integrationBranch).toBe("feat/second");
+  });
+
+  it("projects the merge gate and recorded historical PRs independently", () => {
+    const awaitingMerge = { milestone: 2, prs: { "acme/api": "https://github.com/acme/api/pull/2" } };
+    const snap = buildSnapshot(parsePlan(MILESTONE_PLAN), parseLoop(loop({ state: JSON.stringify({
+      milestone: 2, awaitingMerge,
+      milestones: { "1": { prs: { "acme/api": "https://github.com/acme/api/pull/10" } } },
+    }) })));
+    expect(snap.effort).toMatchObject({ milestone: 2, milestoneTotal: 2, awaitingMerge });
+    expect(snap.effort.pr?.url).toBe("https://github.com/acme/api/pull/2");
+    expect(snap.plan.milestones[0].prs).toEqual({ "acme/api": "https://github.com/acme/api/pull/10" });
+    expect(snap.plan.phaseSummary.map((p) => p.milestone)).toEqual([1, 1, 2, 2]);
+    expect(snap.graph.nodes.find((n) => n.id === "2")?.prs).toEqual({ "acme/api": "https://github.com/acme/api/pull/10" });
+    expect(snap.graph.nodes.find((n) => n.id === "4")?.prs).toEqual(awaitingMerge.prs);
+  });
+});
