@@ -38,7 +38,8 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              dirty, lists the files and asks to force delete
 #   ws claude|codex|grok [args]  run the agent in this tab as a tracked session (e.g. a prefix+c tab)
 #   ws hook <event>            called by agent hooks inside a session window
-#                              (working|idle|waiting|subagent-start|subagent-stop)
+#                              (working|idle|stop|cancel|waiting|subagent-start|subagent-stop)
+#                              cancel requires the current turn id; unknown/stale ids are ignored
 #   ws _dismiss <window|pane>  tab seen or agent exited: emit `closed` if a notification is open
 #
 # Workspace slots live in <worktree git dir>/ws-sessions (slot, agent, resume id, global id).
@@ -384,18 +385,24 @@ confirm() {
 # seq (µs since epoch, taken at entry) orders hooks per tab: one older than the tab's @ws_seq
 # is dropped, and a per-window lock keeps overlapping hooks from both applying/emitting
 # (no lock → dropped: an unordered write could clobber a newer state).
+# Cancellation also requires the recorded turn id: late reports have newer entry times.
 cmd_hook() {
   zmodload zsh/datetime zsh/system 2>/dev/null
   local seq="$(realtime_us "$EPOCHREALTIME")" event="${1:-}" payload=""
   [[ -t 0 ]] || payload="$(cat)"
+  local hook_event="$(print -r -- "$payload" | jq -r '.hook_event_name // .hookEventName // empty' 2>/dev/null)"
+  local turn_id="$(print -r -- "$payload" | jq -r '.promptId // .prompt_id // .turn_id // empty | select(type == "string")' 2>/dev/null)"
   # Accept older launches that wired Stop to idle, as well as the explicit Stop command.
-  if [[ "$event" == idle ]] && print -r -- "$payload" | jq -e '.hook_event_name == "Stop"' >/dev/null 2>&1; then
-    event=stop
+  if [[ "$event" == idle ]]; then
+    case "$hook_event" in
+    Stop|stop) event=stop ;;
+    StopCancelled|stop_cancelled|Interrupt) event=cancel ;;
+    esac
   fi
   local reply=""
   [[ "$event" != stop ]] || reply='{}'
   [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
-  [[ "$event" == (working|idle|stop|waiting|subagent-start|subagent-stop) ]] || return 0
+  [[ "$event" == (working|idle|stop|cancel|waiting|subagent-start|subagent-stop) ]] || return 0
   record_resume_id "$payload"
   local win lock lockfd prev last state agent_id="" applied=0
   [[ -n "$payload" ]] && agent_id="$(print -r -- "$payload" | jq -r '.agent_id // empty' 2>/dev/null)"
@@ -405,6 +412,20 @@ cmd_hook() {
   { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
   if [[ "$last" != <-> ]] || (( last < seq )); then
+    # Cancel reports can start after the next prompt: the entry-time watermark alone
+    # cannot order them. Without a matching turn id, neither state nor input is safe.
+    if [[ "$event" == cancel ]]; then
+      if [[ -z "$turn_id" || "$turn_id" != "$(tmux_ show -wqv -t "$win" @ws_turn)" ]]; then
+        exec {lockfd}>&-
+        return 0
+      fi
+      event=idle
+    elif [[ "$event" == working && -z "$agent_id" ]]; then
+      # Tool hooks may omit ids; a new prompt without one invalidates the old turn.
+      if [[ -n "$turn_id" || "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
+        tmux_ set -w -t "$win" @ws_turn "$turn_id" 2>/dev/null
+      fi
+    fi
     if [[ "$event" == stop ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
       id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
@@ -461,6 +482,7 @@ hook_state() {
     fi
     ;;
   idle)
+    tmux_ set -wu -t "$TMUX_PANE" @ws_turn 2>/dev/null # ended before any fallback starts a new turn
     tmux_ set -w -t "$TMUX_PANE" @ws_main idle 2>/dev/null
     if subagents_running; then print working; else print idle; fi
     ;;
@@ -591,7 +613,7 @@ tag_window() {
 
 untag_window() {
   local opt
-  for opt in @ws_path @ws_slot @ws_session @ws_agent @ws_state @ws_main @ws_unread automatic-rename \
+  for opt in @ws_path @ws_slot @ws_session @ws_agent @ws_state @ws_main @ws_turn @ws_unread automatic-rename \
     window-status-format window-status-current-format; do
     tmux_ set -wu -t "$1" "$opt" 2>/dev/null
   done
@@ -624,7 +646,7 @@ agent_command() {
     local instructions="developer_instructions=$(jq -rn --arg text "$preamble" '$text | @json')"
     cmd+=" -c ${(q)instructions}"
     local hook
-    for ev st in UserPromptSubmit working PreToolUse working PostToolUse working PermissionRequest waiting Stop stop Interrupt idle; do
+    for ev st in UserPromptSubmit working PreToolUse working PostToolUse working PermissionRequest waiting Stop stop Interrupt cancel; do
       hook="hooks.$ev=[{hooks=[{type=\"command\",command=$(jq -rn --arg c "${(q)WS_BIN} hook $st" '$c | @json')}]}]"
       cmd+=" -c ${(q)hook}"
     done
@@ -673,7 +695,7 @@ write_grok_hooks() {
       PreToolUse: run("working"),
       PostToolUse: run("working"),
       Stop: run("stop"),
-      StopCancelled: run("idle"),
+      StopCancelled: run("cancel"),
       PermissionRequest: run("waiting"),
       Notification: [{matcher: "permission_prompt", hooks: [cmd("waiting")]}]
     }}' > "$GROK_HOOKS"

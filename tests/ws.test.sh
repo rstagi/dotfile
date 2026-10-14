@@ -387,7 +387,7 @@ assert_contains "$(wait_pane "$GW" FAKE-grok)" "--always-approve" "grok skips ap
 GROK_ID="$(T show -wqv -t "$GW" @ws_session)"
 assert_agent_preamble grok "$GROK_ID"
 GH="$GROK_HOME/hooks/ws.json"
-assert_eq "$(jq -r '.hooks.StopCancelled[0].hooks[0].command' "$GH" 2>/dev/null)" "$WS hook idle" "grok hook file: StopCancelled → idle"
+assert_eq "$(jq -r '.hooks.StopCancelled[0].hooks[0].command' "$GH" 2>/dev/null)" "$WS hook cancel" "grok hook file: StopCancelled → turn-checked cancel"
 assert_eq "$(jq -r '.hooks.Notification[0].matcher' "$GH" 2>/dev/null)" "permission_prompt" "grok hook file: permission prompt → waiting"
 "$WS" add api/grokky --agent grok --detach
 GW2="$(slot_window "$GWT" 2)"
@@ -1383,6 +1383,73 @@ assert_eq "$(cat "$WS_HOME/pane-$SEND_ID.jsonl")" "$before" "background activity
 print '{"agent_id":"delivery-bg"}' | hook api/delivery "$SEND_WIN" subagent-stop
 wait_until pane_received "$SEND_ID" $'[ws #1]\nafter background'
 assert_eq "$(tail -1 "$WS_HOME/pane-$SEND_ID.jsonl" | jq -r '.text')" $'[ws #1]\nafter background' "last subagent stop drains idle inbox"
+
+# --- M3 stale cancel ---
+echo "ws hook: a late Grok cancellation cannot idle a newer turn or paste its inbox"
+M3_WIN="$(slot_window "$SEND_WT" 3)"
+M3_ID="$(T display -p -t "$M3_WIN" '#{@ws_session}')"
+print '{"hookEventName":"user_prompt_submit","promptId":"grok-old"}' | hook api/delivery "$M3_WIN" working
+print '{"hookEventName":"user_prompt_submit","promptId":"grok-new"}' | hook api/delivery "$M3_WIN" working
+WS_SESSION=1 "$WS" send "$M3_ID" "after the current turn"
+M3_INBOX="$(cat "$WS_HOME/sessions/$M3_ID/inbox")"
+M3_PANE="$(cat "$WS_HOME/pane-$M3_ID.jsonl" 2>/dev/null)"
+print '{"hookEventName":"stop_cancelled","promptId":"grok-old","reason":"user_interrupt"}' | hook api/delivery "$M3_WIN" idle
+assert_contains "$("$WS" sessions "$M3_ID")" $'\tgrok\tworking\tactive' "stale Grok cancel leaves the newer turn working"
+assert_eq "$(cat "$WS_HOME/sessions/$M3_ID/inbox")" "$M3_INBOX" "stale Grok cancel keeps the inbox intact"
+assert_eq "$(cat "$WS_HOME/pane-$M3_ID.jsonl" 2>/dev/null)" "$M3_PANE" "stale Grok cancel submits no pane input"
+print '{}' | hook api/delivery "$M3_WIN" stop >/dev/null
+
+echo "ws hook: the configured Codex Interrupt without a turn id cannot settle or paste"
+M3_WIN="$(slot_window "$SEND_WT" 2)"
+M3_ID="$(T display -p -t "$M3_WIN" '#{@ws_session}')"
+M3_CANCEL_COMMAND="$(python3 - "$WS_HOME/argv-$M3_ID.json" <<'PY_M3'
+import json, sys, tomllib
+argv = json.load(open(sys.argv[1]))
+config = next(arg for arg in argv if arg.startswith("hooks.Interrupt="))
+print(tomllib.loads(config)["hooks"]["Interrupt"][0]["hooks"][0]["command"])
+PY_M3
+)"
+print '{"hook_event_name":"UserPromptSubmit","turn_id":"codex-current"}' | hook api/delivery "$M3_WIN" working
+WS_SESSION=1 "$WS" send "$M3_ID" "idless interruption"
+M3_INBOX="$(cat "$WS_HOME/sessions/$M3_ID/inbox")"
+M3_PANE="$(cat "$WS_HOME/pane-$M3_ID.jsonl" 2>/dev/null)"
+print '{}' | WS_WORKSPACE=api/delivery TMUX_PANE="$(T display -p -t "$M3_WIN" '#{pane_id}')" zsh -c "$M3_CANCEL_COMMAND"
+assert_eq "$(cat "$WS_HOME/sessions/$M3_ID/inbox")" "$M3_INBOX" "idless Codex Interrupt keeps queued messages"
+assert_eq "$(cat "$WS_HOME/pane-$M3_ID.jsonl" 2>/dev/null)" "$M3_PANE" "idless Codex Interrupt never pastes"
+assert_contains "$("$WS" sessions "$M3_ID")" $'\tcodex\tworking\tactive' "idless Codex Interrupt leaves the turn working"
+print '{}' | hook api/delivery "$M3_WIN" stop >/dev/null
+
+echo "ws hook: matching cancellations deliver once and cannot cancel the pasted turn"
+for agent field slot in claude prompt_id 1 codex turn_id 2 grok promptId 3; do
+  M3_WIN="$(slot_window "$SEND_WT" "$slot")"
+  M3_ID="$(T display -p -t "$M3_WIN" '#{@ws_session}')"
+  jq -nc --arg field "$field" '{hook_event_name:"UserPromptSubmit", ($field):"old"}' | hook api/delivery "$M3_WIN" working
+  jq -nc --arg field "$field" '{hook_event_name:"UserPromptSubmit", ($field):"current | opaque"}' | hook api/delivery "$M3_WIN" working
+  print '{"hook_event_name":"PreToolUse"}' | hook api/delivery "$M3_WIN" working
+  jq -nc --arg field "$field" '{hook_event_name:"Interrupt", ($field):"old"}' | hook api/delivery "$M3_WIN" idle
+  assert_contains "$("$WS" sessions "$M3_ID")" "$agent"$'\tworking\tactive' "$agent stale cancel with empty inbox keeps working"
+  WS_SESSION=1 "$WS" send "$M3_ID" "$agent matching cancellation"
+  M3_CANCEL_PAYLOAD="$(jq -nc --arg field "$field" '{($field):"current | opaque"}')"
+  print -r -- "$M3_CANCEL_PAYLOAD" | hook api/delivery "$M3_WIN" cancel
+  wait_until pane_received "$M3_ID" "[ws #1]"$'\n'"$agent matching cancellation"
+  assert_exit "$?" "0" "$agent matching cancel pastes after idless tool hook"
+  assert_eq "$([[ -s "$WS_HOME/sessions/$M3_ID/inbox" ]] && print pending)" "" "$agent matching cancel drains the inbox"
+  WS_SESSION=1 "$WS" send "$M3_ID" "$agent next pasted turn"
+  M3_INBOX="$(cat "$WS_HOME/sessions/$M3_ID/inbox")"
+  M3_PANE="$(cat "$WS_HOME/pane-$M3_ID.jsonl")"
+  print -r -- "$M3_CANCEL_PAYLOAD" | hook api/delivery "$M3_WIN" cancel
+  assert_eq "$(cat "$WS_HOME/sessions/$M3_ID/inbox")" "$M3_INBOX" "$agent repeated cancel preserves the next turn's inbox"
+  assert_eq "$(cat "$WS_HOME/pane-$M3_ID.jsonl")" "$M3_PANE" "$agent repeated cancel never pastes twice"
+  print '{}' | hook api/delivery "$M3_WIN" stop >/dev/null
+  jq -nc --arg field "$field" '{hook_event_name:"UserPromptSubmit", ($field):"current | opaque"}' | hook api/delivery "$M3_WIN" working
+  print -r -- "$M3_CANCEL_PAYLOAD" | hook api/delivery "$M3_WIN" cancel
+  assert_contains "$("$WS" sessions "$M3_ID")" "$agent"$'\tidle\tactive' "$agent matching cancel with empty inbox settles idle"
+  jq -nc --arg field "$field" '{hook_event_name:"UserPromptSubmit", ($field):"current | opaque"}' | hook api/delivery "$M3_WIN" working
+  print '{"hook_event_name":"UserPromptSubmit"}' | hook api/delivery "$M3_WIN" working
+  print -r -- "$M3_CANCEL_PAYLOAD" | hook api/delivery "$M3_WIN" cancel
+  assert_contains "$("$WS" sessions "$M3_ID")" "$agent"$'\tworking\tactive' "$agent new prompt without an id invalidates the previous turn"
+  print '{}' | hook api/delivery "$M3_WIN" stop >/dev/null
+done
 
 echo "ws send: concurrent senders retain every queued message"
 hook api/delivery "$SEND_WIN" working </dev/null
