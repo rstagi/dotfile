@@ -1803,6 +1803,33 @@ assert_eq "$(T show -wqv -t "$EXIT_HUP_WIN" @ws_main)" "" "HUP clears idle deliv
 "$WS" rm api/exit-hup --force --delete-branch >/dev/null
 "$WS" rm api/exit-path --force --delete-branch >/dev/null
 "$WS" rm api/delivery --force --delete-branch >/dev/null
+
+echo "ws exit path: agent children inherit default SIGINT and SIGQUIT"
+# Replace only this private fixture's executable; running agents keep the old inode.
+mv "$TMP/bin/claude" "$TMP/bin/claude-exit-normal"
+cat > "$TMP/bin/claude" <<'SIGNAL_AGENT'
+#!/usr/bin/env python3
+import os, signal
+print("SIGNAL-READY", flush=True)
+os.kill(os.getpid(), getattr(signal, "SIG" + input().strip()))
+print("SIGNAL-SURVIVED", flush=True)
+SIGNAL_AGENT
+chmod +x "$TMP/bin/claude"
+for signal in INT QUIT; do
+  signal_code=130
+  [[ "$signal" != QUIT ]] || signal_code=131
+  signal_branch="exit-signal-${(L)signal}"
+  "$WS" new --repo "$REPO" --branch "$signal_branch" --detach
+  SIGNAL_WIN="$(windows_of "$WS_ROOT/api/$signal_branch")"
+  assert_contains "$(wait_pane "$SIGNAL_WIN" SIGNAL-READY)" SIGNAL-READY "$signal agent ready"
+  SIGNAL_ID="$(T display -p -t "$SIGNAL_WIN" '#{@ws_session}')"
+  T send-keys -t "$SIGNAL_WIN" "$signal" Enter
+  wait_until lifecycle_exit_count "$SIGNAL_ID" 1
+  assert_exit "$?" "0" "$signal agent termination publishes once"
+  assert_eq "$(jq -r '.code' "$WS_HOME/sessions/$SIGNAL_ID/events")" "$signal_code" "$signal retains its default termination disposition"
+  "$WS" rm "api/$signal_branch" --force --delete-branch >/dev/null
+done
+mv "$TMP/bin/claude-exit-normal" "$TMP/bin/claude"
 # --- end exit path ---
 
 # --- M1 done vs pending inbox ---

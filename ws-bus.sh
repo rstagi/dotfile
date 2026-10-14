@@ -353,7 +353,8 @@ ws_bus_event_locked() {
 }
 
 # A background child plus wait lets HUP interrupt supervision even if the TUI holds the
-# closed tty. Explicit stdin preserves interactive input; only the watcher ignores Ctrl-C.
+# closed tty. Explicit stdin preserves interactive input. Reset async zsh's ignored
+# INT/QUIT in the child; the watcher alone ignores Ctrl-C while waiting for its exit code.
 ws_bus_run_agent() {
   setopt localtraps
   local id="$1" command="$2" code agent_pid input_fd win="" prompt="$WS_SESSIONS/$1/prompt"
@@ -368,7 +369,7 @@ ws_bus_run_agent() {
     command+=' -- "$1"'
   fi
   exec {input_fd}<&0
-  ${(z)WS_AGENT_SHELL} "$command" "${args[@]}" <&$input_fd &
+  { trap - INT QUIT; exec ${(z)WS_AGENT_SHELL} "$command" "${args[@]}"; } <&$input_fd &
   agent_pid=$!
   exec {input_fd}<&-
   trap 'trap "" HUP; kill -HUP "$agent_pid" 2>/dev/null; ws_bus_untag_agent "$id" "$win"; ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
