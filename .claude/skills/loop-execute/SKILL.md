@@ -425,6 +425,29 @@ merge every PR. Notify once with final PRs/verdicts, unlock, stop.
   `sub/handoff.md` exists, read it **once** and rename it to `sub/handoff.consumed-<k>.md`
   (single-consumption); then reconcile as above and run steps 4-7 under the recycle loop below.
 
+**Milestone resume** *(human only, `LOOP_SUB` unset, `state.awaitingMerge` set)*. Never auto-resume
+or poll for merges.
+
+1. **Recover the park.** If `awaitingMerge` is unset but the current milestone's gate review is
+   `done` with every participant's gate PR recorded (crash between aggregation and step 8.1),
+   rebuild `awaitingMerge {milestone, prs{slug:url}}` from `state.repositories[slug].prUrl` and
+   continue; never re-run the gate review.
+2. **Check.** `loop-milestone.sh check --state .loop/state.json`: exit 3 (open) → report each open
+   PR, stop, change nothing; exit 4 (closed unmerged) → open a HIL for the human (reopen or
+   re-plan), stop; exit 1 (gh/state error) → report it, stop; exit 0 (all merged) → continue.
+3. **Advance.** Resolve the next milestone's branch per participant (precedence in preflight) and
+   run `loop-milestone.sh advance --state .loop/state.json --next <N> --branches '<json slug→branch>'`.
+   It prepares every next participant before retiring old non-adopted worktrees, so a failed
+   advance leaves the runtime intact; re-run it as-is after an interruption (idempotent). A
+   non-zero exit is reported and stops; nothing is applied.
+4. **Apply.** Apply the printed patch with exactly one `loop-state.sh set` (new `milestone`,
+   reset `repositories`, `awaitingMerge: null`, `milestones[N].prs` history). When
+   the effort changes the Loop runtime itself, the patch's `runtimeRoot` is the new integration
+   worktree: switch `RUNTIME_ROOT` to it before composing any later prompt.
+5. **Restart.** Set plan Status back to `in progress` + `loop-plan.sh push`; remove
+   `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` (carries `milestone`); respawn the
+   orchestrator for the new milestone (the SUB then schedules only its phases).
+
 ### Sub recycle *(mode: `sub` only)*
 
 You are a disposable instance — recycle before you fill up so a fresh successor continues.

@@ -334,7 +334,9 @@ Resolve `RUNTIME_ROOT` to the repository integration worktree when the effort ch
 Loop runtime itself; otherwise use `~/dotfile`. The runner resolves its Jev client, model
 config, and emitter from that same directory. Compose later SUB prompts from
 `$RUNTIME_ROOT/.claude/skills/loop-execute/{SKILL.md,references/loop-protocol.md}` too, so
-merged self-hosting changes run without mutating the installed checkout.
+merged self-hosting changes run without mutating the installed checkout. With milestones, a
+resume that advances the milestone switches `RUNTIME_ROOT` to the patch's `runtimeRoot` (the new
+integration worktree) — the old one may be retired, so never keep composing prompts from it.
 
 Detached, so runners survive orchestrator death:
 
@@ -1025,5 +1027,14 @@ truth for code, the plan/daemon for claims + phase status, state for attempt boo
 - `state.awaitingMerge` set → parked at a milestone merge gate: do not respawn the orchestrator
   and do not re-run the gate review; a SUB writes `blocked` and exits, only a human resume leaves
   the park. Applies while `state.awaitingMerge` is set, whatever the plan or daemon status says.
+- Gate review `done` for the current milestone but `state.awaitingMerge` unset (crash before
+  parking finished) → recover `awaitingMerge` from the gate review's recorded PR URLs; never
+  re-run the gate review.
+- Phases of a milestone whose gate PRs are merged are permanently shipped: never re-check them
+  against a later integration tip (squash/rebase merges rewrite it) and never re-run them.
+  Reconcile git against the current milestone's integration branches only.
+- `loop-milestone.sh advance` interrupted (state still has `awaitingMerge`, the next milestone
+  not yet applied) → re-run `check` then `advance`; prepare and retire are idempotent, state is
+  written once by the final `loop-state.sh set`.
 - Runners are spawned detached, so they survive orchestrator death; never double-spawn a
   phase whose run dir has a live pid.
