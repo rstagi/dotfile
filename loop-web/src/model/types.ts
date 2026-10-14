@@ -182,9 +182,13 @@ export interface PlanRepository {
 export interface PlanPhase {
   /** Phase number as string ("1".."N"), from the `Phase N` marker. */
   phase: string;
+  /** Containing milestone number; legacy `## Phases` belongs to milestone 1. */
+  milestone: number;
   /** Descriptive title with the bracket markers stripped. */
   title: string;
   kind: PlanPhaseKind;
+  /** Human merge barrier, from `[gate: merge]`. */
+  gate: "merge" | null;
   lane: string;
   status: PlanPhaseStatus;
   repository: string;
@@ -214,12 +218,23 @@ export interface PlanProse {
   progressLog: string | null;
 }
 
+export interface PlanMilestone {
+  number: number;
+  title: string;
+  gatePhase: string | null;
+  integrationBranches: Record<string, string | null>;
+  prs: Record<string, string | null>;
+  /** Repositories assigned to this milestone's work phases, in document order. */
+  participants: string[];
+}
+
 export interface Plan {
   name: string;
   status: string | null;
   updatedAt: string | null;
   loopConfig: LoopConfig | null;
   repositories: PlanRepository[];
+  milestones: PlanMilestone[];
   phases: PlanPhase[];
   prose: PlanProse;
   warnings: string[];

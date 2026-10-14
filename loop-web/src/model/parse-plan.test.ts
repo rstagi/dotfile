@@ -88,6 +88,184 @@ const EDITABLE_WITH_REVIEW = `# Editable — Multi-Phase Plan
 - **Done when:** every repository PR has a non-blocking review verdict
 `;
 
+const TWO_MILESTONES = `# Ship twice — Multi-Phase Plan
+
+**Status:** awaiting merge
+
+## Loop config
+- **Integration branch:** \`feat/first\`
+
+## Milestone 1 — Ship the core
+
+### Phase 1 — Build the core [lane: A]
+- **Depends on:** none
+
+### Phase 2 — Review the core [kind: pr-review] \`[gate: merge]\`
+- **Depends on:** Phase 1
+
+## Milestone 2 — Ship the API
+- **Integration branch:** \`feat/second\`
+
+### Phase 4 — Build the API [lane: A]
+- **Depends on:** Phase 2
+
+### Phase 3 — Review the API [kind: pr-review]
+- **Depends on:** Phase 4
+
+## Progress log
+### Phase 99 — A historical heading, not executable
+`;
+
+const MULTI_REPO_MILESTONES = MULTI_REPO.slice(0, MULTI_REPO.indexOf("## Phases")) + `
+## Milestone 1 — Ship both services
+
+### Phase 1 — Build API
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+
+### Phase 2 — Build web
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 1
+
+### Phase 3 — Review services [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 2
+
+## Milestone 2 — Extend API
+- **Integration branch (acme/api):** \`feat/api-next\`
+
+### Phase 4 — Extend API
+- **Repository:** \`acme/api\`
+- **Depends on:** Phase 3
+
+### Phase 5 — Review API [kind: pr-review]
+- **Depends on:** Phase 4
+`;
+
+describe("parsePlan — milestones", () => {
+  it("collects both milestone sections in document order and parses the merge gate", () => {
+    const plan = parsePlan(TWO_MILESTONES);
+    expect(plan.status).toBe("awaiting merge");
+    expect(plan.phases.map((phase) => [phase.phase, phase.milestone])).toEqual([
+      ["1", 1], ["2", 1], ["4", 2], ["3", 2],
+    ]);
+    expect(plan.phases[1].title).toBe("Review the core");
+    expect(plan.phases[1].gate).toBe("merge");
+    expect(plan.phases.at(-1)).toMatchObject({ phase: "3", milestone: 2, kind: "pr-review", gate: null });
+    expect(plan.milestones).toEqual([
+      {
+        number: 1, title: "Ship the core", gatePhase: "2",
+        integrationBranches: { primary: "feat/first" }, prs: { primary: null }, participants: ["primary"],
+      },
+      {
+        number: 2, title: "Ship the API", gatePhase: null,
+        integrationBranches: { primary: "feat/second" }, prs: { primary: null }, participants: ["primary"],
+      },
+    ]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("treats legacy Phases as milestone 1 with existing repository branches and PRs", () => {
+    const plan = parsePlan(MULTI_REPO);
+    expect(plan.phases.map((phase) => phase.milestone)).toEqual([1, 1]);
+    expect(plan.milestones).toEqual([{
+      number: 1, title: "Phases", gatePhase: null,
+      integrationBranches: { "acme/api": "feat/api", "acme/web": "feat/shared" },
+      prs: { "acme/api": "https://github.com/acme/api/pull/10", "acme/web": null },
+      participants: ["acme/api", "acme/web"],
+    }]);
+    expect(parsePlan(MULTI_LANE).milestones[0].prs).toEqual({ primary: "https://github.com/acme/widgets/pull/42" });
+  });
+
+  it.each([
+    ["", { "acme/api": "feat/api", "acme/web": "feat/shared" }],
+    ["- **Integration branch:** `feat/milestone`", { "acme/api": "feat/milestone", "acme/web": "feat/milestone" }],
+    ["- **Integration branch:** `feat/milestone`\n- **Integration branch (acme/api):** `feat/api-milestone`", { "acme/api": "feat/api-milestone", "acme/web": "feat/milestone" }],
+  ])("resolves branch precedence for milestone 1: %s", (header, expected) => {
+    const plan = parsePlan(MULTI_REPO_MILESTONES.replace("## Milestone 1 — Ship both services", `## Milestone 1 — Ship both services\n${header}`));
+    expect(plan.milestones[0].integrationBranches).toEqual(expected);
+    expect(plan.milestones[1]).toMatchObject({
+      participants: ["acme/api"], integrationBranches: { "acme/api": "feat/api-next" },
+    });
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("reads PRs from milestone headers and scopes unqualified PRs to a single participant", () => {
+    expect(parsePlan(MULTI_REPO_MILESTONES).milestones[0].prs).toEqual({ "acme/api": null, "acme/web": null });
+    const plan = parsePlan(MULTI_REPO_MILESTONES
+      .replace("## Milestone 1 — Ship both services", `## Milestone 1 — Ship both services
+- **PR:** https://github.com/acme/api/pull/999
+- **PR (acme/api):** [#20](https://github.com/acme/api/pull/20)
+- **PR (acme/web):** _none yet_`)
+      .replace("## Milestone 2 — Extend API", `## Milestone 2 — Extend API
+- **PR:** https://github.com/acme/api/pull/21`));
+    expect(plan.milestones.map((milestone) => milestone.prs)).toEqual([
+      { "acme/api": "https://github.com/acme/api/pull/20", "acme/web": null },
+      { "acme/api": "https://github.com/acme/api/pull/21" },
+    ]);
+    const cleared = parsePlan(TWO_MILESTONES.replace("## Milestone 2 — Ship the API", `## Milestone 2 — Ship the API
+- **PR:** https://github.com/acme/api/pull/21
+- **PR (primary):** _none yet_`));
+    expect(cleared.milestones[1].prs).toEqual({ primary: null });
+  });
+
+  it("requires a declared branch for every later milestone participant without global fallback", () => {
+    const plan = parsePlan(MULTI_REPO_MILESTONES.replace("- **Integration branch (acme/api):** `feat/api-next`\n", ""));
+    expect(plan.milestones[1].integrationBranches).toEqual({ "acme/api": null });
+    expect(plan.warnings.join("\n")).toMatch(/Milestone 2.*acme\/api.*[Bb]ranch/);
+  });
+
+  it("warns when a repository reuses a branch, allowing the same branch for different repositories", () => {
+    const repeated = parsePlan(MULTI_REPO_MILESTONES.replace("`feat/api-next`", "`feat/api`"));
+    expect(repeated.warnings.join("\n")).toMatch(/Milestone 2.*acme\/api.*feat\/api.*(?:repeat|reuse)/i);
+    const distinct = parsePlan(MULTI_REPO_MILESTONES.replace("`feat/api-next`", "`feat/shared`"));
+    expect(distinct.warnings).toEqual([]);
+  });
+
+  it.each([
+    TWO_MILESTONES.replace("`[gate: merge]`", ""),
+    TWO_MILESTONES.replace("## Milestone 2 — Ship the API", `### Phase 6 — Work after the gate
+- **Depends on:** Phase 2
+
+## Milestone 2 — Ship the API`),
+  ])("warns unless a non-final milestone ends with a gated PR-review", (md) => {
+    expect(parsePlan(md).warnings.join("\n")).toMatch(/Milestone 1.*end.*PR-review.*gate.*merge/i);
+  });
+
+  it("warns on gate tags on work phases without treating them as milestone gates", () => {
+    const plan = parsePlan(TWO_MILESTONES.replace("### Phase 2 — Review the core [kind: pr-review]", "### Phase 2 — Review the core"));
+    expect(plan.phases[1].title).toBe("Review the core");
+    expect(plan.milestones[0].gatePhase).toBeNull();
+    expect(plan.warnings.join("\n")).toMatch(/Phase 2.*gate.*PR-review/i);
+  });
+
+  it.each(["none", "Phase 1"])("requires milestone roots to explicitly depend on the previous gate: %s", (dependency) => {
+    const plan = parsePlan(TWO_MILESTONES.replace("### Phase 4 — Build the API [lane: A]\n- **Depends on:** Phase 2", `### Phase 4 — Build the API [lane: A]\n- **Depends on:** ${dependency}`));
+    expect(plan.phases[2].dependsOn).toEqual(dependency === "none" ? [] : ["1"]);
+    expect(plan.warnings.join("\n")).toMatch(/Milestone 2.*(?:root )?Phase 4.*explicit.*gate Phase 2/i);
+    expect(plan.warnings.join("\n")).not.toMatch(/Phase 3.*gate Phase 2/i);
+  });
+
+  it("walks an implicit first milestone followed by an explicit later milestone", () => {
+    const plan = parsePlan(TWO_MILESTONES.replace("## Milestone 1 — Ship the core", "## Phases"));
+    expect(plan.milestones.map((milestone) => [milestone.number, milestone.title])).toEqual([[1, "Phases"], [2, "Ship the API"]]);
+    expect(plan.phases.map((phase) => phase.phase)).toEqual(["1", "2", "4", "3"]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("ignores phase-local branch and PR bullets when reading milestone metadata", () => {
+    const plan = parsePlan(TWO_MILESTONES.replace("### Phase 1 — Build the core [lane: A]", `### Phase 1 — Build the core [lane: A]
+- **Integration branch:** \`feat/phase-only\`
+- **PR:** https://github.com/acme/api/pull/999`));
+    expect(plan.milestones[0]).toMatchObject({ integrationBranches: { primary: "feat/first" }, prs: { primary: null } });
+  });
+
+  it("keeps phase identities unique across milestone sections", () => {
+    const plan = parsePlan(TWO_MILESTONES.replace("### Phase 3 — Review the API", "### Phase 1 — Review the API"));
+    expect(plan.phases.map((phase) => phase.phase)).toEqual(["1", "2", "4"]);
+    expect(plan.warnings.join("\n")).toMatch(/Duplicate Phase 1/);
+  });
+});
+
 describe("parsePlan — header", () => {
   it("extracts effort name, stripping the '— Multi-Phase Plan' suffix", () => {
     expect(parsePlan(MULTI_LANE).name).toBe("Widget revamp");
