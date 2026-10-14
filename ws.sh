@@ -214,7 +214,8 @@ cmd_run() {
   WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ws_bus_run_agent "$id" "$cmd"
   s=$?
   cmd_dismiss "$TMUX_PANE"
-  (( s == 0 )) && session_remove "$wt" "$slot" # else kept for resume, as for a killed tab
+  # Generation-scoped (as `_end`): a resumed ID's new window keeps its row and registry window.
+  (( s == 0 )) && session_remove "$wt" "$slot" "$id" "$win" # else kept for resume, as for a killed tab
   untag_window "$win"
   return $s
 }
@@ -416,8 +417,7 @@ cmd_hook() {
   [[ "$event" == (working|idle|stop|cancel|waiting|subagent-start|subagent-stop) ]] || return 0
   # A reused pane now hosts another session: a delayed hook from the old launch must not
   # touch the new one's resume id, state or inbox.
-  local pane_session="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)"
-  if [[ -n "${WS_SESSION:-}" && -n "$pane_session" && "$pane_session" != "$WS_SESSION" ]]; then
+  if ! hook_owns_pane || nested_agent_hook; then
     [[ -z "$reply" ]] || print -r -- "$reply"
     return 0
   fi
@@ -452,7 +452,11 @@ cmd_hook() {
         tmux_ set -w -t "$win" @ws_turn "$turn_id" 2>/dev/null
       fi
     fi
-    if [[ "$event" == stop ]]; then
+    if [[ "$event" == stop ]] && ! hook_owns_pane; then # exit cleanup/resume raced the lock
+      exec {lockfd}>&-
+      print -r -- '{}'
+      return 0
+    elif [[ "$event" == stop ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
       id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
       reply="$(ws_bus_stop "$id")" || reply='{}'
@@ -486,6 +490,59 @@ cmd_hook() {
   [[ "$prev" == working && "$state" == idle ]] && ! pane_focused && tmux_ set -w -t "$TMUX_PANE" @ws_unread 1 2>/dev/null
   [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev" "$payload" "$seq"
   return 0
+}
+
+# A pane whose @ws_session moved on (reused tab), or was untagged by exit cleanup while the
+# registry points elsewhere (resumed/closed), no longer belongs to this launch's WS_SESSION.
+# Only a pre-tag hook whose registry window is this very pane may fall back to WS_SESSION.
+hook_owns_pane() {
+  [[ -n "${WS_SESSION:-}" ]] || return 0
+  local pane_session="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)" win
+  [[ -z "$pane_session" ]] || { [[ "$pane_session" == "$WS_SESSION" ]]; return; }
+  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || return 1
+  [[ -n "$win" && "$(jq -r '.window // ""' "$WS_SESSIONS/$WS_SESSION/meta" 2>/dev/null)" == "$win" ]]
+}
+
+# Nested agents (e.g. headless grok run from the tab agent's tool shell) inherit TMUX_PANE/
+# WS_* and global hooks: their hooks must not act for the tab. Walking the hook's ancestry
+# up to the pane, a run of same-named agent processes is one agent (node → native codex);
+# two agent runs mean a nested agent. Hooks from outside the pane's tree are not judged.
+nested_agent_hook() {
+  local pane_pid pid=$$ name prev="" runs=0 line
+  local -A parent args
+  pane_pid="$(tmux_ display -p -t "$TMUX_PANE" '#{pane_pid}' 2>/dev/null)"
+  [[ "$pane_pid" == <-> ]] || return 1
+  while read -r line; do
+    line="${line## #}"
+    local -a f=(${=line})
+    (( ${#f} >= 3 )) || continue
+    parent[$f[1]]="$f[2]"
+    args[$f[1]]="${(j: :)f[3,-1]}"
+  done < <(ps -Ao pid=,ppid=,args= 2>/dev/null)
+  while [[ -n "${parent[$pid]:-}" && "$pid" != "$pane_pid" && "$pid" -gt 1 ]]; do
+    pid="${parent[$pid]}"
+    name="$(agent_process_name "${args[$pid]:-}")"
+    if [[ -n "$name" && "$name" != "$prev" ]]; then
+      (( ++runs ))
+    fi
+    prev="$name"
+  done
+  [[ "$pid" == "$pane_pid" ]] && (( runs > 1 ))
+}
+
+# agent_process_name <args> — claude|codex|grok when the process is that agent (also via an
+# interpreter: `node …/codex`, `sh …/claude`), else empty.
+agent_process_name() {
+  local -a w=(${=1})
+  local exe="${w[1]:-}" name="${${w[1]:-}:t}"
+  if [[ "$name" == (node|bun|deno|sh|bash|zsh|python3) && -n "${w[2]:-}" && "${w[2]}" != -* ]]; then
+    exe="${w[2]}"; name="${w[2]:t}"
+  fi
+  if [[ "$name" == (claude|codex|grok)(|-*) ]]; then
+    print -r -- "${name%%-*}"
+  elif [[ "$exe" == *(claude-code|@openai/codex)/* ]]; then
+    [[ "$exe" == *claude-code/* ]] && print claude || print codex
+  fi
 }
 
 # hook_state <event> <agent_id> <prev> — the tab's new state. The main agent's turn can end
@@ -712,6 +769,8 @@ write_claude_settings() {
 # Grok has no per-launch hooks flag, so ws hooks live in its global hooks dir (always
 # trusted there). Harmless outside ws: without WS_WORKSPACE, cmd_hook only answers Stop with {}.
 write_grok_hooks() {
+  # Global hooks fire in every Grok session: never wire them to a missing ws.
+  [[ -f "$WS_BIN" && -x "$WS_BIN" ]] || { print -u2 "ws: grok hooks: WS_BIN not executable: $WS_BIN"; return 1; }
   mkdir -p "${GROK_HOOKS:h}"
   jq -n --arg h "${(q)WS_BIN} hook" '
     def cmd($s): {type: "command", command: "\($h) \($s)", timeout: 5};

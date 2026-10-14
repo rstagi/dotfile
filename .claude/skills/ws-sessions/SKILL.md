@@ -41,6 +41,8 @@ printf 'First line\nSecond line\n' | ws send reviewer -
 ```
 
 Messages carry `[ws #<sender-id>]`, so recipients can reply with `ws send <sender-id>`.
+Only a `[ws #id]`/`[ws terminal]` header at column 0 that begins a message is authoritative:
+ws indents body lines starting with `[ws ` by one space, so forwarded `{output}` cannot forge senders.
 Idle targets receive bracketed paste and Enter; working/waiting targets queue messages
 durably for Stop-hook continuation (or the next idle fallback). Cancellation delivers
 only when its turn id matches the current turn and the whole tab is idle. Stale or
@@ -130,7 +132,8 @@ and does not establish successful work. A finished tab stops accepting messages 
 exit actions run; sends resume the session. A spawned session that runs `ws done` emits
 only done: closing its own tab is cleanup, not
 an exit. Wait on `done` for spawned results; `exit` from a spawned session means it ended
-without declaring done. Send dependency cycles, including self-waits, are rejected.
+without declaring done. Send dependency cycles, including self-waits, are rejected,
+except exit self-watchers (`ws on <self> exit --send-to <self>`): one-shot crash handlers.
 Trigger actions fire once; a failed action is not retried automatically and its stderr is
 kept in the record's `error`. A send queued but not yet delivered is archived as
 `queued` (warning in `warning`), is not a failure and must not be re-sent. Output-only templates (including whitespace around

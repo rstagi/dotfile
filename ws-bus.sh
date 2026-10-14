@@ -116,7 +116,7 @@ cmd_send() {
     set -- "$1" "$2"
   fi
   [[ $# == 2 ]] || die "send: expected [--force] <id|name> <message|->"
-  local id message="$2" sender=terminal
+  local id message="$2" sender=terminal nl=$'\n'
   id="$(ws_bus_resolve "$1")" || die "no such session: $1"
   if [[ -n "${WS_SESSION:-}" ]]; then
     sender="#$(cmd_whoami)" || return 1
@@ -126,6 +126,9 @@ cmd_send() {
     message="${message%.}"
   fi
   [[ -n "$message" ]] || die "send: empty message"
+  # Body lines must not forge a sender header (Stop joins batches): indent `[ws ` lines.
+  [[ "$message" != '[ws '* ]] || message=" $message"
+  message="${message//"${nl}[ws "/"${nl} [ws "}"
   message="[ws $sender]"$'\n'"$message"
   # 75 (EX_TEMPFAIL): durably queued, not yet delivered. A later Stop/idle delivers it: never re-send.
   local win lock lockfd rc attempt queued=75
@@ -199,7 +202,7 @@ ws_bus_register_trigger() {
   # Serialize graph validation with registration/removal; concurrent reverse edges lose.
   local cycle_rc=0
   if [[ "$3" == send ]]; then
-    ws_bus_trigger_cycle "$1" "$4" || cycle_rc=$?
+    ws_bus_trigger_cycle "$1" "$4" "$2" || cycle_rc=$?
     if (( cycle_rc != 1 )); then
       if (( cycle_rc == 0 )); then
         print -u2 "ws: on: dependency cycle rejected"
@@ -229,10 +232,18 @@ ws_bus_register_trigger() {
   print -r -- "$tid"
 }
 
+# 0 = cycle, 1 = acyclic, else unvalidated. Corrupt records are warned and skipped. An exit
+# self-edge is a one-shot crash handler (its session has already exited), never a cycle.
 ws_bus_trigger_cycle() {
+  local edges=""
   local -a records=("$WS_TRIGGERS"/<->.json(N))
-  print -n '' | jq -se --argjson sources "$1" --arg target "$2" '
-    map(select(.status == "pending" and .action == "send")) as $edges |
+  (( ! ${#records} )) || edges="$(ws_bus_jq_records -c 'select(.status == "pending" and .action == "send") |
+    if (.sources | type) == "array" and all(.sources[]; type == "string") and (.target | type) == "string"
+    then {sources: (if .event == "exit" then .sources - [.target] else .sources end), target}
+    else error("bad trigger schema") end' -- "${records[@]}")" || return 2
+  print -rn -- "$edges" | jq -se --argjson sources "$1" --arg target "$2" --arg event "${3:-}" '
+    . as $edges |
+    (if $event == "exit" then $sources - [$target] else $sources end) as $sources |
     def reaches($node; $seen):
       if ($sources | index($node)) != null then true
       elif ($seen | index($node)) != null then false
@@ -240,7 +251,7 @@ ws_bus_trigger_cycle() {
         if (.sources | index($node)) != null
         then reaches(.target; $seen + [$node]) else false end)
       end;
-    reaches($target; [])' "${records[@]}" >/dev/null
+    ($sources | length) > 0 and reaches($target; [])' >/dev/null
 }
 
 ws_bus_remove_trigger() {
@@ -254,18 +265,22 @@ ws_bus_remove_trigger_locked() {
   rm -f "$record"
 }
 
-# Evaluate only subscribers to this source/event, after releasing the append lock.
+# List only subscribers to this source/event; ws_bus_evaluate_run fires them lock-free.
 # Legacy fired/failed records retire only if unlocked: a held lock is a live action.
-ws_bus_evaluate() {
-  local line tids
+ws_bus_evaluate_list() {
   local -a records=("$WS_TRIGGERS"/<->.json(Nn))
   (( ${#records} )) || return 0
-  tids="$(ws_bus_jq_records -r --arg id "$1" --arg event "$2" '
+  ws_bus_jq_records -r --arg id "$1" --arg event "$2" '
     if .status == "fired" or .status == "failed" then "retire\t\(.id)"
     elif .status == "pending" and .event == $event and (.sources | index($id)) then "fire\t\(.id)"
     else empty end
-  ' -- "${records[@]}")"
-  for line in "${(@f)tids}"; do
+  ' -- "${records[@]}"
+}
+
+ws_bus_evaluate_run() {
+  local line
+  [[ -n "$1" ]] || return 0
+  for line in "${(@f)1}"; do
     case "$line" in # failures are recorded; keep going
       fire$'\t'*) ws_bus_evaluate_trigger "${line#*$'\t'}" ;;
       retire$'\t'*) ws_bus_retire_trigger "${line#*$'\t'}" ;;
@@ -432,14 +447,27 @@ ws_bus_publish_done_locked() {
 # Single lifecycle append boundary: subscribers attach here after the durable JSONL write.
 # Event payloads carry id/event/at plus event-specific fields (done: output; exit: code).
 ws_bus_event() {
-  local id="$1" event="$2" detail="${3:-}" record
+  local id="$1" event="$2" detail="${3:-}" record tids
   [[ -n "$detail" ]] || detail='{}'
   [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
   record="$(jq -nc --arg id "$id" --arg event "$event" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson detail "$detail" '$detail + {id:$id,event:$event,at:$at}')" || return 1
-  with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record" || return 1
+  # Registry then events lock: a concurrent registration either snapshots an offset past
+  # this event or is written before we list subscribers. Actions run after both release.
+  if ! tids="$(with_lock "$WS_TRIGGERS/registry" ws_bus_event_registry_locked "$id" "$record" "$event")"; then
+    # Registry lock unavailable: never lose the event itself.
+    with_lock "$WS_SESSIONS/$id/events" ws_bus_event_locked "$id" "$record" || return 1
+    tids="$(ws_bus_evaluate_list "$id" "$event")"
+  fi
   # The event is published: subscriber failures are reported, never the event's status.
-  ws_bus_evaluate "$id" "$event" || print -u2 "ws: event #$id $event: trigger evaluation failed"
+  ws_bus_evaluate_run "$tids" || print -u2 "ws: event #$id $event: trigger evaluation failed"
+  return 0
+}
+
+# Fails only if the append failed; the subscriber listing is best-effort.
+ws_bus_event_registry_locked() {
+  with_lock "$WS_SESSIONS/$1/events" ws_bus_event_locked "$1" "$2" || return 1
+  ws_bus_evaluate_list "$1" "$3"
   return 0
 }
 
@@ -477,6 +505,18 @@ ws_bus_run_agent() {
   # Exit actions may wait for slow targets: stop delivery before publishing any exit.
   # @ws_state stays for the wrapper's dismiss.
   ws_bus_untag_agent "$id" "$win"
+  # tmux serializes commands: a paste admitted before the untag is already in the tty.
+  # Discard it so the tab's shell never reads it; non-canonical so partial lines go too.
+  # Bounded, so a continuous stream cannot stall the exit. Foreground only: an interactive
+  # agent shell may keep the tty's process group, and touching it would stop this wrapper.
+  if [[ -t 0 ]]; then
+    local tty_mode junk drained=0 tpgid pgid
+    read -r tpgid pgid <<<"$(ps -o tpgid= -o pgid= -p $$ 2>/dev/null)"
+    if [[ -n "$tpgid" && "$tpgid" == "$pgid" ]] && tty_mode="$(stty -g 2>/dev/null)" && stty -icanon min 0 time 0 2>/dev/null; then
+      while (( drained++ < 65536 )) && read -r -k 1 -u 0 -t 0.05 junk 2>/dev/null; do :; done
+      stty "$tty_mode" 2>/dev/null
+    fi
+  fi
   ws_bus_exit "$id" "$code" </dev/null
 
   return "$code"
@@ -582,7 +622,8 @@ ws_bus_stop_locked() {
   local inbox="$WS_SESSIONS/$1/inbox" inflight="$WS_SESSIONS/$1/inbox.inflight.$$"
   ws_bus_reclaim_orphans "$1" || return 1
   [[ -s "$inbox" ]] || { print '{}'; return 0; }
-  mv "$inbox" "$inflight" && : > "$inbox" || return 1
+  # Fresh mtime: the orphan expiry measures this drain, not the last enqueue.
+  mv "$inbox" "$inflight" && touch "$inflight" && : > "$inbox" || return 1
   jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inflight"
 }
 
@@ -673,16 +714,21 @@ ws_bus_paste_timeout() {
 }
 
 # Named buffers isolate concurrent senders; raw paste preserves LF inside bracketed input.
+# Ownership is rechecked inside tmux at paste and at Enter: an agent that exited mid-delivery
+# (untagged) must never have its pane's shell receive the text. Lost ownership fails: requeue.
 ws_bus_paste() {
-  local id="$1" win="$2" message="$3" buffer="ws-$1-$$" pane
+  local id="$1" win="$2" message="$3" buffer="ws-$1-$$" pane owned
   pane="$(ws_bus_pane "$win")" || return 1
+  owned="#{==:#{@ws_session},$id}"
   print -rn -- "$message" | tmux_ load-buffer -b "$buffer" - || return 1
-  if ! tmux_ paste-buffer -d -p -r -b "$buffer" -t "$pane"; then
+  tmux_ if-shell -F -t "$pane" "$owned" "paste-buffer -d -p -r -b $buffer -t $pane" 2>/dev/null
+  if tmux_ show-buffer -b "$buffer" >/dev/null 2>&1; then # not consumed: not pasted
     tmux_ delete-buffer -b "$buffer" 2>/dev/null
     return 1
   fi
   sleep 0.3
-  tmux_ send-keys -t "$pane" Enter
+  [[ "$(tmux_ display -p -t "$pane" "$owned" 2>/dev/null)" == 1 ]] || return 1
+  tmux_ if-shell -F -t "$pane" "$owned" "send-keys -t $pane Enter"
 }
 
 # The agent's own pane (@ws_pane), never the active one: a user may split the tab with a
