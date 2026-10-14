@@ -412,3 +412,54 @@ describe("buildGraph — control (pause + model override)", () => {
     expect(buildGraph(parsePlan(SINGLE_LANE), null).nodes.find((n) => n.id === "1")?.paused).toBe(false);
   });
 });
+
+const MILESTONES = `# Ship twice — Multi-Phase Plan
+
+## Milestone 1 — Ship the core
+
+### Phase 1 — Build the core [lane: A]
+- **Depends on:** none
+
+### Phase 2 — Review the core [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 1
+
+## Milestone 2 — Ship the API
+- **Integration branch:** \`feat/second\`
+
+### Phase 3 — Build the API [lane: A]
+- **Depends on:** Phase 2
+
+### Phase 4 — Review the API [kind: pr-review]
+- **Depends on:** Phase 3
+`;
+
+describe("buildGraph — milestones", () => {
+  it("tags nodes with their milestone and lists the milestones", () => {
+    const g = buildGraph(parsePlan(MILESTONES), null);
+    expect(g.nodes.filter((n) => n.phase).map((n) => [n.id, n.milestone])).toEqual([["1", 1], ["2", 1], ["3", 2], ["4", 2]]);
+    expect(g.nodes.find((n) => n.id === "plan")!.milestone).toBeNull();
+    expect(g.milestones).toEqual([{ number: 1, title: "Ship the core" }, { number: 2, title: "Ship the API" }]);
+    expect(g.nodes.find((n) => n.id === "2")!.gate).toBe("merge");
+    expect(g.nodes.find((n) => n.id === "4")!.gate).toBeNull();
+  });
+
+  it("marks the current milestone's gate awaiting merge with its PRs", () => {
+    const withState = {
+      ...runtime({}), state: { milestone: 1, awaitingMerge: { milestone: 1, prs: { primary: "https://github.com/acme/api/pull/9" } } },
+    } as unknown as Runtime;
+    const g = buildGraph(parsePlan(MILESTONES), withState);
+    const gate = g.nodes.find((n) => n.id === "2")!;
+    expect(gate.awaitingMerge).toBe(true);
+    expect(gate.ui).toBe("awaiting");
+    expect(gate.prs).toEqual({ primary: "https://github.com/acme/api/pull/9" });
+    expect(g.nodes.find((n) => n.id === "4")!.awaitingMerge).toBeFalsy();
+  });
+
+  it("does not mark a historical gate awaiting once the loop moved on", () => {
+    const withState = {
+      ...runtime({}), state: { milestone: 2, awaitingMerge: null },
+    } as unknown as Runtime;
+    const gate = buildGraph(parsePlan(MILESTONES), withState).nodes.find((n) => n.id === "2")!;
+    expect(gate.awaitingMerge).toBeFalsy();
+  });
+});

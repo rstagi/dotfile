@@ -461,6 +461,12 @@ export interface GraphNode {
   reviewStages?: ReviewStageRun[];
   /** PRs scoped to this review phase’s milestone, including recorded merge history. */
   prs?: Record<string, string | null>;
+  /** Containing milestone; null for the synthetic Plan / legacy PR Review nodes. Absent on older snapshots. */
+  milestone?: number | null;
+  /** Explicit PR-review nodes: `[gate: merge]` barrier. Absent on older snapshots. */
+  gate?: "merge" | null;
+  /** Merge gate parked in `awaiting-merge`: review verdict posted, waiting for a human to merge + resume. */
+  awaitingMerge?: boolean;
 }
 
 export type EdgeKind = "plan-to-lane" | "depends" | "to-review";
@@ -474,7 +480,15 @@ export interface GraphEdge {
   blocking: boolean;
 }
 
+/** Milestone header for grouped layouts. */
+export interface GraphMilestone {
+  number: number;
+  title: string;
+}
+
 export interface Graph {
+  /** Plan milestones in order (absent on older snapshots); layouts group only when there are ≥2. */
+  milestones?: GraphMilestone[];
   nodes: GraphNode[];
   edges: GraphEdge[];
   lanes: string[];

@@ -75,7 +75,13 @@ export function Header({
             : ""}
         </span>
       )}
+      {(e?.milestoneTotal ?? 1) > 1 && (
+        <span className="pill" title="current milestone">M{e!.milestone}/{e!.milestoneTotal}</span>
+      )}
       {e?.status && <span className="pill">{e.status}</span>}
+      {e?.awaitingMerge && !/awaiting.merge/i.test(e.status ?? "") && (
+        <span className="pill" style={{ color: "var(--amber)", borderColor: "var(--amber)" }}>awaiting merge</span>
+      )}
       {snapshot?.loopActive && (
         <span className="pill" style={{ color: "var(--aqua)", borderColor: "var(--aqua-deep)" }}>
           loop active

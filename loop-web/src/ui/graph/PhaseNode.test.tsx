@@ -74,3 +74,16 @@ describe("PhaseNode explicit review rounds", () => {
     expect(html).toContain("awaiting review");
   });
 });
+
+describe("PhaseNode merge gate", () => {
+  it("labels a parked gate AWAITING MERGE with the resume hint", () => {
+    const html = render({ kind: "pr-review", phase: "2", repository: null, status: "running", ui: "awaiting", awaitingMerge: true, gate: "merge" });
+    expect(html).toContain("AWAITING MERGE");
+    expect(html).toContain("/loop-execute resume");
+  });
+
+  it("keeps the normal label when not parked", () => {
+    const html = render({ kind: "pr-review", phase: "2", repository: null, status: "todo", ui: "todo", gate: "merge" });
+    expect(html).not.toContain("AWAITING MERGE");
+  });
+});

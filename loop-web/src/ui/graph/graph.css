@@ -48,6 +48,28 @@
   border-color: rgba(85, 224, 138, 0.25);
 }
 
+/* --- milestone columns ------------------------------------------------------------ */
+.milestone {
+  border-left: 1px solid var(--hairline);
+  border-right: 1px solid var(--hairline);
+  background: rgba(20, 32, 38, 0.18);
+  pointer-events: none;
+}
+.milestone__label {
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  max-width: calc(100% - 28px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
 /* --- phase / plan / review node -------------------------------------------------- */
 .node {
   position: relative;

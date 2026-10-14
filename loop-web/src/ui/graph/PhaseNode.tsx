@@ -90,6 +90,7 @@ function chip(n: GraphNode): string {
 }
 
 function statusLabel(n: GraphNode): string {
+  if (n.awaitingMerge) return "AWAITING MERGE";
   const rt = n.runtime;
   if (rt?.hilOpen) return "HIL PAUSE";
   if (rt?.awaiting) return "QUESTION";
@@ -98,6 +99,13 @@ function statusLabel(n: GraphNode): string {
 }
 
 function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null) {
+  if (n.kind === "pr-review" && n.awaitingMerge) {
+    return [
+      <span key="a" className="node__badge" style={{ color: "var(--amber)", borderColor: "var(--amber)" }}>
+        /loop-execute resume
+      </span>,
+    ];
+  }
   if (n.kind === "pr-review") {
     const verdictBelongsToThisRound = n.phase == null || n.status === "done" || n.status === "blocked";
     const pill = reviewPill(verdictBelongsToThisRound ? pr?.outcome : null);

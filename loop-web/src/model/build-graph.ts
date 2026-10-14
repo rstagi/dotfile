@@ -14,6 +14,7 @@ import type {
   PrInfo,
   JevDecision,
   ReviewRun,
+  StateJson,
 } from "./types.ts";
 import {
   classifyAttempt,
@@ -59,6 +60,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     phase: null,
     lane: null,
     repository: null,
+    milestone: null,
     status: mapHeaderStatus(plan.status),
     ui: resolveUi(mapHeaderStatus(plan.status), null, false),
     pulse: null,
@@ -71,7 +73,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
 
   const explicitReviews = plan.phases.some((phase) => phase.kind === "pr-review");
   const phaseNodes = plan.phases.map((phase) => phase.kind === "pr-review"
-    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], plan.repositories.map((r) => r.slug), runtime?.reviewRunsByRepository ?? {})
+    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], plan.repositories.map((r) => r.slug), runtime?.reviewRunsByRepository ?? {}, runtime?.state?.awaitingMerge ?? null)
     : buildPhaseNode(phase, runtime?.phases[phase.phase], now));
   const reviewNodes = explicitReviews ? [] : plan.repositories.map((repository) => {
     const legacy = repository.slug === "primary";
@@ -86,7 +88,8 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
   }));
   const edges = buildEdges(plan, nodes);
 
-  return { nodes, edges, lanes };
+  const milestones = plan.milestones.map((milestone) => ({ number: milestone.number, title: milestone.title }));
+  return { milestones, nodes, edges, lanes };
 }
 
 // --- phase nodes ---------------------------------------------------------------------
@@ -104,6 +107,7 @@ function buildPhaseNode(
     phase: phase.phase,
     lane: phase.lane,
     repository: phase.repository,
+    milestone: phase.milestone,
   };
 
   if (!pr) {
@@ -198,9 +202,12 @@ function buildExplicitReviewNode(
   runtime: PhaseRuntime | undefined,
   repositories: string[],
   reviewRuns: Record<string, ReviewRun[]>,
+  awaitingMerge: NonNullable<StateJson["awaitingMerge"]> | null,
 ): GraphNode {
   const status = validStateStatus(runtime?.state?.status) ?? mapPlanStatus(phase.status);
   const paused = (runtime?.paused ?? false) || status === "paused";
+  // Parked at this milestone's merge gate: verdict posted, a human merges + resumes.
+  const parked = phase.gate === "merge" && awaitingMerge != null && awaitingMerge.milestone === phase.milestone;
   return {
     id: phase.phase,
     kind: "pr-review",
@@ -208,8 +215,10 @@ function buildExplicitReviewNode(
     phase: phase.phase,
     lane: phase.lane,
     repository: null,
+    milestone: phase.milestone,
+    gate: phase.gate,
     status,
-    ui: status === "blocked" ? "problem" : resolveUi(status, null, false, paused),
+    ui: parked ? "awaiting" : status === "blocked" ? "problem" : resolveUi(status, null, false, paused),
     pulse: null,
     runtime: null,
     notePending: runtime?.note != null && status !== "done" && status !== "merged",
@@ -218,6 +227,7 @@ function buildExplicitReviewNode(
     modelOverride: runtime?.modelOverride ?? null,
     review: phase.review,
     reviewStages: phase.review ? reviewStageRuns(phase.review, phase.phase, repositories, reviewRuns) : [],
+    ...(parked ? { awaitingMerge: true, prs: { ...awaitingMerge.prs } } : {}),
   };
 }
 
@@ -246,6 +256,7 @@ function buildReviewNode(repository: string, pr: PrInfo | null, noteMarkdown: st
     phase: null,
     lane: null,
     repository,
+    milestone: null,
     status,
     ui,
     pulse: null,
