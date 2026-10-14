@@ -42,8 +42,10 @@ printf 'First line\nSecond line\n' | ws send reviewer -
 
 Messages carry `[ws #<sender-id>]`, so recipients can reply with `ws send <sender-id>`.
 Idle targets receive bracketed paste and Enter; working/waiting targets queue messages
-durably for Stop-hook continuation (or the next idle fallback). An interrupted (Esc)
-turn may emit no hook, so queued messages wait for the next turn. Paste + Enter submits
+durably for Stop-hook continuation (or the next idle fallback). Cancellation delivers
+only when its turn id matches the current turn and the whole tab is idle. Stale or
+idless cancel/Interrupt hooks leave state and inbox unchanged; queued messages wait
+for a later Stop or verified idle. Paste + Enter submits
 any unsent text a human typed into the target's input along with the message. Codex
 launches set `-c developer_instructions=...`, overriding configured developer
 instructions. Stopped targets resume
