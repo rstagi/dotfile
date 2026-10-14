@@ -118,6 +118,7 @@ cmd_run() {
 # Prompt goes after `--` so option-like or subcommand-named prompts stay positional.
 agent_command() {
   local agent="$1" resume="$2" prompt="$3" id="$4"
+  hooks_migrate # launches that skip main's startup migration (send, resume, ws claude) must rebind a moved ws too
   local preamble="You are ws session #$id. Use the ws-sessions skill to coordinate sessions."
   # done is permanent: only spawned sessions own their completion; user tabs outlive tasks.
   [[ "$(jq -r '.spawned' "$WS_SESSIONS/$id/meta" 2>/dev/null)" != true ]] ||

@@ -93,6 +93,15 @@ assert_eq "$(T list-keys -T prefix a | grep -cF -- "/old/dotfile/ws.sh")" "1" "n
 migrate _migrate-hooks
 assert_eq "$([[ "$MIG_HOME/bin/ws" -ef "$WS" ]] && print yes)" "yes" "_migrate-hooks re-links bin/ws"
 assert_eq "$(T list-keys -T prefix a | grep -cF -- "$WS")" "1" "_migrate-hooks re-binds tmux keys"
+
+echo "ws migrate: launches that skip the startup migration (send, resume, ws claude) re-bind a moved ws too"
+rm -f "$MIG_HOME/bin/ws"; ln -sfn "$TMP/gone/ws.sh" "$MIG_HOME/bin/ws"
+T bind-key a run-shell "/old/dotfile/ws.sh add"
+stale_hooks "/old/dotfile/ws.sh"
+WS_HOME="$MIG_HOME" GROK_HOME="$MIG_GROK" zsh -c 'source "$1"; agent_command claude "" "" 1 >/dev/null' _ "$WS" 2>/dev/null
+assert_eq "$(hook_stop_cmd "$MIG_HOME/claude-settings.json")" "${(q)WS} hook stop" "launch re-points claude-settings.json"
+assert_eq "$([[ "$MIG_HOME/bin/ws" -ef "$WS" ]] && print yes)" "yes" "launch re-links a dangling bin/ws"
+assert_eq "$(T list-keys -T prefix a | grep -cF -- "$WS")" "1" "launch re-binds tmux keys"
 T kill-session -t mig-bind 2>/dev/null
 
 echo "ws migrate: an unusable ws cannot be wired into Grok but still migrates Claude settings"
