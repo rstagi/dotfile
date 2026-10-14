@@ -2201,6 +2201,43 @@ assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$TID.json" 2>/dev/null)"
 assert_eq "$([[ -f "$WS_HOME/triggers/$BROKEN_TID.json" ]] && print active)" "" "failed trigger is pruned from the active registry"
 assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$BROKEN_TID.json" 2>/dev/null)" "failed" "archive preserves the failed action"
 assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/archive/$BROKEN_TID.json" 2>/dev/null)" "no longer exists" "archive keeps the failure reason"
+# --- trigger edge batching ---
+echo "ws on: trigger edges batch unrelated records and retire legacy terminal records"
+edge_jq="$(command -v jq)"
+mkdir -p "$TMP/edge-bin"
+cat > "$TMP/edge-bin/jq" <<'EDGE_JQ'
+#!/bin/sh
+printf '.\n' >> "$WS_EDGE_JQ_CALLS"
+exec "$WS_EDGE_JQ" "$@"
+EDGE_JQ
+chmod +x "$TMP/edge-bin/jq"
+WS_SESSION="$DEFAULT_ID" "$WS" name trigger-edge-waiter
+for edge_fixture in {700001..700030}; do
+  mkdir -p "$WS_HOME/sessions/$edge_fixture"
+  jq -n --arg id "$edge_fixture" '{id:$id,name:"",status:"active"}' > "$WS_HOME/sessions/$edge_fixture/meta"
+  jq -n --arg id "$edge_fixture" --arg source "$SOURCE_B" --arg target "$DEFAULT_ID" \
+    '{id:$id,sources:[$source],event:"exit",action:"send",target:$target,template:"after exit",status:"pending"}' \
+    > "$WS_HOME/triggers/$edge_fixture.json"
+done
+: > "$TMP/edge-jq-calls"
+out="$(PATH="$TMP/edge-bin:$PATH" WS_EDGE_JQ="$edge_jq" WS_EDGE_JQ_CALLS="$TMP/edge-jq-calls" "$WS" show trigger-edge-waiter)"
+assert_contains "$out" "id: $DEFAULT_ID" "batched name lookup resolves the waiter"
+edge_calls="$(wc -l < "$TMP/edge-jq-calls")"
+assert_eq "$(( edge_calls <= 2 ))" "1" "name lookup uses bounded jq processes across many sessions"
+# A record retained by older versions must be archived without executing it again.
+cp "$WS_HOME/triggers/archive/$TID.json" "$WS_HOME/triggers/$TID.json"
+: > "$TMP/edge-jq-calls"
+PATH="$TMP/edge-bin:$PATH" WS_EDGE_JQ="$edge_jq" WS_EDGE_JQ_CALLS="$TMP/edge-jq-calls" WS_SESSION="$SOURCE_A" "$WS" done
+assert_exit "$?" "0" "done succeeds with many unrelated pending triggers"
+edge_calls="$(wc -l < "$TMP/edge-jq-calls")"
+assert_eq "$(( edge_calls < 20 ))" "1" "event evaluation uses bounded jq processes across unrelated triggers"
+assert_eq "$([[ -f "$WS_HOME/triggers/$TID.json" ]] && print active)" "" "legacy fired record is retired on the next event"
+assert_eq "$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)" "{}" "unrelated triggers do not notify the waiter"
+for edge_fixture in {700001..700030}; do
+  rm -rf "$WS_HOME/sessions/$edge_fixture"
+  rm -f "$WS_HOME/triggers/$edge_fixture.json"
+done
+# --- end trigger edge batching ---
 # --- end trigger edges ---
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null
