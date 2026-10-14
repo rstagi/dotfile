@@ -26,9 +26,9 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh loop-review.sh ws.sh ws-bus.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh loop-review.sh ws/ws.sh ws/lib/*.sh ws/tests/*.sh
 
-# Loop engineering shell tests (occupancy + orchestrator + loop-top; also runs zsh -n over the loop-*.sh)
+# Loop engineering shell tests (occupancy + orchestrator + loop-top + ws suite; also runs zsh -n over the loop-*.sh and ws files)
 zsh tests/run.sh
 
 # Review pipeline stages only
@@ -38,7 +38,7 @@ zsh tests/review-stages.test.sh
 node --test tests/loop-top.test.mjs
 
 # ws (terminal workspaces) tests
-zsh tests/ws.test.sh
+zsh ws/tests/run.sh
 
 # Loop Observatory (loop-web) tests + build
 cd loop-web && npm test && npm run build && cd ..
@@ -66,8 +66,9 @@ loop-models.conf        Loop engineering: model chains, budgets, timeouts
 loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model controls)
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
-ws.sh                   Terminal workspaces: worktree + tmux session per branch, tab per Claude/Codex/Grok session (hook-driven status + resume)
-ws-bus.sh               Global ws session registry, messaging, done/exit lifecycle and send/spawn triggers
+ws/ws.sh                Terminal workspaces entry: env/config, sources ws/lib/*, command dispatch (see ws/README.md)
+ws/lib/                 ws modules: core, workspace, tabs, hooks, notify, picker, bus (registry + send/inbox), triggers (done/on)
+ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh sourced in order by run.sh
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)

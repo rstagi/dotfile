@@ -81,7 +81,7 @@ closing the tab. Finish the turn so the Stop hook delivers them, handle the mess
 then retry `ws done`.
 Finishing a turn or exiting the agent is not a `done` declaration.
 Only the top-level tab agent may run `ws done`: nested or headless children inherit
-`WS_SESSION` and must not declare it. `ws` is on every tab's `PATH` (`$WS_BIN` is ws.sh),
+`WS_SESSION` and must not declare it. `ws` is on every tab's `PATH` (`$WS_BIN` is ws/ws.sh),
 so non-interactive shells can run it.
 
 ## Wait for #123, then do ABC
