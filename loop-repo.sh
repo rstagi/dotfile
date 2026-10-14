@@ -11,13 +11,14 @@ CMD="${1:-}"
 
 REGISTRY="${LOOP_REPO_REGISTRY:-${HOME}/.loop/repos.json}"
 WORKTREE_ROOT="${LOOP_WORKTREE_ROOT:-${HOME}/.loop/worktrees}"
-REPO="" RUN_ID="" INTEGRATION_BRANCH="" POSITIONAL=()
+REPO="" RUN_ID="" INTEGRATION_BRANCH="" MILESTONE=1 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --repo) REPO="$2"; shift 2 ;;
   --run-id) RUN_ID="$2"; shift 2 ;;
   --integration-branch) INTEGRATION_BRANCH="$2"; shift 2 ;;
+  --milestone) MILESTONE="$2"; shift 2 ;;
   *) POSITIONAL+=("$1"); shift ;;
   esac
 done
@@ -95,10 +96,16 @@ check_repo() {
   [[ "$INTEGRATION_BRANCH" != "$default_branch" ]] \
     || die "integration branch cannot be the default branch ($default_branch)" 4
 
-  local mode=create adopt_worktree=""
+  local mode=create adopt_worktree="" expected
   if git -C "$checkout" show-ref --verify --quiet "refs/heads/$INTEGRATION_BRANCH"; then
     mode=adopt
     adopt_worktree="$(branch_worktree "$checkout" "$INTEGRATION_BRANCH")" || exit $?
+    expected="$(integration_path)"
+    if [[ "$CMD" == prepare && -n "$adopt_worktree" && "$adopt_worktree" == "${expected:A}" ]]; then
+      mode=reuse
+    elif (( MILESTONE > 1 )); then
+      die "milestone $MILESTONE cannot adopt existing branch $INTEGRATION_BRANCH" 4
+    fi
     if [[ -n "$adopt_worktree" && -n "$(git -C "$adopt_worktree" status --porcelain)" ]]; then
       die "integration branch $INTEGRATION_BRANCH has uncommitted changes in $adopt_worktree; commit or stash first" 4
     fi
@@ -168,11 +175,21 @@ adopt_branch() {
 # Run-scoped integration worktree path guard + creation; extra args go to worktree add.
 new_integration_worktree() {
   local checkout="$1"; shift
-  integration_worktree="$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/integration"
+  integration_worktree="$(integration_path)"
   [[ ! -e "$integration_worktree" ]] || die "integration worktree path exists: $integration_worktree" 4
   mkdir -p "${integration_worktree:h}"
   git -C "$checkout" worktree add -q "$integration_worktree" "$@" \
     || die "could not create integration worktree for $REPO" 4
+}
+
+integration_path() {
+  local suffix="" slug
+  if (( MILESTONE > 1 )); then
+    slug="$(printf '%s' "$INTEGRATION_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+    [[ -n "$slug" ]] || die "integration branch has no usable path slug" 4
+    suffix="-$slug"
+  fi
+  print -r -- "$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/integration$suffix"
 }
 
 case "$CMD" in
@@ -212,6 +229,8 @@ prepare)
   [[ -n "$RUN_ID" ]] || die "prepare requires --run-id"
   run_id_re='^[A-Za-z0-9._-]+$'
   [[ "$RUN_ID" =~ $run_id_re ]] || die "invalid run id '$RUN_ID'"
+  milestone_re='^[1-9][0-9]*$'
+  [[ "$MILESTONE" =~ $milestone_re ]] || die "invalid milestone '$MILESTONE'"
   checked="$(check_repo)" || exit $?
   checkout="$(print -r -- "$checked" | jq -r .sourceRoot)"
   default_branch="$(print -r -- "$checked" | jq -r .defaultBranch)"
@@ -221,7 +240,15 @@ prepare)
   base_sha="$(git -C "$checkout" rev-parse "refs/remotes/origin/$default_branch")" \
     || die "fetched default ref is missing for $REPO" 3
   integration_worktree="" adopted=false
-  if [[ "$(print -r -- "$checked" | jq -r .mode)" == adopt ]]; then
+  mode="$(print -r -- "$checked" | jq -r .mode)"
+  if [[ "$mode" == reuse ]]; then
+    integration_worktree="$(print -r -- "$checked" | jq -r .adoptWorktree)"
+    record="$(git -C "$integration_worktree" rev-parse --absolute-git-dir)/loop-repo-prepare.json"
+    if [[ -f "$record" ]]; then
+      base_sha="$(jq -er .baseSha "$record")" || die "invalid prepare record: $record" 4
+      adopted="$(jq -er '.adopted | tostring' "$record")" || die "invalid prepare record: $record" 4
+    fi
+  elif [[ "$mode" == adopt ]]; then
     adopted=true
     adopt_branch "$checkout" "$INTEGRATION_BRANCH" "$base_sha" "$default_branch" \
       "$(print -r -- "$checked" | jq -r '.adoptWorktree // empty')"
@@ -229,6 +256,14 @@ prepare)
     new_integration_worktree "$checkout" -b "$INTEGRATION_BRANCH" "$base_sha"
   fi
   ahead_count="$(git -C "$checkout" rev-list --count "$base_sha..refs/heads/$INTEGRATION_BRANCH")"
+  expected="$(integration_path)"
+  if [[ "${integration_worktree:A}" == "${expected:A}" ]]; then
+    record="$(git -C "$integration_worktree" rev-parse --absolute-git-dir)/loop-repo-prepare.json"
+    tmp="$(mktemp "$record.XXXXXX")" || die "cannot create prepare record" 4
+    jq -cn --arg baseSha "$base_sha" --argjson adopted "$adopted" \
+      '{baseSha:$baseSha, adopted:$adopted}' > "$tmp" && mv "$tmp" "$record" \
+      || die "cannot save prepare record" 4
+  fi
   jq -cn --arg repository "$REPO" --arg sourceRoot "$checkout" \
     --arg defaultBranch "$default_branch" --arg baseSha "$base_sha" \
     --arg integrationBranch "$INTEGRATION_BRANCH" --arg integrationWorktree "$integration_worktree" \

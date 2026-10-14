@@ -209,4 +209,60 @@ assert_eq "$(cat "$WEB_WT/result.txt")" "web" "web verify/merge lands in web int
 git -C "$WT" rev-parse --verify feat/web-change >/dev/null 2>&1
 assert_exit "$?" "128" "repository histories stay separate"
 
+echo "loop-repo: later milestones start fresh in independent worktrees"
+export FAKE_DEFAULT_BRANCH=trunk
+git --git-dir "$REMOTE" worktree add -q "$TMP/remote-edit" trunk
+print milestone-two >> "$TMP/remote-edit/file.txt"
+git -C "$TMP/remote-edit" commit -qam milestone-two-base
+M2_BASE="$(git -C "$TMP/remote-edit" rev-parse HEAD)"
+git --git-dir "$REMOTE" worktree remove "$TMP/remote-edit"
+m2_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 2 --integration-branch feat/api-milestone-2)"
+assert_exit "$?" "0" "second milestone prepares in the same run"
+M2_WT="$(print "$m2_out" | jq -r .integrationWorktree)"
+assert_eq "$M2_WT" "$LOOP_WORKTREE_ROOT/run-1/acme--api/integration-feat-api-milestone-2" "later milestone path includes branch slug"
+assert_eq "$(print "$m2_out" | jq -r .baseSha)" "$M2_BASE" "later milestone fetches the latest default"
+assert_eq "$(print "$m2_out" | jq -r .adopted)" "false" "later milestone creates rather than adopts"
+if [[ -d "$M2_WT" ]]; then
+  assert_eq "$(git -C "$M2_WT" rev-parse HEAD)" "$M2_BASE" "later milestone starts exactly at default"
+  [[ -e "$M2_WT/result.txt" ]]
+  assert_exit "$?" "1" "previous integration changes do not leak into new milestone"
+fi
+assert_eq "$(cat "$WT/result.txt")" "api" "first milestone worktree remains available"
+
+echo "loop-repo: later milestones never adopt existing branches"
+git -C "$CHECKOUT" branch feat/milestone-existing "$M2_BASE"
+$ROOT/loop-repo.sh prepare --repo acme/api --run-id run-existing \
+  --milestone 2 --integration-branch feat/milestone-existing >/dev/null 2>&1
+assert_exit "$?" "4" "later milestone refuses an unchecked-out existing branch"
+WS="$(new_ws feat/milestone-worktree "$M2_BASE")"
+$ROOT/loop-repo.sh prepare --repo acme/api --run-id run-existing \
+  --milestone 3 --integration-branch feat/milestone-worktree >/dev/null 2>&1
+assert_exit "$?" "4" "later milestone refuses an existing external worktree"
+assert_eq "$(git -C "$WS" rev-parse HEAD)" "$M2_BASE" "refused adoption leaves existing worktree untouched"
+
+echo "loop-repo: prepare retries reuse their own worktrees"
+retry_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 2 --integration-branch feat/api-milestone-2)"
+assert_exit "$?" "0" "later milestone prepare is retryable"
+assert_eq "$retry_out" "$m2_out" "retry returns the same milestone integration record"
+retry_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 1 --integration-branch feat/api)"
+assert_exit "$?" "0" "first milestone retry survives default advancing"
+assert_eq "$(print "$retry_out" | jq -r .integrationWorktree)" "$WT" "first milestone retry keeps legacy path"
+assert_eq "$(print "$retry_out" | jq -r .baseSha)" "$REMOTE_SHA" "retry retains original base after default advances"
+assert_eq "$(print "$retry_out" | jq -r .adopted)" "false" "retry does not relabel owned worktrees as adopted"
+assert_eq "$(print "$retry_out" | jq -r .aheadCount)" "2" "retry counts lane and merge commits already in integration"
+retry_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-6 --integration-branch feat/loose)"
+assert_exit "$?" "0" "retry also supports adopted run-scoped worktrees"
+assert_eq "$(print "$retry_out" | jq -r .adopted)" "true" "retry retains adopted ownership"
+
+echo "loop-repo: retries refuse a different branch occupying the expected path"
+git -C "$M2_WT" switch -q -c feat/milestone-other
+$ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 2 --integration-branch feat/api-milestone-2 >/dev/null 2>&1
+assert_exit "$?" "4" "retry refuses a worktree switched to a different branch"
+assert_eq "$(git -C "$M2_WT" branch --show-current)" "feat/milestone-other" "retry leaves the other branch untouched"
+git -C "$M2_WT" switch -q feat/api-milestone-2
+
 test_summary
