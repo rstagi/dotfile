@@ -1497,6 +1497,21 @@ assert_eq "$([[ -e "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" ]] && pri
 assert_eq "$(T show -wqv -t "$ROBUST_WIN" @ws_state)" "working" "confirmed submission marks working"
 print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
 
+echo "ws send: an overtaken prompt hook still confirms its earlier paste"
+WS_SESSION=1 "$WS" send "$ROBUST_ID" "overtaken confirmation"
+wait_until pane_received "$ROBUST_ID" $'[ws #1]\novertaken confirmation'
+mkfifo "$TMP/robust-overtaken.in"
+exec {robust_w}<>"$TMP/robust-overtaken.in"
+(exec {robust_w}>&-; hook api/delivery "$ROBUST_WIN" working < "$TMP/robust-overtaken.in") &
+robust_stale_pid=$!
+sleep 0.5
+print '{"hook_event_name":"PreToolUse"}' | hook api/delivery "$ROBUST_WIN" working
+print -r -- '{"hook_event_name":"UserPromptSubmit"}' >&$robust_w
+exec {robust_w}>&-
+wait "$robust_stale_pid"
+assert_eq "$([[ -e "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" ]] && print pending)" "" "newer prompt acknowledges even when another hook overtakes its state update"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+
 echo "ws send: swallowed Enter times out and requeues without forcing working"
 WS_PASTE_ACK_TIMEOUT=1.5 WS_SESSION=1 "$WS" send "$ROBUST_ID" "swallowed Enter"
 wait_until pane_received "$ROBUST_ID" $'[ws #1]\nswallowed Enter'

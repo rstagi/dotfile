@@ -419,6 +419,13 @@ cmd_hook() {
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
   { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
+  # A tool hook may overtake a delayed prompt hook's state update. Delivery ack only
+  # compares against the paste watermark; stale state must not discard that confirmation.
+  if [[ "$event" == working && -z "$agent_id" && "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
+    local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+    id="${id:-${WS_SESSION:-}}"
+    [[ "$id" != <-> ]] || with_lock "$WS_SESSIONS/$id/inbox" ws_bus_paste_ack "$id" "$seq"
+  fi
   if [[ "$last" != <-> ]] || (( last < seq )); then
     # Cancel reports can start after the next prompt: the entry-time watermark alone
     # cannot order them. Without a matching turn id, neither state nor input is safe.
@@ -433,11 +440,6 @@ cmd_hook() {
       if [[ -n "$turn_id" || "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
         tmux_ set -w -t "$win" @ws_turn "$turn_id" 2>/dev/null
       fi
-    fi
-    if [[ "$event" == working && -z "$agent_id" && "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
-      local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
-      id="${id:-${WS_SESSION:-}}"
-      [[ "$id" != <-> ]] || with_lock "$WS_SESSIONS/$id/inbox" ws_bus_paste_ack "$id" "$seq"
     fi
     if [[ "$event" == stop ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
