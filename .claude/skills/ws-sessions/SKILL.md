@@ -67,6 +67,9 @@ printf 'Completed ABC. Validation: ...\nResult: ...\n' | ws done -
 another done event; triggers still fire once. There is no undo. Spawned tabs close
 after publication, so do all work and validation before calling it; user-opened tabs stay.
 Finishing a turn or exiting the agent is not a `done` declaration.
+Only the top-level tab agent may run `ws done`: nested or headless children inherit
+`WS_SESSION` and must not declare it. `ws` is on every tab's `PATH` (`$WS_BIN` is ws.sh),
+so non-interactive shells can run it.
 
 ## Wait for #123, then do ABC
 
@@ -111,8 +114,12 @@ ws on 123 exit --send-to me 'Session {id} exited. Inspect its status and output 
 ```
 
 `exit` includes clean exits and crashes; it does not establish successful work. A
-spawned session emits done before exit. Send dependency cycles, including self-waits,
-are rejected. Trigger actions fire once; a failed action is not retried automatically.
+spawned session that runs `ws done` emits only done: closing its own tab is cleanup, not
+an exit. Wait on `done` for spawned results; `exit` from a spawned session means it ended
+without declaring done. Send dependency cycles, including self-waits, are rejected.
+Trigger actions fire once; a failed action is not retried automatically and its stderr is
+kept in the record's `error`. An empty message or prompt after expansion (e.g. empty
+`{output}`) does not fire: the trigger stays pending and `ws on` reports the error.
 
 ```sh
 ws triggers                  # TSV: pending id, sources, event, action, target, template

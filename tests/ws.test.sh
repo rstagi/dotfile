@@ -103,8 +103,9 @@ wait_until() {
 }
 
 # Read the context argument recorded by the fake executable, preserving argv boundaries.
+# assert_agent_preamble <agent> <id> [spawned] — only spawned sessions are told to run `ws done`.
 assert_agent_preamble() {
-  local agent="$1" id="$2" actual="" flag
+  local agent="$1" id="$2" spawned="${3:-}" actual="" flag expected
   local argv="$WS_HOME/argv-$id.json"
   wait_until test -s "$argv"
   if [[ "$agent" == codex ]]; then
@@ -116,8 +117,10 @@ assert_agent_preamble() {
     [[ "$agent" != grok ]] || flag=--rules
     actual="$(jq -r --arg flag "$flag" 'index($flag) as $i | if $i == null then "" else .[$i + 1] end' "$argv")"
   fi
-  assert_eq "$actual" "You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions." \
-    "$agent session #$id receives its identity and completion instruction as context"
+  expected="You are ws session #$id. Use the ws-sessions skill to coordinate sessions."
+  [[ -z "$spawned" ]] ||
+    expected="You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions."
+  assert_eq "$actual" "$expected" "$agent session #$id receives its identity${spawned:+ and completion instruction} as context"
 }
 
 # Playback is detached, so wait for the fake afplay before reading what it played.
@@ -1348,18 +1351,20 @@ assert_contains "$(T capture-pane -p -t "$(slot_window "$SEND_WT" 2)")" "hook st
 assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$GROK_HOME/hooks/ws.json")" "$WS hook stop" "Grok Stop uses synchronous bus delivery"
 
 pane_received() { [[ "$(tail -1 "$WS_HOME/pane-$1.jsonl" 2>/dev/null | jq -r '.text')" == "$2" ]]; }
-echo "ws send: continuation guards and cancellation fall back to paste on verified idle"
+echo "ws send: continuation Stops block only for new messages; cancellation pastes on verified idle"
 for agent in claude codex grok; do
   BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
   BUS_ID="$(T display -p -t "$BUS_WIN" '#{@ws_session}')"
   hook api/delivery "$BUS_WIN" working </dev/null
   WS_SESSION=1 "$WS" send "$BUS_ID" "$agent guarded message"
   if [[ "$agent" == grok ]]; then active_payload='{"stopHookActive":true}'; else active_payload='{"stop_hook_active":true}'; fi
+  before="$(cat "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null)"
   reply="$(print -r -- "$active_payload" | hook api/delivery "$BUS_WIN" stop)"
-  assert_eq "$reply" "{}" "$agent active Stop does not recursively block"
-  wait_until pane_received "$BUS_ID" "[ws #1]"$'\n'"$agent guarded message"
-  assert_eq "$(tail -1 "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null | jq -r '.text')" "[ws #1]"$'\n'"$agent guarded message" "$agent guarded inbox falls back to idle paste"
-  assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "working" "$agent pasted continuation is working"
+  assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty' 2>/dev/null)" "[ws #1]"$'\n'"$agent guarded message" "$agent active Stop blocks for new messages"
+  assert_eq "$(cat "$WS_HOME/pane-$BUS_ID.jsonl" 2>/dev/null)" "$before" "$agent active Stop never pastes into the blocked TUI"
+  assert_eq "$(T display -p -t "$BUS_WIN" '#{@ws_state}')" "working" "$agent continued delivery is working"
+  reply="$(print -r -- "$active_payload" | hook api/delivery "$BUS_WIN" stop)"
+  assert_eq "$reply" "{}" "$agent active Stop with an empty inbox allows stopping"
   hook api/delivery "$BUS_WIN" working </dev/null
   WS_SESSION=1 "$WS" send "$BUS_ID" "$agent cancelled message"
   hook api/delivery "$BUS_WIN" idle </dev/null
@@ -1373,7 +1378,7 @@ hook api/delivery "$SEND_WIN" working </dev/null
 print '{"agent_id":"delivery-bg"}' | hook api/delivery "$SEND_WIN" subagent-start
 WS_SESSION=1 "$WS" send "$SEND_ID" "after background"
 before="$(cat "$WS_HOME/pane-$SEND_ID.jsonl")"
-print '{"stop_hook_active":true}' | hook api/delivery "$SEND_WIN" stop >/dev/null
+hook api/delivery "$SEND_WIN" idle </dev/null
 assert_eq "$(cat "$WS_HOME/pane-$SEND_ID.jsonl")" "$before" "background activity prevents fallback input"
 print '{"agent_id":"delivery-bg"}' | hook api/delivery "$SEND_WIN" subagent-stop
 wait_until pane_received "$SEND_ID" $'[ws #1]\nafter background'
@@ -1475,6 +1480,28 @@ assert_contains "$out" "message queued" "missing pane explains pending delivery"
 assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$FRESH_ID/inbox")" $'[ws #1]\nno pane' "missing pane retains inbox"
 T set -w -t "$FRESH_WIN" @ws_pane "$AGENT_PANE"
 print '{}' | hook api/delivery "$FRESH_WIN" stop >/dev/null
+
+# --- G2: send revalidates the target window after taking the hook lock ---
+echo "ws send: a window closed while send waits for the hook lock resumes instead of stranding"
+vanish_before="$(windows_of "$SEND_WT")"
+"$WS" add api/delivery --agent claude --detach
+VANISH_WIN="$(windows_of "$SEND_WT" | grep -vxF -f <(print -r -- "$vanish_before"))"
+VANISH_ID="$(T display -p -t "$VANISH_WIN" '#{@ws_session}')"
+assert_contains "$(wait_pane "$VANISH_WIN" PASTE-READY)" "PASTE-READY" "vanishing target TUI ready"
+hook api/delivery "$VANISH_WIN" working </dev/null
+VANISH_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$VANISH_WIN.lock"
+(zmodload zsh/system; : >> "$VANISH_LOCK"; zsystem flock -f vanish_fd "$VANISH_LOCK"; : > "$TMP/vanish-held"; sleep 2) &
+vanish_holder=$!
+wait_until test -e "$TMP/vanish-held"
+(WS_SESSION=1 "$WS" send "$VANISH_ID" "after vanish" >"$TMP/vanish.out" 2>&1; print $? > "$TMP/vanish.rc") &
+vanish_sender=$!
+sleep 1 # send resolved the live window and now blocks on the held hook lock
+T kill-window -t "$VANISH_WIN"
+wait "$vanish_holder"; wait "$vanish_sender"
+assert_exit "$(cat "$TMP/vanish.rc")" "0" "send resumes a target whose window vanished before the hook lock"
+wait_until pane_received "$VANISH_ID" $'[ws #1]\nafter vanish'
+assert_eq "$(tail -1 "$WS_HOME/pane-$VANISH_ID.jsonl" 2>/dev/null | jq -r '.text')" $'[ws #1]\nafter vanish' "resumed target receives the message instead of stranding it"
+# --- end G2 send revalidation ---
 
 echo "ws send: done declared while send waits for the inbox lock is honored"
 META="$WS_HOME/sessions/$FRESH_ID/meta"
@@ -1640,13 +1667,33 @@ assert_eq "$(cat "$WS_HOME/sessions/$SPAWN_ID/output.md")" "agent result" "spawn
 assert_eq "$(jq -sr 'map(select(.event == "done")) | length' "$WS_HOME/sessions/$SPAWN_ID/events")" "1" "spawned completion appends one done event"
 assert_eq "$("$WS" sessions "$SPAWN_ID" | cut -f6)" "done" "closing spawned tab preserves done status"
 assert_contains "$("$WS" show "$SPAWN_ID")" "output: $WS_HOME/sessions/$SPAWN_ID/output.md" "closed spawned result is addressable"
-wait_until lifecycle_exit_count "$SPAWN_ID" 1
-assert_exit "$?" "0" "spawned closure also reports agent termination"
-assert_eq "$(jq -sr 'map(.event) | join(",")' "$WS_HOME/sessions/$SPAWN_ID/events")" "done,exit" "completion is durable before spawned exit event"
-jq -se 'map(select(.event == "exit")) | length == 1 and (.[0].code == 0 or .[0].code == 129)' "$WS_HOME/sessions/$SPAWN_ID/events" >/dev/null
-assert_exit "$?" "0" "spawned closure records actual EOF or SIGHUP exit code"
+# G2: done's self-kill is cleanup, not a crash: no exit event (would fire `ws on X exit`).
+agent_gone() { ! pgrep -f "_agent $1 " >/dev/null; }
+wait_until agent_gone "$SPAWN_ID"
+assert_exit "$?" "0" "spawned agent wrapper finishes after done closure"
+assert_eq "$(jq -sr 'map(.event) | join(",")' "$WS_HOME/sessions/$SPAWN_ID/events")" "done" "spawned done closure records one done and no exit"
 "$WS" open "$SPAWN_ID" --detach
-assert_contains "$(wait_pane "$(windows_of "$DONE_WT")" FAKE-claude)" "--resume spawn-resume" "closed spawned identity retains agent resume data"
+SPAWN_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$SPAWN_WIN" FAKE-claude)" "--resume spawn-resume" "closed spawned identity retains agent resume data"
+T send-keys -t "$SPAWN_WIN" Enter
+wait_until lifecycle_exit_count "$SPAWN_ID" 1
+assert_exit "$?" "0" "resumed spawned session still reports its own exit"
+assert_eq "$(jq -sr 'map(.event) | join(",")' "$WS_HOME/sessions/$SPAWN_ID/events")" "done,exit" "resumed exit follows the earlier done"
+
+echo "ws lifecycle: a crashed spawned session reports one nonzero exit and no done"
+"$WS" add api/lifecycle --detach
+CRASH_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$CRASH_WIN" FAKE-claude)" "FAKE-claude" "spawned crash fixture ready"
+CRASH_ID="$(T display -p -t "$CRASH_WIN" '#{@ws_session}')"
+META="$WS_HOME/sessions/$CRASH_ID/meta"
+jq '.spawned = true' "$META" > "$META.fixture"
+mv "$META.fixture" "$META"
+T send-keys -t "$CRASH_WIN" 17 Enter
+wait_until lifecycle_exit_count "$CRASH_ID" 1
+assert_exit "$?" "0" "spawned crash emits exit"
+assert_contains "$(wait_pane "$CRASH_WIN" 'agent exited (17)')" "agent exited (17)" "spawned crash keeps close prompt"
+assert_eq "$(jq -sr 'map("\(.event):\(.code // "")") | join(",")' "$WS_HOME/sessions/$CRASH_ID/events")" "exit:17" "spawned crash records single nonzero exit, no done"
+T send-keys -t "$CRASH_WIN" Enter
 
 echo "ws lifecycle: tab closure reports exit while a TUI still holds the tty"
 "$WS" new --repo "$REPO" --branch delivery --detach
@@ -1733,6 +1780,60 @@ reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'stale\n\n[ws terminal]\nfresh' "stale in-flight messages precede new ones"
 assert_eq "$([[ -e "$WS_HOME/sessions/$SOURCE_A/inbox.inflight" ]] && print yes)" "" "in-flight file removed after reply"
 
+# --- G1: Stop delivery ack + resume-id ownership ---
+inflight_count() { ls "$WS_HOME/sessions/$1" | grep -c '^inbox\.inflight'; }
+echo "ws stop: a reply that never reached the agent stays in flight and is redelivered"
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+print -rn -- lost-reply | "$WS" send --force "$SOURCE_A" - 2>/dev/null
+hook api/triggers "$SOURCE_A_WIN" stop </dev/null 2>/dev/null | head -c 0 # hook dies (SIGPIPE) writing its reply
+assert_eq "$(inflight_count "$SOURCE_A")" "1" "unwritten reply keeps its in-flight file"
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws terminal]\nlost-reply' "next Stop redelivers the unacked reply"
+assert_eq "$(inflight_count "$SOURCE_A")" "0" "written reply acks its in-flight file"
+
+echo "ws stop: a live Stop's in-flight messages are never reclaimed by a concurrent send"
+sleep 30 &
+owner_pid=$!
+print -r -- '{"message":"owned"}' > "$WS_HOME/sessions/$SOURCE_A/inbox.inflight.$owner_pid"
+hook api/triggers "$SOURCE_A_WIN" working </dev/null
+print -rn -- concurrent | "$WS" send --force "$SOURCE_A" - 2>/dev/null
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws terminal]\nconcurrent' "live owner's messages are not redelivered"
+assert_eq "$(cat "$WS_HOME/sessions/$SOURCE_A/inbox.inflight.$owner_pid")" '{"message":"owned"}' "live owner's in-flight file untouched"
+kill "$owner_pid"; wait "$owner_pid" 2>/dev/null
+reply="$(hook api/triggers "$SOURCE_A_WIN" stop </dev/null)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "owned" "dead owner's in-flight messages are redelivered"
+assert_eq "$(inflight_count "$SOURCE_A")" "0" "reclaimed in-flight file removed"
+
+echo "ws hook: a stale hook never rewrites a reused slot's resume row"
+# resume_row <pane-session-id> <sid> — sessions-file row after record_resume_id for slot 1.
+resume_row() {
+  ( source "$WS"
+    sessions_file() { print -r -- "$TMP/g1-ws-sessions"; }
+    tmux_() {
+      case "$*" in
+        *@ws_path*) print -r -- "$TMP/g1-wt" ;;
+        *@ws_slot*) print 1 ;;
+        *@ws_agent*) print claude ;;
+        *@ws_session*) print -r -- "$G1_PANE_ID" ;;
+      esac
+    }
+    G1_PANE_ID="$1" TMUX_PANE=%0 record_resume_id "{\"session_id\":\"$2\"}"
+    cat "$TMP/g1-ws-sessions" )
+}
+( source "$WS"
+  f="$TMP/g1-ws-sessions"
+  session_append "$f" claude "$TMP/g1-wt" >/dev/null # slot 1 → old session
+  session_remove_locked "$f" 1
+  session_append "$f" claude "$TMP/g1-wt" >/dev/null ) # slot 1 reused → new session
+G1_OLD="$(( $(cat "$WS_HOME/sessions/counter") - 1 ))"
+G1_NEW="$(cat "$WS_HOME/sessions/counter")"
+assert_eq "$(resume_row "$G1_OLD" sid-old)" "1	claude		$G1_NEW" "stale hook leaves the new owner's row intact"
+assert_eq "$(resume_row "$G1_NEW" sid-new)" "1	claude	sid-new	$G1_NEW" "current owner records its resume id"
+assert_eq "$(resume_row "$G1_OLD" sid-old)" "1	claude	sid-new	$G1_NEW" "stale hook never replaces a recorded owner"
+rm -f "$TMP/g1-ws-sessions" "$TMP/g1-ws-sessions.lock"
+# --- end G1 ---
+
 echo "ws on: rejects direct and transitive cycles; removal cancels a pending action"
 CYCLE_TID="$("$WS" on "$SOURCE_A" exit --send-to "$TARGET_ID" cycle-forward)"
 assert_exit "$?" "0" "forward dependency registers"
@@ -1772,7 +1873,7 @@ for spawn_agent in claude codex grok; do
     CHILD_WIN="$(jq -r '.window' "$WS_HOME/sessions/$CHILD_ID/meta")"
     assert_contains "$(wait_pane "$CHILD_WIN" "FAKE-$spawn_agent")" "WHOAMI=$CHILD_ID" "$spawn_agent child has WS_SESSION and can query it"
     wait_until test -s "$WS_HOME/argv-$CHILD_ID.json"
-    assert_agent_preamble "$spawn_agent" "$CHILD_ID"
+    assert_agent_preamble "$spawn_agent" "$CHILD_ID" spawned
     assert_eq "$(jq -r '.[-1]' "$WS_HOME/argv-$CHILD_ID.json")" "Follow \"quoted\" \$literal"$'\n'"source $SOURCE_B: spawn result {id} {output}; \$(touch never-execute-ws-prompt)" "$spawn_agent initial prompt is one literal final argument"
     assert_eq "$(jq -r '.spawned' "$WS_HOME/sessions/$CHILD_ID/meta")" "true" "$spawn_agent child is marked spawned"
     assert_eq "$(jq -r '.path' "$WS_HOME/sessions/$CHILD_ID/meta")" "$TRIGGER_WT" "$spawn_agent child uses registering session worktree"
@@ -1818,6 +1919,44 @@ assert_exit "$?" "0" "literal dash trigger registers"
 reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n-' "trigger dash is delivered literally"
 
+# --- G2: empty expansions stay pending; failed actions keep their stderr ---
+echo "ws on: an empty {output} expansion leaves send and spawn triggers pending"
+empty_before="$(windows_of "$TRIGGER_WT")"
+"$WS" add api/triggers --detach
+EMPTY_WIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$empty_before"))"
+EMPTY_SRC="$(T display -p -t "$EMPTY_WIN" '#{@ws_session}')"
+WS_SESSION="$EMPTY_SRC" "$WS" done </dev/null
+assert_exit "$?" "0" "empty-output source declares done"
+empty_sessions="$("$WS" sessions | wc -l | tr -d ' ')"
+for empty_action in --send-to --spawn; do
+  if [[ "$empty_action" == --send-to ]]; then
+    out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --send-to me '{output}' 2>&1)"
+  else
+    out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --spawn ' {output}' 2>&1)"
+  fi
+  assert_exit "$?" "1" "$empty_action empty expansion reports failure"
+  assert_contains "$out" "empty" "$empty_action empty expansion explains itself"
+  EMPTY_TID="${${(f)out}[1]}"
+  assert_eq "$(jq -r '.status' "$WS_HOME/triggers/$EMPTY_TID.json" 2>/dev/null)" "pending" "$empty_action empty expansion is not burned"
+  "$WS" on --rm "$EMPTY_TID"
+done
+assert_eq "$("$WS" sessions | wc -l | tr -d ' ')" "$empty_sessions" "empty spawn prompt never starts a blank child"
+reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
+assert_eq "$reply" "{}" "empty send expansion queues nothing"
+
+echo "ws on: a failed trigger action records its error"
+BROKEN_ID=999999
+mkdir -p "$WS_HOME/sessions/$BROKEN_ID"
+jq -n --arg id "$BROKEN_ID" '{id:$id,name:"",workspace:"api/gone",agent:"claude",status:"active",path:"/nonexistent/ws-gone",slot:1,window:""}' > "$WS_HOME/sessions/$BROKEN_ID/meta"
+out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --send-to "$BROKEN_ID" unreachable 2>&1)"
+assert_exit "$?" "1" "unreachable trigger target fails"
+BROKEN_TID="${${(f)out}[1]}"
+assert_eq "$(jq -r '.status' "$WS_HOME/triggers/$BROKEN_TID.json")" "failed" "failed action is marked failed"
+assert_contains "$(jq -r '.error // ""' "$WS_HOME/triggers/$BROKEN_TID.json")" "no longer exists" "failed action record keeps stderr"
+rm -rf "$WS_HOME/sessions/$BROKEN_ID"
+T send-keys -t "$EMPTY_WIN" Enter
+# --- end G2 trigger failures ---
+
 echo "ws on: validates source lists, events and action options without creating triggers"
 for bad_sources in '' ',' "$SOURCE_B," ",$SOURCE_B" "$SOURCE_B,,${TARGET_ID}" no-such-session; do
   "$WS" on "$bad_sources" done --send-to "$DEFAULT_ID" invalid 2>/dev/null
@@ -1842,6 +1981,66 @@ assert_exit "$?" "1" "triggers rejects unexpected arguments"
 "$WS" on --rm ../counter 2>/dev/null
 assert_exit "$?" "1" "remove rejects unsafe trigger ids"
 assert_eq "$("$WS" triggers)" "" "invalid registrations create no pending triggers"
+
+# --- G3: spawn prompt via file, open failure cleanup, ready timeout, non-interactive ws ---
+echo "ws on: spawn prompts beyond tmux's command limit reach the agent argv intact"
+new_session_id() { comm -13 <(print -r -- "$1" | sort) <(ls "$WS_HOME/sessions" | sort) | grep -x '[0-9]*'; }
+BIG_PAD=""
+BIG_PROMPT="big-start ${(l:24000::x:)BIG_PAD} \$(touch never-execute-big) big-end"
+before_ids="$(ls "$WS_HOME/sessions")"
+WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn "$BIG_PROMPT" --agent claude >/dev/null
+assert_exit "$?" "0" "large spawn trigger fires"
+BIG_ID="$(new_session_id "$before_ids")"
+wait_until test -s "$WS_HOME/argv-$BIG_ID.json"
+assert_eq "$(jq -r '.[-1]' "$WS_HOME/argv-$BIG_ID.json" 2>/dev/null)" "$BIG_PROMPT" "24KB spawn prompt is the literal final argument"
+assert_eq "$(jq -r '.[-2]' "$WS_HOME/argv-$BIG_ID.json" 2>/dev/null)" "--" "large prompt still follows --"
+assert_eq "$([[ -e "$WS_HOME/sessions/$BIG_ID/prompt" ]] && print yes)" "" "prompt file is consumed at launch"
+assert_eq "$([[ -e "$TRIGGER_WT/never-execute-big" ]] && print yes)" "" "large prompt never executes substitution"
+if [[ "$BIG_ID" == <-> ]]; then
+  T send-keys -t "$(jq -r '.window' "$WS_HOME/sessions/$BIG_ID/meta")" done Enter
+  wait_until spawn_done_closed "$BIG_ID"
+fi
+
+echo "ws on: a spawn whose tab fails to open leaves no slot row and a closed identity"
+FAIL_RECORD="$TMP/fail-trigger.json"
+jq -n --arg p "$TRIGGER_WT" --arg s "$DEFAULT_ID" '{id:"t-fail",path:$p,agent:"codex",sender:$s}' > "$FAIL_RECORD"
+before_ids="$(ls "$WS_HOME/sessions")"
+( source "$WS"; open_session() { return 1; }; ws_bus_spawn_trigger "$FAIL_RECORD" never-opened ) >/dev/null 2>&1
+assert_exit "$?" "1" "failed spawn open reports failure"
+FAIL_ID="$(new_session_id "$before_ids")"
+assert_eq "${FAIL_ID:+found}" "found" "failed spawn allocated an identity"
+assert_eq "$(awk -F '\t' -v id="$FAIL_ID" '$4 == id' "$(git -C "$TRIGGER_WT" rev-parse --absolute-git-dir)/ws-sessions")" "" "failed spawn frees its slot row"
+assert_eq "$(jq -r '.status' "$WS_HOME/sessions/$FAIL_ID/meta" 2>/dev/null)" "closed" "failed spawn identity is closed"
+
+echo "ws send: input readiness waits up to WS_READY_TIMEOUT seconds"
+# ready_probe <polls-until-ready> — runs ws_bus_wait_ready against a stub pane.
+ready_probe() {
+  ( local after="$1"; source "$WS"
+    WS_SESSIONS="$TMP/ready"; mkdir -p "$WS_SESSIONS/1"; print queued > "$WS_SESSIONS/1/inbox"; print 0 > "$TMP/ready-polls"
+    ws_bus_pane() { print %0; }
+    tmux_() { local n=$(( $(<"$TMP/ready-polls") + 1 )); print $n > "$TMP/ready-polls"; (( n > after )) && print 1 || print 0; }
+    ws_bus_wait_ready 1 @0 )
+}
+ready_probe 55
+assert_exit "$?" "0" "TUI ready after >5s of polling succeeds within the default budget"
+WS_READY_TIMEOUT=0.3 ready_probe 1000
+assert_exit "$?" "1" "WS_READY_TIMEOUT bounds the wait"
+assert_eq "$(( $(<"$TMP/ready-polls") < 10 ))" "1" "short WS_READY_TIMEOUT gives up early"
+
+echo "ws add: agent shells resolve a non-interactive ws command"
+cat > "$TMP/env-shell" <<'EOF'
+#!/bin/zsh -f
+print -r -- "$(command -v ws)|${WS_BIN:-}" >> "$WS_HOME/agent-env"
+exec zsh -fc "$@"
+EOF
+chmod +x "$TMP/env-shell"
+WS_AGENT_SHELL="$TMP/env-shell" "$WS" add api/triggers --agent claude --detach >/dev/null
+# env-shell logs twice: the tmux tab shell (before run's PATH entry), then the agent shell.
+agent_env_lines() { (( $(wc -l < "$WS_HOME/agent-env" 2>/dev/null || print 0) >= 2 )); }
+WS_TEST_WAIT=5 wait_until agent_env_lines
+ENV_LINE="$(sed -n 2p "$WS_HOME/agent-env" 2>/dev/null)"
+assert_eq "$([[ "${ENV_LINE%%|*}" -ef "$WS" ]] && print yes)" "yes" "ws on agent PATH resolves to ws.sh"
+assert_eq "${ENV_LINE#*|}" "$WS" "agent env exports WS_BIN"
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 

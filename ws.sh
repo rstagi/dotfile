@@ -5,8 +5,8 @@ zmodload zsh/system # zsystem flock (sessions file)
 # ws — bare-minimum terminal Conductor: one git worktree + one tmux session per workspace,
 # one tab (window) per agent session inside it. Status and resume ids come from Claude Code /
 # Codex / Grok Build hooks — no screen scraping.
-# Every launched/resumed agent gets its global identity and a reminder to run `ws done`
-# when the user's task is complete; ws-sessions teaches messaging and dependent tasks.
+# Every launched/resumed agent gets its global identity (spawned ones: a reminder to run
+# `ws done` when the task is complete); ws-sessions teaches messaging and dependent tasks.
 #
 #   ws                         picker (attaches when run outside tmux)
 #   ws new [--repo P] [--branch B] [--agent claude|codex|grok] [--detach]
@@ -408,7 +408,7 @@ cmd_hook() {
     if [[ "$event" == stop ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
       id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
-      reply="$(ws_bus_stop "$id" "$payload")" || reply='{}'
+      reply="$(ws_bus_stop "$id")" || reply='{}'
       if [[ "$reply" == *'"decision":"block"'* ]]; then
         state="$(hook_state working "" "$prev")"
       else
@@ -417,7 +417,8 @@ cmd_hook() {
     else
       state="$(hook_state "$event" "$agent_id" "$prev")"
     fi
-    if [[ "$state" == idle ]]; then
+    # Never paste for a Stop: its TUI is blocked in this hook. Later sends see the idle tab.
+    if [[ "$event" != stop && "$state" == idle ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
       id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
       if ws_bus_idle "$id" "$win"; then
@@ -430,7 +431,9 @@ cmd_hook() {
     hook_state "$event" "$agent_id" "$prev" >/dev/null # stale for state, but keep subagent bookkeeping
   fi
   exec {lockfd}>&-
-  [[ -z "$reply" ]] || print -r -- "$reply"
+  if [[ -n "$reply" ]] && print -r -- "$reply" && [[ "$reply" == *'"decision":"block"'* ]]; then
+    ws_bus_ack "${id:-}" # reply delivered: drop its in-flight copy
+  fi
   (( applied )) || return 0
   # finished while you weren't looking → unread until you visit the tab (or ws opens it)
   [[ "$prev" == working && "$state" == idle ]] && ! pane_focused && tmux_ set -w -t "$TMUX_PANE" @ws_unread 1 2>/dev/null
@@ -535,10 +538,18 @@ open_session_locked() {
   name="$(workspace_name "$wt")"
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
-  cmd="$(agent_command "$agent" "$resume" "${6:-}" "$id")"
-  run="${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  cmd="$(agent_command "$agent" "$resume" "" "$id")"
+  # Prompt via file: tmux rejects commands over ~16KB. `_agent` consumes it once.
+  if [[ -n "${6:-}" ]]; then
+    (umask 077 && print -rn -- "$6" > "$WS_SESSIONS/$id/prompt") || return 1
+  else
+    rm -f "$WS_SESSIONS/$id/prompt"
+  fi
+  # Non-interactive agent shells (codex/grok `zsh -lc`) lack the `ws` alias: put a `ws` on PATH.
+  [[ "$WS_HOME/bin/ws" -ef "$WS_BIN" ]] || { mkdir -p "$WS_HOME/bin" && ln -sfn "$WS_BIN" "$WS_HOME/bin/ws"; } 2>/dev/null
+  run="PATH=${(q)WS_HOME}/bin:\$PATH; ${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
-    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}"
+    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" -e "WS_BIN=$WS_BIN"
     -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
@@ -592,7 +603,10 @@ untag_window() {
 # Prompt goes after `--` so option-like or subcommand-named prompts stay positional.
 agent_command() {
   local agent="$1" resume="$2" prompt="$3" id="$4"
-  local preamble="You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions."
+  local preamble="You are ws session #$id. Use the ws-sessions skill to coordinate sessions."
+  # done is permanent: only spawned sessions own their completion; user tabs outlive tasks.
+  [[ "$(jq -r '.spawned' "$WS_SESSIONS/$id/meta" 2>/dev/null)" != true ]] ||
+    preamble="You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions."
   case "$agent" in
   claude)
     write_claude_settings
@@ -648,7 +662,7 @@ write_claude_settings() {
 }
 
 # Grok has no per-launch hooks flag, so ws hooks live in its global hooks dir (always
-# trusted there). Harmless outside ws: cmd_hook no-ops without WS_WORKSPACE.
+# trusted there). Harmless outside ws: without WS_WORKSPACE, cmd_hook only answers Stop with {}.
 write_grok_hooks() {
   mkdir -p "${GROK_HOOKS:h}"
   jq -n --arg h "$WS_BIN hook" '
@@ -937,6 +951,8 @@ session_remove_locked() {
 
 # Stores the tab's resume id, re-adding its row if it went missing (a session must stay
 # resumable after a reboot). Skips the write when nothing changed — hooks fire on every tool.
+# slot/id are read before the lock: a stale hook after slot reuse must never take over the
+# row of the slot's new owner, so only an unowned row or our own is updated.
 record_resume_id() {
   local sid wt slot agent f id
   sid="$(print -r -- "$1" | jq -r '.session_id // empty' 2>/dev/null)"
@@ -954,7 +970,7 @@ record_resume_id() {
   fi
   grep -qxF -- "$slot	${agent:-claude}	$sid	$id" "$f" && return 0
   with_lock "$f" rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" -v g="$id" \
-    '$1 == s { $3 = id; if (g != "") $4 = g; found = 1 } { print } END { if (!found) print s, a, id, g }'
+    '$1 == s { found = 1; if ($4 == "" || $4 == g) { $3 = id; if (g != "") $4 = g } } { print } END { if (!found) print s, a, id, g }'
 }
 
 # with_lock <file> <cmd...> — runs cmd holding <file>.lock: parallel tool calls fire hooks

@@ -82,6 +82,8 @@ cmd_done() {
     win="$(ws_bus_window "$id")"
     if [[ -n "$win" ]]; then
       # Publish first and release the lifecycle lock before killing our own process group.
+      # Mark this tab's HUP as cleanup, not a crash: ws_bus_exit skips its exit event.
+      ws_bus_update "$id" --arg win "$win" '.done_window = $win'
       # The kill skips the launch wrapper's `ws _end`: free the slot row here.
       session_remove "$(jq -r '.path' "$WS_SESSIONS/$id/meta")" "$(jq -r '.slot' "$WS_SESSIONS/$id/meta")"
       cmd_dismiss "$win"
@@ -122,24 +124,28 @@ cmd_send() {
   fi
   [[ -n "$message" ]] || die "send: empty message"
   message="[ws $sender]"$'\n'"$message"
-  local win lock lockfd
+  local win lock lockfd rc attempt
   # Durable first: a slow TUI or busy hook lock can delay, never drop, the message.
   with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_enqueue "$id" "$message" "$force" || return 1
-  win="$(ws_bus_window "$id")"
-  if [[ -z "$win" ]]; then
-    (ws_bus_open "$id" 1) || die "send: message queued; cannot resume session #$id"
-    win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open"
-    ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
-  elif [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle && -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
-    ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
-  fi
-  lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-  { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
-    die "send: message queued; session #$id busy"
-  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
-  local rc=$?
-  exec {lockfd}>&-
-  return "$rc"
+  # The window may close while we wait for its hook lock: re-resolve (and resume) once.
+  for attempt in 1 2; do
+    win="$(ws_bus_window "$id")"
+    if [[ -z "$win" ]]; then
+      (ws_bus_open "$id" 1) || die "send: message queued; cannot resume session #$id"
+      win="$(ws_bus_window "$id")" || die "send: message queued; session #$id did not open"
+      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+    elif [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle && -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
+      ws_bus_wait_ready "$id" "$win" || die "send: message queued; session #$id input not ready"
+    fi
+    lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+    { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
+      die "send: message queued; session #$id busy"
+    with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
+    rc=$?
+    exec {lockfd}>&-
+    (( rc == 3 )) || return "$rc"
+  done
+  die "send: message queued; session #$id not delivered"
 }
 
 cmd_whoami() {
@@ -233,7 +239,7 @@ ws_bus_evaluate_trigger() {
 }
 
 ws_bus_fire_trigger() {
-  local record="$WS_TRIGGERS/$1.json" id event target sender template output="" piece message action rc
+  local record="$WS_TRIGGERS/$1.json" id event target sender template output="" piece message action rc errfile
   [[ -f "$record" ]] || return 0
   [[ "$(jq -r '.status' "$record")" == pending ]] || return 0
   event="$(jq -r '.event' "$record")"
@@ -256,22 +262,30 @@ ws_bus_fire_trigger() {
   message="$(print -rn -- "$output" | jq -Rsrj --arg template "$template" --arg ids "${(j:,:)ids}" \
     '. as $output | $template | gsub("\\{(?<key>id|output)\\}"; if .key == "id" then $ids else $output end)'; print -n .)"
   message="${message%.}"
+  # An empty expansion is not an action: stay pending, a later output may fill it.
+  if [[ -z "${message//[[:space:]]/}" ]]; then
+    print -u2 "ws: trigger #$1: empty message or prompt after expansion; left pending"
+    return 1
+  fi
   target="$(jq -r '.target' "$record")"
   sender="$(jq -r '.sender' "$record")"
   # Claim before any side effect. Repeated and simultaneous events cannot execute twice.
   jq '.status = "fired"' "$record" > "$record.tmp" && mv "$record.tmp" "$record" || return 1
   action="$(jq -r '.action' "$record")"
+  errfile="$(mktemp "$WS_TRIGGERS/.error.XXXXXX")" || return 1
   if [[ "$action" == spawn ]]; then
-    ws_bus_spawn_trigger "$record" "$message" >/dev/null
+    ws_bus_spawn_trigger "$record" "$message" >/dev/null 2>"$errfile"
   else
     # Registering the trigger is the explicit override for done targets.
-    print -rn -- "$message" | (WS_SESSION="$sender" cmd_send --force "$target" - 2>/dev/null) >/dev/null
+    print -rn -- "$message" | (WS_SESSION="$sender" cmd_send --force "$target" - 2>"$errfile") >/dev/null
   fi
   rc=$?
   if (( rc )); then
-    jq --argjson rc "$rc" '.status = "failed" | .exit_code = $rc' "$record" > "$record.tmp" && mv "$record.tmp" "$record"
-    print -u2 "ws: trigger #$1 action failed; see $record"
+    jq --argjson rc "$rc" --rawfile error "$errfile" '.status = "failed" | .exit_code = $rc | .error = $error' \
+      "$record" > "$record.tmp" && mv "$record.tmp" "$record"
+    print -u2 "ws: trigger #$1 action failed: $(tail -1 "$errfile"); see $record"
   fi
+  rm -f "$errfile"
   return "$rc"
 }
 
@@ -288,7 +302,12 @@ ws_bus_spawn_trigger() {
   ws_bus_update "$id" --arg trigger "$tid" --arg parent "$sender" \
     '.spawned = true | .trigger = $trigger | .parent = $parent' || return 1
   jq --arg child "$id" '.spawned_session = $child' "$record" > "$record.tmp" && mv "$record.tmp" "$record" || return 1
-  open_session "$wt" "$slot" "$agent" "" "$prompt"
+  open_session "$wt" "$slot" "$agent" "" "$prompt" && return 0
+  # No tab: free the slot and close the identity rather than orphan a stopped session.
+  rm -f "$WS_SESSIONS/$id/prompt"
+  session_remove "$wt" "$slot"
+  ws_bus_close "$id"
+  return 1
 }
 
 # Output publication and status are serialized across repeat declarations; cmd_done emits after.
@@ -326,9 +345,17 @@ ws_bus_event_locked() {
 # closed tty. Explicit stdin preserves interactive input; only the watcher ignores Ctrl-C.
 ws_bus_run_agent() {
   setopt localtraps
-  local id="$1" command="$2" code agent_pid input_fd
+  local id="$1" command="$2" code agent_pid input_fd prompt="$WS_SESSIONS/$1/prompt"
+  local -a args
+  # One-shot initial prompt (open_session writes it): literal positional $1 after `--`.
+  if [[ -f "$prompt" ]]; then
+    args=(ws "$(cat -- "$prompt"; print x)") # x: keep trailing newlines
+    args[2]="${args[2]%x}"
+    rm -f "$prompt"
+    command+=' -- "$1"'
+  fi
   exec {input_fd}<&0
-  ${(z)WS_AGENT_SHELL} "$command" <&$input_fd &
+  ${(z)WS_AGENT_SHELL} "$command" "${args[@]}" <&$input_fd &
   agent_pid=$!
   exec {input_fd}<&-
   trap 'trap "" HUP; kill -HUP "$agent_pid" 2>/dev/null; ws_bus_exit "$id" 129 </dev/null >/dev/null 2>&1; exit 129' HUP
@@ -353,6 +380,10 @@ ws_bus_run_agent() {
 ws_bus_exit() {
   [[ $# == 2 && "$2" == <-> && "$2" -le 255 ]] || die "_exit: expected <id> <exit-code>"
   local detail
+  # Spawned `ws done` closed this very tab (its slot cleanup already cleared .window): the
+  # done event is the completion. A resumed tab has a new window id and reports exits again.
+  [[ ! -f "$WS_SESSIONS/$1/meta" ]] || ! jq -e '.status == "done" and .done_window != null and (.window == .done_window or .window == "")' \
+    "$WS_SESSIONS/$1/meta" >/dev/null || return 0
   detail="$(jq -nc --argjson code "$2" '{code:$code}')" || return 1
   ws_bus_event "$1" exit "$detail"
 }
@@ -360,8 +391,12 @@ ws_bus_exit() {
 # Both send and Stop hold the window's hook lock before the inbox lock: no idle/queue race.
 ws_bus_send_locked() {
   local id="$1" win="$2" message="$3" queued="${4:-0}" state
-  state="$(tmux_ show -wqv -t "$win" @ws_state)"
   (( queued )) || ws_bus_enqueue "$id" "$message" || return 1
+  # Revalidate under the hook lock: a closed/retagged window or unknown state is not a live
+  # busy target. 3 = queued, caller re-resolves (resume) instead of reporting delivery.
+  [[ "$(ws_bus_window "$id")" == "$win" ]] || return 3
+  state="$(tmux_ show -wqv -t "$win" @ws_state)"
+  [[ -n "$state" ]] || return 3
   if [[ "$state" == idle && -s "$WS_SESSIONS/$id/inbox" ]]; then
     if [[ -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
       ws_bus_wait_ready "$id" "$win" || { print -u2 "ws: send: message queued; session #$id input not ready"; return 1; }
@@ -402,50 +437,74 @@ ws_bus_reclaim() {
 # tmux 3.8 exposes the TUI's bracketed-paste mode. A freshly resumed tab starts in a
 # shell: never paste there before the agent enables input. Stop may already have consumed
 # the queued message during startup, which also counts as delivery.
+# Budget: WS_READY_TIMEOUT seconds (default 60): resumed agents with MCPs start slowly.
 ws_bus_wait_ready() {
-  local id="$1" win="$2" attempt ready pane
-  for attempt in {1..50}; do
+  local id="$1" win="$2" ready pane deadline
+  zmodload zsh/datetime
+  deadline=$(( EPOCHREALTIME + ${WS_READY_TIMEOUT:-60} ))
+  while :; do
     [[ -s "$WS_SESSIONS/$id/inbox" ]] || return 0
     pane="$(ws_bus_pane "$win")" || return 1
     ready="$(tmux_ display -p -t "$pane" '#{bracket_paste_flag}' 2>/dev/null)" || return 1
     [[ "$ready" != 1 ]] || return 0
+    (( EPOCHREALTIME < deadline )) || return 1
     sleep 0.1
   done
-  return 1
 }
 
-# A Stop continuation is one-shot. The next Stop with an empty inbox must allow stopping.
+# Continuation Stops (stop_hook_active) block too, but only for messages queued since the
+# last reply: an empty inbox allows stopping. Inbox lock -t 1 + hook lock -t 2 stay under
+# the 5s hook timeout.
 ws_bus_stop() {
-  local id="$1" payload="$2"
+  local id="$1" inbox="$WS_SESSIONS/$1/inbox"
   [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || { print '{}'; return 0; }
-  if print -r -- "$payload" | jq -e '.stop_hook_active == true or .stopHookActive == true' >/dev/null 2>&1; then
-    print '{}'
-    return 0
-  fi
-  with_lock "$WS_SESSIONS/$id/inbox" ws_bus_stop_locked "$id"
+  : >> "$inbox.lock"
+  (zsystem flock -t 1 -i 0.01 "$inbox.lock" 2>/dev/null || exit 1; ws_bus_stop_locked "$id")
 }
 
-# Drained messages stay in inbox.inflight until the reply is written (at-least-once).
+# Drained messages stay in inbox.inflight.<hook pid> until the hook has written the reply
+# and acked (at-least-once): a hook killed before that leaves an orphan for the next drain.
 ws_bus_stop_locked() {
-  local inbox="$WS_SESSIONS/$1/inbox" reply
-  ws_bus_reclaim "$1" || return 1
+  local inbox="$WS_SESSIONS/$1/inbox" inflight="$WS_SESSIONS/$1/inbox.inflight.$$"
+  ws_bus_reclaim_orphans "$1" || return 1
   [[ -s "$inbox" ]] || { print '{}'; return 0; }
-  mv "$inbox" "$inbox.inflight" && : > "$inbox" || return 1
-  reply="$(jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inbox.inflight")" || return 1
-  print -r -- "$reply" || return 1
-  rm -f "$inbox.inflight"
+  mv "$inbox" "$inflight" && : > "$inbox" || return 1
+  jq -cs '{decision:"block",reason:(map(.message) | join("\n\n"))}' "$inflight"
 }
 
-# Fallback for cancellation, legacy hooks or an active Stop guard. Only a verified idle
-# tab may receive pane input; callers hold its hook lock while checking/draining the inbox.
+# cmd_hook calls this once the Stop reply reached stdout. Own file only, so no lock:
+# reclaim never touches a live owner's file.
+ws_bus_ack() {
+  [[ "$1" == <-> ]] || return 0
+  rm -f "$WS_SESSIONS/$1/inbox.inflight.$$"
+}
+
+# Under the inbox lock: requeues the legacy in-flight file and those of dead Stop hooks.
+# A live owner's reply may still land, so its file stays; our own pid's is a reused one.
+ws_bus_reclaim_orphans() {
+  local inbox="$WS_SESSIONS/$1/inbox" f
+  ws_bus_reclaim "$1" || return 1
+  for f in "$inbox".inflight.<->(N); do
+    [[ "${f##*.}" != $$ ]] && kill -0 "${f##*.}" 2>/dev/null && continue
+    cat "$f" "$inbox" > "$inbox.tmp" && mv "$inbox.tmp" "$inbox" && rm -f "$f" || return 1
+  done
+}
+
+# Fallback for cancellation or legacy hooks (never a Stop: its TUI is blocked in the hook).
+# Only a verified idle tab may receive pane input; callers hold its hook lock while
+# checking/draining the inbox.
 ws_bus_idle() {
   local id="$1" win="$2"
-  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" && -s "$WS_SESSIONS/$id/inbox" ]] || return 1
+  local -a orphans
+  [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || return 1
+  orphans=("$WS_SESSIONS/$id"/inbox.inflight*(N))
+  [[ -s "$WS_SESSIONS/$id/inbox" ]] || (( $#orphans )) || return 1
   with_lock "$WS_SESSIONS/$id/inbox" ws_bus_idle_locked "$id" "$win"
 }
 
 ws_bus_idle_locked() {
   local id="$1" win="$2" inbox="$WS_SESSIONS/$1/inbox" message
+  ws_bus_reclaim_orphans "$id" || return 1
   [[ -s "$inbox" ]] || return 1
   message="$(jq -rjs 'map(.message) | join("\n\n")' "$inbox" && print -n .)" || return 1
   message="${message%.}"
