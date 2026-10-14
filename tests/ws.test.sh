@@ -2020,13 +2020,15 @@ assert_eq "$("$WS" triggers)" "" "invalid registrations create no pending trigge
 
 # --- G3: spawn prompt via file, open failure cleanup, ready timeout, non-interactive ws ---
 echo "ws on: spawn prompts beyond tmux's command limit reach the agent argv intact"
-new_session_id() { comm -13 <(print -r -- "$1" | sort) <(ls "$WS_HOME/sessions" | sort) | grep -x '[0-9]*'; }
+new_session_id() { comm -13 <(print -r -- "$1" | sort) <(print -rl -- "$WS_HOME"/sessions/<->(N:t) | sort); }
 BIG_PAD=""
 BIG_PROMPT="big-start ${(l:24000::x:)BIG_PAD} \$(touch never-execute-big) big-end"
-before_ids="$(ls "$WS_HOME/sessions")"
+before_ids="$(print -rl -- "$WS_HOME"/sessions/<->(N:t))"
 WS_SESSION="$DEFAULT_ID" "$WS" on "$SOURCE_B" done --spawn "$BIG_PROMPT" --agent claude >/dev/null
 assert_exit "$?" "0" "large spawn trigger fires"
 BIG_ID="$(new_session_id "$before_ids")"
+# n5: session discovery must fail closed even when ls color is forced.
+assert_eq "$([[ "$BIG_ID" == <-> ]] && print yes)" "yes" "large spawn discovers one numeric session id"
 wait_until test -s "$WS_HOME/argv-$BIG_ID.json"
 assert_eq "$(jq -r '.[-1]' "$WS_HOME/argv-$BIG_ID.json" 2>/dev/null)" "$BIG_PROMPT" "24KB spawn prompt is the literal final argument"
 assert_eq "$(jq -r '.[-2]' "$WS_HOME/argv-$BIG_ID.json" 2>/dev/null)" "--" "large prompt still follows --"
@@ -2040,11 +2042,11 @@ fi
 echo "ws on: a spawn whose tab fails to open leaves no slot row and a closed identity"
 FAIL_RECORD="$TMP/fail-trigger.json"
 jq -n --arg p "$TRIGGER_WT" --arg s "$DEFAULT_ID" '{id:"t-fail",path:$p,agent:"codex",sender:$s}' > "$FAIL_RECORD"
-before_ids="$(ls "$WS_HOME/sessions")"
+before_ids="$(print -rl -- "$WS_HOME"/sessions/<->(N:t))"
 ( source "$WS"; open_session() { return 1; }; ws_bus_spawn_trigger "$FAIL_RECORD" never-opened ) >/dev/null 2>&1
 assert_exit "$?" "1" "failed spawn open reports failure"
 FAIL_ID="$(new_session_id "$before_ids")"
-assert_eq "${FAIL_ID:+found}" "found" "failed spawn allocated an identity"
+assert_eq "$([[ "$FAIL_ID" == <-> ]] && print yes)" "yes" "failed spawn allocated one numeric identity"
 assert_eq "$(awk -F '\t' -v id="$FAIL_ID" '$4 == id' "$(git -C "$TRIGGER_WT" rev-parse --absolute-git-dir)/ws-sessions")" "" "failed spawn frees its slot row"
 assert_eq "$(jq -r '.status' "$WS_HOME/sessions/$FAIL_ID/meta" 2>/dev/null)" "closed" "failed spawn identity is closed"
 
