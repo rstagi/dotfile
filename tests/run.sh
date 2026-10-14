@@ -25,7 +25,7 @@ fi
 
 echo "== zsh -n (syntax) =="
 ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh ws/lib/*.sh(N) ws/tests/*.sh(N))"}) # relative to $ROOT
-for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-review.sh $ws_scripts; do
+for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh $ws_scripts; do
   [[ -f "$ROOT/$s" ]] || continue
   if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; fail=1; fi
 done
