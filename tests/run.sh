@@ -1,7 +1,13 @@
 #!/bin/zsh
 # Run every tests/*.test.sh; exit non-zero if any file fails. Also syntax-checks the
 # loop-*.sh + ws.sh scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
+# Discard caller loop/color settings; each suite configures its own environment.
 set -u
+for inherited in ${(k)parameters}; do
+  case "$inherited" in
+    LOOP_*|CLICOLOR*|FORCE_COLOR|NO_COLOR|TYPESAFE_API_KEY) unset "$inherited" ;;
+  esac
+done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 fail=0

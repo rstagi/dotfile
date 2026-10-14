@@ -204,11 +204,13 @@ unset LOOP_JEV_MODE LOOP_JEV_CLIENT FAKE_JEV_LOG FAKE_JEV_RESPONSE FAKE_CODEX_OU
 export FAKE_ENGINE_LOG="$TMP/engines.log"
 export FAKE_RUN_DIR="$RUN_DIR"
 
+# --- checkpoint readiness: observe session startup before awaiting the watchdog ---
 echo "runner: phase deadline returns a checkpoint to the orchestrator"
 mkdir -p "$TMP/slow-bin" "$TMP/checkpoint"
 cat > "$TMP/slow-bin/codex" <<'EOF'
 #!/bin/zsh
-[[ "$1" == debug ]] && { print -r -- '{"models":[{"slug":"gpt-6-sol","visibility":"list"}]}'; exit 0; }
+# Simulate slow model discovery before the engine emits its session.
+[[ "$1" == debug ]] && { sleep 1; print -r -- '{"models":[{"slug":"gpt-6-sol","visibility":"list"}]}'; exit 0; }
 print -r -- "codex $*" >> "$FAKE_ENGINE_LOG"
 print -r -- '{"type":"thread.started","thread_id":"checkpoint-session"}'
 sleep 10
@@ -226,7 +228,19 @@ zsh "$ROOT/loop-runner.sh" \
   --run-dir "$TMP/checkpoint" \
   --prompt-file "$TMP/prompt.md" \
   --chain task \
-  --timeout 1 > "$TMP/checkpoint-runner.out" 2>&1
+  --timeout 5 > "$TMP/checkpoint-runner.out" 2>&1 &
+checkpoint_pid=$!
+checkpoint_ready=0
+for checkpoint_poll in {1..60}; do
+  if rg -qF '"thread_id":"checkpoint-session"' "$TMP/checkpoint/transcript.jsonl" 2>/dev/null; then
+    checkpoint_ready=1
+    break
+  fi
+  kill -0 "$checkpoint_pid" 2>/dev/null || break
+  sleep 0.05
+done
+assert_eq "$checkpoint_ready" "1" "checkpoint engine publishes its session before cutoff"
+wait "$checkpoint_pid"
 RC=$?
 assert_exit "$RC" "10" "deadline asks orchestrator for guidance"
 assert_eq "$(jq -r '.outcome' "$TMP/checkpoint/status.json" 2>/dev/null)" "question" "writes question status"
@@ -237,6 +251,7 @@ assert_eq "$(jq -r '.timedOut' "$TMP/checkpoint/meta.json" 2>/dev/null)" "true" 
 assert_eq "$(jq -r '.engine' "$TMP/checkpoint/meta.json" 2>/dev/null)" "codex" "records engine for resume"
 assert_eq "$(jq -r '.sessionId' "$TMP/checkpoint/meta.json" 2>/dev/null)" "checkpoint-session" "keeps session for resume"
 assert_eq "$(rg -c '^claude ' "$FAKE_ENGINE_LOG" 2>/dev/null || echo 0)" "0" "does not start fallback after deadline"
+# --- end checkpoint readiness ---
 
 echo "runner: review stage also checkpoints at its deadline"
 mkdir -p "$TMP/review-checkpoint"
@@ -495,5 +510,26 @@ for limit_rc in 0 1; do
   assert_contains "$(cat "$TMP/limit-$limit_rc.out")" "rate/usage limit on claude" "classifies the reply as a usage limit (claude rc=$limit_rc)"
   assert_eq "$(grep -c '^claude ' "$TMP/limit-$limit_rc.log")" "1" "does not retry the limited leg (claude rc=$limit_rc)"
 done
+
+# --- suite environment isolation: caller settings never reach suite fixtures ---
+echo "suite: ignores inherited loop and color settings"
+mkdir -p "$TMP/suite/tests"
+cp "$HERE/run.sh" "$TMP/suite/tests/run.sh"
+cat > "$TMP/suite/tests/environment.test.sh" <<'EOF'
+#!/bin/zsh
+for inherited in ${(k)parameters}; do
+  case "$inherited" in
+    LOOP_*|CLICOLOR*|FORCE_COLOR|NO_COLOR|TYPESAFE_API_KEY) exit 1 ;;
+  esac
+done
+[[ "${SUITE_SENTINEL:-}" == preserved ]]
+EOF
+env LOOP_JEV_MODE=shadow LOOP_JEV_MODE_EXPLICIT=0 LOOP_JEV_CUSTOM=inherited \
+  LOOP_SUB=1 LOOP_SUB_DIR=/unused LOOP_SUB_CUSTOM=inherited LOOP_CONTROL_POLL_SEC=99 \
+  LOOP_DAEMON_URL=http://127.0.0.1:9 CLICOLOR=1 CLICOLOR_FORCE=1 CLICOLOR_CUSTOM=1 \
+  FORCE_COLOR=1 NO_COLOR=1 TYPESAFE_API_KEY=fake-key SUITE_SENTINEL=preserved \
+  zsh "$TMP/suite/tests/run.sh" > "$TMP/suite.out" 2>&1
+assert_exit "$?" "0" "suite strips loop and color settings while preserving unrelated variables"
+# --- end suite environment isolation ---
 
 test_summary
