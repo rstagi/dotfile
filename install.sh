@@ -423,6 +423,9 @@ install_ws() {
   if ! grep -q "source.*\.zshrc_ws_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
     echo "source $HOME/dotfile/.zshrc_ws_ext" >> "$HOME/.zshrc_ext"
   fi
+  # Real executable (alias is interactive-only): agents' `zsh -lc` shells can run `ws done`
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$HOME/dotfile/ws.sh" "$HOME/.local/bin/ws"
   # Grok Build: optional third agent, never a hard dep (it sends repo content to xAI)
   if ! command -v grok &> /dev/null && read_yes "Install Grok Build (optional ws agent; sends code to xAI)?"; then
     install_grok
@@ -657,9 +660,9 @@ install_claude_config() {
     ln -sfn ~/dotfile/CLAUDE_GLOBAL.md ~/.claude/CLAUDE.md
     mkdir -p ~/.codex
     ln -sfn ~/dotfile/AGENTS_GLOBAL.md ~/.codex/AGENTS.md
-    # Share the Loop workflow through current/legacy Codex discovery and Ratel Local.
+    # Share Loop + ws skills through current/legacy Codex discovery and Ratel Local.
     if ! ~/dotfile/install-agent-skills.sh --source ~/dotfile/.claude/skills; then
-      echo "Failed to install shared Loop skills" >&2
+      echo "Failed to install shared agent skills" >&2
       return 1
     fi
 

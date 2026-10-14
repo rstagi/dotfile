@@ -5,17 +5,36 @@ zmodload zsh/system # zsystem flock (sessions file)
 # ws — bare-minimum terminal Conductor: one git worktree + one tmux session per workspace,
 # one tab (window) per agent session inside it. Status and resume ids come from Claude Code /
 # Codex / Grok Build hooks — no screen scraping.
+# Every launched/resumed agent gets its global identity (spawned ones: a reminder to run
+# `ws done` when the task is complete); ws-sessions teaches messaging and dependent tasks.
 #
 #   ws                         picker (attaches when run outside tmux)
 #   ws new [--repo P] [--branch B] [--agent claude|codex|grok] [--detach]
 #   ws add [name|path] [--agent claude|codex|grok] [--detach]   another agent tab (default: current worktree)
-#   ws open <name|path> [--detach]   focus, or restore every recorded session (resumed by id)
+#   ws open <workspace|path|id|name> [--detach]   focus or resume a workspace/session
 #   ws pick                    grouped picker: enter open · ctrl-n new · ctrl-o new codex ·
 #                              ctrl-r new grok · ctrl-a add claude tab · ctrl-t add codex tab ·
 #                              ctrl-v add grok tab · ctrl-p pin · ctrl-x rm ·
 #                              ctrl-s show/hide sessions · ctrl-u toggle unread (• = finished, not yet seen)
 #   ws pin <name|path>         toggle pin (pinned workspaces are listed first)
 #   ws list                    TSV: state name path agent window pinned active unread
+#   ws whoami                  own global session id (inside an agent tab)
+#   ws sessions [id|name]      TSV: id name workspace agent state status
+#   ws name <label>            name your session (unique; usable in place of its id)
+#   ws send [--force] <id|name> <msg|->   sender-prefixed message (or stdin): paste idle, queue busy
+#                              done needs --force; stopped sessions resume before delivery
+#                              idle paste awaits prompt confirmation; timeout requeues (WS_PASTE_ACK_TIMEOUT=10)
+#   ws done [--output <file>|-]   declare own session done; replace output.md (default empty)
+#                              --output - also reads stdin; repeat appends another done event
+#                              pending inbox/in-flight messages refuse done; let Stop deliver first
+#                              spawned tabs close after publication; user-opened tabs stay
+#   ws show <id|name>           session metadata, lifecycle status and output path
+#   ws on <id[,id…]> <done|exit> (--send-to <id|me> <msg> | --spawn <prompt> [--agent A])
+#                              one-shot fan-in; spawn defaults to claude in current worktree
+#                              done counts past events; exit counts only events after registration
+#                              output-only templates reject registration; include text or {id}
+#   ws triggers                TSV: pending trigger id, sources, event, action, target, template
+#   ws on --rm <trigger-id>     cancel a pending trigger; cycles are rejected on registration
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
 #                              default squash), fast-forward the main checkout, then on confirm
@@ -23,11 +42,14 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              dirty, lists the files and asks to force delete
 #   ws claude|codex|grok [args]  run the agent in this tab as a tracked session (e.g. a prefix+c tab)
 #   ws hook <event>            called by agent hooks inside a session window
-#                              (working|idle|waiting|subagent-start|subagent-stop)
+#                              (working|idle|stop|cancel|waiting|subagent-start|subagent-stop)
+#                              cancel requires the current turn id; unknown/stale ids are ignored
 #   ws _dismiss <window|pane>  tab seen or agent exited: emit `closed` if a notification is open
 #
-# Sessions live in <worktree git dir>/ws-sessions (slot, agent, resume id). Quitting an agent
-# cleanly forgets its session; a killed one (reboot, kill-window) is resumed on `ws open`.
+# Workspace slots live in <worktree git dir>/ws-sessions (slot, agent, resume id, global id).
+# Global identities live in $WS_HOME/sessions/<id>/. A killed tab resumes on `ws open`;
+# a clean exit forgets its workspace slot while retaining its global record.
+# Exited tabs stop accepting messages before exit triggers run; sends resume the session.
 
 WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
@@ -52,6 +74,7 @@ SHOW_SESSIONS="$WS_HOME/show-sessions" # exists → picker lists per-session row
 DEFAULT_INCLUDE_GLOBS=(".env*")
 AGENTS=(claude codex grok)
 GROK_HOOKS="${GROK_HOME:-$HOME/.grok}/hooks/ws.json"
+source "${WS_BIN:h}/ws-bus.sh"
 
 main() {
   local cmd="${1:-}"
@@ -64,6 +87,14 @@ main() {
   pick) cmd_pick ;;
   pin) cmd_pin "$@" ;;
   list | ls) cmd_list ;;
+  whoami) cmd_whoami ;;
+  sessions) cmd_sessions "$@" ;;
+  name) cmd_name "$@" ;;
+  send) cmd_send "$@" ;;
+  done) cmd_done "$@" ;;
+  on) cmd_on "$@" ;;
+  triggers) cmd_triggers "$@" ;;
+  show) cmd_show "$@" ;;
   rm) cmd_rm "$@" ;;
   merge) cmd_merge ;;
   _merge_popup) (cmd_merge); print -n "\npress enter to close"; read -r _ ;; # subshell: die must not skip the pause
@@ -76,8 +107,13 @@ main() {
   _unread) toggle_unread "$@" ;;
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
+  _agent) ws_bus_run_agent "$@" ;;
+  _paste-timeout) ws_bus_paste_timeout "$@" ;;
+  _evaluate) ws_bus_evaluate_event "$@" ;;
+  _deliver-retry) ws_bus_deliver_retry "$@" ;;
+  _hook-retry) hook_retry "$@" ;;
   _build-notifier) build_notifier ;;
-  -h | --help | help) sed -n '4,24p' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
+  -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
   esac
 }
@@ -115,8 +151,9 @@ cmd_new() {
   [[ -e "$wt" ]] && die "workspace exists: $wt (use: ws open ${repo:t}/${wt:t})"
   add_worktree "$repo" "$branch" "$wt" || die "git worktree add failed"
   copy_included_files "$repo" "$wt"
-  local win
-  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  local win slot
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  win="$(open_session "$wt" "$slot" "$agent" "")" || die "cannot open session"
   run_setup "$wt" "$(setup_script "$repo")"
   (( detach )) || focus "$win"
 }
@@ -132,9 +169,10 @@ cmd_add() {
   done
   check_agent "$agent"
   [[ -n "$target" ]] || target="$(current_workspace)" || die "add: not inside a workspace (pass <repo/branch>)"
-  local wt win
+  local wt win slot
   wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
-  win="$(open_session "$wt" "$(session_add "$wt" "$agent")" "$agent" "")"
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  win="$(open_session "$wt" "$slot" "$agent" "")" || die "cannot open session"
   (( detach )) || focus "$win"
 }
 
@@ -146,12 +184,17 @@ cmd_open() {
     *) target="$1"; shift ;;
     esac
   done
-  local wt slot agent resume
+  local wt id row
+  if id="$(ws_bus_resolve "$target")"; then
+    ws_bus_open "$id" "$detach"
+    return $?
+  fi
   wt="$(resolve_workspace "$target")" || die "no such workspace: $target"
   if [[ -z "$(windows_for "$wt")" ]]; then
     [[ -n "$(sessions_read "$wt")" ]] || session_add "$wt" claude >/dev/null
-    sessions_read "$wt" | while IFS=$'\t' read -r slot agent resume; do
-      open_session "$wt" "$slot" "$agent" "$resume" >/dev/null
+    sessions_read "$wt" | while IFS= read -r row; do
+      local -a fields=("${(@ps:\t:)row}")
+      open_session "$wt" "${fields[1]}" "${fields[2]}" "${fields[3]:-}" >/dev/null
     done
   fi
   (( detach )) || focus "$(active_window_for "$wt")"
@@ -160,20 +203,22 @@ cmd_open() {
 # Runs an agent in the current tab (one opened by hand, e.g. prefix+c) as a tracked session:
 # ws hooks, state, resume. The tab goes back to a plain shell when the agent exits.
 cmd_run() {
-  local agent="$1" wt win slot cmd s
+  local agent="$1" wt win slot cmd s id
   shift
   [[ -n "${TMUX_PANE:-}" ]] || die "$agent: run it inside a workspace's tmux tab"
   wt="$(current_workspace)" && wt="$(resolve_workspace "$wt")" || die "$agent: not inside a workspace"
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}')"
   [[ -z "$(tmux_ show -wqv -t "$win" @ws_slot)" ]] || die "$agent: this tab already runs a ws session"
-  slot="$(session_add "$wt" "$agent")"
+  slot="$(session_add "$wt" "$agent")" || die "cannot register session"
+  id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || die "cannot register session"
   tag_window "$win" "$wt" "$slot" "$agent"
-  cmd="$(agent_command "$agent" "")"
+  cmd="$(agent_command "$agent" "" "" "$id")"
   (( $# )) && cmd+=" ${(j: :)${(q)@}}"
-  WS_WORKSPACE="$(workspace_name "$wt")" ${(z)WS_AGENT_SHELL} "$cmd"
+  WS_SESSION="$id" WS_WORKSPACE="$(workspace_name "$wt")" ws_bus_run_agent "$id" "$cmd"
   s=$?
   cmd_dismiss "$TMUX_PANE"
-  (( s == 0 )) && session_remove "$wt" "$slot" # else kept for resume, as for a killed tab
+  # Generation-scoped (as `_end`): a resumed ID's new window keeps its row and registry window.
+  (( s == 0 )) && session_remove "$wt" "$slot" "$id" "$win" # else kept for resume, as for a killed tab
   untag_window "$win"
   return $s
 }
@@ -345,37 +390,189 @@ confirm() {
 }
 
 # Agent hooks call this from inside a session window: sets the window's state and records
-# the agent's session id (for resume). Best effort, always exits 0 — never blocks the agent.
+# the agent's session id (for resume). Best effort, always exits 0. Stop may request a
+# continuation with queued messages; all other hook output stays silent.
 # seq (µs since epoch, taken at entry) orders hooks per tab: one older than the tab's @ws_seq
 # is dropped, and a per-window lock keeps overlapping hooks from both applying/emitting
 # (no lock → dropped: an unordered write could clobber a newer state).
+# Cancellation also requires the recorded turn id: late reports have newer entry times.
 cmd_hook() {
   zmodload zsh/datetime zsh/system 2>/dev/null
   local seq="$(realtime_us "$EPOCHREALTIME")" event="${1:-}" payload=""
   [[ -t 0 ]] || payload="$(cat)"
-  [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || return 0
-  [[ "$event" == (working|idle|waiting|subagent-start|subagent-stop) ]] || return 0
-  record_resume_id "$payload"
+  local hook_event="$(print -r -- "$payload" | jq -r '.hook_event_name // .hookEventName // empty' 2>/dev/null)"
+  local turn_id="$(print -r -- "$payload" | jq -r '.promptId // .prompt_id // .turn_id // empty | select(type == "string")' 2>/dev/null)"
+  # Accept older launches that wired Stop to idle, as well as the explicit Stop command.
+  if [[ "$event" == idle ]]; then
+    case "$hook_event" in
+    Stop|stop) event=stop ;;
+    StopCancelled|stop_cancelled|Interrupt) event=cancel ;;
+    esac
+  fi
+  # Grok parses but ignores Stop decisions when its channel closes: preserve queued work.
+  if [[ "$event" == stop && "$(print -r -- "$payload" | jq -r '.reason // empty' 2>/dev/null)" == (channel_closed|shutdown) ]]; then
+    print '{}'
+    return 0
+  fi
+  local reply=""
+  [[ "$event" != stop ]] || reply='{}'
+  [[ -n "${WS_WORKSPACE:-}" && -n "${TMUX_PANE:-}" ]] || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
+  [[ "$event" == (working|idle|stop|cancel|waiting|subagent-start|subagent-stop) ]] || return 0
+  # A reused pane now hosts another session: a delayed hook from the old launch must not
+  # touch the new one's resume id, state or inbox.
+  if ! hook_owns_pane || nested_agent_hook; then
+    [[ -z "$reply" ]] || print -r -- "$reply"
+    return 0
+  fi
+  # Stop shares a 5s hook timeout with the hook and inbox locks: never wait on resume ids.
+  record_resume_id "$payload" "$([[ "$event" == stop ]] && print 0 || print 3)"
   local win lock lockfd prev last state agent_id="" applied=0
   [[ -n "$payload" ]] && agent_id="$(print -r -- "$payload" | jq -r '.agent_id // empty' 2>/dev/null)"
   agent_id="${agent_id//[^A-Za-z0-9_-]/_}"
-  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || return 0
+  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
   lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-  { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 0
+  # Stop waits longest (3s hook lock + 1s inbox lock stay under the 5s hook timeout) and, if
+  # starved, hands settling the tab to a detached retry rather than dropping the event.
+  local lock_wait=2
+  [[ "$event" != stop ]] || lock_wait=3
+  { : >>"$lock" && zsystem flock -t "$lock_wait" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || {
+    [[ "$event" != stop ]] || ws_bus_detach "$WS_BIN" _hook-retry "$(tmux_ show -wqv -t "$TMUX_PANE" @ws_seq 2>/dev/null)"
+    [[ -z "$reply" ]] || print -r -- "$reply"
+    return 0
+  }
   IFS='|' read -r last prev <<<"$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_seq}|#{@ws_state}' 2>/dev/null)"
+  # A tool hook may overtake a delayed prompt hook's state update. Delivery ack only
+  # compares against the paste watermark; stale state must not discard that confirmation.
+  if [[ "$event" == working && -z "$agent_id" && "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
+    local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+    id="${id:-${WS_SESSION:-}}"
+    [[ "$id" != <-> ]] || with_lock "$WS_SESSIONS/$id/inbox" ws_bus_paste_ack "$id" "$seq"
+  fi
   if [[ "$last" != <-> ]] || (( last < seq )); then
-    state="$(hook_state "$event" "$agent_id" "$prev")"
+    # Cancel reports can start after the next prompt: the entry-time watermark alone
+    # cannot order them. Without a matching turn id, neither state nor input is safe.
+    if [[ "$event" == cancel ]]; then
+      if [[ -z "$turn_id" || "$turn_id" != "$(tmux_ show -wqv -t "$win" @ws_turn)" ]]; then
+        exec {lockfd}>&-
+        return 0
+      fi
+      event=idle
+    elif [[ "$event" == working && -z "$agent_id" ]]; then
+      # Tool hooks may omit ids; a new prompt without one invalidates the old turn.
+      if [[ -n "$turn_id" || "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
+        tmux_ set -w -t "$win" @ws_turn "$turn_id" 2>/dev/null
+      fi
+    fi
+    if [[ "$event" == stop ]] && ! hook_owns_pane; then # exit cleanup/resume raced the lock
+      exec {lockfd}>&-
+      print -r -- '{}'
+      return 0
+    elif [[ "$event" == stop ]]; then
+      local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+      id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
+      reply="$(ws_bus_stop "$id")" || reply='{}'
+      if [[ "$reply" == *'"decision":"block"'* ]]; then
+        state="$(hook_state working "" "$prev")"
+      else
+        state="$(hook_state idle "" "$prev")"
+      fi
+    else
+      state="$(hook_state "$event" "$agent_id" "$prev")"
+    fi
+    # Never paste for a Stop: its TUI is blocked in this hook. Later sends see the idle tab.
+    if [[ "$event" != stop && "$state" == idle ]]; then
+      local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+      id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
+      if ws_bus_idle "$id" "$win"; then
+        seq="$(tmux_ show -wqv -t "$win" @ws_seq)" # paste watermark; state awaits UserPromptSubmit
+      fi
+    fi
     tmux_ set -w -t "$TMUX_PANE" @ws_seq "$seq" \; set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
     applied=1
   elif [[ "$event" == subagent-* ]]; then
     hook_state "$event" "$agent_id" "$prev" >/dev/null # stale for state, but keep subagent bookkeeping
   fi
   exec {lockfd}>&-
+  if [[ -n "$reply" ]] && print -r -- "$reply" && [[ "$reply" == *'"decision":"block"'* ]]; then
+    ws_bus_ack "${id:-}" # reply delivered: drop its in-flight copy
+  fi
   (( applied )) || return 0
   # finished while you weren't looking → unread until you visit the tab (or ws opens it)
   [[ "$prev" == working && "$state" == idle ]] && ! pane_focused && tmux_ set -w -t "$TMUX_PANE" @ws_unread 1 2>/dev/null
   [[ "$state" != "$prev" ]] && emit_notify_event "$state" "$prev" "$payload" "$seq"
   return 0
+}
+
+# Detached retry for a Stop that never got the hook lock: the TUI is no longer blocked, so
+# settle the tab as idle (draining its inbox by paste) unless a newer hook already moved it.
+hook_retry() {
+  local seq0="${1:-}" i
+  for i in {1..15}; do
+    sleep 1
+    [[ "$(tmux_ show -wqv -t "$TMUX_PANE" @ws_seq 2>/dev/null)" == "$seq0" &&
+      "$(tmux_ show -wqv -t "$TMUX_PANE" @ws_state 2>/dev/null)" == working ]] || return 0
+    print -r -- '{"hook_event_name":"idle"}' | cmd_hook idle >/dev/null 2>&1
+  done
+}
+
+# A pane whose @ws_session moved on (reused tab), or was untagged by exit cleanup while the
+# registry points elsewhere (resumed/closed), no longer belongs to this launch's WS_SESSION.
+# Only a pre-tag hook whose registry window is this very pane may fall back to WS_SESSION.
+hook_owns_pane() {
+  [[ -n "${WS_SESSION:-}" ]] || return 0
+  local pane_session="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)" win agent_pane
+  if [[ -n "$pane_session" ]]; then
+    [[ "$pane_session" == "$WS_SESSION" ]] || return 1
+    # WS_SESSION leaks into split panes via the tmux session env: only the tab's agent pane
+    # (and, by sharing its TMUX_PANE, that agent's children) acts for the tab.
+    agent_pane="$(tmux_ show -wqv -t "$TMUX_PANE" @ws_pane 2>/dev/null)"
+    [[ -z "$agent_pane" || "$agent_pane" == "$TMUX_PANE" ]]
+    return
+  fi
+  win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || return 1
+  [[ -n "$win" && "$(jq -r '.window // ""' "$WS_SESSIONS/$WS_SESSION/meta" 2>/dev/null)" == "$win" ]]
+}
+
+# Nested agents (e.g. headless grok run from the tab agent's tool shell) inherit TMUX_PANE/
+# WS_* and global hooks: their hooks must not act for the tab. Walking the hook's ancestry
+# up to the pane, a run of same-named agent processes is one agent (node → native codex);
+# two agent runs mean a nested agent. Hooks from outside the pane's tree are not judged.
+nested_agent_hook() {
+  local pane_pid pid=$$ name prev="" runs=0 line
+  local -A parent args
+  pane_pid="$(tmux_ display -p -t "$TMUX_PANE" '#{pane_pid}' 2>/dev/null)"
+  [[ "$pane_pid" == <-> ]] || return 1
+  while read -r line; do
+    line="${line## #}"
+    local -a f=(${=line})
+    (( ${#f} >= 3 )) || continue
+    parent[$f[1]]="$f[2]"
+    args[$f[1]]="${(j: :)f[3,-1]}"
+  done < <(ps -Ao pid=,ppid=,args= 2>/dev/null)
+  while [[ -n "${parent[$pid]:-}" && "$pid" != "$pane_pid" && "$pid" -gt 1 ]]; do
+    pid="${parent[$pid]}"
+    name="$(agent_process_name "${args[$pid]:-}")"
+    if [[ -n "$name" && "$name" != "$prev" ]]; then
+      (( ++runs ))
+    fi
+    prev="$name"
+  done
+  [[ "$pid" == "$pane_pid" ]] && (( runs > 1 ))
+}
+
+# agent_process_name <args> — claude|codex|grok when the process is that agent (also via an
+# interpreter: `node …/codex`, `sh …/claude`), else empty.
+agent_process_name() {
+  local -a w=(${=1})
+  local exe="${w[1]:-}" name="${${w[1]:-}:t}"
+  if [[ "$name" == (node|bun|deno|sh|bash|zsh|python3) && -n "${w[2]:-}" && "${w[2]}" != -* ]]; then
+    exe="${w[2]}"; name="${w[2]:t}"
+  fi
+  if [[ "$name" == (claude|codex|grok)(|-*) ]]; then
+    print -r -- "${name%%-*}"
+  elif [[ "$exe" == *(claude-code|@openai/codex)/* ]]; then
+    [[ "$exe" == *claude-code/* ]] && print claude || print codex
+  fi
 }
 
 # hook_state <event> <agent_id> <prev> — the tab's new state. The main agent's turn can end
@@ -398,6 +595,7 @@ hook_state() {
     fi
     ;;
   idle)
+    tmux_ set -wu -t "$TMUX_PANE" @ws_turn 2>/dev/null # ended before any fallback starts a new turn
     tmux_ set -w -t "$TMUX_PANE" @ws_main idle 2>/dev/null
     if subagents_running; then print working; else print idle; fi
     ;;
@@ -460,18 +658,39 @@ configure_bindings() {
 # anything else (crash, SIGHUP) keeps it for resume.
 open_session() {
   local wt="$1" slot="$2" agent="$3" resume="$4"
+  local id
+  id="$(ws_bus_identity "$wt" "$slot" "$agent" "$resume")" || return 1
+  with_lock "$WS_SESSIONS/$id/open" open_session_locked "$wt" "$slot" "$agent" "$resume" "$id" "${5:-}"
+}
+
+open_session_locked() {
+  local wt="$1" slot="$2" agent="$3" resume="$4" id="$5"
   local name tab cmd run sess win
+  if win="$(ws_bus_window "$id")"; then
+    print -r -- "$win"
+    return 0
+  fi
   name="$(workspace_name "$wt")"
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
-  cmd="$(agent_command "$agent" "$resume")"
-  run="$cmd; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
-  local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" ${(z)WS_AGENT_SHELL} "$run")
+  cmd="$(agent_command "$agent" "$resume" "" "$id")"
+  # Prompt via file: tmux rejects commands over ~16KB. `_agent` consumes it once.
+  if [[ -n "${6:-}" ]]; then
+    (umask 077 && print -rn -- "$6" > "$WS_SESSIONS/$id/prompt") || return 1
+  else
+    rm -f "$WS_SESSIONS/$id/prompt"
+  fi
+  # Non-interactive agent shells (codex/grok `zsh -lc`) lack the `ws` alias: put a `ws` on PATH.
+  [[ "$WS_HOME/bin/ws" -ef "$WS_BIN" ]] || { mkdir -p "$WS_HOME/bin" && ln -sfn "$WS_BIN" "$WS_HOME/bin/ws"; } 2>/dev/null
+  run="PATH=${(q)WS_HOME}/bin:\$PATH; ${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot $id \"\$TMUX_PANE\"; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
+    -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" -e "WS_BIN=$WS_BIN"
+    -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then
-    win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")"
+    win="$(tmux_ new-window -t "$sess:" "${spawn[@]}")" || return 1
   else
-    win="$(tmux_ new-session -s "${name//[.:]/_}" "${spawn[@]}")"
+    win="$(tmux_ new-session -s "${name//[.:]/_}" "${spawn[@]}")" || return 1
     configure_bindings
     sess="$(tmux_ display -p -t "$win" '#{session_id}')"
     tmux_ set -t "$sess" @ws_path "$wt"
@@ -479,19 +698,27 @@ open_session() {
     tmux_ set -t "$sess" status-left-length 60
     tmux_ set -t "$sess" status-left "#[bold] $name #[default]"
   fi
-  tag_window "$win" "$wt" "$slot" "$agent"
+  tag_window "$win" "$wt" "$slot" "$agent" || return 1
   print -r -- "$win"
 }
 
 # Marks a tab as an agent session: what windows_for, cmd_list and hooks key on.
 tag_window() {
-  local win="$1" wt="$2" slot="$3" agent="$4" tab="$4"
+  local win="$1" wt="$2" slot="$3" agent="$4" tab="$4" id pane
+  id="$(ws_bus_identity "$wt" "$slot" "$agent" "")" || return 1
   (( slot > 1 )) && tab+="#$slot"
   tmux_ rename-window -t "$win" "$tab"
   tmux_ set -w -t "$win" @ws_path "$wt"
   tmux_ set -w -t "$win" @ws_slot "$slot"
+  tmux_ set -w -t "$win" @ws_session "$id"
   tmux_ set -w -t "$win" @ws_agent "$agent"
   tmux_ set -w -t "$win" @ws_state idle
+  # Agent pane: the caller's when it runs here (ws run), else the new tab's only pane.
+  pane="${TMUX_PANE:-}"
+  [[ -n "$pane" && "$(tmux_ display -p -t "$pane" '#{window_id}' 2>/dev/null)" == "$win" ]] ||
+    pane="$(tmux_ display -p -t "$win" '#{pane_id}')"
+  tmux_ set -w -t "$win" @ws_pane "$pane"
+  ws_bus_update "$id" --arg win "$win" '.window = $win | if .status == "closed" then .status = "active" else . end'
   tmux_ set -w -t "$win" automatic-rename off
   tmux_ set -w -t "$win" window-status-format "#I $(state_format) #W"
   tmux_ set -w -t "$win" window-status-current-format "#[bold]#I $(state_format) #W#[default]"
@@ -499,7 +726,7 @@ tag_window() {
 
 untag_window() {
   local opt
-  for opt in @ws_path @ws_slot @ws_agent @ws_state @ws_main @ws_unread automatic-rename \
+  for opt in @ws_path @ws_slot @ws_session @ws_agent @ws_state @ws_main @ws_turn @ws_unread automatic-rename \
     window-status-format window-status-current-format; do
     tmux_ set -wu -t "$1" "$opt" 2>/dev/null
   done
@@ -508,13 +735,20 @@ untag_window() {
   done
 }
 
+# Prompt goes after `--` so option-like or subcommand-named prompts stay positional.
 agent_command() {
-  local agent="$1" resume="$2"
+  local agent="$1" resume="$2" prompt="$3" id="$4"
+  local preamble="You are ws session #$id. Use the ws-sessions skill to coordinate sessions."
+  # done is permanent: only spawned sessions own their completion; user tabs outlive tasks.
+  [[ "$(jq -r '.spawned' "$WS_SESSIONS/$id/meta" 2>/dev/null)" != true ]] ||
+    preamble="You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions."
   case "$agent" in
   claude)
     write_claude_settings
     local cmd="claude --dangerously-skip-permissions --settings ${(q)WS_HOME}/claude-settings.json"
+    cmd+=" --append-system-prompt ${(q)preamble}"
     [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
+    [[ -z "$prompt" ]] || cmd+=" -- ${(q)prompt}"
     print -r -- "$cmd"
     ;;
   codex)
@@ -522,15 +756,22 @@ agent_command() {
     local cmd="codex" ev st
     [[ -n "$resume" ]] && cmd+=" resume ${(q)resume}"
     cmd+=" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
-    for ev st in UserPromptSubmit working PostToolUse working PermissionRequest waiting Stop idle Interrupt idle; do
-      cmd+=" -c 'hooks.$ev=[{hooks=[{type=\"command\",command=\"$WS_BIN hook $st\"}]}]'"
+    local instructions="developer_instructions=$(jq -rn --arg text "$preamble" '$text | @json')"
+    cmd+=" -c ${(q)instructions}"
+    local hook
+    for ev st in UserPromptSubmit working PreToolUse working PostToolUse working PermissionRequest waiting Stop stop Interrupt cancel; do
+      hook="hooks.$ev=[{hooks=[{type=\"command\",command=$(jq -rn --arg c "${(q)WS_BIN} hook $st" '$c | @json')}]}]"
+      cmd+=" -c ${(q)hook}"
     done
+    [[ -z "$prompt" ]] || cmd+=" -- ${(q)prompt}"
     print -r -- "$cmd"
     ;;
   grok)
     write_grok_hooks
     local cmd="grok --always-approve"
+    cmd+=" --rules ${(q)preamble}"
     [[ -n "$resume" ]] && cmd+=" --resume ${(q)resume}"
+    [[ -z "$prompt" ]] || cmd+=" -- ${(q)prompt}"
     print -r -- "$cmd"
     ;;
   esac
@@ -540,13 +781,13 @@ agent_command() {
 # No SessionStart: its id has no conversation yet, and `claude --resume <id>` fails on it.
 write_claude_settings() {
   mkdir -p "$WS_HOME"
-  jq -n --arg h "$WS_BIN hook" '
+  jq -n --arg h "${(q)WS_BIN} hook" '
     def run($s): [{hooks: [{type: "command", command: "\($h) \($s)", timeout: 5}]}];
     {hooks: {
       UserPromptSubmit: run("working"),
       PreToolUse: run("working"),
       PostToolUse: run("working"),
-      Stop: run("idle"),
+      Stop: run("stop"),
       SubagentStart: run("subagent-start"),
       SubagentStop: run("subagent-stop"),
       PermissionRequest: run("waiting"),
@@ -556,17 +797,20 @@ write_claude_settings() {
 }
 
 # Grok has no per-launch hooks flag, so ws hooks live in its global hooks dir (always
-# trusted there). Harmless outside ws: cmd_hook no-ops without WS_WORKSPACE.
+# trusted there). Harmless outside ws: without WS_WORKSPACE, cmd_hook only answers Stop with {}.
 write_grok_hooks() {
+  # Global hooks fire in every Grok session: never wire them to a missing ws.
+  [[ -f "$WS_BIN" && -x "$WS_BIN" ]] || { print -u2 "ws: grok hooks: WS_BIN not executable: $WS_BIN"; return 1; }
   mkdir -p "${GROK_HOOKS:h}"
-  jq -n --arg h "$WS_BIN hook" '
+  jq -n --arg h "${(q)WS_BIN} hook" '
     def cmd($s): {type: "command", command: "\($h) \($s)", timeout: 5};
     def run($s): [{hooks: [cmd($s)]}];
     {hooks: {
       UserPromptSubmit: run("working"),
+      PreToolUse: run("working"),
       PostToolUse: run("working"),
-      Stop: run("idle"),
-      StopCancelled: run("idle"),
+      Stop: run("stop"),
+      StopCancelled: run("cancel"),
       PermissionRequest: run("waiting"),
       Notification: [{matcher: "permission_prompt", hooks: [cmd("waiting")]}]
     }}' > "$GROK_HOOKS"
@@ -815,40 +1059,71 @@ sessions_read() {
 session_add() {
   local wt="$1" agent="$2" f
   f="$(sessions_file "$wt")"
-  with_lock "$f" session_append "$f" "$agent"
+  with_lock "$f" session_append "$f" "$agent" "$wt"
 }
 
 session_append() {
-  local f="$1" agent="$2" slot
+  local f="$1" agent="$2" wt="$3" slot id
   slot="$( { [[ -f "$f" ]] && cut -f1 "$f"; print 0; } | sort -n | tail -1)"
   slot=$((slot + 1))
-  printf '%s\t%s\t\n' "$slot" "$agent" >> "$f"
+  id="$(ws_bus_allocate "$wt" "$slot" "$agent")" || return 1
+  printf '%s\t%s\t\t%s\n' "$slot" "$agent" "$id" >> "$f"
   print -r -- "$slot"
 }
 
+# session_remove <wt> <slot> [<id> <window|pane>] — with an exiting generation (launch
+# wrapper `_end`), a slot re-pointed meanwhile (`ws open` resumed the ID elsewhere, or
+# the slot was reused) is left to its new owner.
 session_remove() {
-  local wt="$1" slot="$2" f
+  local wt="$1" slot="$2" gid="${3:-}" win="${4:-}" f
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  with_lock "$f" rewrite "$f" -F '\t' -v s="$slot" '$1 != s'
+  [[ "$win" != %* ]] || win="$(tmux_ display -p -t "$win" '#{window_id}' 2>/dev/null)"
+  with_lock "$f" session_remove_locked "$f" "$slot" "$gid" "$win"
+}
+
+session_remove_locked() {
+  local f="$1" slot="$2" gid="$3" win="$4" id
+  id="$(awk -F '\t' -v s="$slot" '$1 == s {print $4}' "$f")"
+  if [[ -n "$gid" ]]; then
+    [[ -z "$id" || "$id" == "$gid" ]] || return 0
+    if [[ "$gid" == <-> && -n "$win" ]]; then
+      ws_bus_close "$gid" "$win"
+      (( $? != 3 )) || return 0
+    fi
+  fi
+  rewrite "$f" -F '\t' -v s="$slot" '$1 != s' || return 1
+  [[ "$id" != <-> || ( -n "$win" && "$id" == "$gid" ) ]] || ws_bus_close "$id"
+  return 0
 }
 
 # Stores the tab's resume id, re-adding its row if it went missing (a session must stay
 # resumable after a reboot). Skips the write when nothing changed — hooks fire on every tool.
+# slot/id are read before the lock: a stale hook after slot reuse must never take over the
+# row of the slot's new owner, so only an unowned row or our own is updated.
 record_resume_id() {
-  local sid wt slot agent f
+  local sid wt slot agent f id meta t="${2:-3}" # t: lock wait (s); contention skips the update
   sid="$(print -r -- "$1" | jq -r '.session_id // empty' 2>/dev/null)"
   [[ -n "$sid" ]] || sid="${GROK_SESSION_ID:-}" # grok hooks: id in env if not in the payload
   [[ -n "$sid" ]] || return 0
   wt="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_path}' 2>/dev/null)"
   slot="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_slot}' 2>/dev/null)"
   agent="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_agent}' 2>/dev/null)"
+  id="$(tmux_ display -p -t "$TMUX_PANE" '#{@ws_session}' 2>/dev/null)"
   [[ -n "$wt" && -n "$slot" ]] || return 0
   f="$(sessions_file "$wt")" || return 0
   [[ -f "$f" ]] || return 0
-  grep -qxF -- "$slot	${agent:-claude}	$sid" "$f" && return 0
-  with_lock "$f" rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" \
-    '$1 == s { $3 = id; found = 1 } { print } END { if (!found) print s, a, id }'
+  meta="$WS_SESSIONS/$id/meta"
+  if [[ "$id" == <-> && -f "$meta" && "$(jq -r '.resume_id' "$meta")" != "$sid" ]]; then
+    : >> "$meta.lock"
+    (zsystem flock -t "$t" -i 0.01 "$meta.lock" 2>/dev/null &&
+      ws_bus_update_locked "$meta" --arg resume "$sid" '.resume_id = $resume') || return 0
+  fi
+  grep -qxF -- "$slot	${agent:-claude}	$sid	$id" "$f" && return 0
+  : >> "$f.lock"
+  (zsystem flock -t "$t" -i 0.01 "$f.lock" 2>/dev/null || exit 0
+    rewrite "$f" -F '\t' -v OFS='\t' -v s="$slot" -v a="${agent:-claude}" -v id="$sid" -v g="$id" \
+      '$1 == s { found = 1; if ($4 == "" || $4 == g) { $3 = id; if (g != "") $4 = g } } { print } END { if (!found) print s, a, id, g }')
 }
 
 # with_lock <file> <cmd...> — runs cmd holding <file>.lock: parallel tool calls fire hooks
@@ -857,7 +1132,7 @@ with_lock() {
   local f="$1"
   shift
   : >> "$f.lock" # flock won't create it
-  (zsystem flock -t 3 "$f.lock" 2>/dev/null || exit 1; "$@")
+  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $f.lock"; exit 1; }; "$@")
 }
 
 # rewrite <file> <awk args...> — replaces the file with awk's output, atomically.
@@ -956,7 +1231,7 @@ hook_detail_json() {
   print -r -- "$1" | jq -cs '
     (if length == 1 then .[0] else {} end)
     | if type == "object" then
-        [.message, .last_assistant_message, .prompt]
+        [.message, .last_assistant_message, .lastAssistantMessage, .prompt]
         | map(select(type == "string") | select(length > 0))
         | (first // "") | .[:1024]
       else "" end

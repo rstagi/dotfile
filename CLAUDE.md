@@ -26,7 +26,7 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh loop-review.sh ws.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-repo.sh loop-review.sh ws.sh ws-bus.sh
 
 # Loop engineering shell tests (occupancy + orchestrator + loop-top; also runs zsh -n over the loop-*.sh)
 zsh tests/run.sh
@@ -48,7 +48,7 @@ cd loop-web && npm test && npm run build && cd ..
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-install-agent-skills.sh Shares Loop skills across Claude Code, Codex, and Ratel Local
+install-agent-skills.sh Shares Loop + ws skills across Claude Code, Codex, and Ratel Local
 ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
 ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
@@ -67,6 +67,8 @@ loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop infer
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
 ws.sh                   Terminal workspaces: worktree + tmux session per branch, tab per Claude/Codex/Grok session (hook-driven status + resume)
+ws-bus.sh               Global ws session registry, messaging, done/exit lifecycle and send/spawn triggers
+.claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
