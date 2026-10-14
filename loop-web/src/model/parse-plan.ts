@@ -1,5 +1,6 @@
 import type {
   Plan,
+  PlanMilestone,
   PlanPhase,
   PlanPhaseKind,
   PlanPhaseStatus,
@@ -18,14 +19,25 @@ const PLAN_STATUSES: readonly PlanPhaseStatus[] = [
 ];
 
 const PHASE_HEADING = /^###\s+Phase\s+(\d+)\s*(.*)$/;
+const MILESTONE_HEADING = /^Milestone\s+(\d+)\s*[—–-]\s*(.+)$/;
+const REPOSITORY_HEADING = /^###\s+`?([^`\s]+)`?\s*$/;
+const REPOSITORY_SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const LANE_TAG = /\[lane:\s*([^\]]+?)\s*\]/i;
 const STATUS_TAG = /\[status:\s*([^\]]+?)\s*\]/i;
 const KIND_TAG = /\[kind:\s*([^\]]+?)\s*\]/i;
 const REVIEW_TAG = /\[review:\s*([^\]]+?)\s*\]/i;
 const ROUNDS_TAG = /\[rounds:\s*([^\]]+?)\s*\]/i;
+const GATE_TAG = /\[gate:\s*([^\]]+?)\s*\]/i;
 const REVIEW_TIERS: ReviewTier[] = ["shallow", "medium", "max"];
 /** Mirrors LOOP_REVIEW_ROUNDS_CAP in loop-models.conf. */
 const REVIEW_ROUNDS_CAP = 5;
+
+interface MilestoneSection {
+  number: number;
+  title: string;
+  explicit: boolean;
+  lines: string[];
+}
 
 /**
  * Parse the canonical multi-phase plan markdown into a normalized `Plan`.
@@ -40,7 +52,7 @@ export function parsePlan(md: string): Plan {
   const repositories = repositorySection
     ? parseRepositories(repositorySection, loopConfig, warnings)
     : [legacyRepository(loopConfig)];
-  const phases = parsePhases(sectionLines(lines, "Phases"), repositories, repositorySection != null, warnings);
+  const { phases, milestones } = parseMilestones(lines, repositories, repositorySection != null, warnings);
   if (phases.some((phase) => phase.kind === "pr-review") && phases.at(-1)?.kind !== "pr-review") {
     warnings.push("Executable plans with explicit review phases must end with a PR-review phase");
   }
@@ -51,16 +63,118 @@ export function parsePlan(md: string): Plan {
     updatedAt: parseHeaderValue(lines, "Last updated"),
     loopConfig,
     repositories,
+    milestones,
     phases,
     prose: parseProse(lines),
     warnings,
   };
 }
 
-// --- repositories --------------------------------------------------------------------
+// --- milestones ----------------------------------------------------------------------
 
-const REPOSITORY_HEADING = /^###\s+`?([^`\s]+)`?\s*$/;
-const REPOSITORY_SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+function parseMilestones(
+  lines: string[],
+  repositories: PlanRepository[],
+  multiRepository: boolean,
+  warnings: string[],
+): { phases: PlanPhase[]; milestones: PlanMilestone[] } {
+  const sections: MilestoneSection[] = [];
+  let current: MilestoneSection | null = null;
+  for (const line of lines) {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      const milestone = heading[1].match(MILESTONE_HEADING);
+      current = milestone
+        ? { number: Number(milestone[1]), title: milestone[2].trim(), explicit: true, lines: [] }
+        : heading[1] === "Phases"
+          ? { number: 1, title: "Phases", explicit: false, lines: [] }
+          : null;
+      if (current) sections.push(current);
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+
+  const phases: PlanPhase[] = [];
+  const milestones: PlanMilestone[] = [];
+  const seenPhases = new Set<string>();
+  const milestonePlan = sections.some((section) => section.explicit);
+  for (const section of sections) {
+    const milestonePhases = parsePhases(section.lines, repositories, multiRepository, warnings, section.number, seenPhases);
+    phases.push(...milestonePhases);
+    milestones.push(buildMilestone(section, milestonePhases, repositories, milestonePlan));
+  }
+  validateMilestones(milestones, phases, warnings);
+  return { phases, milestones };
+}
+
+function buildMilestone(
+  section: MilestoneSection,
+  phases: PlanPhase[],
+  repositories: PlanRepository[],
+  milestonePlan: boolean,
+): PlanMilestone {
+  const firstPhase = section.lines.findIndex((line) => PHASE_HEADING.test(line));
+  const header = firstPhase === -1 ? section.lines : section.lines.slice(0, firstPhase);
+  const participants = [...new Set(phases
+    .filter((phase) => phase.kind === "work" && phase.repository)
+    .map((phase) => phase.repository))];
+  const sharedBranch = stripBackticks(bulletValue(header, "Integration branch"));
+  const sharedPr = participants.length === 1 ? bulletValue(header, "PR") : null;
+
+  return {
+    number: section.number,
+    title: section.title,
+    gatePhase: phases.find((phase) => phase.kind === "pr-review" && phase.gate === "merge")?.phase ?? null,
+    integrationBranches: Object.fromEntries(participants.map((slug) => {
+      const fallback = section.number === 1
+        ? repositories.find((repo) => repo.slug === slug)?.integrationBranch ?? null
+        : null;
+      return [slug, stripBackticks(bulletValue(header, `Integration branch (${slug})`)) ?? sharedBranch ?? fallback];
+    })),
+    prs: Object.fromEntries(participants.map((slug) => {
+      const raw = bulletValue(header, `PR (${slug})`) ?? sharedPr;
+      const fallback = milestonePlan ? null : repositories.find((repo) => repo.slug === slug)?.pr ?? null;
+      return [slug, raw != null ? normalizePr(raw) : fallback];
+    })),
+    participants,
+  };
+}
+
+function validateMilestones(milestones: PlanMilestone[], phases: PlanPhase[], warnings: string[]): void {
+  const branches = new Map<string, Set<string>>();
+  for (const [index, milestone] of milestones.entries()) {
+    const milestonePhases = phases.filter((phase) => phase.milestone === milestone.number);
+    const lastPhase = milestonePhases.at(-1);
+    if (milestone !== milestones.at(-1) && (lastPhase?.kind !== "pr-review" || lastPhase.gate !== "merge")) {
+      warnings.push(`Milestone ${milestone.number} must end with a PR-review phase tagged [gate: merge]`);
+    }
+    const previousGate = milestones[index - 1]?.gatePhase;
+    if (previousGate) {
+      const localPhases = new Set(milestonePhases.map((phase) => phase.phase));
+      for (const phase of milestonePhases) {
+        const root = !phase.dependsOn.some((dependency) => localPhases.has(dependency));
+        if (root && !phase.dependsOn.includes(previousGate)) {
+          warnings.push(`Milestone ${milestone.number}: root Phase ${phase.phase} must explicitly depend on gate Phase ${previousGate}`);
+        }
+      }
+    }
+    for (const slug of milestone.participants) {
+      const branch = milestone.integrationBranches[slug];
+      if (milestone.number >= 2 && !branch) {
+        warnings.push(`Milestone ${milestone.number}: repository ${slug} must declare an Integration branch`);
+      }
+      if (branch) {
+        const seen = branches.get(slug) ?? new Set<string>();
+        if (seen.has(branch)) warnings.push(`Milestone ${milestone.number}: repository ${slug} branch "${branch}" is reused across milestones`);
+        seen.add(branch);
+        branches.set(slug, seen);
+      }
+    }
+  }
+}
+
+// --- repositories --------------------------------------------------------------------
 
 function legacyRepository(config: LoopConfig | null): PlanRepository {
   return {
@@ -180,12 +294,13 @@ function parsePhases(
   repositories: PlanRepository[],
   multiRepository: boolean,
   warnings: string[],
+  milestone: number,
+  seen: Set<string>,
 ): PlanPhase[] {
   if (!section) return [];
   const phases: PlanPhase[] = [];
 
   // Split the section into per-phase blocks on each "### Phase N" heading.
-  const seen = new Set<string>();
   let current: { num: string; heading: string; body: string[] } | null = null;
   const flush = () => {
     if (!current) return;
@@ -195,7 +310,7 @@ function parsePhases(
       return;
     }
     seen.add(current.num);
-    phases.push(buildPhase(current, repositories, multiRepository, warnings));
+    phases.push(buildPhase(current, repositories, multiRepository, warnings, milestone));
   };
   for (const line of section) {
     const m = line.match(PHASE_HEADING);
@@ -215,16 +330,21 @@ function buildPhase(
   repositories: PlanRepository[],
   multiRepository: boolean,
   warnings: string[],
+  milestone: number,
 ): PlanPhase {
   const laneMatch = raw.heading.match(LANE_TAG);
   const statusMatch = raw.heading.match(STATUS_TAG);
   const kind = normalizeKind(raw.heading.match(KIND_TAG)?.[1], raw.num, warnings);
+  if (raw.heading.match(GATE_TAG) && kind !== "pr-review") {
+    warnings.push(`Phase ${raw.num}: gate tags are only allowed on PR-review phases`);
+  }
   const title = raw.heading
     .replace(/`?\[lane:[^\]]*\]`?/i, "")
     .replace(/`?\[status:[^\]]*\]`?/i, "")
     .replace(/`?\[kind:[^\]]*\]`?/i, "")
     .replace(/`?\[review:[^\]]*\]`?/i, "")
     .replace(/`?\[rounds:[^\]]*\]`?/i, "")
+    .replace(/`?\[gate:[^\]]*\]`?/i, "")
     .replace(/^\s*[—–-]\s*/, "")
     .replace(/`/g, "")
     .trim();
@@ -242,8 +362,10 @@ function buildPhase(
 
   return {
     phase: raw.num,
+    milestone,
     title: title || `Phase ${raw.num}`,
     kind,
+    gate: raw.heading.match(GATE_TAG)?.[1].toLowerCase() === "merge" ? "merge" : null,
     lane: laneMatch ? laneMatch[1].trim() : "A",
     status: normalizeStatus(statusMatch?.[1], raw.num, warnings),
     repository,
