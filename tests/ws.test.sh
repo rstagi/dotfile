@@ -48,9 +48,7 @@ for agent in claude codex grok; do
 #!/bin/sh
 own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
-if [ "\$WS_WORKSPACE" = api/triggers ]; then
-  python3 -c 'import json,sys; json.dump(sys.argv[1:],sys.stdout)' "\$@" > "\$WS_HOME/argv-\$WS_SESSION.json"
-fi
+python3 -c 'import json,sys; json.dump(sys.argv[1:],sys.stdout)' "\$@" > "\$WS_HOME/argv-\$WS_SESSION.json"
 [ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
 if [ "\$line" = done ]; then
@@ -99,6 +97,24 @@ wait_until() {
   return 1
 }
 
+# Read the context argument recorded by the fake executable, preserving argv boundaries.
+assert_agent_preamble() {
+  local agent="$1" id="$2" actual="" flag
+  local argv="$WS_HOME/argv-$id.json"
+  wait_until test -s "$argv"
+  if [[ "$agent" == codex ]]; then
+    actual="$(jq -r '.[] | select(startswith("developer_instructions=")) | ltrimstr("developer_instructions=") | fromjson' "$argv")"
+    assert_eq "$(jq -r '. as $argv | map(startswith("developer_instructions=")) | index(true) as $i | if $i == null then "" else $argv[$i - 1] end' "$argv")" \
+      "-c" "codex preamble is a config override"
+  else
+    flag=--append-system-prompt
+    [[ "$agent" != grok ]] || flag=--rules
+    actual="$(jq -r --arg flag "$flag" 'index($flag) as $i | if $i == null then "" else .[$i + 1] end' "$argv")"
+  fi
+  assert_eq "$actual" "You are ws session #$id; run \`ws done\` when the user's task is complete. Use the ws-sessions skill to coordinate sessions." \
+    "$agent session #$id receives its identity and completion instruction as context"
+}
+
 # Playback is detached, so wait for the fake afplay before reading what it played.
 afplay_out() { wait_until test -s "$FAKE_AFPLAY_OUT"; cat "$FAKE_AFPLAY_OUT" 2>/dev/null; }
 afplay_log() { wait_until test -s "$FAKE_AFPLAY_LOG"; cat "$FAKE_AFPLAY_LOG" 2>/dev/null; }
@@ -121,6 +137,14 @@ windows_of() { T list-windows -a -F '#{window_id} #{@ws_path}' | awk -v p="$1" '
 slot_window() { T list-windows -a -F '#{window_id} #{@ws_path} #{@ws_slot}' | awk -v p="$1" -v s="$2" '$2 == p && $3 == s { print $1 }'; }
 session_of() { T display -p -t "$1" '#{session_name}'; }
 hook() { WS_WORKSPACE="$1" TMUX_PANE="$(T display -p -t "$2" '#{pane_id}')" "$WS" hook "$3"; }
+
+echo "ws skill: installer exposes the real session skill to Claude and Codex"
+HOME="$TMP/skillhome" bash "$ROOT/install-agent-skills.sh" --no-ratel > "$TMP/skill-install.log" 2>&1
+assert_exit "$?" "0" "shared skill installer succeeds in a private home"
+for host in .claude .agents .codex; do
+  assert_eq "$([[ "$TMP/skillhome/$host/skills/ws-sessions/SKILL.md" -ef "$ROOT/.claude/skills/ws-sessions/SKILL.md" ]] && print yes)" \
+    "yes" "$host discovers the canonical ws-sessions skill"
+done
 
 REPO="$(make_repo api)"
 print 'SECRET=1' > "$REPO/.env"
@@ -148,6 +172,7 @@ assert_contains "$out" "WS=api/feat-login" "agent sees WS_WORKSPACE"
 echo "ws sessions: new tabs have a global identity"
 assert_contains "$out" "ID=1" "first agent gets global id in its environment"
 assert_contains "$out" "WHOAMI=1" "agent can query its own id"
+assert_agent_preamble claude 1
 assert_contains "$("$WS" sessions)" $'1\t\tapi/feat-login\tclaude\tidle\tactive' "registry lists identity, workspace, agent, state and status"
 env -u WS_SESSION "$WS" whoami 2>/dev/null
 assert_exit "$?" "1" "whoami refuses outside a tracked session"
@@ -284,6 +309,8 @@ assert_contains "$("$WS" list)" $'api/feat-login#2\t' "list names extra sessions
 out="$(wait_pane "$W2" FAKE-codex)"
 assert_contains "$out" "--dangerously-bypass-approvals-and-sandbox" "codex bypasses approvals"
 assert_contains "$out" "hooks.Stop" "codex gets Stop hook override"
+CODEX_ID="$(T show -wqv -t "$W2" @ws_session)"
+assert_agent_preamble codex "$CODEX_ID"
 print '{"session_id":"sid-claude-1"}' | hook api/feat-login "$WIN" idle
 print '{"session_id":"sid-codex-2"}' | hook api/feat-login "$W2" idle
 SF="$(git -C "$WT" rev-parse --absolute-git-dir)/ws-sessions"
@@ -294,6 +321,7 @@ done
 wait
 assert_eq "$(cut -f1,3 "$SF" | tr '\t\n' ': ')" "1:sid-claude-1 2:sid-codex-2 " "concurrent hooks keep every session row"
 T kill-window -t "$WIN"; T kill-window -t "$W2"
+rm -f "$WS_HOME/argv-1.json" "$WS_HOME/argv-$CODEX_ID.json"
 assert_eq "$(windows_of "$WT")" "" "both windows gone (simulated reboot)"
 assert_contains "$("$WS" list)" $'stopped\tapi/feat-login\t' "workspace shows stopped"
 "$WS" open reviewer --detach
@@ -302,10 +330,13 @@ assert_contains "$(wait_pane "$(slot_window "$WT" 1)" FAKE-claude)" "--resume si
 assert_contains "$(wait_pane "$(slot_window "$WT" 1)" FAKE-claude)" "ID=1 WHOAMI=1" "named resume preserves global identity"
 assert_eq "$(slot_window "$WT" 2)" "" "resuming one id leaves other sessions stopped"
 T kill-window -t "$(slot_window "$WT" 1)"
+rm -f "$WS_HOME/argv-1.json"
 "$WS" open api/feat-login --detach
 wait_until test -n "$(slot_window "$WT" 2)"
 assert_contains "$(wait_pane "$(slot_window "$WT" 1)" sid-claude-1)" "--resume sid-claude-1" "claude session resumed by id"
 assert_contains "$(wait_pane "$(slot_window "$WT" 2)" sid-codex-2)" "resume sid-codex-2" "codex session resumed by id"
+assert_agent_preamble claude 1
+assert_agent_preamble codex "$CODEX_ID"
 assert_eq "$(session_of "$(slot_window "$WT" 2)")" "api/feat-login" "restored into one worktree session"
 assert_contains "$(wait_pane "$(slot_window "$WT" 1)" FAKE-claude)" "ID=1 WHOAMI=1" "workspace resume keeps the same named global identity"
 
@@ -315,6 +346,8 @@ GWT="$WS_ROOT/api/grokky"
 GW="$(slot_window "$GWT" 1)"
 assert_eq "$(T display -p -t "$GW" '#{window_name}')" "grok" "grok tab named after agent"
 assert_contains "$(wait_pane "$GW" FAKE-grok)" "--always-approve" "grok skips approvals"
+GROK_ID="$(T show -wqv -t "$GW" @ws_session)"
+assert_agent_preamble grok "$GROK_ID"
 GH="$GROK_HOME/hooks/ws.json"
 assert_eq "$(jq -r '.hooks.StopCancelled[0].hooks[0].command' "$GH" 2>/dev/null)" "$WS hook idle" "grok hook file: StopCancelled → idle"
 assert_eq "$(jq -r '.hooks.Notification[0].matcher' "$GH" 2>/dev/null)" "permission_prompt" "grok hook file: permission prompt → waiting"
@@ -322,10 +355,13 @@ assert_eq "$(jq -r '.hooks.Notification[0].matcher' "$GH" 2>/dev/null)" "permiss
 GW2="$(slot_window "$GWT" 2)"
 assert_eq "$(T display -p -t "$GW2" '#{window_name}')" "grok#2" "second grok tab named grok#2"
 GROK_SESSION_ID=sid-grok-2 hook api/grokky "$GW2" idle </dev/null
+GROK_RESUME_ID="$(T show -wqv -t "$GW2" @ws_session)"
 T kill-window -t "$GW"; T kill-window -t "$GW2"
+rm -f "$WS_HOME/argv-$GROK_RESUME_ID.json"
 "$WS" open api/grokky --detach
 wait_until test -n "$(slot_window "$GWT" 2)"
 assert_contains "$(wait_pane "$(slot_window "$GWT" 2)" sid-grok-2)" "--resume sid-grok-2" "grok resumed by GROK_SESSION_ID"
+assert_agent_preamble grok "$GROK_RESUME_ID"
 "$WS" add api/grokky --agent gemini --detach 2>/dev/null
 assert_exit "$?" "1" "unknown agent refused"
 "$WS" rm api/grokky --force --delete-branch
@@ -466,6 +502,7 @@ out="$(wait_pane "$MW" FAKE-claude)"
 assert_contains "$out" "--settings" "agent launched w/ ws hooks"
 assert_contains "$out" "--model x" "extra args passed through"
 assert_contains "$out" "WS=web/zeta" "agent sees WS_WORKSPACE"
+assert_agent_preamble claude "$(T show -wqv -t "$MW" @ws_session)"
 assert_eq "$(T display -p -t "$MW" '#{@ws_path}')" "$ZWT" "tab tagged as a workspace session"
 assert_eq "$(T display -p -t "$MW" '#{window_name}')" "claude#3" "tab named agent#slot"
 assert_contains "$("$WS" list)" $'web/zeta#3\t' "listed as a session"
@@ -1620,6 +1657,7 @@ for spawn_agent in claude codex grok; do
     CHILD_WIN="$(jq -r '.window' "$WS_HOME/sessions/$CHILD_ID/meta")"
     assert_contains "$(wait_pane "$CHILD_WIN" "FAKE-$spawn_agent")" "WHOAMI=$CHILD_ID" "$spawn_agent child has WS_SESSION and can query it"
     wait_until test -s "$WS_HOME/argv-$CHILD_ID.json"
+    assert_agent_preamble "$spawn_agent" "$CHILD_ID"
     assert_eq "$(jq -r '.[-1]' "$WS_HOME/argv-$CHILD_ID.json")" "Follow \"quoted\" \$literal"$'\n'"source $SOURCE_B: spawn result {id} {output}; \$(touch never-execute-ws-prompt)" "$spawn_agent initial prompt is one literal final argument"
     assert_eq "$(jq -r '.spawned' "$WS_HOME/sessions/$CHILD_ID/meta")" "true" "$spawn_agent child is marked spawned"
     assert_eq "$(jq -r '.path' "$WS_HOME/sessions/$CHILD_ID/meta")" "$TRIGGER_WT" "$spawn_agent child uses registering session worktree"
