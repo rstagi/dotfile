@@ -53,7 +53,7 @@ export function Drawer({
         <dl className="kv">
           <dt>state</dt>
           <dd style={{ color: uiColor(node.ui) }}>
-            {node.status}
+            {node.awaitingMerge ? "awaiting merge" : node.status}
             {node.pulse ? ` · ${node.pulse}` : ""}
           </dd>
           {node.lane && (
@@ -86,6 +86,7 @@ export function Drawer({
         </dl>
 
         {node.kind === "plan" && plan && <PlanSection plan={plan} />}
+        {node.kind === "pr-review" && node.phase != null && <MergeGateSection node={node} />}
         {(node.decisions?.length ?? 0) > 0 && <JevDecisionSection decisions={node.decisions!} />}
         {node.kind === "pr-review" && (
           <ReviewSection
@@ -140,6 +141,30 @@ export function Drawer({
         )}
       </div>
     </div>
+  );
+}
+
+/** Explicit review/gate nodes: milestone PRs (live or recorded), plus the resume hint while parked. */
+function MergeGateSection({ node }: { node: GraphNode }) {
+  const prs = Object.entries(node.prs ?? {}).filter((entry): entry is [string, string] => entry[1] != null);
+  if (!node.awaitingMerge && prs.length === 0) return null;
+  return (
+    <section>
+      <p className="section__title" style={node.awaitingMerge ? { color: "var(--amber)" } : undefined}>
+        {node.awaitingMerge ? "Awaiting merge" : node.gate === "merge" ? "Merge gate" : "Pull requests"}
+        {node.milestone != null ? ` · milestone ${node.milestone}` : ""}
+      </p>
+      {prs.map(([slug, url]) => (
+        <div key={slug} className="kv">
+          <a href={url} target="_blank" rel="noreferrer">{`${slug === "primary" ? "PR" : slug} ${prLabel(url)}`}</a>
+        </div>
+      ))}
+      {node.awaitingMerge && (
+        <div className="rail__empty" style={{ padding: 12 }}>
+          Merge the PRs, then run <code>/loop-execute resume</code>.
+        </div>
+      )}
+    </section>
   );
 }
 
