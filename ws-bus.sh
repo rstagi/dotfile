@@ -4,7 +4,7 @@
 WS_SESSIONS="$WS_HOME/sessions"
 
 cmd_done() {
-  local source="" id
+  local source="" id win
   case "$#:${1:-}" in
   0:) ;;
   1:-) source=- ;;
@@ -14,7 +14,15 @@ cmd_done() {
   id="$(cmd_whoami)" || return 1
   [[ -z "$source" || "$source" == - || ( -f "$source" && -r "$source" ) ]] \
     || die "done: cannot read output file: $source"
-  with_lock "$WS_SESSIONS/$id/output" ws_bus_done_locked "$id" "$source"
+  with_lock "$WS_SESSIONS/$id/output" ws_bus_done_locked "$id" "$source" || return 1
+  if jq -e '.spawned == true' "$WS_SESSIONS/$id/meta" >/dev/null; then
+    win="$(ws_bus_window "$id")"
+    if [[ -n "$win" ]]; then
+      # Publish first and release the lifecycle lock before killing our own process group.
+      cmd_dismiss "$win"
+      tmux_ kill-window -t "$win"
+    fi
+  fi
 }
 
 # Output publication, status and event order are serialized across repeat declarations.

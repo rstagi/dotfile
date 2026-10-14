@@ -23,6 +23,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #                              done needs --force; stopped sessions resume before delivery
 #   ws done [--output <file>|-]   declare own session done; replace output.md (default empty)
 #                              --output - also reads stdin; repeat appends another done event
+#                              spawned tabs close after publication; user-opened tabs stay
 #   ws show <id|name>           session metadata, lifecycle status and output path
 #   ws rm <name|path> [--force] [--delete-branch]
 #   ws merge                   in a workspace: confirm, merge its PR (gh, $WS_MERGE_METHOD,
@@ -517,7 +518,7 @@ open_session() {
 
 open_session_locked() {
   local wt="$1" slot="$2" agent="$3" resume="$4" id="$5"
-  local name tab cmd run sess win
+  local name tab cmd run sess win hup
   if win="$(ws_bus_window "$id")"; then
     print -r -- "$win"
     return 0
@@ -526,7 +527,9 @@ open_session_locked() {
   tab="$agent"
   (( slot > 1 )) && tab+="#$slot"
   cmd="$(agent_command "$agent" "$resume")"
-  run="$cmd; s=\$?; ${(q)WS_BIN} _exit $id \"\$s\"; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
+  # The closed macOS pty can hang a new shell: detach all handler I/O before recording HUP.
+  hup="${(q)WS_BIN} _exit $id 129 </dev/null >/dev/null 2>&1; exit 129"
+  run="trap ${(q)hup} HUP; $cmd; s=\$?; trap - HUP; ${(q)WS_BIN} _exit $id \"\$s\"; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
     -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"

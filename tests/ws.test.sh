@@ -50,6 +50,11 @@ own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
 [ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
+if [ "\$line" = done ]; then
+  printf 'agent result\\n' | "\$WS_TEST_CLI" done -
+  echo DONE-RETURNED
+  read line
+fi
 exit "\${line:-0}"
 EOF
   chmod +x "$TMP/bin/$agent"
@@ -1467,6 +1472,29 @@ T send-keys -t "$MANUAL_WIN" Enter
 assert_contains "$(wait_pane "$MANUAL_WIN" EXIT=0)" "EXIT=0" "adopted tab returns to shell"
 assert_eq "$(jq -r '.event, .code' "$WS_HOME/sessions/$MANUAL_ID/events")" $'exit\n0' "adopted tab also emits actual process exit"
 T kill-window -t "$MANUAL_WIN"
+
+echo "ws done: spawned agent closes its own tab after publishing output"
+"$WS" add api/lifecycle --detach
+SPAWN_WIN="$(windows_of "$DONE_WT")"
+assert_contains "$(wait_pane "$SPAWN_WIN" FAKE-claude)" "FAKE-claude" "spawn fixture ready"
+SPAWN_ID="$(T display -p -t "$SPAWN_WIN" '#{@ws_session}')"
+META="$WS_HOME/sessions/$SPAWN_ID/meta"
+jq '.spawned = true | .resume_id = "spawn-resume"' "$META" > "$META.fixture"
+mv "$META.fixture" "$META"
+T send-keys -t "$SPAWN_WIN" done Enter
+spawn_done_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
+wait_until spawn_done_closed "$SPAWN_ID"
+assert_exit "$?" "0" "spawned tab closes when its agent declares done"
+assert_eq "$(cat "$WS_HOME/sessions/$SPAWN_ID/output.md")" "agent result" "spawned output is durable before tab closes"
+assert_eq "$(jq -sr 'map(select(.event == "done")) | length' "$WS_HOME/sessions/$SPAWN_ID/events")" "1" "spawned completion appends one done event"
+assert_eq "$("$WS" sessions "$SPAWN_ID" | cut -f6)" "done" "closing spawned tab preserves done status"
+assert_contains "$("$WS" show "$SPAWN_ID")" "output: $WS_HOME/sessions/$SPAWN_ID/output.md" "closed spawned result is addressable"
+wait_until lifecycle_exit_count "$SPAWN_ID" 1
+assert_exit "$?" "0" "spawned closure also reports agent termination"
+assert_eq "$(jq -sr 'map(.event) | join(",")' "$WS_HOME/sessions/$SPAWN_ID/events")" "done,exit" "completion is durable before spawned exit event"
+assert_eq "$(jq -sr 'map(select(.event == "exit")) | .[0].code' "$WS_HOME/sessions/$SPAWN_ID/events")" "129" "tmux closure reports SIGHUP exit code"
+"$WS" open "$SPAWN_ID" --detach
+assert_contains "$(wait_pane "$(windows_of "$DONE_WT")" FAKE-claude)" "--resume spawn-resume" "closed spawned identity retains agent resume data"
 
 "$WS" rm api/lifecycle --force --delete-branch >/dev/null
 
