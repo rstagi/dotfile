@@ -48,6 +48,9 @@ for agent in claude codex grok; do
 #!/bin/sh
 own_id=\$("\$WS_TEST_CLI" whoami)
 echo "FAKE-$agent \$* WS=\$WS_WORKSPACE ID=\$WS_SESSION WHOAMI=\$own_id"
+if [ "\$WS_WORKSPACE" = api/triggers ]; then
+  python3 -c 'import json,sys; json.dump(sys.argv[1:],sys.stdout)' "\$@" > "\$WS_HOME/argv-\$WS_SESSION.json"
+fi
 [ "\$WS_WORKSPACE" != api/delivery ] || exec python3 "$TMP/paste-agent.py"
 read line
 if [ "\$line" = done ]; then
@@ -1603,6 +1606,30 @@ hook api/triggers "$TARGET_WIN" working </dev/null
 T send-keys -t "$SOURCE_A_WIN" Enter
 wait_until lifecycle_exit_count "$SOURCE_A" 1
 assert_eq "$(hook api/triggers "$TARGET_WIN" stop </dev/null)" "{}" "cancelled trigger never delivers"
+
+echo "ws on: spawn expands a literal prompt and starts a tracked child in the same worktree"
+printf 'spawn result {id} {output}' | WS_SESSION="$SOURCE_B" "$WS" done -
+SPAWN_PROMPT=$'Follow "quoted" $literal\nsource {id}: {output}; $(touch never-execute-ws-prompt)'
+for spawn_agent in claude codex grok; do
+  before_ids="$("$WS" sessions | cut -f1 | paste -sd, -)"
+  SPAWN_TID="$(WS_SESSION="$TARGET_ID" "$WS" on "$SOURCE_B" done --spawn "$SPAWN_PROMPT" --agent "$spawn_agent")"
+  assert_exit "$?" "0" "$spawn_agent spawn trigger registers and fires"
+  CHILD_ID="$("$WS" sessions | awk -F '\t' -v a="$spawn_agent" -v ids="$before_ids" '$3 == "api/triggers" && $4 == a { if (index("," ids ",", "," $1 ",") == 0) print $1 }')"
+  assert_eq "${CHILD_ID:+found}" "found" "$spawn_agent spawn creates one new session"
+  if [[ -n "$CHILD_ID" ]]; then
+    CHILD_WIN="$(jq -r '.window' "$WS_HOME/sessions/$CHILD_ID/meta")"
+    assert_contains "$(wait_pane "$CHILD_WIN" "FAKE-$spawn_agent")" "WHOAMI=$CHILD_ID" "$spawn_agent child has WS_SESSION and can query it"
+    wait_until test -s "$WS_HOME/argv-$CHILD_ID.json"
+    assert_eq "$(jq -r '.[-1]' "$WS_HOME/argv-$CHILD_ID.json")" "Follow \"quoted\" \$literal"$'\n'"source $SOURCE_B: spawn result {id} {output}; \$(touch never-execute-ws-prompt)" "$spawn_agent initial prompt is one literal final argument"
+    assert_eq "$(jq -r '.spawned' "$WS_HOME/sessions/$CHILD_ID/meta")" "true" "$spawn_agent child is marked spawned"
+    assert_eq "$(jq -r '.path' "$WS_HOME/sessions/$CHILD_ID/meta")" "$TRIGGER_WT" "$spawn_agent child uses registering session worktree"
+    T send-keys -t "$CHILD_WIN" done Enter
+    wait_until spawn_done_closed "$CHILD_ID"
+    assert_exit "$?" "0" "$spawn_agent spawned child closes on done"
+    assert_eq "$(cat "$WS_HOME/sessions/$CHILD_ID/output.md")" "agent result" "$spawn_agent child publishes output before closure"
+  fi
+done
+assert_eq "$([[ -e "$TRIGGER_WT/never-execute-ws-prompt" ]] && print yes)" "" "spawn prompt never executes shell substitution"
 
 "$WS" rm api/triggers --force --delete-branch >/dev/null
 
