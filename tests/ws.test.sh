@@ -29,7 +29,7 @@ T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
 mkdir -p "$TMP/bin"
 # Fake delivery TUI records bytes submitted outside bracketed paste, including multiline input.
 cat > "$TMP/paste-agent.py" <<'PY_AGENT'
-import json, os, time, tty
+import json, os, subprocess, time, tty
 delay = 0.6 # delayed startup exposes paste before the resumed TUI is ready
 try: # one-shot override: a test's next TUI starts slower than the hook-lock timeout
     with open(os.environ["WS_HOME"] + "/tui-delay") as f: delay = float(f.read())
@@ -44,6 +44,9 @@ while True:
     ch = os.read(0, 1)
     buf += ch
     if ch == b"\r" and not (b"\033[200~" in buf and b"\033[201~" not in buf):
+        if not os.path.exists(os.environ["WS_HOME"] + "/no-submit-" + os.environ["WS_SESSION"]):
+            subprocess.run([os.environ["WS_TEST_CLI"], "hook", "working"],
+                           input=b'{"hook_event_name":"UserPromptSubmit"}', check=True)
         with open(os.environ["WS_HOME"] + "/pane-" + os.environ["WS_SESSION"] + ".jsonl", "a") as f:
             f.write(json.dumps({"raw": buf.decode(), "text": buf[:-1].replace(b"\033[200~", b"").replace(b"\033[201~", b"").decode()}) + "\n")
         buf = b""
@@ -1467,6 +1470,49 @@ reply="$(print '{"hook_event_name":"Stop"}' | hook api/delivery "$ROBUST_WIN" st
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws #1]\nsurvive session end' "ordinary Stop still delivers retained work"
 print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
 # --- end delivery robustness: session-end Stop ---
+
+# --- delivery robustness: idle paste acknowledgement ---
+echo "ws send: idle paste awaits a newer prompt submission before acknowledgement"
+wait_until test -s "$WS_HOME/argv-$ROBUST_ID.json"
+hook api/delivery "$ROBUST_WIN" idle </dev/null
+: > "$WS_HOME/no-submit-$ROBUST_ID" # model a picker consuming Enter without a prompt hook
+mkfifo "$TMP/robust-prompt.in"
+exec {robust_w}<>"$TMP/robust-prompt.in"
+(exec {robust_w}>&-; hook api/delivery "$ROBUST_WIN" working < "$TMP/robust-prompt.in") &
+robust_stale_pid=$!
+sleep 0.3
+(exec {robust_w}>&-; WS_SESSION=1 "$WS" send "$ROBUST_ID" "await confirmation")
+wait_until pane_received "$ROBUST_ID" $'[ws #1]\nawait confirmation'
+assert_eq "$(T show -wqv -t "$ROBUST_WIN" @ws_state)" "idle" "paste alone never forces working"
+ROBUST_PENDING="$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" 2>/dev/null)"
+assert_contains "$ROBUST_PENDING" "await confirmation" "unconfirmed paste stays durably in flight"
+print -r -- '{"hook_event_name":"UserPromptSubmit"}' >&$robust_w
+exec {robust_w}>&-
+wait "$robust_stale_pid"
+assert_eq "$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" 2>/dev/null)" "$ROBUST_PENDING" "older prompt hook cannot ack a newer paste"
+print '{"hook_event_name":"PreToolUse"}' | hook api/delivery "$ROBUST_WIN" working
+assert_eq "$(cat "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" 2>/dev/null)" "$ROBUST_PENDING" "tool hook cannot ack an unconfirmed paste"
+print '{"hook_event_name":"UserPromptSubmit"}' | hook api/delivery "$ROBUST_WIN" working
+assert_eq "$([[ -e "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste" ]] && print pending)" "" "newer prompt submission acknowledges the pasted batch"
+assert_eq "$(T show -wqv -t "$ROBUST_WIN" @ws_state)" "working" "confirmed submission marks working"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+
+echo "ws send: swallowed Enter times out and requeues without forcing working"
+WS_PASTE_ACK_TIMEOUT=1.5 WS_SESSION=1 "$WS" send "$ROBUST_ID" "swallowed Enter"
+wait_until pane_received "$ROBUST_ID" $'[ws #1]\nswallowed Enter'
+ROBUST_PANE="$(cat "$WS_HOME/pane-$ROBUST_ID.jsonl")"
+WS_SESSION=1 "$WS" send "$ROBUST_ID" "queued after paste"
+assert_eq "$(cat "$WS_HOME/pane-$ROBUST_ID.jsonl")" "$ROBUST_PANE" "sends during unconfirmed paste queue without a second Enter"
+wait_until test -s "$WS_HOME/sessions/$ROBUST_ID/inbox"
+wait_until test ! -e "$WS_HOME/sessions/$ROBUST_ID/inbox.inflight.paste"
+assert_exit "$?" "0" "timeout requeues the unconfirmed batch"
+assert_eq "$(jq -r '.message' "$WS_HOME/sessions/$ROBUST_ID/inbox")" $'[ws #1]\nswallowed Enter\n[ws #1]\nqueued after paste' "timeout retains both messages in delivery order"
+assert_eq "$(T show -wqv -t "$ROBUST_WIN" @ws_state)" "idle" "timeout leaves the unconfirmed tab idle"
+reply="$(print '{}' | hook api/delivery "$ROBUST_WIN" stop)"
+assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" $'[ws #1]\nswallowed Enter\n\n[ws #1]\nqueued after paste' "later Stop delivers the timed-out batch and queued sends"
+rm -f "$WS_HOME/no-submit-$ROBUST_ID"
+print '{}' | hook api/delivery "$ROBUST_WIN" stop >/dev/null
+# --- end delivery robustness: idle paste acknowledgement ---
 
 echo "ws send: concurrent senders retain every queued message"
 hook api/delivery "$SEND_WIN" working </dev/null

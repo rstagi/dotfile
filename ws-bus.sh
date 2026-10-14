@@ -412,12 +412,8 @@ ws_bus_send_locked() {
     if [[ -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
       ws_bus_wait_ready "$id" "$win" || { print -u2 "ws: send: message queued; session #$id input not ready"; return 1; }
     fi
-    # Order the submitted turn against hooks that entered before this paste. Capture
-    # before input, so the resulting UserPromptSubmit remains newer than this watermark.
-    zmodload zsh/datetime
-    local seq="$(realtime_us "$EPOCHREALTIME")"
+    [[ ! -e "$WS_SESSIONS/$id/inbox.inflight.paste" ]] || return 0 # awaiting prompt acknowledgement
     ws_bus_idle_locked "$id" "$win" || { print -u2 "ws: send: message queued; session #$id agent pane unavailable"; return 1; }
-    tmux_ set -w -t "$win" @ws_seq "$seq" \; set -w -t "$win" @ws_main working \; set -w -t "$win" @ws_state working
   fi
 }
 
@@ -435,6 +431,7 @@ ws_bus_send_enqueue() {
 # Called under the inbox lock. Message via stdin: large payloads must not hit ARG_MAX.
 ws_bus_enqueue() {
   ws_bus_reclaim "$1" || return 1
+  ws_bus_paste_expire "$1" || return 1
   print -rn -- "$2" | jq -Rsc '{message:.}' >> "$WS_SESSIONS/$1/inbox"
 }
 
@@ -495,6 +492,7 @@ ws_bus_ack() {
 ws_bus_reclaim_orphans() {
   local inbox="$WS_SESSIONS/$1/inbox" f
   ws_bus_reclaim "$1" || return 1
+  ws_bus_paste_expire "$1" || return 1
   for f in "$inbox".inflight.<->(N); do
     [[ "${f##*.}" != $$ ]] && kill -0 "${f##*.}" 2>/dev/null && continue
     cat "$f" "$inbox" > "$inbox.tmp" && mv "$inbox.tmp" "$inbox" && rm -f "$f" || return 1
@@ -513,14 +511,57 @@ ws_bus_idle() {
   with_lock "$WS_SESSIONS/$id/inbox" ws_bus_idle_locked "$id" "$win"
 }
 
+# Under the inbox lock: one pasted batch awaits a newer UserPromptSubmit, not just Enter.
 ws_bus_idle_locked() {
-  local id="$1" win="$2" inbox="$WS_SESSIONS/$1/inbox" message
+  local id="$1" win="$2" inbox="$WS_SESSIONS/$1/inbox" message seq timeout="${WS_PASTE_ACK_TIMEOUT:-10}"
   ws_bus_reclaim_orphans "$id" || return 1
-  [[ -s "$inbox" ]] || return 1
+  [[ ! -e "$inbox.inflight.paste" && -s "$inbox" ]] || return 1
   message="$(jq -rjs 'map(.message) | join("\n\n")' "$inbox" && print -n .)" || return 1
   message="${message%.}"
-  ws_bus_paste "$id" "$win" "$message" || return 1
-  : > "$inbox"
+  zmodload zsh/datetime
+  seq="$(realtime_us "$EPOCHREALTIME")"
+  jq -nc --arg seq "$seq" --argjson deadline "$(( EPOCHREALTIME + timeout ))" \
+    '{seq:$seq,deadline:$deadline}' > "$inbox.paste" || return 1
+  mv "$inbox" "$inbox.inflight.paste" && : > "$inbox" || return 1
+  # Publish before input so delayed older hooks cannot confirm or settle this paste.
+  tmux_ set -w -t "$win" @ws_seq "$seq" \; set -wu -t "$win" @ws_turn 2>/dev/null
+  # Separate process: inherits neither lock; timeout requeues even if no later hook fires.
+  "$WS_BIN" _paste-timeout "$id" "$seq" "$timeout" </dev/null >/dev/null 2>&1 &!
+  ws_bus_paste "$id" "$win" "$message" || { ws_bus_paste_requeue "$id"; return 1; }
+}
+
+# Only a prompt hook newer than the paste watermark acknowledges this batch.
+ws_bus_paste_ack() {
+  local id="$1" seq="$2" inbox="$WS_SESSIONS/$1/inbox" pasted
+  [[ -f "$inbox.paste" ]] || return 0
+  pasted="$(jq -r '.seq' "$inbox.paste")" || return 1
+  [[ "$pasted" == <-> ]] && (( seq > pasted )) || return 0
+  rm -f "$inbox.inflight.paste" "$inbox.paste"
+}
+
+# Under the inbox lock; also checked on drains in case the timeout worker was interrupted.
+ws_bus_paste_expire() {
+  local id="$1" seq="${2:-}" inbox="$WS_SESSIONS/$1/inbox" pasted deadline
+  [[ -f "$inbox.paste" ]] || return 0
+  IFS='|' read -r pasted deadline <<<"$(jq -r '[.seq,.deadline] | join("|")' "$inbox.paste")"
+  [[ -z "$seq" || "$seq" == "$pasted" ]] || return 0 # an old worker cannot reclaim a new batch
+  zmodload zsh/datetime
+  (( EPOCHREALTIME >= deadline )) || return 0
+  ws_bus_paste_requeue "$id"
+}
+
+ws_bus_paste_requeue() {
+  local inbox="$WS_SESSIONS/$1/inbox"
+  if [[ -f "$inbox.inflight.paste" ]]; then
+    cat "$inbox.inflight.paste" "$inbox" > "$inbox.tmp" && mv "$inbox.tmp" "$inbox" || return 1
+  fi
+  rm -f "$inbox.inflight.paste" "$inbox.paste"
+}
+
+# Invoked by the detached timer; no waiting while an inbox or hook lock is held.
+ws_bus_paste_timeout() {
+  sleep "$3"
+  with_lock "$WS_SESSIONS/$1/inbox" ws_bus_paste_expire "$1" "$2"
 }
 
 # Named buffers isolate concurrent senders; raw paste preserves LF inside bracketed input.

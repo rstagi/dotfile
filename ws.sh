@@ -23,6 +23,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws name <label>            name your session (unique; usable in place of its id)
 #   ws send [--force] <id|name> <msg|->   sender-prefixed message (or stdin): paste idle, queue busy
 #                              done needs --force; stopped sessions resume before delivery
+#                              idle paste awaits prompt confirmation; timeout requeues (WS_PASTE_ACK_TIMEOUT=10)
 #   ws done [--output <file>|-]   declare own session done; replace output.md (default empty)
 #                              --output - also reads stdin; repeat appends another done event
 #                              pending inbox/in-flight messages refuse done; let Stop deliver first
@@ -104,6 +105,7 @@ main() {
   _preview) preview "$@" ;;
   _end) session_remove "$@" ;;
   _agent) ws_bus_run_agent "$@" ;;
+  _paste-timeout) ws_bus_paste_timeout "$@" ;;
   _build-notifier) build_notifier ;;
   -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
@@ -432,6 +434,11 @@ cmd_hook() {
         tmux_ set -w -t "$win" @ws_turn "$turn_id" 2>/dev/null
       fi
     fi
+    if [[ "$event" == working && -z "$agent_id" && "$hook_event" == (UserPromptSubmit|user_prompt_submit) ]]; then
+      local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
+      id="${id:-${WS_SESSION:-}}"
+      [[ "$id" != <-> ]] || with_lock "$WS_SESSIONS/$id/inbox" ws_bus_paste_ack "$id" "$seq"
+    fi
     if [[ "$event" == stop ]]; then
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
       id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
@@ -449,7 +456,7 @@ cmd_hook() {
       local id="$(tmux_ display -p -t "$win" '#{@ws_session}')"
       id="${id:-${WS_SESSION:-}}" # early hooks fire before new-window tags @ws_session
       if ws_bus_idle "$id" "$win"; then
-        state="$(hook_state working "" "$prev")"
+        seq="$(tmux_ show -wqv -t "$win" @ws_seq)" # paste watermark; state awaits UserPromptSubmit
       fi
     fi
     tmux_ set -w -t "$TMUX_PANE" @ws_seq "$seq" \; set -w -t "$TMUX_PANE" @ws_state "$state" 2>/dev/null
