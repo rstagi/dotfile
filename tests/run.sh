@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Run every tests/*.test.sh; exit non-zero if any file fails. Also syntax-checks the
-# loop-*.sh + ws.sh scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
+# Run every tests/*.test.sh and the ws suite (ws/tests/run.sh); exit non-zero if any fails. Also
+# syntax-checks the loop-*.sh + ws scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
 # Discard caller loop/color settings; each suite configures its own environment.
 set -u
 for inherited in ${(k)parameters}; do
@@ -24,7 +24,8 @@ else # copied-runner fixtures (runner.test.sh) ship run.sh alone: sandbox HOME, 
 fi
 
 echo "== zsh -n (syntax) =="
-for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-repo.sh loop-review.sh ws.sh ws-bus.sh; do
+ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh ws/lib/*.sh(N) ws/tests/*.sh(N))"}) # relative to $ROOT
+for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-repo.sh loop-review.sh $ws_scripts; do
   [[ -f "$ROOT/$s" ]] || continue
   if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; fail=1; fi
 done
@@ -35,6 +36,12 @@ for t in "$HERE"/*.test.sh; do
   zsh "$t" || fail=1
   echo
 done
+
+if [[ -f "$ROOT/ws/tests/run.sh" ]]; then # needs the repo's ws/; absent from copied-runner fixtures
+  echo "== ws/tests/run.sh =="
+  zsh "$ROOT/ws/tests/run.sh" || fail=1
+  echo
+fi
 
 if [[ -n "${real_home_snapshot+set}" ]]; then
   echo "== real HOME guard ($REAL_HOME) =="
