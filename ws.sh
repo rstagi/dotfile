@@ -31,6 +31,7 @@ zmodload zsh/system # zsystem flock (sessions file)
 #   ws on <id[,id…]> <done|exit> (--send-to <id|me> <msg> | --spawn <prompt> [--agent A])
 #                              one-shot fan-in; spawn defaults to claude in current worktree
 #                              done counts past events; exit counts only events after registration
+#                              output-only templates reject registration; include text or {id}
 #   ws triggers                TSV: pending trigger id, sources, event, action, target, template
 #   ws on --rm <trigger-id>     cancel a pending trigger; cycles are rejected on registration
 #   ws rm <name|path> [--force] [--delete-branch]

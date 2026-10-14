@@ -125,8 +125,9 @@ done: closing its own tab is cleanup, not
 an exit. Wait on `done` for spawned results; `exit` from a spawned session means it ended
 without declaring done. Send dependency cycles, including self-waits, are rejected.
 Trigger actions fire once; a failed action is not retried automatically and its stderr is
-kept in the record's `error`. An empty message or prompt after expansion (e.g. empty
-`{output}`) does not fire: the trigger stays pending and `ws on` reports the error.
+kept in the record's `error`. Output-only templates (including whitespace around
+`{output}`) are rejected at registration because `ws done` may omit output. Include
+text or `{id}` alongside `{output}` so the continuation always has content.
 
 ```sh
 ws triggers                  # TSV: pending id, sources, event, action, target, template

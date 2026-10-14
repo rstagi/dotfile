@@ -33,6 +33,9 @@ cmd_on() {
   *) die "on: expected --send-to or --spawn" ;;
   esac
   [[ -n "$template" ]] || die "on: empty message or prompt"
+  local required_text="${template//\{output\}/}"
+  [[ -n "${required_text//[[:space:]]/}" ]] \
+    || die "on: message or prompt may be empty; include text or {id} alongside {output}"
   for id in "${(@s:,:)1}"; do
     id="$(ws_bus_resolve "$id")" || die "on: no such source session"
     (( ${ids[(Ie)$id]} )) || ids+=("$id")

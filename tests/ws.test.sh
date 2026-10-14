@@ -2026,8 +2026,8 @@ assert_exit "$?" "0" "literal dash trigger registers"
 reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$DEFAULT_ID]"$'\n-' "trigger dash is delivered literally"
 
-# --- G2: empty expansions stay pending; failed actions keep their stderr ---
-echo "ws on: an empty {output} expansion leaves send and spawn triggers pending"
+# --- G2: empty templates reject registration; failed actions keep their stderr ---
+echo "ws on: output-only send and spawn templates reject registration"
 empty_before="$(windows_of "$TRIGGER_WT")"
 "$WS" add api/triggers --detach
 EMPTY_WIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$empty_before"))"
@@ -2036,6 +2036,7 @@ WS_SESSION="$EMPTY_SRC" "$WS" done </dev/null
 assert_exit "$?" "0" "empty-output source declares done"
 empty_sessions="$("$WS" sessions | wc -l | tr -d ' ')"
 for empty_action in --send-to --spawn; do
+  empty_counter="$(cat "$WS_HOME/triggers/counter")"
   if [[ "$empty_action" == --send-to ]]; then
     out="$(WS_SESSION="$DEFAULT_ID" "$WS" on "$EMPTY_SRC" done --send-to me '{output}' 2>&1)"
   else
@@ -2043,9 +2044,7 @@ for empty_action in --send-to --spawn; do
   fi
   assert_exit "$?" "1" "$empty_action empty expansion reports failure"
   assert_contains "$out" "empty" "$empty_action empty expansion explains itself"
-  EMPTY_TID="${${(f)out}[1]}"
-  assert_eq "$(jq -r '.status' "$WS_HOME/triggers/$EMPTY_TID.json" 2>/dev/null)" "pending" "$empty_action empty expansion is not burned"
-  "$WS" on --rm "$EMPTY_TID"
+  assert_eq "$(cat "$WS_HOME/triggers/counter")" "$empty_counter" "$empty_action empty template allocates no trigger"
 done
 assert_eq "$("$WS" sessions | wc -l | tr -d ' ')" "$empty_sessions" "empty spawn prompt never starts a blank child"
 reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null)"
@@ -2184,6 +2183,16 @@ for corrupt_record in '{' '{"status":"pending","action":"send","sources":7}'; do
   assert_eq "$(cat "$WS_HOME/triggers/counter")" "$edge_counter" "failed validation allocates no trigger"
   rm -f "$WS_HOME/triggers/999999.json"
   # Clean up the old behavior's incorrectly accepted trigger during the RED run.
+  [[ "$(cat "$WS_HOME/triggers/counter")" == "$edge_counter" ]] || "$WS" on --rm "$(cat "$WS_HOME/triggers/counter")"
+done
+# Registration must report this to the waiter even before a future event has output.
+echo "ws on: trigger edges reject templates that can expand to empty"
+for edge_template in '{output}' $' \t{output} {output}\n'; do
+  edge_counter="$(cat "$WS_HOME/triggers/counter")"
+  out="$("$WS" on "$SOURCE_A" exit --send-to "$DEFAULT_ID" "$edge_template" 2>&1)"
+  assert_exit "$?" "1" "output-only future trigger rejects registration"
+  assert_contains "$out" "empty" "waiter sees the empty-template error at registration"
+  assert_eq "$(cat "$WS_HOME/triggers/counter")" "$edge_counter" "empty template leaves no pending trigger"
   [[ "$(cat "$WS_HOME/triggers/counter")" == "$edge_counter" ]] || "$WS" on --rm "$(cat "$WS_HOME/triggers/counter")"
 done
 # --- end trigger edges ---
