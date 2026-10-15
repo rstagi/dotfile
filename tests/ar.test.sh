@@ -152,4 +152,34 @@ record round2 critic grok AGREE
 assert_eq "$(next --start-round 2 --single-round)" done "single-round findings have no fix or final"
 assert_eq "$(ar_round_status --ledger "$LEDGER" --round 2)" findings "planner receives findings status"
 
+echo "ar: revised approval skips fixes but cannot trigger opening early stop"
+rm -f "$LEDGER"
+record round1 review gpt NEEDS_CHANGES
+record round1 critic claude DISAGREE_EVIDENCE
+record round1 respond gpt APPROVE
+record round1 critic claude AGREE
+assert_eq "$(next)" "round2${T}review${T}claude" "last R approval omits fix, without third confirmation"
+assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" clean "withdrawn findings no longer count"
+assert_eq "$(next --rounds 1)" "final${T}final${T}claude" "revised approval in last round goes to final"
+record fix1 fix claude NOOP
+assert_eq "$(next --single-round)" done "single-round cannot advance after a completed fix"
+
+echo "ar: configuration and ledger validation"
+for args in '--rounds 0' '--rounds 6' '--inner 0' '--inner 6' '--inner nope' '--start-round 4' '--unknown'; do
+  next ${=args} >/dev/null 2>&1
+  assert_exit "$?" 1 "invalid arguments: $args"
+done
+ar_next --rounds 2 --inner 2 --ledger >/dev/null 2>&1
+assert_exit "$?" 1 "missing ledger value rejected"
+rm -f "$LEDGER"
+record round1 review gpt UNKNOWN
+next >/dev/null 2>&1; assert_exit "$?" 1 "unknown ledger verdict rejected"
+ar_round_status --ledger "$LEDGER" --round 1 >/dev/null 2>&1
+assert_exit "$?" 1 "status also rejects unknown verdict"
+rm -f "$LEDGER"
+record round1 fix claude NOOP
+next >/dev/null 2>&1; assert_exit "$?" 1 "mismatched ledger role/stage rejected"
+printf 'a1\tround1\treview\tgpt\tAPPROVE\n' > "$LEDGER"
+next >/dev/null 2>&1; assert_exit "$?" 1 "ledger must have all six columns"
+
 test_summary

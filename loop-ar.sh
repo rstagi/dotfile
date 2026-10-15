@@ -3,6 +3,7 @@
 #
 # Frozen ledger contract (Phases 4–9): one row per completed run, six TSV columns:
 #   a<k>  stage  role  provider  verdict  run_dir
+# PR ledger: runs/review-p<N>-<owner--repo>.ledger.tsv.
 # run_dir is relative to the loop directory; a<k> is the idempotency key.
 # Roles / token-only verdicts:
 #   review|respond: APPROVE|NEEDS_CHANGES
@@ -14,6 +15,8 @@
 # Providers: gpt|claude|grok; fix/final use claude, disputed uses "-" (no runner).
 # ar_next emits stage<TAB>role<TAB>provider, or the terminal sentinel "done".
 # Completed rows are replayed in file order. No rows are written for skipped rounds.
+# A DISPUTED row records the round's <ledger-stem>.disputed.md sidecar. Replay uses
+# that row, so an earlier round's sidecar cannot taint later rounds.
 
 # ar_next --rounds N --inner M --ledger F [--start-round r] [--single-round].
 ar_next() {
@@ -39,7 +42,10 @@ ar_next() {
   for (( round = start; round <= rounds; round++ )); do
     _ar_load_round "$ledger" "$round" || return 1
     [[ "${ar_state[final]}" == 1 ]] && { print -r -- done; return 0; }
-    [[ "${ar_state[fixed]}" == 1 ]] && continue
+    if [[ "${ar_state[fixed]}" == 1 ]]; then
+      (( single )) && { print -r -- done; return 0; }
+      continue
+    fi
     providers=(${(ps:\t:)"$(ar_rotation "$round")"})
     reviewer="$providers[1]"; critic="$providers[2]"; third="$providers[3]"
     # A veto keeps T in the critic slot for every remaining inner exchange.
@@ -143,6 +149,7 @@ _ar_load_round() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     columns=(${(ps:\t:)line})
     (( ${#columns} == 6 )) || return 1
+    _ar_valid_row "${columns[@]}" || return 1
     stage="$columns[2]"; role="$columns[3]"; verdict="$columns[5]"
     [[ "$stage" == final && "$role" == final ]] && ar_state[final]=1
     if [[ "$stage" == round[1-5] ]]; then active="${stage#round}"; fi
@@ -161,4 +168,16 @@ _ar_load_round() {
     ar_state[role]="$role"
   done < "$ledger"
   return 0
+}
+
+_ar_valid_row() {
+  local attempt="$1" stage="$2" role="$3" provider="$4" verdict="$5" run_dir="$6"
+  [[ "$attempt" =~ '^a[1-9][0-9]*$' && -n "$run_dir" && "$run_dir" != /* ]] || return 1
+  case "$stage:$role:$verdict" in
+    round[1-5]:(review|respond):(APPROVE|NEEDS_CHANGES)|round[1-5]:(critic|confirm):(AGREE|DISAGREE_EVIDENCE|DISAGREE_CONCERN))
+      [[ "$provider" == gpt || "$provider" == claude || "$provider" == grok ]] ;;
+    disputed:disputed:DISPUTED) [[ "$provider" == - ]] ;;
+    fix[1-5]:fix:(PUSHED|NOOP)|final:final:(REQUEST_CHANGES|COMMENT|APPROVE)) [[ "$provider" == claude ]] ;;
+    *) return 1 ;;
+  esac
 }
