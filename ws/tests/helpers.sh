@@ -40,7 +40,19 @@ export GROK_HOME="$TMP/grokhome"
 # Cap input-readiness waits (default 60s): a send stuck on a TUI that never readies fails fast.
 export WS_READY_TIMEOUT=15
 socket_listener_pid=""
-trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP" "$NOTCH_HOME"; home_guard_check "$real_home_snapshot" || exit 1' EXIT
+trap ws_tests_cleanup EXIT
+# ws_tests_cleanup — EXIT trap: stop this suite's background jobs and tmux server, drop the hook
+# locks ws keeps in ${TMPDIR:-/tmp}, then fail if the real agent hooks/config changed.
+# Detached retries (setsid) exit on their own once their tmux server is gone.
+ws_tests_cleanup() {
+  [[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null
+  local -a pids=(${(s.:.)${(j.:.)${(v)jobstates#*:*:}}})
+  (( $#pids )) && kill ${pids%%=*} 2>/dev/null
+  tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null
+  rm -f "${TMPDIR:-/tmp}"/ws-hook-"$WS_TMUX_SOCKET"-*.lock(N)
+  rm -rf "$TMP" "$NOTCH_HOME" 2>/dev/null || { sleep 1; rm -rf "$TMP" "$NOTCH_HOME"; }
+  home_guard_check "$real_home_snapshot" || exit 1
+}
 WS="$ROOT/ws/ws.sh"
 export WS_TEST_CLI="$WS"
 T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }

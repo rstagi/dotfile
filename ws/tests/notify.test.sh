@@ -544,7 +544,7 @@ assert_eq "$(afplay_log)" "$ROOT/assets/ws/sounds/waiting.wav" "nested notch fal
 
 echo "ws hook: auto uses osascript when terminal-notifier is absent"
 mkdir -p "$TMP/fallback-bin"
-for cmd in tmux jq git date cat cut afplay; do
+for cmd in tmux jq git date cat cut afplay grep; do
   ln -s "$(command -v "$cmd")" "$TMP/fallback-bin/$cmd"
 done
 ln -s "$TMP/bin/osascript" "$TMP/fallback-bin/osascript"
