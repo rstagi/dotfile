@@ -28,7 +28,7 @@ shellcheck install.sh afk-ralph.sh
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
 zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh ws/ws.sh ws/lib/*.sh ws/tests/*.sh
 
-# Loop engineering shell tests (occupancy + orchestrator + loop-top + ws suite; also runs zsh -n over the loop-*.sh and ws files)
+# Loop engineering shell tests (occupancy + orchestrator + loop-top + ws suite, run concurrently; also runs zsh -n over the loop-*.sh and ws files)
 zsh tests/run.sh
 
 # Review pipeline stages only
