@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { fitRows, gateText, inferLoop, milestoneTitles, phaseRows, pickerRows, pipelineSummary, tierChoices } from "../loop-top.mjs";
+import { fitRows, gateText, inferLoop, milestoneTitles, phaseRows, pickerRows, pipelineSummary, renderDetails, tierChoices } from "../loop-top.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "loop-top.mjs");
 
@@ -360,6 +360,63 @@ const SHALLOW2 = (s1, s2, s3, repository) => [
   stage(2, "fix1", "review-fix", s2, repository),
   stage(3, "final", "review-final", s3, repository),
 ];
+
+const EARLY_STOP = (finalState = "running") => [
+  stage(1, "round1", "review-gpt", "done", "acme/api", { role: "review", provider: "gpt", verdict: "APPROVE" }),
+  stage(2, "round1", "review-claude", "done", "acme/api", { role: "critic", provider: "claude", verdict: "AGREE" }),
+  stage(3, "round1", "review-grok", "done", "acme/api", { role: "confirm", provider: "grok", verdict: "AGREE" }),
+  stage(-1, "fix1", "review-fix", "skipped"),
+  stage(-2, "round2", "review-claude", "skipped"),
+  stage(-3, "round2", "review-grok", "skipped"),
+  stage(4, "final", "review-final", finalState),
+];
+
+test("--once: clean early stop shows final as current and skips outside pending progress", async (t) => {
+  const reviewStages = EARLY_STOP();
+  const snapshot = { graph: { nodes: [
+    node({ kind: "pr-review", ui: "running", status: "running", review: { tier: "standard", rounds: 2, inner: 2 }, reviewStages }),
+  ] } };
+  assert.equal(phaseRows(snapshot, null)[0].state, "final · 3/4");
+  assert.equal(pipelineSummary(reviewStages)[0].text, "round1 ✓✓✓ › fix1 ↷ › round2 ↷↷ › final ◐");
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /final · 3\/4/);
+  assert.match(out.stdout, /round1 ✓✓✓ › fix1 ↷ › round2 ↷↷ › final ◐/);
+});
+
+test("--once: an entirely planned AR pipeline stays todo until a run starts", async (t) => {
+  const snapshot = { graph: { nodes: [
+    node({ kind: "pr-review", review: { tier: "standard", rounds: 2, inner: 2 }, reviewStages: [
+      stage(1, "round1", "review-gpt", "planned"), stage(2, "round1", "review-claude", "planned"),
+      stage(3, "final", "review-final", "planned"),
+    ] }),
+  ] } };
+  assert.equal(phaseRows(snapshot, null)[0].state, "todo");
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.equal(out.code, 0, out.stderr);
+  assert.doesNotMatch(out.stdout, /round1|final ·/);
+});
+
+test("renderDetails: AR chains resolve the tier's provider models and show available tiers", () => {
+  for (const [tier, gpt, claude] of [["standard", "codex:@sol", "claude:opus"], ["max", "codex:@astra", "claude:fable"]]) {
+    const snapshot = { graph: { nodes: [node({ kind: "pr-review", review: { tier, rounds: 2, inner: 2 }, reviewStages: [
+      stage(1, "round1", "review-gpt", "planned"), stage(2, "round1", "review-claude", "planned"),
+      stage(3, "round1", "review-grok", "planned"), stage(4, "fix1", "review-fix", "planned"),
+      stage(5, "final", "review-final", "planned"),
+    ] })] } };
+    const text = renderDetails({ ref: loop(), snapshot, state: null, source: "store", at: new Date() }, "1", { width: 180, color: false });
+    assert.match(text, /tier: standard \| max/);
+    assert.ok(text.includes(`(${gpt})`), text);
+    assert.ok(text.includes(`(${claude})`), text);
+    assert.match(text, /grok +· planned +\(grok:default\)/);
+    assert.match(text, /fix +· planned +\(claude:opus\)/);
+    assert.match(text, /final +· planned +\(claude:opus\)/);
+  }
+});
 
 test("phaseRows: a started review phase's state names its current sub-stage + progress", () => {
   const review = (id, ui, reviewStages) => node({ id, phase: id, kind: "pr-review", lane: "review", title: "R", ui, status: "running", review: { tier: "shallow", rounds: 2 }, reviewStages });
