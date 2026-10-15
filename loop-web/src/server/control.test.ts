@@ -7,6 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Snapshot } from "../model/types.ts";
 
 const SERVER = fileURLToPath(new URL("../../server/index.mjs", import.meta.url));
 const PLAN = [
@@ -55,6 +56,29 @@ describe("review tier control endpoint", () => {
     }
     child = undefined;
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads review ledgers into the snapshot and preserves the live final attempt", async () => {
+    const runs = path.join(root, "runs");
+    const final = path.join(runs, "review-p2-acme--api-a4");
+    fs.mkdirSync(final, { recursive: true });
+    fs.writeFileSync(path.join(final, "leg.json"), JSON.stringify({ engine: "claude", model: "opus" }));
+    fs.writeFileSync(path.join(runs, "review-p2-acme--api.ledger.tsv"), [
+      "a1\tround1\treview\tgpt\tAPPROVE\truns/review-p2-acme--api-a1",
+      "a2\tround1\tcritic\tclaude\tAGREE\truns/review-p2-acme--api-a2",
+      "a3\tround1\tconfirm\tgrok\tAGREE\truns/review-p2-acme--api-a3",
+    ].join("\n"));
+    fs.writeFileSync(path.join(runs, "review-p9-acme--other.ledger.tsv"), "a1\tround1\treview\tgpt\tNEEDS_CHANGES\truns/other\n");
+    const response = await control({ action: "review", phase: "2", tier: "standard" });
+    expect(response.status).toBe(200);
+    const snapshot = await (await fetch(url.replace(/control$/, "snapshot"))).json() as Snapshot;
+    const stages = snapshot.graph.nodes.find((n) => n.id === "2")!.reviewStages!;
+    expect(stages.slice(0, 3).map((r) => [r.role, r.verdict, r.state])).toEqual([
+      ["review", "APPROVE", "done"], ["critic", "AGREE", "done"], ["confirm", "AGREE", "done"],
+    ]);
+    expect(stages.at(-1)).toMatchObject({ k: 4, role: "final", state: "running", model: "opus" });
+    expect(stages.filter((r) => r.stage === "round2").every((r) => r.state === "skipped")).toBe(true);
+    expect(new Set(stages.map((r) => r.repository))).toEqual(new Set(["acme/api"]));
   });
 
   it.each(["shallow", "medium", "huge"])("rejects tier %s without editing the plan", async (tier) => {

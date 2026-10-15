@@ -2,6 +2,17 @@ import { describe, it, expect } from "vitest";
 import { parseLoop } from "./parse-loop.ts";
 import type { LoopInput, RawRunDir } from "./parse-loop.ts";
 
+it("parses phase-scoped review ledgers without requiring run directories", () => {
+  const runtime = parseLoop(input({ reviewLedgers: [
+    { name: "review-p7-acme--api.ledger.tsv", content: "a1\tround1\treview\tgpt\tNEEDS_CHANGES\truns/review-p7-acme--api-a1\n" },
+    { name: "review-p8-acme--web.ledger.tsv", content: "broken\na2\tdisputed\tdisputed\t-\tDISPUTED\truns\n" },
+  ] }));
+  expect(runtime.reviewLedger).toEqual([
+    { phase: "7", repository: "acme--api", k: 1, stage: "round1", role: "review", provider: "gpt", verdict: "NEEDS_CHANGES", runDir: "runs/review-p7-acme--api-a1" },
+    { phase: "8", repository: "acme--web", k: 2, stage: "disputed", role: "disputed", provider: "-", verdict: "DISPUTED", runDir: "runs" },
+  ]);
+});
+
 function run(over: Partial<RawRunDir> & { name: string }): RawRunDir {
   return {
     meta: null,

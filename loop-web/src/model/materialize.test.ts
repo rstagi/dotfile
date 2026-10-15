@@ -55,6 +55,18 @@ const stateAll: Ingest = {
 
 const emptyLive: LoopInput = { present: true, state: null, events: null, runs: [], hil: [], notes: [] };
 
+it("carries AR ledger roles and verdicts through materialize into the review graph", () => {
+  const planText = "# AR\n\n## Phases\n### Phase 7 — Review [kind: pr-review] [review: standard]\n";
+  const rec = fold("r", { kind: "register", info: { runId: "r", planText } });
+  const live: LoopInput = { ...emptyLive, reviewLedgers: [{
+    name: "review-p7-acme--api.ledger.tsv",
+    content: "a1\tround1\treview\tgpt\tNEEDS_CHANGES\truns/review-p7-acme--api-a1\n",
+  }] };
+  const stages = materialize(rec, live).graph.nodes.find((n) => n.id === "7")!.reviewStages!;
+  expect(stages[0]).toMatchObject({ repository: "acme/api", k: 1, stage: "round1", role: "review", provider: "gpt", verdict: "NEEDS_CHANGES", state: "done" });
+  expect(stages[1]).toMatchObject({ k: 2, role: "critic", provider: "claude", state: "planned" });
+});
+
 describe("materialize — overlay drives the node status through the real buildSnapshot", () => {
   it("promotes phase 3 to done in the graph even though state.json still says running", () => {
     const rec = fold("r", register, stateAll, {

@@ -128,9 +128,12 @@ horizontal lanes as a first-class concept, and our DAGs are tiny, so a determini
   guaranteed clean bands with a synthetic Plan root. New plans render explicit PR-review
   phases inline, including repeated review rounds after late-added work; legacy plans retain
   stacked synthetic repository review terminals. Explicit review nodes carry `reviewStages`:
-  the legacy static run list (mirrored in `src/model/review-stages.ts`, checked against
-  `src/model/legacy-stages.tsv` rather than the ledger-driven `loop-review.sh` CLI)
-  folded with each `runs/review-p<N>-<owner--repo>-a<k>` dir's live state and engine/model.
+  completed AR runs from `runs/review-p<N>-<owner--repo>.ledger.tsv` (role, provider, verdict),
+  followed by the maximum remaining path as `planned`. A clean third-provider confirmation
+  marks later rounds `skipped`, preserving the actual final attempt number. Ledger rows flow
+  through `parseLoop` and `materialize`; run directories supply live state and engine/model.
+  Historical shallow/medium tiers retain their static shape, checked against
+  `src/model/legacy-stages.tsv`.
 
 Plans declare GitHub `owner/repo` slugs and assign one repository to every work phase;
 explicit review phases cover all repositories. Re-registering edited plan text preserves
