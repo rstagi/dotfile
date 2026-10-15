@@ -1,5 +1,5 @@
 #!/bin/zsh
-# loop-execute public review contract: tiered local adversarial rounds, fixes between rounds, one post.
+# loop-execute public review contract: rotating AR exchanges, verified fixes, one final post.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -117,7 +117,20 @@ assert_eq "$([[ "$FIX_SKILL" == *'disable-model-invocation: true'* ]] && echo bl
 assert_contains "$FIX_SKILL" 'Write `RUN_DIR/remediation-plan.md`' "records reconciliation before fixes"
 assert_contains "$FIX_SKILL" 'accepted, rejected, or duplicate' "disposes every finding"
 assert_contains "$FIX_SKILL" 'maximum of 3 concurrent subagents' "bounds parallel remediation"
-assert_contains "$FIX_SKILL" '**shallow:** apply the fix groups yourself' "shallow coordinator fixes without subagents"
+assert_contains "$FIX_SKILL" 'report:<path> [disputed:<path>] tier:<standard|max>' "single review plus optional disputed input"
+assert_contains "$FIX_SKILL" 'Require exactly one `report:`' "rejects independent report sets"
+assert_contains "$FIX_SKILL" 'last R `report.md`' "uses final reviewer position of current round"
+assert_contains "$FIX_SKILL" 'including critic-added issues' "does not lose critic-only disputed concerns"
+assert_contains "$FIX_SKILL" 'Verify every finding and every disputed item against the current code before accepting or rejecting it' "code verification precedes disposition"
+assert_contains "$FIX_SKILL" 'Consensus or disagreement alone is not evidence' "does not treat convergence as correctness"
+assert_contains "$FIX_SKILL" 'including an `APPROVE` report with critic-only disputed items' "dispute cannot become a false no-op"
+assert_contains "$FIX_SKILL" 'Legacy tiers shallow and medium are rejected' "fix skill rejects legacy tiers"
+assert_contains "$FIX_SKILL" '**standard / max — always spawn Opus fixers.**' "both tiers delegate accepted fixes to Opus"
+assert_contains "$FIX_SKILL" '"result": "PUSHED | NOOP"' "records verified remediation result"
+assert_contains "$FIX_SKILL" '"headBefore": "full starting SHA"' "records push recovery starting head"
+assert_contains "$FIX_SKILL" '"headAfter": "full verified final SHA"' "records push recovery final head"
+assert_eq "$([[ "$FIX_SKILL" == *'Sonnet'* || "$FIX_SKILL" == *'**shallow:**'* || "$FIX_SKILL" == *'three in medium/max'* ]] && echo stale || echo current)" current "no shallow coordinator path or report fan-in"
+assert_eq "$([[ "$FIX_AGENT" == *'Astra/Fable reports'* ]] && echo stale || echo current)" current "fixer has no obsolete report assumptions"
 assert_contains "$FIX_SKILL" '`model: opus` (the latest Opus)' "remediation subagents run the latest Opus"
 assert_contains "$FIX_SKILL" 'Agent tool with the `pr-review-fixer` subagent' "spawns through the skill"
 assert_contains "$FIX_AGENT" 'model: opus' "fixer agents run the latest Opus"
