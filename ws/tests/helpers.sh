@@ -109,7 +109,7 @@ make_repo() {
 wait_pane() {
   local i out
   for i in {1..30}; do
-    out="$(T capture-pane -p -t "$1" 2>/dev/null)"
+    out="$(T capture-pane -pJ -t "$1" 2>/dev/null)"
     [[ "$out" == *"$2"* ]] && { print -r -- "$out"; return 0; }
     sleep 0.1
   done
