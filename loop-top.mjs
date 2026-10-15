@@ -32,6 +32,8 @@ const ICONS = { done: "✓", running: "◐", awaiting: "⏸", paused: "‖", pro
 const RUN_ICONS = { done: "✓", running: "◐", todo: "·", question: "⏸", blocked: "✗", failed: "✗" };
 const CHAIN_KEYS = { "review-adv-a": "ADV_A", "review-adv-b": "ADV_B", "review-adv-c": "ADV_C", "review-fix": "FIX", "review-final": "FINAL" };
 const WAITING_TEXT = "waiting on you (orchestrator)";
+const AWAITING_MERGE_TEXT = "awaiting merge";
+const RESUME_HINT = "/loop-execute resume";
 const ESC = "\x1b[";
 const STYLE = { dim: "2", bold: "1", green: "32", yellow: "33", red: "31", cyan: "36" };
 const ICON_STYLE = { "✓": STYLE.green, "◐": STYLE.cyan, "⏸": STYLE.yellow, "‖": STYLE.yellow, "✗": STYLE.red, "·": STYLE.dim };
@@ -117,7 +119,8 @@ export function phaseRows(snapshot, state) {
     .sort((a, b) => comparePhase(a.phase ?? a.id, b.phase ?? b.id))
     .map((n) => {
       const ps = state?.phases?.[n.id] ?? {};
-      const waiting = Boolean(n.runtime?.hilOpen || n.runtime?.awaiting) || n.ui === "awaiting";
+      const parked = n.awaitingMerge === true;
+      const waiting = parked || Boolean(n.runtime?.hilOpen || n.runtime?.awaiting) || n.ui === "awaiting";
       const incoming = depEdges.filter((e) => e.target === n.id);
       const label = (e) => labelOf.get(e.source) ?? e.source;
       const pending = incoming.filter((e) => e.blocking).map(label).sort(comparePhase);
@@ -136,11 +139,25 @@ export function phaseRows(snapshot, state) {
         started: (n.status != null && n.status !== "todo") || (n.runtime?.attempt ?? 0) > 0,
         deps: incoming.map(label).sort(comparePhase),
         icon: waiting ? ICONS.awaiting : n.paused && n.ui !== "done" ? ICONS.paused : (ICONS[n.ui] ?? ICONS.todo),
-        state: waiting ? WAITING_TEXT : n.ui === "todo" && pending.length ? `waiting on ${pending.join(", ")}` : (reviewProgress(n) ?? stateText(n)),
+        milestone: n.milestone ?? null,
+        gate: parked ? { prs: gatePrs(n.prs) } : null,
+        state: parked ? AWAITING_MERGE_TEXT : waiting ? WAITING_TEXT : n.ui === "todo" && pending.length ? `waiting on ${pending.join(", ")}` : (reviewProgress(n) ?? stateText(n)),
         branch: ps.branch ?? n.runtime?.branch ?? null,
         worktree: ps.worktree ?? null,
       };
     });
+}
+
+/** Milestone headers from the snapshot graph (`M<n> — <title>`); empty unless there are ≥2. */
+export function milestoneTitles(snapshot) {
+  const milestones = snapshot?.graph?.milestones ?? [];
+  return milestones.length > 1 ? new Map(milestones.map((m) => [m.number, m.title])) : new Map();
+}
+
+/** A parked merge gate's second line: `acme/api #12 · acme/web #7 · /loop-execute resume`. */
+export function gateText(prs) {
+  const links = prs.map(({ slug, number }) => `${slug === "primary" ? "PR" : slug} ${number}`);
+  return [...links, RESUME_HINT].join(" · ");
 }
 
 /** Review sub-stages as one line per repository: consecutive runs of a stage share its name,
@@ -439,13 +456,14 @@ function pickLoop(loops) {
   return res.stdout.trim().split(/\s+/)[1] ?? null;
 }
 
-/** Picker lines: `status  runId  updatedAt`, active first, archived hidden. */
+/** Picker lines: `status  runId  updatedAt`, active first then awaiting-merge (needs a human),
+ * archived hidden. The status stays one word so fzf's `{2}` is still the runId. */
 export function pickerRows(loops) {
-  const rank = (l) => (l.status === "active" ? 0 : 1);
+  const rank = (l) => ({ active: 0, "awaiting-merge": 1 })[l.status] ?? 2;
   return loops
     .filter((l) => l.status !== "archived")
     .sort((a, b) => rank(a) - rank(b))
-    .map((l) => `${l.status.padEnd(9)}  ${l.runId}  ${l.updatedAt ?? ""}`);
+    .map((l) => `${l.status.padEnd(14)}  ${l.runId}  ${l.updatedAt ?? ""}`);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -674,8 +692,15 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
     if (at < 0) return paint(STYLE.dim, padded);
     return paint(STYLE.dim, padded.slice(0, at)) + paint(ICON_STYLE[glyph], glyph) + paint(STYLE.dim, padded.slice(at + glyph.length));
   };
-  const groups = ordered.map((r, i) => {
+  const titles = milestoneTitles(snapshot);
+  let currentMilestone;
+  const groups = ordered.flatMap((r, i) => {
     const entry = layout?.entries[i];
+    const heading = [];
+    if (titles.size && r.milestone != null && r.milestone !== currentMilestone) {
+      currentMilestone = r.milestone;
+      heading.push({ done: false, selected: false, lines: [paint(STYLE.bold, truncate(`  M${r.milestone} — ${titles.get(r.milestone) ?? ""}`, width))] });
+    }
     const cols = [
       r.label.padEnd(labelW),
       truncate(rowTitle(r), titleW).padEnd(titleW),
@@ -708,8 +733,12 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
       const lead = `${entry ? entry.mid.padEnd(railW) : "    "}  ${r.branch ?? "—"} → `;
       lines.push(paint(STYLE.dim, "  " + lead + truncateLeft(wt, width - lead.length - 2)));
     }
+    if (r.gate) {
+      const lead = `  ${entry ? entry.mid.padEnd(railW) : "    "}  `;
+      lines.push(paint(STYLE.dim, lead) + paint(STYLE.yellow, truncate(gateText(r.gate.prs), width - lead.length)));
+    }
     if (entry) lines.push(...entry.after.map((l) => "  " + rails(l)));
-    return { done: r.icon === ICONS.done, selected: isSelected, lines };
+    return [...heading, { done: r.icon === ICONS.done, selected: isSelected, lines }];
   });
   out.push(...fitRows(groups, height ? height - out.length - (keys ? 3 : 2) : Infinity, paint));
   if (rows.length === 0) out.push(paint(STYLE.dim, "  (no phases yet)"));
@@ -779,7 +808,11 @@ function renderDetails(frame, id, { width, height, color, banner }) {
 
 function renderHeader({ ref, snapshot }, width, paint) {
   const elapsed = ref.startedAt ? formatAge(((ref.finishedAt ? Date.parse(ref.finishedAt) : Date.now()) - Date.parse(ref.startedAt)) / 1000) : "—";
-  const head = truncate([ref.runId, ref.status, elapsed, ref.integrationBranch].filter(Boolean).join(" · "), width);
+  const effort = snapshot?.effort;
+  const milestone = (effort?.milestoneTotal ?? 1) > 1 ? `M${effort.milestone}/${effort.milestoneTotal}` : null;
+  // The current milestone's branch (the daemon swaps it per milestone); never milestone 1's by fallback.
+  const branch = effort ? effort.integrationBranch ?? ((effort.milestone ?? 1) > 1 ? null : ref.integrationBranch) : ref.integrationBranch;
+  const head = truncate([ref.runId, ref.status, elapsed, milestone, branch].filter(Boolean).join(" · "), width);
   return [
     paint(STYLE.bold, head) + (snapshot?.paused ? "  " + paint(STYLE.yellow, "‖ LOOP PAUSED") : ""),
     truncate(`repos: ${ref.repositories.join(", ") || "—"}`, width),
@@ -969,6 +1002,14 @@ function actualModel(rt) {
     model = [...(rt.attempts ?? [])].reverse().find((a) => a.engine === rt.engine && a.model && a.model !== "resume")?.model ?? null;
   }
   return model ? `${rt.engine}:${model}` : rt.engine;
+}
+
+/** `{slug: url}` → `[{slug, number: "#12"}]`, sorted; repositories without a PR yet are skipped. */
+function gatePrs(prs) {
+  return Object.entries(prs ?? {})
+    .filter(([, url]) => url)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([slug, url]) => ({ slug, number: url.replace(/^.*\/pull\/(\d+).*$/, "#$1") }));
 }
 
 function stateText(n) {
