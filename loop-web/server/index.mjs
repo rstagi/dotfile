@@ -28,7 +28,7 @@ const RECONCILE_MS = 15000;
 const TAIL_BYTES = 64 * 1024;
 const NOTE_BYTES = 16 * 1024;
 const CONTROL_ACTIONS = new Set(["pause", "resume", "model", "review"]);
-const REVIEW_TIERS = new Set(["shallow", "medium", "max"]);
+const REVIEW_TIERS = new Set(["standard", "max"]);
 /** `engine:model[+fallback[,fallback2]]` — the loop-models.conf leg grammar. */
 const MODEL_LEG = /^(codex|claude|grok):@?[A-Za-z0-9._-]+(\+[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*)?$/;
 const DECISION_FILE_BYTES = 128 * 1024;
@@ -436,23 +436,22 @@ function handleControl(runId, req, res) {
   });
 }
 
-/** Started = state.json moved past todo, or any attempt was counted. */
 /** `{action:"review", phase, tier}`: rewrite the review phase's `[review: …]` tag in plan.md
- * (dropping `[rounds: …]` → the tier's default). The orchestrator reads the tags when the review
+ * (dropping `[rounds: …]` and `[inner: …]` → their defaults). The orchestrator reads the tags when the review
  * phase starts, so this is refused once it has; the plan watcher re-materializes the graph. */
 function setReviewTier(entry, loopDir, phase, tier, res) {
   if (phase === null) return json(res, 400, { error: "review requires a phase" });
-  if (!REVIEW_TIERS.has(tier)) return json(res, 400, { error: "tier must be shallow|medium|max" });
+  if (!REVIEW_TIERS.has(tier)) return json(res, 400, { error: "tier must be standard|max" });
   const planFile = entry.record.planFile ?? path.join(loopDir, "plan.md");
   const text = readText(planFile);
   const lines = text?.split("\n") ?? [];
   const i = lines.findIndex((l) => new RegExp(`^#{2,4} Phase ${phase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(l));
-  if (i < 0 || !/`\[kind: pr-review\]`/.test(lines[i])) return json(res, 400, { error: "not a review phase", phase });
-  const statusTag = lines[i].match(/`\[status: ([^\]]+)\]`/)?.[1] ?? "todo";
+  if (i < 0 || !/\[kind:\s*pr-review\s*\]/i.test(lines[i])) return json(res, 400, { error: "not a review phase", phase });
+  const statusTag = lines[i].match(/\[status:\s*([^\]]+?)\s*\]/i)?.[1] ?? "todo";
   if (statusTag !== "todo" || phaseStarted(entry.record, loopDir, phase)) {
     return json(res, 409, { error: "review phase already started — tier can only change before it starts", phase });
   }
-  lines[i] = `${lines[i].replace(/\s*`\[(review|rounds): [^\]]*\]`/g, "")} \`[review: ${tier}]\``;
+  lines[i] = `${lines[i].replace(/\s*`?\[(review|rounds|inner):[^\]]*\]`?/gi, "")} \`[review: ${tier}]\``;
   try {
     const tmp = `${planFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, lines.join("\n"));
@@ -465,6 +464,7 @@ function setReviewTier(entry, loopDir, phase, tier, res) {
   json(res, 200, { ok: true, runId: entry.record.runId, action: "review", phase, tier });
 }
 
+/** Started = state.json moved past todo, or any attempt was counted. */
 function phaseStarted(record, loopDir, phase) {
   const live = safeParse(readText(path.join(loopDir, "state.json")));
   const ph = live?.phases?.[phase] ?? record.lastState?.phases?.[phase] ?? null;

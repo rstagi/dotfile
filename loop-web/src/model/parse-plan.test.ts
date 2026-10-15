@@ -432,22 +432,41 @@ describe("parsePlan — phases", () => {
     expect(plan.warnings.join("\n")).not.toMatch(/Phase 3.*Repository/i);
   });
 
-  it("parses review tier + rounds tags on a PR-review phase (defaults: medium, tier rounds)", () => {
+  it("parses review tier + rounds tags on a PR-review phase (defaults: standard, two rounds)", () => {
     const tagged = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\` \`[review: max]\` \`[rounds: 2]\`\n- **Depends on:** Phase 2\n`);
     const review = tagged.phases.at(-1)!;
     expect(review.title).toBe("Review pull requests");
-    expect(review.review).toEqual({ tier: "max", rounds: 2 });
+    expect(review.review).toEqual({ tier: "max", rounds: 2, inner: 2 });
 
     const plain = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`\n- **Depends on:** Phase 2\n`);
-    expect(plain.phases.at(-1)!.review).toEqual({ tier: "medium", rounds: null });
+    expect(plain.phases.at(-1)!.review).toEqual({ tier: "standard", rounds: 2, inner: 2 });
     expect(plain.phases[0].review).toBeNull();
   });
 
   it("warns on an unknown review tier or out-of-range rounds and falls back to defaults", () => {
     const bad = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review \`[lane: review]\` \`[kind: pr-review]\` \`[review: huge]\` \`[rounds: 9]\`\n- **Depends on:** Phase 2\n`);
-    expect(bad.phases.at(-1)!.review).toEqual({ tier: "medium", rounds: null });
+    expect(bad.phases.at(-1)!.review).toEqual({ tier: "standard", rounds: 2, inner: 2 });
     expect(bad.warnings.join("\n")).toMatch(/Phase 3.*review tier/i);
     expect(bad.warnings.join("\n")).toMatch(/Phase 3.*rounds/i);
+  });
+
+  it.each(["shallow", "medium"])("preserves legacy %s reviews with a warning for historical plans", (tier) => {
+    const plan = parsePlan(`# History\n\n## Phases\n\n### Phase 1 — Review [kind: pr-review] [review: ${tier}]\n`);
+    expect(plan.phases[0].review).toEqual({ tier, rounds: null, inner: 2 });
+    expect(plan.warnings.join("\n")).toMatch(new RegExp(`Phase 1.*legacy.*${tier}`, "i"));
+    expect(plan.warnings.join("\n")).toMatch(/standard\|max/);
+  });
+
+  it.each(["standard", "max"])("parses %s outer and inner round caps and strips the tags from the title", (tier) => {
+    const plan = parsePlan(`# AR\n\n## Phases\n\n### Phase 1 — Review \`[kind: pr-review]\` \`[review: ${tier}]\` \`[rounds: 5]\` \`[inner: 1]\`\n`);
+    expect(plan.phases[0]).toMatchObject({ title: "Review", review: { tier, rounds: 5, inner: 1 } });
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it.each(["", " ", "0", "6", "-1", "1.5", "many", "Infinity"])("warns and defaults to inner 2 for an invalid cap: %j", (inner) => {
+    const plan = parsePlan(`# AR\n\n## Phases\n\n### Phase 1 — Review [kind: pr-review] [inner: ${inner}]\n`);
+    expect(plan.phases[0].review).toEqual({ tier: "standard", rounds: 2, inner: 2 });
+    expect(plan.warnings.join("\n")).toMatch(/Phase 1.*inner.*1\.\.5.*default.*2/i);
   });
 
   it("warns when work appears after the last explicit PR-review phase", () => {

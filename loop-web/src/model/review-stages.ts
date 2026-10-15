@@ -10,8 +10,8 @@ export interface PlannedReviewRun {
   chain: ReviewChain;
 }
 
-/** LOOP_REVIEW_ROUNDS_<TIER> defaults in loop-models.conf. */
-export const DEFAULT_REVIEW_ROUNDS: Record<ReviewTier, number> = { shallow: 1, medium: 3, max: 3 };
+/** Shared AR round default plus historical shallow/medium defaults. */
+export const DEFAULT_REVIEW_ROUNDS: Record<ReviewTier, number> = { standard: 2, shallow: 1, medium: 3, max: 2 };
 
 /** Every run of one repository's pipeline, planned runs first, each folded with its run dir.
  * Repositories come from the plan, except a lone `primary` (single-repo plans), which yields to

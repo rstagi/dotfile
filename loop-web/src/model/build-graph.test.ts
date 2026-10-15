@@ -169,8 +169,8 @@ describe("buildGraph — review tier on PR-review nodes", () => {
   it("carries the parsed tier + rounds onto pr-review nodes only", () => {
     const tagged = REVIEW_ROUNDS.replace(/(### Phase 4[^\n]*\[kind: pr-review\]`?)/, "$1 `[review: shallow]` `[rounds: 2]`");
     const graph = buildGraph(parsePlan(tagged), null);
-    expect(node(graph, "4").review).toEqual({ tier: "shallow", rounds: 2 });
-    expect(node(graph, "2").review).toEqual({ tier: "medium", rounds: null });
+    expect(node(graph, "4").review).toEqual({ tier: "shallow", rounds: 2, inner: 2 });
+    expect(node(graph, "2").review).toEqual({ tier: "standard", rounds: 2, inner: 2 });
     expect(node(graph, "1").review ?? null).toBeNull();
   });
 });
@@ -181,7 +181,8 @@ describe("buildGraph — review pipeline sub-stages", () => {
     rt.reviewRunsByRepository = {
       "acme--api": [{ k: 1, runDir: "runs/review-p4-acme--api-a1", phase: "4", repository: "acme--api", status: null, leg: { engine: "codex", model: "@sol" } }],
     };
-    const graph = buildGraph(parsePlan(MULTI_REPO_REVIEW), rt);
+    const legacy = MULTI_REPO_REVIEW.replace(/(### Phase 4[^\n]*)/, "$1 `[review: medium]`");
+    const graph = buildGraph(parsePlan(legacy), rt);
     const stages = node(graph, "4").reviewStages ?? [];
     expect(stages).toHaveLength(24); // medium ×3 = 12 runs × 2 repositories
     expect(stages[0]).toMatchObject({ repository: "acme/api", k: 1, stage: "round1", state: "running", model: "@sol" });
