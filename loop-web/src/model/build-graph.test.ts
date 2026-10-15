@@ -176,6 +176,18 @@ describe("buildGraph — review tier on PR-review nodes", () => {
 });
 
 describe("buildGraph — review pipeline sub-stages", () => {
+  it("keeps AR ledgers scoped to their phase and repository", () => {
+    const rt = runtime({});
+    rt.reviewLedger = [
+      { phase: "4", repository: "acme--api", k: 1, stage: "round1", role: "review", provider: "gpt", verdict: "NEEDS_CHANGES", runDir: "runs/review-p4-acme--api-a1" },
+      { phase: "2", repository: "acme--web", k: 1, stage: "final", role: "final", provider: "claude", verdict: "APPROVE", runDir: "runs/review-p2-acme--web-a1" },
+    ];
+    const stages = node(buildGraph(parsePlan(MULTI_REPO_REVIEW), rt), "4").reviewStages!;
+    expect(stages[0]).toMatchObject({ repository: "acme/api", role: "review", provider: "gpt", verdict: "NEEDS_CHANGES", state: "done" });
+    expect(stages.find((r) => r.repository === "acme/web")).toMatchObject({ k: 1, role: "review", state: "planned", verdict: null });
+    expect(stages.filter((r) => r.state === "done")).toHaveLength(1);
+  });
+
   it("lists the phase's pipeline runs with their live state", () => {
     const rt = runtime({});
     rt.reviewRunsByRepository = {

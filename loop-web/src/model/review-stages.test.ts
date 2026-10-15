@@ -3,9 +3,82 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { planReviewRuns, reviewStageRuns } from "./review-stages.ts";
+import { parseLoop } from "./parse-loop.ts";
 import type { ReviewRun } from "./types.ts";
 
 const LEGACY_STAGES = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "legacy-stages.tsv"), "utf8");
+
+function ledger(...lines: string[]) {
+  return parseLoop({ present: true, state: null, events: null, runs: [], hil: [], notes: [],
+    reviewLedgers: [{ name: "review-p7-acme--api.ledger.tsv", content: lines.join("\n") }],
+  }).reviewLedger!;
+}
+
+describe("AR reviewStageRuns", () => {
+  const config = { tier: "standard" as const, rounds: 2, inner: 2 };
+
+  it("plans the maximum remaining inner exchanges with rotating providers", () => {
+    const out = reviewStageRuns(config, "7", ["acme/api"], {});
+    expect(out.map((r) => [r.stage, r.role, r.provider])).toEqual([
+      ["round1", "review", "gpt"], ["round1", "critic", "claude"], ["round1", "confirm", "grok"],
+      ["round1", "respond", "gpt"], ["round1", "critic", "grok"], ["disputed", "disputed", "-"], ["fix1", "fix", "claude"],
+      ["round2", "review", "claude"], ["round2", "critic", "grok"], ["round2", "confirm", "gpt"],
+      ["round2", "respond", "claude"], ["round2", "critic", "gpt"], ["disputed", "disputed", "-"], ["final", "final", "claude"],
+    ]);
+    expect(out.every((r) => r.state === "planned" && r.verdict === null)).toBe(true);
+  });
+
+  it("infers skipped rounds after clean confirm while the actual final a4 is running", () => {
+    const rows = ledger(
+      "a1\tround1\treview\tgpt\tAPPROVE\truns/review-p7-acme--api-a1",
+      "a2\tround1\tcritic\tclaude\tAGREE\truns/review-p7-acme--api-a2",
+      "a3\tround1\tconfirm\tgrok\tAGREE\truns/review-p7-acme--api-a3",
+    );
+    const out = reviewStageRuns(config, "7", ["acme/api"], {
+      "acme--api": [run({ k: 4, leg: { engine: "claude", model: "opus" } })],
+    }, rows);
+    expect(out.slice(0, 3).map((r) => [r.role, r.provider, r.verdict, r.state])).toEqual([
+      ["review", "gpt", "APPROVE", "done"], ["critic", "claude", "AGREE", "done"], ["confirm", "grok", "AGREE", "done"],
+    ]);
+    expect(out.filter((r) => r.stage === "round2").every((r) => r.state === "skipped")).toBe(true);
+    expect(out.filter((r) => r.stage === "round2")).not.toHaveLength(0);
+    expect(out.filter((r) => r.state === "running")).toMatchObject([
+      { k: 4, stage: "final", role: "final", provider: "claude", model: "opus" },
+    ]);
+    expect(out.at(-1)).toMatchObject({ k: 4, stage: "final", state: "running" });
+    expect(out.some((r) => r.state === "planned")).toBe(false);
+    expect(new Set(out.map((r) => r.k)).size).toBe(out.length);
+  });
+
+  it("keeps skipped rounds before a completed final without inventing more work", () => {
+    const rows = ledger(
+      "a1\tround1\treview\tgpt\tAPPROVE\truns/review-p7-acme--api-a1",
+      "a2\tround1\tcritic\tclaude\tAGREE\truns/review-p7-acme--api-a2",
+      "a3\tround1\tconfirm\tgrok\tAGREE\truns/review-p7-acme--api-a3",
+      "a4\tfinal\tfinal\tclaude\tAPPROVE\truns/review-p7-acme--api-a4",
+    );
+    const out = reviewStageRuns(config, "7", ["acme/api"], {}, rows);
+    expect(out.at(-1)).toMatchObject({ k: 4, role: "final", verdict: "APPROVE", state: "done" });
+    expect(out.every((r) => r.state === "done" || r.state === "skipped")).toBe(true);
+  });
+
+  it("folds a disputed marker as completed and schedules remediation, never clean skips", () => {
+    const rows = ledger(
+      "a1\tround1\treview\tgpt\tAPPROVE\truns/review-p7-acme--api-a1",
+      "a2\tround1\tcritic\tclaude\tDISAGREE_CONCERN\truns/review-p7-acme--api-a2",
+      "a3\tround1\trespond\tgpt\tAPPROVE\truns/review-p7-acme--api-a3",
+      "a4\tround1\tcritic\tclaude\tDISAGREE_EVIDENCE\truns/review-p7-acme--api-a4",
+      "a5\tdisputed\tdisputed\t-\tDISPUTED\truns",
+    );
+    const out = reviewStageRuns(config, "7", ["acme/api"], {
+      "acme--api": [run({ k: 6, leg: { engine: "claude", model: "opus" } })],
+    }, rows);
+    expect(out[4]).toMatchObject({ k: 5, stage: "disputed", role: "disputed", provider: "-", verdict: "DISPUTED", state: "done", engine: null, runDir: "runs" });
+    expect(out[5]).toMatchObject({ k: 6, stage: "fix1", role: "fix", state: "running" });
+    expect(out[6]).toMatchObject({ stage: "round2", role: "review", provider: "claude", state: "planned" });
+    expect(out.some((r) => r.state === "skipped")).toBe(false);
+  });
+});
 
 function run(over: Partial<ReviewRun> & { k: number }): ReviewRun {
   return { runDir: `runs/review-p7-acme--api-a${over.k}`, status: null, phase: "7", repository: "acme--api", ...over };

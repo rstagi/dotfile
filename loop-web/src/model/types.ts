@@ -78,6 +78,8 @@ export interface StateReviewPipeline {
   stage?: string;
   tier?: ReviewTier;
   rounds?: number;
+  inner?: number;
+  ledger?: string;
   headSha?: string;
 }
 
@@ -351,23 +353,43 @@ export interface ReviewRun {
   leg?: LegJson | null;
 }
 
-/** loop-review.sh chain names — one run of a review pipeline uses exactly one. */
-export type ReviewChain = "review-adv-a" | "review-adv-b" | "review-adv-c" | "review-fix" | "review-final";
+export type ReviewRole = "review" | "critic" | "respond" | "confirm" | "disputed" | "fix" | "final";
+export type ReviewProvider = "gpt" | "claude" | "grok" | "-";
 
-export type ReviewRunState = "todo" | "running" | "done" | "question" | "blocked" | "failed";
-
-/** One run (`a<k>`) of an explicit review phase's pipeline for one repository: the planned
- * stage from tier + rounds, folded with its run dir when one exists. */
-export interface ReviewStageRun {
+/** Completed AR run, in ledger order. Disputed markers have no runner directory. */
+export interface ReviewLedgerEntry {
+  phase: string;
   repository: string;
   k: number;
-  /** `round<r>` | `fix<r>` | `final`. */
+  stage: string;
+  role: ReviewRole;
+  provider: ReviewProvider;
+  verdict: string;
+  runDir: string;
+}
+
+/** Current and historical chain names; review-disputed is a marker without a runner. */
+export type ReviewChain = "review-adv-a" | "review-adv-b" | "review-adv-c" | "review-gpt" | "review-claude" | "review-grok" | "review-disputed" | "review-fix" | "review-final";
+
+export type ReviewRunState = "todo" | "planned" | "skipped" | "running" | "done" | "question" | "blocked" | "failed";
+
+/** One ledger run or a possible remaining stage, folded with live runner data. */
+export interface ReviewStageRun {
+  repository: string;
+  /** Actual/planned attempt number; negative display keys identify inferred skips. */
+  k: number;
+  /** `round<r>` | `fix<r>` | `disputed` | `final`. */
   stage: string;
   chain: ReviewChain;
   state: ReviewRunState;
   engine: string | null;
   model: string | null;
   summary: string | null;
+  /** AR fields; absent for historical static pipelines. */
+  role?: ReviewRole;
+  provider?: ReviewProvider;
+  verdict?: string | null;
+  runDir?: string | null;
 }
 
 export interface Runtime {
@@ -377,6 +399,7 @@ export interface Runtime {
   events: RawEvent[];
   reviewRuns: ReviewRun[];
   reviewRunsByRepository: Record<string, ReviewRun[]>;
+  reviewLedger?: ReviewLedgerEntry[];
   /** Legacy reserved notes/pr-review.md steering note. */
   reviewNote: string | null;
   reviewNotes: Record<string, string>;
