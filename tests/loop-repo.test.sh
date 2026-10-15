@@ -226,7 +226,7 @@ m2_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
   --milestone 2 --integration-branch feat/api-milestone-2)"
 assert_exit "$?" "0" "second milestone prepares in the same run"
 M2_WT="$(print "$m2_out" | jq -r .integrationWorktree)"
-assert_eq "$M2_WT" "$LOOP_WORKTREE_ROOT/run-1/acme--api/integration-feat-api-milestone-2" "later milestone path includes branch slug"
+assert_eq "$M2_WT" "$LOOP_WORKTREE_ROOT/run-1/acme--api/integration-feat-api-milestone-2-$(printf %s feat/api-milestone-2 | shasum | cut -c1-8)" "later milestone path includes branch slug + hash"
 assert_eq "$(print "$m2_out" | jq -r .baseSha)" "$M2_BASE" "later milestone fetches the latest default"
 assert_eq "$(print "$m2_out" | jq -r .adopted)" "false" "later milestone creates rather than adopts"
 if [[ -d "$M2_WT" ]]; then
@@ -235,6 +235,12 @@ if [[ -d "$M2_WT" ]]; then
   assert_exit "$?" "1" "previous integration changes do not leak into new milestone"
 fi
 assert_eq "$(cat "$WT/result.txt")" "api" "first milestone worktree remains available"
+
+echo "loop-repo: same-slug branches get distinct paths"
+p1="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-slug --milestone 2 --integration-branch feat/m2 | jq -r .integrationWorktree)"
+p2="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-slug --milestone 2 --integration-branch feat-m2 | jq -r .integrationWorktree)"
+[[ -n "$p1" && -n "$p2" && "$p1" != "$p2" ]]
+assert_exit "$?" "0" "feat/m2 and feat-m2 do not collide"
 
 echo "loop-repo: later milestones never adopt existing branches"
 git -C "$CHECKOUT" branch feat/milestone-existing "$M2_BASE"

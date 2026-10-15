@@ -66,8 +66,8 @@ assert_contains "$SKILL" '**keep** `sub/REVIEW_READY`' "parking keeps REVIEW_REA
 assert_contains "$SKILL" 'never `finish`, never respawn' "parking neither finishes nor respawns"
 assert_contains "$SKILL" 'does not respawn while `state.awaitingMerge` is set' "step 3b backstop skips respawn while parked"
 assert_contains "$SKILL" 'writes `status.json{outcome:"blocked"}` and exits' "SUB seeing awaitingMerge blocks"
-assert_contains "$PROTOCOL" '| `milestone.awaiting-merge` | supervise (loop-state.sh log) | milestone, prs |' "event table: awaiting-merge"
-assert_contains "$PROTOCOL" '| `milestone.resumed` | supervise (loop-state.sh log) | milestone |' "event table: resumed"
+assert_contains "$PROTOCOL" '| `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |' "event table: awaiting-merge"
+assert_contains "$PROTOCOL" '| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` |' "event table: resumed"
 assert_contains "$PROTOCOL" '"awaitingMerge": { "milestone": 1, "prs": { "owner/api": "<gate PR url>" } }' "state schema: awaitingMerge"
 assert_contains "$PROTOCOL" '"milestone": 1,' "state schema: milestone"
 assert_contains "$PROTOCOL" '"milestones": { "1": { "prs": { "owner/api": "<gate PR url>" } } }' "state schema: milestone PR history"
@@ -95,5 +95,8 @@ assert_contains "$PROTOCOL" 'permanently shipped: never re-check them' "merged m
 assert_contains "$PROTOCOL" 'recover `awaitingMerge` from the gate review' "protocol: recover awaitingMerge"
 assert_contains "$PROTOCOL" '`loop-milestone.sh advance` interrupted' "protocol: interrupted advance re-runs idempotently"
 assert_contains "$PROTOCOL" 'resume that advances the milestone switches `RUNTIME_ROOT`' "protocol: runtime root switch"
+assert_contains "$SKILL" 'loop-state.sh set ". + $PATCH"' "patch applied as a top-level merge"
+assert_contains "$SKILL" 'Never deep-merge with `*`' "patch never deep-merged"
+assert_contains "$SKILL" 'Wait for every participating repository of this milestone.' "gate waits only on milestone participants"
 
 test_summary

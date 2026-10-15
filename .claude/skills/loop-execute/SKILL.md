@@ -389,7 +389,7 @@ Do not count this as a reviewer failure or advance the stage; sibling repositori
 After the `final` run, promote its verdict, report path, and comment URL into
 `state.repositories[slug].review`, clear the review note, and emit one `review.finish`.
 
-Wait for every repository. Aggregate verdict precedence is `blocked > question > done`. If any
+Wait for every participating repository of this milestone. Aggregate verdict precedence is `blocked > question > done`. If any
 repository is blocked, mark the explicit review phase `blocked` and use the normal HIL/retry path;
 otherwise promote it to `done`. Repush after promotion. On a `[gate: merge]` review, park instead of respawning
 (never the "later phases" path below):
@@ -397,8 +397,9 @@ otherwise promote it to `done`. Repush after promotion. On a `[gate: merge]` rev
 1. Persist `state.awaitingMerge {milestone, prs{slug:url}}` with one gate PR URL per participating
    repository (`loop-state.sh set`), and record the verdicts in `state.repositories[slug].review`.
 2. Flip plan Status `awaiting merge` + `loop-plan.sh push`.
-3. `loop-state.sh log milestone.awaiting-merge` — the daemon's typed `milestone.awaiting-merge`
-   event, carrying `milestone` and `prs`.
+3. `loop-state.sh log milestone.awaiting-merge "" "M<n> <slug>=<url> ..."` — the daemon's typed
+   `milestone.awaiting-merge` event. `log` only carries phase/repository/detail, so the milestone
+   and gate PRs go in `detail` as one compact string (e.g. `M1 owner/api=<url> owner/web=<url>`).
 4. Notify once (`loop-notify.sh --level info --event milestone.awaiting-merge`): PR URLs + the
    instruction to merge them and run `/loop-execute resume`.
 5. **keep** `sub/REVIEW_READY` (it is what stops the step-3b backstop), unlock, stop — never `finish`, never respawn. A SUB or backstop that sees `awaitingMerge` does nothing.
@@ -425,8 +426,8 @@ merge every PR. Notify once with final PRs/verdicts, unlock, stop.
   `sub/handoff.md` exists, read it **once** and rename it to `sub/handoff.consumed-<k>.md`
   (single-consumption); then reconcile as above and run steps 4-7 under the recycle loop below.
 
-**Milestone resume** *(human only, `LOOP_SUB` unset, `state.awaitingMerge` set)*. Never auto-resume
-or poll for merges.
+**Milestone resume** *(human only, `LOOP_SUB` unset; the loop is parked — `state.awaitingMerge`
+set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll for merges.
 
 1. **Recover the park.** If `awaitingMerge` is unset but the current milestone's gate review is
    `done` with every participant's gate PR recorded (crash between aggregation and step 8.1),
@@ -440,12 +441,17 @@ or poll for merges.
    It prepares every next participant before retiring old non-adopted worktrees, so a failed
    advance leaves the runtime intact; re-run it as-is after an interruption (idempotent). A
    non-zero exit is reported and stops; nothing is applied.
-4. **Apply.** Apply the printed patch with exactly one `loop-state.sh set` (new `milestone`,
-   reset `repositories`, `awaitingMerge: null`, `milestones[N].prs` history). When
-   the effort changes the Loop runtime itself, the patch's `runtimeRoot` is the new integration
-   worktree: switch `RUNTIME_ROOT` to it before composing any later prompt.
+4. **Apply.** Apply the printed patch with exactly one `loop-state.sh set` as a top-level merge:
+   `PATCH="$(loop-milestone.sh advance ...)"; loop-state.sh set ". + $PATCH"` (the patch JSON is a
+   valid jq literal). `. + ` replaces each top-level key wholesale — `repositories` becomes exactly
+   the next participants and `prUrl`/`review`/`reviewPipeline`/`awaitingMerge` reset to `null`, with
+   new `milestone`, `integrationWorktree`, `integrationBranch`, `runtimeRoot`, `milestones[N].prs`
+   history. Never deep-merge with `*` (keeps stale repositories) or `set` the bare patch (drops the
+   rest of state). When the effort changes the Loop runtime itself, the patch's `runtimeRoot` is
+   the host repository's new integration worktree (or its retained old one when the host sits the
+   milestone out): switch `RUNTIME_ROOT` to it before composing any later prompt.
 5. **Restart.** Set plan Status back to `in progress` + `loop-plan.sh push`; remove
-   `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` (carries `milestone`); respawn the
+   `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); respawn the
    orchestrator for the new milestone (the SUB then schedules only its phases).
 
 ### Sub recycle *(mode: `sub` only)*

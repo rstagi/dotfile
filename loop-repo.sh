@@ -193,7 +193,8 @@ integration_path() {
   if (( MILESTONE > 1 )); then
     slug="$(printf '%s' "$INTEGRATION_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
     [[ -n "$slug" ]] || die "integration branch has no usable path slug" 4
-    suffix="-$slug"
+    # Hash of the exact branch keeps distinct same-slug branches (feat/m2, feat-m2) apart.
+    suffix="-$slug-$(printf '%s' "$INTEGRATION_BRANCH" | shasum | cut -c1-8)"
   fi
   print -r -- "$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/integration$suffix"
 }
