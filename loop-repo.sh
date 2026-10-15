@@ -5,24 +5,34 @@ set -u -o pipefail
 # Registry paths stay outside plans so the same owner/repo plan is portable across machines.
 # check/prepare create the integration branch from fetched origin/<default>, or adopt an
 # existing non-default one (clean worktree, ff-only to origin/<default>, never behind its remote).
+# prepare --milestone N defaults to 1; later milestones create branch-scoped worktrees,
+# reusing only their own path on retry. retire removes clean, non-adopted run worktrees;
+# pr-state --pr <url> prints open|merged|closed.
 
 CMD="${1:-}"
 [[ -n "$CMD" ]] && shift
 
 REGISTRY="${LOOP_REPO_REGISTRY:-${HOME}/.loop/repos.json}"
 WORKTREE_ROOT="${LOOP_WORKTREE_ROOT:-${HOME}/.loop/worktrees}"
-REPO="" RUN_ID="" INTEGRATION_BRANCH="" POSITIONAL=()
+REPO="" RUN_ID="" INTEGRATION_BRANCH="" MILESTONE=1 WORKTREE="" ADOPTED="" PR="" POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --repo) REPO="$2"; shift 2 ;;
   --run-id) RUN_ID="$2"; shift 2 ;;
   --integration-branch) INTEGRATION_BRANCH="$2"; shift 2 ;;
+  --milestone) MILESTONE="$2"; shift 2 ;;
+  --worktree) WORKTREE="$2"; shift 2 ;;
+  --adopted) ADOPTED="$2"; shift 2 ;;
+  --pr) PR="$2"; shift 2 ;;
   *) POSITIONAL+=("$1"); shift ;;
   esac
 done
 
 die() { print -u2 "loop-repo: $1"; exit "${2:-1}"; }
+
+milestone_re='^[1-9][0-9]*$'
+[[ "$MILESTONE" =~ $milestone_re ]] || die "invalid milestone '$MILESTONE'"
 
 validate_slug() {
   local slug_re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
@@ -95,10 +105,16 @@ check_repo() {
   [[ "$INTEGRATION_BRANCH" != "$default_branch" ]] \
     || die "integration branch cannot be the default branch ($default_branch)" 4
 
-  local mode=create adopt_worktree=""
+  local mode=create adopt_worktree="" expected
   if git -C "$checkout" show-ref --verify --quiet "refs/heads/$INTEGRATION_BRANCH"; then
     mode=adopt
     adopt_worktree="$(branch_worktree "$checkout" "$INTEGRATION_BRANCH")" || exit $?
+    expected="$(integration_path)"
+    if [[ "$CMD" == prepare && -n "$adopt_worktree" && "$adopt_worktree" == "${expected:A}" ]]; then
+      mode=reuse
+    elif (( MILESTONE > 1 )); then
+      die "milestone $MILESTONE cannot adopt existing branch $INTEGRATION_BRANCH" 4
+    fi
     if [[ -n "$adopt_worktree" && -n "$(git -C "$adopt_worktree" status --porcelain)" ]]; then
       die "integration branch $INTEGRATION_BRANCH has uncommitted changes in $adopt_worktree; commit or stash first" 4
     fi
@@ -168,11 +184,55 @@ adopt_branch() {
 # Run-scoped integration worktree path guard + creation; extra args go to worktree add.
 new_integration_worktree() {
   local checkout="$1"; shift
-  integration_worktree="$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/integration"
+  integration_worktree="$(integration_path)"
   [[ ! -e "$integration_worktree" ]] || die "integration worktree path exists: $integration_worktree" 4
   mkdir -p "${integration_worktree:h}"
   git -C "$checkout" worktree add -q "$integration_worktree" "$@" \
     || die "could not create integration worktree for $REPO" 4
+}
+
+integration_path() {
+  local suffix="" slug
+  if (( MILESTONE > 1 )); then
+    slug="$(printf '%s' "$INTEGRATION_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+    [[ -n "$slug" ]] || die "integration branch has no usable path slug" 4
+    # Hash of the exact branch keeps distinct same-slug branches (feat/m2, feat-m2) apart.
+    suffix="-$slug-$(printf '%s' "$INTEGRATION_BRANCH" | shasum | cut -c1-8)"
+  fi
+  print -r -- "$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/integration$suffix"
+}
+
+retire_worktree() {
+  validate_slug "$REPO"
+  validate_run_id
+  [[ -n "$WORKTREE" ]] || die "retire requires --worktree"
+  [[ "$ADOPTED" == true || "$ADOPTED" == false ]] || die "retire requires --adopted true|false"
+  [[ "$ADOPTED" == false ]] || die "cannot retire an adopted worktree" 4
+  local target="${WORKTREE:A}" run_root="${WORKTREE_ROOT:A}/$RUN_ID" checkout common target_common record
+  [[ "$target" == "$run_root/"* ]] || die "cannot retire worktree outside run root: $target" 4
+  [[ -e "$target" ]] || return 0
+  [[ ! -e "$target/.loop" ]] || die "cannot retire a coordinator worktree: $target" 4
+  checkout="$(mapping_get "$REPO")" || die "no mapping for $REPO" 2
+  checkout="$(normalize_checkout "$checkout")" || exit $?
+  [[ -f "$target/.git" && "$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" == "$target" ]] \
+    || die "not a linked worktree: $target" 4
+  common="$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir)" || exit $?
+  target_common="$(git -C "$target" rev-parse --path-format=absolute --git-common-dir)" || exit $?
+  [[ "${common:A}" == "${target_common:A}" ]] || die "worktree does not belong to $REPO: $target" 4
+  record="$(git -C "$target" rev-parse --absolute-git-dir)/loop-repo-prepare.json"
+  if [[ -f "$record" ]]; then
+    jq -e '.adopted == false' "$record" >/dev/null 2>&1 \
+      || die "cannot retire an adopted worktree: $target" 4
+  fi
+  [[ -z "$(git -C "$target" status --porcelain --untracked-files=all)" ]] \
+    || die "cannot retire dirty worktree: $target" 4
+  git -C "$checkout" worktree remove -- "$target" || die "could not retire worktree: $target" 4
+}
+
+validate_run_id() {
+  local run_id_re='^[A-Za-z0-9._-]+$'
+  [[ -n "$RUN_ID" && "$RUN_ID" != . && "$RUN_ID" != .. && "$RUN_ID" =~ $run_id_re ]] \
+    || die "invalid run id '$RUN_ID'"
 }
 
 case "$CMD" in
@@ -210,8 +270,7 @@ check)
 prepare)
   [[ -n "$REPO" ]] || die "prepare requires --repo"
   [[ -n "$RUN_ID" ]] || die "prepare requires --run-id"
-  run_id_re='^[A-Za-z0-9._-]+$'
-  [[ "$RUN_ID" =~ $run_id_re ]] || die "invalid run id '$RUN_ID'"
+  validate_run_id
   checked="$(check_repo)" || exit $?
   checkout="$(print -r -- "$checked" | jq -r .sourceRoot)"
   default_branch="$(print -r -- "$checked" | jq -r .defaultBranch)"
@@ -221,7 +280,17 @@ prepare)
   base_sha="$(git -C "$checkout" rev-parse "refs/remotes/origin/$default_branch")" \
     || die "fetched default ref is missing for $REPO" 3
   integration_worktree="" adopted=false
-  if [[ "$(print -r -- "$checked" | jq -r .mode)" == adopt ]]; then
+  mode="$(print -r -- "$checked" | jq -r .mode)"
+  if [[ "$mode" == reuse ]]; then
+    integration_worktree="$(print -r -- "$checked" | jq -r .adoptWorktree)"
+    # Keep the original base and ownership across retries, even after default advances.
+    # Git's per-worktree directory keeps this bookkeeping out of the working tree.
+    record="$(git -C "$integration_worktree" rev-parse --absolute-git-dir)/loop-repo-prepare.json"
+    if [[ -f "$record" ]]; then
+      base_sha="$(jq -er .baseSha "$record")" || die "invalid prepare record: $record" 4
+      adopted="$(jq -er '.adopted | tostring' "$record")" || die "invalid prepare record: $record" 4
+    fi
+  elif [[ "$mode" == adopt ]]; then
     adopted=true
     adopt_branch "$checkout" "$INTEGRATION_BRANCH" "$base_sha" "$default_branch" \
       "$(print -r -- "$checked" | jq -r '.adoptWorktree // empty')"
@@ -229,6 +298,14 @@ prepare)
     new_integration_worktree "$checkout" -b "$INTEGRATION_BRANCH" "$base_sha"
   fi
   ahead_count="$(git -C "$checkout" rev-list --count "$base_sha..refs/heads/$INTEGRATION_BRANCH")"
+  expected="$(integration_path)"
+  if [[ "${integration_worktree:A}" == "${expected:A}" ]]; then
+    record="$(git -C "$integration_worktree" rev-parse --absolute-git-dir)/loop-repo-prepare.json"
+    tmp="$(mktemp "$record.XXXXXX")" || die "cannot create prepare record" 4
+    jq -cn --arg baseSha "$base_sha" --argjson adopted "$adopted" \
+      '{baseSha:$baseSha, adopted:$adopted}' > "$tmp" && mv "$tmp" "$record" \
+      || die "cannot save prepare record" 4
+  fi
   jq -cn --arg repository "$REPO" --arg sourceRoot "$checkout" \
     --arg defaultBranch "$default_branch" --arg baseSha "$base_sha" \
     --arg integrationBranch "$INTEGRATION_BRANCH" --arg integrationWorktree "$integration_worktree" \
@@ -238,7 +315,16 @@ prepare)
       integrationWorktree:$integrationWorktree, adopted:$adopted, aheadCount:$aheadCount,
       prUrl:null, review:null}'
   ;;
+retire)
+  retire_worktree
+  ;;
+pr-state)
+  [[ -n "$PR" ]] || die "pr-state requires --pr"
+  pr_json="$(gh pr view "$PR" --json state)" || die "could not read PR state: $PR" 3
+  print -r -- "$pr_json" | jq -er '.state | ascii_downcase | select(. == "open" or . == "merged" or . == "closed")' \
+    || die "GitHub returned an invalid PR state: $PR" 3
+  ;;
 *)
-  die "unknown command '$CMD' (map|get|list|unmap|check|prepare)"
+  die "unknown command '$CMD' (map|get|list|unmap|check|prepare|retire|pr-state)"
   ;;
 esac

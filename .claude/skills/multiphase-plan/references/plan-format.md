@@ -24,6 +24,8 @@ between repositories.
   Opus reviewer, Sonnet fixes; medium = Sol + Opus + Grok adversaries, Opus fixes; max = Astra +
   Fable + Grok adversaries, Opus fixes; every tier ends with one Opus verdict. `loop-review.sh stages` turns
   the pair into the run list.
+- A review phase that ends a non-final milestone adds `` `[gate: merge]` `` (see
+  **Milestones** below); the tag is only valid together with `[kind: pr-review]`.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.
 - `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
@@ -41,6 +43,34 @@ between repositories.
   `**Plan doc:**` / `**Effort task:**` header lines, or `**Task:**` phase lines — readers
   ignore them.
 
+## Milestones (optional)
+
+One plan may carry several **milestones**: macro phases that each ship as their own PR per
+participating repository and end with a merge gate. Phase numbers stay global and stable across
+milestones.
+
+- **Sections.** `## Milestone N — <outcome>` sections replace `## Phases`; a plain `## Phases` plan is one implicit milestone 1 (backward compatible — nothing below applies to it).
+- **Branch lines.** Before its first `### Phase`, a milestone section may carry
+  `- **Integration branch:** \`<branch>\`` and, per repository,
+  `- **Integration branch (owner/repo):** \`<branch>\``.
+  - Precedence: milestone repository line > milestone line > (milestone 1 only) `## Repositories` override > Loop config.
+  - Milestones ≥2 must declare their branch (no global fallback).
+  - A branch may not repeat for the same repository across milestones.
+- **PR lines.** `- **PR:** …` (single repository) or `- **PR (owner/repo):** …` carry the
+  per-milestone PR links. The `## Repositories` `PR:` line applies only to milestone-less plans.
+- **Participants.** A milestone's participants are the repositories of its work phases.
+  Prepare, PR creation, review, and the merge gate are scoped to participants.
+- **Gate.** Every non-final milestone ends with a `` `[kind: pr-review]` `` `` `[gate: merge]` ``
+  phase. The root phases of milestone N+1 must list the gate in `Depends on` explicitly (the
+  parser warns, `loop-execute` preflight rejects if missing). Milestones always block the next;
+  there is no stacking. After the gate review verdict is posted the loop parks in
+  `awaiting-merge` (plan Status `awaiting merge`) until a human merges and runs
+  `/loop-execute resume`.
+- **Worktrees.** Milestone 1 keeps `…/<owner--repo>/integration`; milestones ≥2 use
+  `…/<owner--repo>/integration-<branch-slug>-<hash8>` (`<hash8>` = 8-char sha1 of the exact
+  branch), always created fresh from the fetched default
+  branch (adoption of an existing branch/worktree applies to milestone 1 only).
+
 ## Document template
 
 > The template below shows four phases across two lanes purely to illustrate every marker.
@@ -50,7 +80,7 @@ between repositories.
 ```markdown
 # <Effort name> — Multi-Phase Plan
 
-**Status:** planning | in progress | integrating | done
+**Status:** planning | in progress | awaiting merge | integrating | done
 **Last updated:** <YYYY-MM-DD> by <host: Claude Code | Codex> (<worktree/branch>)
 
 ## Loop config
@@ -141,6 +171,41 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 ## Progress log
 - <YYYY-MM-DD> — <what moved, by which lane/worktree>. (appended by loop-handoff)
 ```
+
+### Two-milestone variant
+
+Replace `## Phases` with one section per milestone (phase numbers continue across them; only
+the structure is shown):
+
+```markdown
+## Milestone 1 — Backend ships behind a flag
+- **Integration branch:** `feat/token-refresh-backend`
+- **PR:** _none yet_
+
+### Phase 1 — Add OAuth token refresh endpoint `[lane: A]` `[status: todo]`
+- **Repository:** `owner/api`
+- **Depends on:** none
+- ...
+
+### Phase 2 — Review milestone 1 `[lane: review]` `[status: todo]` `[kind: pr-review]` `[gate: merge]`
+- **Depends on:** Phase 1
+- **Done when:** every participating repository PR has a non-blocking review verdict
+
+## Milestone 2 — Web client uses refreshed tokens
+- **Integration branch (owner/web):** `feat/token-refresh-client`
+- **PR (owner/web):** _none yet_
+
+### Phase 3 — Use refreshed tokens in the API client `[lane: A]` `[status: todo]`
+- **Repository:** `owner/web`
+- **Depends on:** Phase 2
+- ...
+
+### Phase 4 — Review milestone 2 `[lane: review]` `[status: todo]` `[kind: pr-review]`
+- **Depends on:** Phase 3
+- **Done when:** every participating repository PR has a non-blocking review verdict
+```
+
+The final milestone ends with the ordinary terminal review (no `[gate: merge]`).
 
 ## `.loop/plan.md` header
 

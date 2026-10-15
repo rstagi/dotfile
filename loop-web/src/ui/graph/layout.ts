@@ -12,6 +12,8 @@ const PAD_X = 48;
 const PAD_Y = 40;
 const BAND_PAD = 28;
 const STACK_STEP = NODE_H + 20;
+const MILESTONE_HEADER_H = 36;
+const MILESTONE_PAD_X = 20;
 
 export interface LaneBand {
   lane: string;
@@ -23,9 +25,20 @@ export interface LaneBand {
   index: number;
 }
 
+/** A vertical column grouping one milestone's phases; empty unless the plan has ≥2 milestones. */
+export interface MilestoneBand {
+  milestone: number;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface Layout {
   positions: Map<string, { x: number; y: number }>;
   bands: LaneBand[];
+  milestones: MilestoneBand[];
   width: number;
   height: number;
 }
@@ -55,17 +68,19 @@ export function computeLayout(graph: Graph): Layout {
     }
     return Math.max(MIN_BAND_H, (maxStack - 1) * STACK_STEP + NODE_H + 2 * BAND_PAD);
   });
+  const grouped = (graph.milestones?.length ?? 0) > 1;
+  const top = grouped ? PAD_Y + MILESTONE_HEADER_H : PAD_Y;
   const laneTop: number[] = [];
-  let acc = PAD_Y;
+  let acc = top;
   for (const h of laneHeight) {
     laneTop.push(acc);
     acc += h;
   }
-  const totalBandH = acc - PAD_Y;
+  const totalBandH = acc - top;
   const reviewNodes = graph.nodes.filter(isSyntheticReview);
   const reviewStackH = Math.max(NODE_H, (reviewNodes.length - 1) * STACK_STEP + NODE_H);
   const contentH = Math.max(totalBandH, reviewStackH + 2 * BAND_PAD);
-  const spanY = PAD_Y + contentH / 2 - NODE_H / 2;
+  const spanY = top + contentH / 2 - NODE_H / 2;
 
   const positions = new Map<string, { x: number; y: number }>();
   for (const n of graph.nodes) {
@@ -90,7 +105,7 @@ export function computeLayout(graph: Graph): Layout {
   }
 
   const width = PAD_X * 2 + maxLayer * COL_W + NODE_W;
-  const height = PAD_Y * 2 + contentH;
+  const height = top + PAD_Y + contentH;
   const bands: LaneBand[] = lanes.map((lane, index) => ({
     lane,
     label: lane,
@@ -101,7 +116,29 @@ export function computeLayout(graph: Graph): Layout {
     index,
   }));
 
-  return { positions, bands, width, height };
+  const milestones = grouped ? milestoneBands(graph, layers, height) : [];
+  return { positions, bands, milestones, width, height };
+}
+
+/** One column per milestone spanning its phases' layers; label-only grouping, never moves nodes. */
+function milestoneBands(graph: Graph, layers: Map<string, number>, height: number): MilestoneBand[] {
+  const bands: MilestoneBand[] = [];
+  for (const milestone of graph.milestones ?? []) {
+    const own = graph.nodes.filter((n) => n.milestone === milestone.number);
+    if (own.length === 0) continue;
+    const ls = own.map((n) => layers.get(n.id) ?? 1);
+    const x = PAD_X + Math.min(...ls) * COL_W - MILESTONE_PAD_X;
+    const right = PAD_X + Math.max(...ls) * COL_W + NODE_W + MILESTONE_PAD_X;
+    bands.push({
+      milestone: milestone.number,
+      label: `M${milestone.number} · ${milestone.title}`,
+      x,
+      y: 0,
+      width: right - x,
+      height,
+    });
+  }
+  return bands;
 }
 
 /** Longest-path layer per node; only legacy synthetic review nodes are forced terminal. */

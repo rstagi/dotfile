@@ -48,6 +48,28 @@
   border-color: rgba(85, 224, 138, 0.25);
 }
 
+/* --- milestone columns ------------------------------------------------------------ */
+.milestone {
+  border-left: 1px solid var(--hairline);
+  border-right: 1px solid var(--hairline);
+  background: rgba(20, 32, 38, 0.18);
+  pointer-events: none;
+}
+.milestone__label {
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  max-width: calc(100% - 28px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
 /* --- phase / plan / review node -------------------------------------------------- */
 .node {
   position: relative;
@@ -132,6 +154,33 @@
   color: var(--ink-soft);
   text-overflow: ellipsis;
   overflow: hidden;
+}
+.node__badge--pr {
+  flex-shrink: 0;
+  overflow: visible;
+}
+/* Parked merge gate: resume hint row above a wrapping PR-badge row; title yields a line. */
+.node--parked .node__title {
+  -webkit-line-clamp: 1;
+  max-height: 1.2em;
+}
+.node__meta--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.node__resume {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--amber);
+}
+.node__prs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 6px;
+}
+.node__prs:empty {
+  display: none;
 }
 .node__badge--model {
   color: var(--aqua);

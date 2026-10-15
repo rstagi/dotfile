@@ -40,3 +40,26 @@ describe("Header Jev status", () => {
     expect(html).toContain("Jev shadow · 3 decisions · 1 fallback");
   });
 });
+
+describe("Header milestones", () => {
+  const snap = (effort: object) => ({
+    effort: { name: "M", status: "awaiting merge", integrationBranch: null, updatedAt: null, pr: null, runId: "r", repositories: [], ...effort },
+    subOrch: null, loopActive: false,
+  }) as unknown as Snapshot;
+
+  it("shows M<n>/<total> and status for multi-milestone plans", () => {
+    const html = renderToStaticMarkup(<Header snapshot={snap({ milestone: 2, milestoneTotal: 3 })} conn="live" />);
+    expect(html).toContain("M2/3");
+    expect(html).toContain("awaiting merge");
+  });
+
+  it("omits the milestone pill for single-milestone plans", () => {
+    const html = renderToStaticMarkup(<Header snapshot={snap({ milestone: 1, milestoneTotal: 1 })} conn="live" />);
+    expect(html).not.toContain("M1/1");
+  });
+
+  it("flags awaiting merge from effort state even if the plan status lags", () => {
+    const html = renderToStaticMarkup(<Header snapshot={snap({ status: "integrating", milestone: 1, milestoneTotal: 2, awaitingMerge: { milestone: 1, prs: {} } })} conn="live" />);
+    expect(html).toContain("awaiting merge");
+  });
+});

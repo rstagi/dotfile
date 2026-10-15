@@ -412,3 +412,120 @@ describe("buildGraph — control (pause + model override)", () => {
     expect(buildGraph(parsePlan(SINGLE_LANE), null).nodes.find((n) => n.id === "1")?.paused).toBe(false);
   });
 });
+
+const MILESTONES = `# Ship twice — Multi-Phase Plan
+
+## Milestone 1 — Ship the core
+
+### Phase 1 — Build the core [lane: A]
+- **Depends on:** none
+
+### Phase 2 — Review the core [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 1
+
+## Milestone 2 — Ship the API
+- **Integration branch:** \`feat/second\`
+
+### Phase 3 — Build the API [lane: A]
+- **Depends on:** Phase 2
+
+### Phase 4 — Review the API [kind: pr-review]
+- **Depends on:** Phase 3
+`;
+
+describe("buildGraph — milestones", () => {
+  it("tags nodes with their milestone and lists the milestones", () => {
+    const g = buildGraph(parsePlan(MILESTONES), null);
+    expect(g.nodes.filter((n) => n.phase).map((n) => [n.id, n.milestone])).toEqual([["1", 1], ["2", 1], ["3", 2], ["4", 2]]);
+    expect(g.nodes.find((n) => n.id === "plan")!.milestone).toBeNull();
+    expect(g.milestones).toEqual([{ number: 1, title: "Ship the core" }, { number: 2, title: "Ship the API" }]);
+    expect(g.nodes.find((n) => n.id === "2")!.gate).toBe("merge");
+    expect(g.nodes.find((n) => n.id === "4")!.gate).toBeNull();
+  });
+
+  it("marks the current milestone's gate awaiting merge with its PRs", () => {
+    const withState = {
+      ...runtime({}), state: { milestone: 1, awaitingMerge: { milestone: 1, prs: { primary: "https://github.com/acme/api/pull/9" } } },
+    } as unknown as Runtime;
+    const g = buildGraph(parsePlan(MILESTONES), withState);
+    const gate = g.nodes.find((n) => n.id === "2")!;
+    expect(gate.awaitingMerge).toBe(true);
+    expect(gate.ui).toBe("awaiting");
+    expect(gate.prs).toEqual({ primary: "https://github.com/acme/api/pull/9" });
+    expect(g.nodes.find((n) => n.id === "4")!.awaitingMerge).toBeFalsy();
+  });
+
+  it("does not mark a historical gate awaiting once the loop moved on", () => {
+    const withState = {
+      ...runtime({}), state: { milestone: 2, awaitingMerge: null },
+    } as unknown as Runtime;
+    const gate = buildGraph(parsePlan(MILESTONES), withState).nodes.find((n) => n.id === "2")!;
+    expect(gate.awaitingMerge).toBeFalsy();
+  });
+});
+
+const TWO_GATES = `# Ship twice — Multi-Phase Plan
+
+## Repositories
+
+### \`acme/api\`
+- **Verify:** \`npm test\`
+
+### \`acme/web\`
+- **Verify:** \`npm test\`
+
+## Milestone 1 — Ship the core
+
+### Phase 1 — Build the core [lane: A]
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+
+### Phase 2 — Review the core [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 1
+
+## Milestone 2 — Ship the web
+
+### Phase 3 — Build the web [lane: B]
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 2
+
+### Phase 4 — Review the web [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 3
+`;
+
+describe("buildGraph — milestone gates and participants", () => {
+  it("parks only the current milestone's gate", () => {
+    const withState = {
+      ...runtime({}), state: { milestone: 2, awaitingMerge: { milestone: 2, prs: { "acme/web": "https://github.com/acme/web/pull/4" } } },
+    } as unknown as Runtime;
+    const g = buildGraph(parsePlan(TWO_GATES), withState);
+    expect(g.nodes.find((n) => n.id === "2")!.awaitingMerge).toBeFalsy();
+    expect(g.nodes.find((n) => n.id === "2")!.ui).not.toBe("awaiting");
+    expect(g.nodes.find((n) => n.id === "4")!.awaitingMerge).toBe(true);
+    expect(g.nodes.find((n) => n.id === "4")!.ui).toBe("awaiting");
+  });
+
+  it("plans review stages only for the containing milestone's participants", () => {
+    const g = buildGraph(parsePlan(TWO_GATES), null);
+    const repos = (id: string) => [...new Set(g.nodes.find((n) => n.id === id)!.reviewStages!.map((s) => s.repository))];
+    expect(repos("2")).toEqual(["acme/api"]);
+    expect(repos("4")).toEqual(["acme/web"]);
+  });
+
+  it("maps an awaiting-merge plan status to the awaiting state", () => {
+    const g = buildGraph(parsePlan(TWO_GATES.replace("## Repositories", "**Status:** awaiting merge\n\n## Repositories")), null);
+    expect(g.nodes.find((n) => n.id === "plan")!.ui).toBe("awaiting");
+  });
+});
+
+describe("buildGraph — parked gate precedence", () => {
+  const parkedAt1 = (phase: Partial<PhaseRuntime>) => ({
+    ...runtime({ "2": phase }), state: { milestone: 1, awaitingMerge: { milestone: 1, prs: { primary: "https://github.com/acme/api/pull/9" } } },
+  } as unknown as Runtime);
+
+  it("shows a paused parked gate as paused", () => {
+    const gate = buildGraph(parsePlan(MILESTONES), parkedAt1({ paused: true })).nodes.find((n) => n.id === "2")!;
+    expect(gate.awaitingMerge).toBe(true);
+    expect(gate.ui).toBe("paused");
+  });
+});

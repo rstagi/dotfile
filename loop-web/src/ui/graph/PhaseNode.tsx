@@ -24,10 +24,11 @@ export function PhaseNode({ data, selected }: NodeProps) {
   const { node, pr, plan } = data as PhaseNodeData;
   const rt = node.runtime;
   const accent = ACCENT[node.ui];
+  const parked = node.kind === "pr-review" && node.awaitingMerge === true;
 
   return (
     <div
-      className={`node node--${node.ui}${selected ? " node--selected" : ""}`}
+      className={`node node--${node.ui}${parked ? " node--parked" : ""}${selected ? " node--selected" : ""}`}
       data-ui={node.ui}
       style={{ ["--accent" as string]: accent }}
     >
@@ -50,7 +51,15 @@ export function PhaseNode({ data, selected }: NodeProps) {
 
       {showTrace(node) && <Trace mode={traceMode(node)} />}
 
-      <div className="node__meta">{metaBadges(node, pr, plan)}</div>
+      {parked ? (
+        // Parked gate: the resume hint gets its own row; PR badges wrap instead of clipping numbers.
+        <div className="node__meta node__meta--stacked">
+          <div className="node__resume">/loop-execute resume</div>
+          <div className="node__prs">{recordedPrBadges(node)}</div>
+        </div>
+      ) : (
+        <div className="node__meta">{metaBadges(node, pr, plan)}</div>
+      )}
     </div>
   );
 }
@@ -59,6 +68,18 @@ export function PhaseNode({ data, selected }: NodeProps) {
 
 const ECG = "M0,11 H18 l3,-7.5 l4,15 l3,-7.5 H46 l3,-4 l4,8 l3,-4 H100";
 const FLAT = "M0,11 H100";
+
+/** Explicit review/gate node of an earlier milestone, or a done merge gate the loop moved past. */
+export function isHistoricalReview(node: GraphNode, currentMilestone?: number | null): boolean {
+  if (node.kind !== "pr-review" || node.phase == null || node.awaitingMerge) return false;
+  if (currentMilestone != null && node.milestone != null) return node.milestone !== currentMilestone;
+  return node.gate === "merge" && node.status === "done";
+}
+
+/** The live PR to show on a repository-less review node: none for historical ones (they show `node.prs`). */
+export function reviewNodePr(node: GraphNode, currentMilestone: number | null | undefined, pr: PrInfo | null): PrInfo | null {
+  return isHistoricalReview(node, currentMilestone) ? null : pr;
+}
 
 function Trace({ mode }: { mode: "live" | "flat" | "idle" }) {
   return (
@@ -90,6 +111,7 @@ function chip(n: GraphNode): string {
 }
 
 function statusLabel(n: GraphNode): string {
+  if (n.awaitingMerge) return "AWAITING MERGE";
   const rt = n.runtime;
   if (rt?.hilOpen) return "HIL PAUSE";
   if (rt?.awaiting) return "QUESTION";
@@ -108,6 +130,8 @@ function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null
         </span>
       );
     if (pr?.url) return <span className="node__badge">PR open · awaiting review</span>;
+    const recorded = recordedPrBadges(n);
+    if (recorded.length) return recorded;
     return <span className="node__badge">no PR yet</span>;
   }
   if (n.kind === "plan") {
@@ -142,6 +166,22 @@ function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null
     );
   else if (rt.branch) out.push(<span key="b" className="node__badge">{truncate(rt.branch, 20)}</span>);
   return out;
+}
+
+/** One link per PR recorded on an explicit review/gate node (its own milestone's PRs). */
+function recordedPrBadges(n: GraphNode) {
+  return Object.entries(n.prs ?? {})
+    .filter((entry): entry is [string, string] => entry[1] != null)
+    .map(([slug, url]) => (
+      <a key={slug} className="node__badge node__badge--pr" href={url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+        {`${slug === "primary" ? "PR" : slug.split("/").pop()} ${prNumber(url)}`}
+      </a>
+    ));
+}
+
+function prNumber(url: string): string {
+  const m = url.match(/\/pull\/(\d+)/);
+  return m ? `#${m[1]}` : "PR";
 }
 
 function truncate(s: string, n: number): string {

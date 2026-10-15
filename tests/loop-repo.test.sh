@@ -13,6 +13,12 @@ mkdir -p "$TMP/bin" "$TMP/home"
 
 cat > "$TMP/bin/gh" <<'EOF'
 #!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  [ "$3" = https://github.com/acme/api/pull/123 ] && [ "$4" = --json ] && [ "$5" = state ] || exit 99
+  [ "${FAKE_PR_FAILURE:-0}" = 0 ] || exit "$FAKE_PR_FAILURE"
+  printf '{"state":"%s"}\n' "${FAKE_PR_STATE:-OPEN}"
+  exit 0
+fi
 printf '%s\n' "${FAKE_DEFAULT_BRANCH:-main}"
 EOF
 chmod +x "$TMP/bin/gh"
@@ -62,6 +68,9 @@ assert_eq "$(print "$out" | jq -r .mode)" "create" "check reports create mode fo
 assert_eq "$(print "$out" | jq -r .adoptWorktree)" "null" "create mode has no adopt worktree"
 $ROOT/loop-repo.sh check --repo acme/api --integration-branch trunk >/dev/null 2>&1
 assert_exit "$?" "4" "default branch refused as integration branch"
+out="$($ROOT/loop-repo.sh check --repo acme/api --integration-branch feat/api --milestone abc 2>&1)"
+assert_exit "$?" "1" "check refuses invalid milestone"
+assert_contains "$out" "invalid milestone 'abc'" "invalid milestone reported, no arithmetic error"
 
 echo "loop-repo: check reports adopt mode for an existing branch, refuses dirty worktrees"
 git -C "$CHECKOUT" branch feat/collision
@@ -208,5 +217,146 @@ assert_eq "$(cat "$WT/result.txt")" "api" "API verify/merge lands in API integra
 assert_eq "$(cat "$WEB_WT/result.txt")" "web" "web verify/merge lands in web integration"
 git -C "$WT" rev-parse --verify feat/web-change >/dev/null 2>&1
 assert_exit "$?" "128" "repository histories stay separate"
+
+echo "loop-repo: later milestones start fresh in independent worktrees"
+export FAKE_DEFAULT_BRANCH=trunk
+git --git-dir "$REMOTE" worktree add -q "$TMP/remote-edit" trunk
+print milestone-two >> "$TMP/remote-edit/file.txt"
+git -C "$TMP/remote-edit" commit -qam milestone-two-base
+M2_BASE="$(git -C "$TMP/remote-edit" rev-parse HEAD)"
+git --git-dir "$REMOTE" worktree remove "$TMP/remote-edit"
+m2_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 2 --integration-branch feat/api-milestone-2)"
+assert_exit "$?" "0" "second milestone prepares in the same run"
+M2_WT="$(print "$m2_out" | jq -r .integrationWorktree)"
+assert_eq "$M2_WT" "$LOOP_WORKTREE_ROOT/run-1/acme--api/integration-feat-api-milestone-2-$(printf %s feat/api-milestone-2 | shasum | cut -c1-8)" "later milestone path includes branch slug + hash"
+assert_eq "$(print "$m2_out" | jq -r .baseSha)" "$M2_BASE" "later milestone fetches the latest default"
+assert_eq "$(print "$m2_out" | jq -r .adopted)" "false" "later milestone creates rather than adopts"
+[[ -d "$M2_WT" ]]
+assert_exit "$?" "0" "later milestone worktree exists"
+assert_eq "$(git -C "$M2_WT" rev-parse HEAD 2>/dev/null)" "$M2_BASE" "later milestone starts exactly at default"
+[[ -d "$M2_WT" && ! -e "$M2_WT/result.txt" ]]
+assert_exit "$?" "0" "previous integration changes do not leak into new milestone"
+assert_eq "$(cat "$WT/result.txt")" "api" "first milestone worktree remains available"
+
+echo "loop-repo: same-slug branches get distinct paths"
+p1="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-slug --milestone 2 --integration-branch feat/m2 | jq -r .integrationWorktree)"
+p2="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-slug --milestone 2 --integration-branch feat-m2 | jq -r .integrationWorktree)"
+[[ -n "$p1" && -n "$p2" && "$p1" != "$p2" ]]
+assert_exit "$?" "0" "feat/m2 and feat-m2 do not collide"
+
+echo "loop-repo: later milestones never adopt existing branches"
+git -C "$CHECKOUT" branch feat/milestone-existing "$M2_BASE"
+$ROOT/loop-repo.sh prepare --repo acme/api --run-id run-existing \
+  --milestone 2 --integration-branch feat/milestone-existing >/dev/null 2>&1
+assert_exit "$?" "4" "later milestone refuses an unchecked-out existing branch"
+WS="$(new_ws feat/milestone-worktree "$M2_BASE")"
+$ROOT/loop-repo.sh prepare --repo acme/api --run-id run-existing \
+  --milestone 3 --integration-branch feat/milestone-worktree >/dev/null 2>&1
+assert_exit "$?" "4" "later milestone refuses an existing external worktree"
+assert_eq "$(git -C "$WS" rev-parse HEAD)" "$M2_BASE" "refused adoption leaves existing worktree untouched"
+
+echo "loop-repo: prepare retries reuse their own worktrees"
+retry_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 2 --integration-branch feat/api-milestone-2)"
+assert_exit "$?" "0" "later milestone prepare is retryable"
+assert_eq "$retry_out" "$m2_out" "retry returns the same milestone integration record"
+retry_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 1 --integration-branch feat/api)"
+assert_exit "$?" "0" "first milestone retry survives default advancing"
+assert_eq "$(print "$retry_out" | jq -r .integrationWorktree)" "$WT" "first milestone retry keeps legacy path"
+assert_eq "$(print "$retry_out" | jq -r .baseSha)" "$REMOTE_SHA" "retry retains original base after default advances"
+assert_eq "$(print "$retry_out" | jq -r .adopted)" "false" "retry does not relabel owned worktrees as adopted"
+assert_eq "$(print "$retry_out" | jq -r .aheadCount)" "2" "retry counts lane and merge commits already in integration"
+retry_out="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-6 --integration-branch feat/loose)"
+assert_exit "$?" "0" "retry also supports adopted run-scoped worktrees"
+assert_eq "$(print "$retry_out" | jq -r .adopted)" "true" "retry retains adopted ownership"
+
+echo "loop-repo: retries refuse a different branch occupying the expected path"
+git -C "$M2_WT" switch -q -c feat/milestone-other
+$ROOT/loop-repo.sh prepare --repo acme/api --run-id run-1 \
+  --milestone 2 --integration-branch feat/api-milestone-2 >/dev/null 2>&1
+assert_exit "$?" "4" "retry refuses a worktree switched to a different branch"
+assert_eq "$(git -C "$M2_WT" branch --show-current)" "feat/milestone-other" "retry leaves the other branch untouched"
+git -C "$M2_WT" switch -q feat/api-milestone-2
+
+echo "loop-repo: retire removes clean owned worktrees and is retryable"
+PRE_RETIRE_SHA="$(git -C "$WT" rev-parse HEAD)"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$WT" --adopted false
+assert_exit "$?" "0" "retire removes a clean non-adopted worktree"
+[[ -e "$WT" ]]
+assert_exit "$?" "1" "retired worktree directory is gone"
+assert_eq "$(git -C "$CHECKOUT" rev-parse feat/api)" "$PRE_RETIRE_SHA" "retire keeps the integration branch"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$WT" --adopted false
+assert_exit "$?" "0" "retire succeeds when worktree is already gone"
+
+echo "loop-repo: retire refuses adopted, dirty, outside-root, and coordinator worktrees"
+refuse_retire() {
+  local target="$1" adopted="$2" message="$3"
+  $ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$target" --adopted "$adopted" >/dev/null 2>&1
+  assert_exit "$?" "4" "$message"
+  [[ -e "$target" ]]
+  assert_exit "$?" "0" "$message leaves worktree intact"
+}
+refuse_retire "$M2_WT" true "explicitly adopted worktree refused"
+print dirty >> "$M2_WT/file.txt"
+refuse_retire "$M2_WT" false "tracked changes refused"
+git -C "$M2_WT" restore file.txt
+print scratch > "$M2_WT/scratch.txt"
+refuse_retire "$M2_WT" false "untracked changes refused"
+rm "$M2_WT/scratch.txt"
+print staged > "$M2_WT/staged.txt"
+git -C "$M2_WT" add staged.txt
+refuse_retire "$M2_WT" false "staged changes refused"
+git -C "$M2_WT" restore --staged staged.txt
+rm "$M2_WT/staged.txt"
+refuse_retire "$WS" false "outside-root worktree refused"
+refuse_retire "$WT6" false "another run's worktree refused"
+mkdir -p "$M2_WT/.loop"
+print '{}' > "$M2_WT/.loop/state.json"
+print '.loop/' >> "$(git -C "$M2_WT" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+assert_eq "$(git -C "$M2_WT" status --porcelain)" "" "coordinator state is gitignored"
+refuse_retire "$M2_WT" false "clean coordinator worktree refused"
+rm -r "$M2_WT/.loop"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-6 --worktree "$WT6" --adopted true >/dev/null 2>&1
+assert_exit "$?" "4" "adopted run-scoped worktree refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-6 --worktree "$WT6" --adopted false >/dev/null 2>&1
+assert_exit "$?" "4" "recorded adopted ownership cannot be overridden by caller"
+
+echo "loop-repo: retire guards path aliases and repository ownership"
+ln -s "$WS" "$LOOP_WORKTREE_ROOT/run-1/escape"
+refuse_retire "$LOOP_WORKTREE_ROOT/run-1/escape" false "symlink escaping run root refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 \
+  --worktree "$LOOP_WORKTREE_ROOT/run-1/../run-6/acme--api/integration" --adopted false >/dev/null 2>&1
+assert_exit "$?" "4" "path traversal into another run refused"
+FOREIGN_WT="$LOOP_WORKTREE_ROOT/run-1/acme--web/retire-test"
+git -C "$WEB_CHECKOUT" worktree add -q -b feat/retire-test "$FOREIGN_WT" feat/web
+refuse_retire "$FOREIGN_WT" false "another repository's worktree refused"
+refuse_retire "$LOOP_WORKTREE_ROOT/run-1" false "run root itself refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id .. --worktree "$M2_WT" --adopted false >/dev/null 2>&1
+assert_exit "$?" "1" "parent-directory run id refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$M2_WT" >/dev/null 2>&1
+assert_exit "$?" "1" "missing adopted flag refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$M2_WT" --adopted yes >/dev/null 2>&1
+assert_exit "$?" "1" "invalid adopted flag refused"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$TMP/missing" --adopted false >/dev/null 2>&1
+assert_exit "$?" "4" "missing path outside run root still refused"
+
+echo "loop-repo: pr-state reports GitHub state through the gh boundary"
+PR_URL=https://github.com/acme/api/pull/123
+for state_pair in OPEN:open MERGED:merged CLOSED:closed; do
+  pr_state="${state_pair%%:*}"
+  out="$(FAKE_PR_STATE="$pr_state" $ROOT/loop-repo.sh pr-state --pr "$PR_URL")"
+  assert_exit "$?" "0" "pr-state accepts $pr_state"
+  assert_eq "$out" "${state_pair#*:}" "pr-state normalizes $pr_state"
+done
+out="$(FAKE_PR_FAILURE=7 $ROOT/loop-repo.sh pr-state --pr "$PR_URL" 2>/dev/null)"
+assert_exit "$?" "3" "pr-state fails when gh fails"
+assert_eq "$out" "" "gh failure never prints a success state"
+$ROOT/loop-repo.sh pr-state >/dev/null 2>&1
+assert_exit "$?" "1" "pr-state requires a PR URL"
+out="$(FAKE_PR_STATE=UNKNOWN $ROOT/loop-repo.sh pr-state --pr "$PR_URL" 2>/dev/null)"
+assert_exit "$?" "3" "pr-state refuses unexpected GitHub state"
+assert_eq "$out" "" "unknown state never prints a success state"
 
 test_summary

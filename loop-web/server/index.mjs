@@ -292,7 +292,8 @@ function defaultEntry() {
 }
 
 function isActiveish(e) {
-  return isDir(e.record.loopDir) && e.record.status !== "finished";
+  return isDir(e.record.loopDir) && !e.record.archived
+    && ["active", "paused", "awaiting-merge", "planned"].includes(e.record.status);
 }
 
 // --- HTTP ----------------------------------------------------------------------------
@@ -527,6 +528,9 @@ function handleLoopPlan(runId, res) {
     effort: rec.effort,
     status: rec.status,
     integrationBranch: rec.integrationBranch,
+    milestone: rec.lastState?.milestone ?? 1,
+    milestoneTotal: summarize(rec).milestoneTotal,
+    awaitingMerge: rec.lastState?.awaitingMerge ?? null,
     planText: rec.planText,
   });
 }

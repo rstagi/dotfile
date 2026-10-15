@@ -12,8 +12,8 @@ import type { Node, Edge, NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Snapshot, GraphNode } from "../../model/types.ts";
 import { computeLayout } from "./layout.ts";
-import type { LaneBand } from "./layout.ts";
-import { PhaseNode } from "./PhaseNode.tsx";
+import type { LaneBand, MilestoneBand } from "./layout.ts";
+import { PhaseNode, reviewNodePr } from "./PhaseNode.tsx";
 
 function BandNode({ data }: NodeProps) {
   const band = (data as { band: LaneBand }).band;
@@ -25,7 +25,16 @@ function BandNode({ data }: NodeProps) {
   );
 }
 
-const nodeTypes = { phase: PhaseNode, band: BandNode };
+function MilestoneNode({ data }: NodeProps) {
+  const band = (data as { band: MilestoneBand }).band;
+  return (
+    <div className="milestone" style={{ width: band.width, height: band.height }}>
+      <span className="milestone__label">{band.label}</span>
+    </div>
+  );
+}
+
+const nodeTypes = { phase: PhaseNode, band: BandNode, milestone: MilestoneNode };
 
 interface Props {
   snapshot: Snapshot;
@@ -47,14 +56,14 @@ function Canvas({ snapshot, selectedId, onSelect }: Props) {
 
   // Refit only when the graph's structure (not its live data) changes.
   useEffect(() => {
-    const sig = snapshot.graph.nodes.map((n) => n.id).join(",") + "|" + snapshot.graph.lanes.join(",");
+    const sig = snapshot.graph.nodes.map((n) => n.id).join(",") + "|" + snapshot.graph.lanes.join(",") + "|" + layout.milestones.length;
     if (sig !== structRef.current) {
       structRef.current = sig;
       // fitView is a JS-driven camera move — the CSS reduced-motion override doesn't touch it.
       const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
       requestAnimationFrame(() => rf.fitView({ padding: 0.16, duration: reduce ? 0 : 450 }));
     }
-  }, [snapshot.graph, rf]);
+  }, [snapshot.graph, layout, rf]);
 
   return (
     <ReactFlow
@@ -107,6 +116,17 @@ function buildNodes(snapshot: Snapshot, layout: ReturnType<typeof computeLayout>
     style: { zIndex: -1 },
   }));
 
+  const milestoneNodes: Node[] = layout.milestones.map((band) => ({
+    id: `milestone-${band.milestone}`,
+    type: "milestone",
+    position: { x: band.x, y: band.y },
+    data: { band },
+    draggable: false,
+    selectable: false,
+    zIndex: -1,
+    style: { zIndex: -1 },
+  }));
+
   const plan = snapshot.plan;
   const phaseNodes: Node[] = snapshot.graph.nodes.map((node) => {
     const pos = layout.positions.get(node.id) ?? { x: 0, y: 0 };
@@ -118,7 +138,7 @@ function buildNodes(snapshot: Snapshot, layout: ReturnType<typeof computeLayout>
         node,
         pr: node.repository
           ? snapshot.effort.repositories.find((repository) => repository.slug === node.repository)?.pr ?? snapshot.effort.pr
-          : snapshot.effort.pr,
+          : reviewNodePr(node, snapshot.effort.milestone, snapshot.effort.pr),
         plan,
         selected: node.id === selectedId,
       },
@@ -128,7 +148,7 @@ function buildNodes(snapshot: Snapshot, layout: ReturnType<typeof computeLayout>
     };
   });
 
-  return [...bandNodes, ...phaseNodes];
+  return [...bandNodes, ...milestoneNodes, ...phaseNodes];
 }
 
 function buildEdges(snapshot: Snapshot): Edge[] {

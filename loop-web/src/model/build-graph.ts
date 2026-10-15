@@ -14,6 +14,7 @@ import type {
   PrInfo,
   JevDecision,
   ReviewRun,
+  StateJson,
 } from "./types.ts";
 import {
   classifyAttempt,
@@ -59,8 +60,9 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     phase: null,
     lane: null,
     repository: null,
+    milestone: null,
     status: mapHeaderStatus(plan.status),
-    ui: resolveUi(mapHeaderStatus(plan.status), null, false),
+    ui: resolveUi(mapHeaderStatus(plan.status), null, isAwaitingMergeStatus(plan.status)),
     pulse: null,
     runtime: null,
     notePending: false,
@@ -71,7 +73,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
 
   const explicitReviews = plan.phases.some((phase) => phase.kind === "pr-review");
   const phaseNodes = plan.phases.map((phase) => phase.kind === "pr-review"
-    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], plan.repositories.map((r) => r.slug), runtime?.reviewRunsByRepository ?? {})
+    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], milestoneParticipants(plan, phase), runtime?.reviewRunsByRepository ?? {}, runtime?.state?.awaitingMerge ?? null)
     : buildPhaseNode(phase, runtime?.phases[phase.phase], now));
   const reviewNodes = explicitReviews ? [] : plan.repositories.map((repository) => {
     const legacy = repository.slug === "primary";
@@ -86,7 +88,8 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
   }));
   const edges = buildEdges(plan, nodes);
 
-  return { nodes, edges, lanes };
+  const milestones = plan.milestones.map((milestone) => ({ number: milestone.number, title: milestone.title }));
+  return { milestones, nodes, edges, lanes };
 }
 
 // --- phase nodes ---------------------------------------------------------------------
@@ -104,6 +107,7 @@ function buildPhaseNode(
     phase: phase.phase,
     lane: phase.lane,
     repository: phase.repository,
+    milestone: phase.milestone,
   };
 
   if (!pr) {
@@ -198,9 +202,12 @@ function buildExplicitReviewNode(
   runtime: PhaseRuntime | undefined,
   repositories: string[],
   reviewRuns: Record<string, ReviewRun[]>,
+  awaitingMerge: NonNullable<StateJson["awaitingMerge"]> | null,
 ): GraphNode {
   const status = validStateStatus(runtime?.state?.status) ?? mapPlanStatus(phase.status);
   const paused = (runtime?.paused ?? false) || status === "paused";
+  // Parked at this milestone's merge gate: verdict posted, a human merges + resumes.
+  const parked = phase.gate === "merge" && awaitingMerge != null && awaitingMerge.milestone === phase.milestone;
   return {
     id: phase.phase,
     kind: "pr-review",
@@ -208,8 +215,11 @@ function buildExplicitReviewNode(
     phase: phase.phase,
     lane: phase.lane,
     repository: null,
+    milestone: phase.milestone,
+    gate: phase.gate,
     status,
-    ui: status === "blocked" ? "problem" : resolveUi(status, null, false, paused),
+    // Pause beats the parked "awaiting" cue (an open HIL already reads as awaiting).
+    ui: parked ? (paused ? "paused" : "awaiting") : status === "blocked" ? "problem" : resolveUi(status, null, false, paused),
     pulse: null,
     runtime: null,
     notePending: runtime?.note != null && status !== "done" && status !== "merged",
@@ -218,6 +228,7 @@ function buildExplicitReviewNode(
     modelOverride: runtime?.modelOverride ?? null,
     review: phase.review,
     reviewStages: phase.review ? reviewStageRuns(phase.review, phase.phase, repositories, reviewRuns) : [],
+    ...(parked ? { awaitingMerge: true, prs: { ...awaitingMerge.prs } } : {}),
   };
 }
 
@@ -246,6 +257,7 @@ function buildReviewNode(repository: string, pr: PrInfo | null, noteMarkdown: st
     phase: null,
     lane: null,
     repository,
+    milestone: null,
     status,
     ui,
     pulse: null,
@@ -314,6 +326,14 @@ export function reviewId(repository: string): string {
   return repository === "primary" ? REVIEW_ID : `${REVIEW_ID}:${repository}`;
 }
 
+/** Repositories reviewed by a phase: its milestone's participants (explicit milestone plans only), else every plan repository. */
+function milestoneParticipants(plan: Plan, phase: PlanPhase): string[] {
+  const milestone = plan.explicitMilestones
+    ? plan.milestones.find((entry) => entry.number === phase.milestone)
+    : undefined;
+  return milestone?.participants ?? plan.repositories.map((repository) => repository.slug);
+}
+
 function repositoryKey(repository: string): string {
   return repository.replace("/", "--");
 }
@@ -347,6 +367,11 @@ function mapHeaderStatus(s: string | null): PhaseStateStatus {
   if (l.includes("done")) return "done";
   if (l.includes("integrat") || l.includes("progress")) return "running";
   return "todo";
+}
+
+/** Header `Status: awaiting merge` — parked at a milestone merge gate (lifecycle stays todo). */
+function isAwaitingMergeStatus(s: string | null): boolean {
+  return s != null && /awaiting.?merge/i.test(s);
 }
 
 function validStateStatus(s: string | undefined): PhaseStateStatus | undefined {

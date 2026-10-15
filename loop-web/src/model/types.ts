@@ -64,12 +64,21 @@ export interface StateRepository {
   integrationBranch?: string | null;
   integrationWorktree?: string | null;
   prUrl?: string | null;
+  reviewPipeline?: StateReviewPipeline | null;
   review?: {
     outcome?: string | null;
     summary?: string | null;
     reportPath?: string | null;
     commentUrl?: string | null;
   } | null;
+}
+
+export interface StateReviewPipeline {
+  phase?: number | string;
+  stage?: string;
+  tier?: ReviewTier;
+  rounds?: number;
+  headSha?: string;
 }
 
 export type PhaseStateStatus =
@@ -84,19 +93,18 @@ export type PhaseStateStatus =
 export interface StateJson {
   runId?: string;
   effort?: string;
-  integrationBranch?: string;
-  integrationWorktree?: string;
+  integrationBranch?: string | null;
+  integrationWorktree?: string | null;
   prUrl?: string | null;
+  milestone?: number;
+  awaitingMerge?: { milestone: number; prs: Record<string, string> } | null;
+  milestones?: Record<string, { prs: Record<string, string> }>;
+  reviewPipeline?: StateReviewPipeline | null;
   repositories?: Record<string, StateRepository>;
   phases?: Record<string, StatePhase>;
   /** PR-review verdict promoted by the orchestrator (`loop-state.sh set`). Structural (no
    * cross-import) so the daemon reducer can fold it; the drawer renders the full report. */
-  review?: {
-    outcome?: string;
-    summary?: string;
-    reportPath?: string;
-    commentUrl?: string;
-  } | null;
+  review?: StateRepository["review"];
 }
 
 /** One row of events.jsonl (loop-state.sh log). */
@@ -182,9 +190,13 @@ export interface PlanRepository {
 export interface PlanPhase {
   /** Phase number as string ("1".."N"), from the `Phase N` marker. */
   phase: string;
+  /** Containing milestone number; legacy `## Phases` belongs to milestone 1. */
+  milestone: number;
   /** Descriptive title with the bracket markers stripped. */
   title: string;
   kind: PlanPhaseKind;
+  /** Human merge barrier, from `[gate: merge]`. */
+  gate: "merge" | null;
   lane: string;
   status: PlanPhaseStatus;
   repository: string;
@@ -214,12 +226,25 @@ export interface PlanProse {
   progressLog: string | null;
 }
 
+export interface PlanMilestone {
+  number: number;
+  title: string;
+  gatePhase: string | null;
+  integrationBranches: Record<string, string | null>;
+  prs: Record<string, string | null>;
+  /** Repositories assigned to this milestone's work phases, in document order. */
+  participants: string[];
+}
+
 export interface Plan {
   name: string;
   status: string | null;
   updatedAt: string | null;
   loopConfig: LoopConfig | null;
   repositories: PlanRepository[];
+  milestones: PlanMilestone[];
+  /** True only when the plan declares `## Milestone N` sections (legacy `## Phases` = false). */
+  explicitMilestones: boolean;
   phases: PlanPhase[];
   prose: PlanProse;
   warnings: string[];
@@ -228,6 +253,7 @@ export interface Plan {
 /** One phase row of the whole-plan drawer summary. */
 export interface PlanPhaseSummary {
   phase: string;
+  milestone: number;
   title: string;
   kind: PlanPhaseKind;
   lane: string;
@@ -238,6 +264,7 @@ export interface PlanPhaseSummary {
 
 /** The plan digest carried on every Snapshot — feeds the plan node badges + the plan drawer. */
 export interface PlanOverview {
+  milestones: PlanMilestone[];
   name: string;
   status: string | null;
   updatedAt: string | null;
@@ -434,6 +461,14 @@ export interface GraphNode {
   review?: ReviewConfig | null;
   /** Explicit PR-review nodes: every pipeline run per repository, in order. Optional on older snapshots. */
   reviewStages?: ReviewStageRun[];
+  /** PRs scoped to this review phase’s milestone, including recorded merge history. */
+  prs?: Record<string, string | null>;
+  /** Containing milestone; null for the synthetic Plan / legacy PR Review nodes. Absent on older snapshots. */
+  milestone?: number | null;
+  /** Explicit PR-review nodes: `[gate: merge]` barrier. Absent on older snapshots. */
+  gate?: "merge" | null;
+  /** Merge gate parked in `awaiting-merge`: review verdict posted, waiting for a human to merge + resume. */
+  awaitingMerge?: boolean;
 }
 
 export type EdgeKind = "plan-to-lane" | "depends" | "to-review";
@@ -447,7 +482,15 @@ export interface GraphEdge {
   blocking: boolean;
 }
 
+/** Milestone header for grouped layouts. */
+export interface GraphMilestone {
+  number: number;
+  title: string;
+}
+
 export interface Graph {
+  /** Plan milestones in order (absent on older snapshots); layouts group only when there are ≥2. */
+  milestones?: GraphMilestone[];
   nodes: GraphNode[];
   edges: GraphEdge[];
   lanes: string[];
@@ -497,6 +540,9 @@ export interface PrInfo {
 }
 
 export interface EffortInfo {
+  milestone: number;
+  milestoneTotal: number;
+  awaitingMerge: NonNullable<StateJson["awaitingMerge"]> | null;
   name: string;
   status: string | null;
   integrationBranch: string | null;

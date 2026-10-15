@@ -120,6 +120,8 @@ then write \`$STATUS\` with outcome "recycle" and exit. NEVER run pr-review; NEV
 AskUserQuestion (HIL → files only, keep other lanes running). When the next ready phase is
 \`[kind: pr-review]\`, write \`$STATUS\` outcome "review-ready". Use "complete" only for a
 legacy plan with no explicit review phase. On an unrecoverable error, outcome "fatal" or "blocked".
+If \`state.awaitingMerge\` is set (loop parked at a milestone merge gate, waiting for a human),
+schedule nothing: write \`$STATUS\` outcome "blocked" (summary: awaiting merge) and exit.
 Your final act MUST be writing \`$STATUS\` (schema: {outcome, summary, tokens, recycleIndex}).
 CRITICAL one-shot runtime: you are a \`claude -p\` process — ending your turn EXITS the
 process; background tasks and "you will be notified" promises die with it and never reach
@@ -251,7 +253,11 @@ while :; do
     ;;
   fatal|blocked)
     summary="$(jq -r '.summary // "no summary"' "$STATUS" 2>/dev/null || echo "?")"
-    notify error "SUB $outcome: $summary"
+    if [[ "$outcome" == blocked ]] && jq -e '.awaitingMerge' "$DIR/state.json" >/dev/null 2>&1; then
+      notify info "parked at milestone merge gate — human merges, then /loop-execute resume"
+    else
+      notify error "SUB $outcome: $summary"
+    fi
     rm -f "$PIDFILE"
     exit 2
     ;;

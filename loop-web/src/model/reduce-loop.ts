@@ -39,6 +39,8 @@ const TYPED_EVENTS = new Set([
   "sub.saturation",
   "review.finish",
   "loop.finish",
+  "milestone.awaiting-merge",
+  "milestone.resumed",
   "jev.decision",
   // User controls (POST /control): timeline-only — pause state is read from control/ files.
   "control.pause",
@@ -86,6 +88,8 @@ export function emptyRecord(runId: string): LoopRecord {
     loopDir: null,
     planFile: null,
     integrationBranch: null,
+    integrationWorktree: null,
+    reviewPipeline: null,
     startedAt: null,
     finishedAt: null,
     status: "active",
@@ -128,8 +132,11 @@ export function effectivePhaseStatus(rec: LoopRecord, num: string): PhaseStateSt
 
 function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register" }>): LoopRecord {
   const info = msg.info;
+  const hasMilestones = /^##\s+Milestone\s+\d+\s*[—–-]\s*.+$/m.test(info.planText ?? prev.planText ?? "");
   const reopened = prev.status === "finished" && hasNewUnfinishedPhase(prev.planText, info.planText ?? null);
-  const repositories = info.planText ? repositoriesFromPlan(info.planText, prev.repositories) : prev.repositories;
+  const repositories = info.planText
+    ? repositoriesFromPlan(info.planText, prev.repositories, prev.lastState?.milestone ?? 1, hasMilestones)
+    : prev.repositories;
   const primary = firstRepository(repositories);
   const next: LoopRecord = {
     ...prev,
@@ -137,7 +144,9 @@ function applyRegister(prev: LoopRecord, msg: Extract<Ingest, { kind: "register"
     effort: info.effort ?? prev.effort,
     loopDir: info.loopDir ?? prev.loopDir,
     planFile: info.planFile ?? prev.planFile,
-    integrationBranch: info.integrationBranch ?? primary?.integrationBranch ?? prev.integrationBranch,
+    integrationBranch: hasMilestones
+      ? primary?.integrationBranch ?? null
+      : info.integrationBranch ?? primary?.integrationBranch ?? prev.integrationBranch,
     startedAt: info.startedAt ?? prev.startedAt,
     finishedAt: reopened ? null : prev.finishedAt,
     planText: info.planText ?? prev.planText,
@@ -158,20 +167,28 @@ function hasNewUnfinishedPhase(previousText: string | null, nextText: string | n
 function repositoriesFromPlan(
   planText: string,
   existing: Record<string, RepositoryRecord>,
+  milestoneNumber: number,
+  hasMilestones: boolean,
 ): Record<string, RepositoryRecord> {
-  const out = { ...existing };
-  for (const repository of parsePlan(planText).repositories) {
-    const prior = out[repository.slug] ?? emptyRepository();
+  const plan = parsePlan(planText);
+  const milestone = hasMilestones ? plan.milestones.find((entry) => entry.number === milestoneNumber) : null;
+  const out: Record<string, RepositoryRecord> = hasMilestones ? {} : { ...existing };
+  for (const repository of plan.repositories) {
+    if (hasMilestones && !milestone?.participants.includes(repository.slug)) continue;
+    const prior = existing[repository.slug] ?? emptyRepository();
     out[repository.slug] = {
       ...prior,
-      integrationBranch: prior.integrationBranch ?? repository.integrationBranch,
-      prUrl: prior.prUrl ?? repository.pr,
+      integrationBranch: prior.integrationBranch ?? (milestone
+        ? milestone.integrationBranches[repository.slug] ?? null : repository.integrationBranch),
+      prUrl: prior.prUrl ?? (milestone ? milestone.prs[repository.slug] ?? null : repository.pr),
     };
   }
   return out;
 }
 
 function applyState(prev: LoopRecord, state: StateJson, planText?: string | null): LoopRecord {
+  const milestoneChanged = typeof state.milestone === "number"
+    && state.milestone !== (prev.lastState?.milestone ?? 1);
   const phases = { ...prev.phases };
   for (const [num, ph] of Object.entries(state?.phases ?? {})) {
     phases[num] = joinOverlay(phases[num], {
@@ -179,22 +196,32 @@ function applyState(prev: LoopRecord, state: StateJson, planText?: string | null
       repository: nonEmpty(ph?.repository) ?? phases[num]?.repository ?? legacyRepositorySlug(state),
     });
   }
-  const repositories = normalizeRepositories(state, prev.repositories);
+  const repositories = normalizeRepositories(state, milestoneChanged ? {} : prev.repositories);
   const primary = firstRepository(repositories);
   const next: LoopRecord = {
     ...prev,
     lastState: state ?? prev.lastState,
     effort: state?.effort ?? prev.effort,
-    integrationBranch: state?.integrationBranch ?? prev.integrationBranch,
-    prUrl: state?.prUrl ?? prev.prUrl,
-    review: normalizeReview(state?.review) ?? prev.review,
+    integrationBranch: milestoneValue(
+      state.integrationBranch, prev.integrationBranch, primary?.integrationBranch, milestoneChanged),
+    integrationWorktree: milestoneValue(
+      state.integrationWorktree, prev.integrationWorktree, primary?.integrationWorktree, milestoneChanged),
+    prUrl: milestoneValue(state.prUrl, prev.prUrl, primary?.prUrl, milestoneChanged),
+    review: milestoneValue(
+      state.review === undefined ? undefined : normalizeReview(state.review), prev.review, primary?.review, milestoneChanged),
+    reviewPipeline: milestoneValue(state.reviewPipeline, prev.reviewPipeline, primary?.reviewPipeline, milestoneChanged),
     repositories,
     planText: planText ?? prev.planText,
     phases,
   };
-  return { ...next, integrationBranch: next.integrationBranch ?? primary?.integrationBranch ?? null,
-    prUrl: next.prUrl ?? primary?.prUrl ?? null,
-    review: next.review ?? primary?.review ?? null, status: deriveStatus(next) };
+  return { ...next, status: deriveStatus(next) };
+}
+
+/** Milestone switches replace current projections; ordinary pushes retain legacy merge semantics. */
+function milestoneValue<T>(incoming: T | null | undefined, prior: T | null | undefined,
+  fallback: T | null | undefined, changed: boolean): T | null {
+  if (changed) return incoming === undefined ? fallback ?? null : incoming;
+  return incoming ?? prior ?? fallback ?? null;
 }
 
 function applyFinish(prev: LoopRecord, info: FinishInfo): LoopRecord {
@@ -393,6 +420,7 @@ function rankToStatus(rank: PhaseRank): PhaseStateStatus {
 function deriveStatus(rec: LoopRecord): LoopStatus {
   if (rec.status === "finished" || rec.finishedAt) return "finished";
   if (Object.values(rec.phases).some((o) => o.hilOpen)) return "paused";
+  if (rec.lastState?.awaitingMerge) return "awaiting-merge";
   // A register-only record (no state push, no lifecycle event) is a plan registered but not
   // yet running; the first state push or event flips it to active. No new ingest field needed.
   if (rec.lastState === null && !rec.events.some((event) => event.event !== "jev.decision")) return "planned";
@@ -513,7 +541,7 @@ function isJevMode(value: unknown): value is JevMode {
 
 function emptyRepository(): RepositoryRecord {
   return { sourceRoot: null, defaultBranch: null, baseSha: null, integrationBranch: null,
-    integrationWorktree: null, prUrl: null, review: null };
+    integrationWorktree: null, prUrl: null, review: null, reviewPipeline: null };
 }
 
 function normalizeRepositories(
@@ -531,14 +559,17 @@ function normalizeRepositories(
       integrationWorktree: repo.integrationWorktree ?? prior.integrationWorktree,
       prUrl: repo.prUrl ?? prior.prUrl,
       review: normalizeReview(repo.review ?? undefined) ?? prior.review,
+      reviewPipeline: repo.reviewPipeline ?? prior.reviewPipeline ?? null,
     };
   }
   if (Object.keys(out).length === 0 && (state.integrationBranch || state.prUrl || state.review)) {
     out.primary = {
       ...emptyRepository(),
       integrationBranch: state.integrationBranch ?? null,
+      integrationWorktree: state.integrationWorktree ?? null,
       prUrl: state.prUrl ?? null,
       review: normalizeReview(state.review) ?? null,
+      reviewPipeline: state.reviewPipeline ?? null,
     };
   }
   return out;

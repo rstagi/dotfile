@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { inferLoop, phaseRows, pickerRows, pipelineSummary, tierChoices } from "../loop-top.mjs";
+import { fitRows, gateText, inferLoop, milestoneTitles, phaseRows, pickerRows, pipelineSummary, tierChoices } from "../loop-top.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "loop-top.mjs");
 
@@ -87,7 +87,7 @@ test("phaseRows: phases in natural order (2a < 2b < 10), plan node dropped, work
   assert.deepEqual(rows.map((r) => r.label), ["2a", "2b", "10"]);
   assert.deepEqual(rows[0], {
     id: "2a", label: "2a", title: "Two a", lane: "A", model: "codex", modelOverride: null, planned: null, paused: false, noted: false, review: null, stages: [], started: true, deps: [],
-    icon: "✓", state: "done", branch: "feat/two-a", worktree: "/wt/lane-a",
+    icon: "✓", milestone: null, gate: null, state: "done", branch: "feat/two-a", worktree: "/wt/lane-a",
   });
   assert.equal(rows[1].icon, "·");
   assert.equal(rows[1].state, "todo");
@@ -543,4 +543,134 @@ test("tierChoices: one line per tier with default rounds + models, current tier 
   assert.match(lines[0], /^shallow +×1 +review claude:opus · fix claude:sonnet · final claude:opus$/);
   assert.match(lines[1], /^medium +×3 +review codex:@sol \+ claude:opus \+ grok:default · fix claude:opus · final claude:opus +\(current\)$/);
   assert.match(lines[2], /^max +×2 +review codex:@astra \+ claude:fable/);
+});
+
+// ---- milestones: grouped rows, parked merge gate, current-milestone header ----
+
+const MILESTONES = [{ number: 1, title: "Core" }, { number: 2, title: "Polish" }];
+const milestoneSnapshot = ({ parked = true, milestones = MILESTONES, effort = { milestone: 1, milestoneTotal: 2, integrationBranch: "feat/m1" } } = {}) => ({
+  effort,
+  graph: {
+    milestones,
+    nodes: [
+      node({ id: "1", phase: "1", title: "Work", ui: "done", milestone: 1 }),
+      node({ id: "2", phase: "2", kind: "pr-review", gate: "merge", lane: "review", title: "Gate", milestone: 1,
+        ui: parked ? "awaiting" : "todo", ...(parked ? { awaitingMerge: true, prs: { "acme/web": "https://github.com/acme/web/pull/7", "acme/api": "https://github.com/acme/api/pull/12" } } : {}) }),
+      node({ id: "3", phase: "3", title: "Next", milestone: 2 }),
+    ],
+    edges: [{ source: "2", target: "3", kind: "depends", blocking: true }],
+  },
+});
+
+test("phaseRows: a parked merge gate says awaiting merge (not waiting on the orchestrator) and carries its PRs", () => {
+  const [, gate, next] = phaseRows(milestoneSnapshot(), null);
+  assert.deepEqual([gate.icon, gate.state, gate.milestone], ["⏸", "awaiting merge", 1]);
+  assert.deepEqual(gate.gate.prs, [{ slug: "acme/api", number: "#12" }, { slug: "acme/web", number: "#7" }]);
+  assert.equal(gateText(gate.gate.prs), "acme/api #12 · acme/web #7 · /loop-execute resume");
+  assert.equal(next.gate, null);
+  assert.equal(phaseRows(milestoneSnapshot({ parked: false }), null)[1].gate, null);
+});
+
+test("milestoneTitles: only when the plan has more than one milestone", () => {
+  assert.deepEqual([...milestoneTitles(milestoneSnapshot())], [[1, "Core"], [2, "Polish"]]);
+  assert.equal(milestoneTitles(milestoneSnapshot({ milestones: [MILESTONES[0]] })).size, 0);
+  assert.equal(milestoneTitles({ graph: { nodes: [] } }).size, 0);
+});
+
+test("--once: rows grouped under M<n> headers, gate row shows PRs + resume hint, header names the current milestone's branch", async (t) => {
+  const snapshot = milestoneSnapshot({ effort: { milestone: 1, milestoneTotal: 2, integrationBranch: "feat/m1" } });
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  const lines = out.stdout.split("\n");
+  assert.match(lines[0], /^loop-demo · active · .* · M1\/2 · feat\/m1$/);
+  const at = (re) => lines.findIndex((l) => re.test(l));
+  assert.ok(at(/^ +M1 — Core$/) >= 0 && at(/^ +M1 — Core$/) < at(/ 1 +Work/));
+  assert.ok(at(/ 2 +Gate/) < at(/^ +M2 — Polish$/) && at(/^ +M2 — Polish$/) < at(/ 3 +Next/));
+  assert.match(out.stdout, /⏸ 2 +Gate .* awaiting merge\n +acme\/api #12 · acme\/web #7 · \/loop-execute resume\n/);
+});
+
+test("--once: header shows milestone 2's branch, never milestone 1's, once the loop moved on", async (t) => {
+  const snapshot = milestoneSnapshot({ parked: false, effort: { milestone: 2, milestoneTotal: 2, integrationBranch: "feat/m2" } });
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.match(out.stdout.split("\n")[0], / · M2\/2 · feat\/m2$/);
+  const nullBranch = milestoneSnapshot({ parked: false, effort: { milestone: 2, milestoneTotal: 2, integrationBranch: null } });
+  const fx2 = fixture({ snapshot: nullBranch });
+  t.after(() => fs.rmSync(fx2.root, { recursive: true, force: true }));
+  const out2 = await runCli(["--once", "loop-demo"], { cwd: fx2.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx2.store } });
+  assert.doesNotMatch(out2.stdout.split("\n")[0], /feat\/demo/); // stored loop-level branch is milestone 1's
+});
+
+test("--once: a single-milestone plan renders unchanged (no headers, no M<n> in the header)", async (t) => {
+  const snapshot = milestoneSnapshot({ parked: false, milestones: [MILESTONES[0]], effort: { milestone: 1, milestoneTotal: 1, integrationBranch: "feat/demo" } });
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.match(out.stdout.split("\n")[0], /^loop-demo · active · .* · feat\/demo$/);
+  assert.doesNotMatch(out.stdout, /M1 — |M\d\/\d/);
+});
+
+test("pickerRows: awaiting-merge sits after active, before finished; the runId stays the 2nd field", () => {
+  const rows = pickerRows([
+    { runId: "fin", status: "finished", updatedAt: "2026-09-04T00:00:00Z" },
+    { runId: "park", status: "awaiting-merge", updatedAt: "2026-09-03T00:00:00Z" },
+    { runId: "live", status: "active", updatedAt: "2026-09-01T00:00:00Z" },
+  ]);
+  assert.deepEqual(rows.map((r) => r.split(/\s+/)[1]), ["live", "park", "fin"]);
+  assert.match(rows[1], /^awaiting-merge  park /);
+});
+
+// A late phase 5 inserted into milestone 1 (stable ids): plan order 1, 5, 2 | 3, 4.
+const lateSnapshot = () => ({
+  effort: { milestone: 1, milestoneTotal: 2, integrationBranch: "feat/m1" },
+  graph: {
+    milestones: MILESTONES,
+    nodes: [
+      node({ id: "1", phase: "1", title: "Work", ui: "done", milestone: 1 }),
+      node({ id: "5", phase: "5", title: "Late", ui: "done", milestone: 1 }),
+      node({ id: "2", phase: "2", kind: "pr-review", gate: "merge", lane: "review", title: "Gate", ui: "done", milestone: 1 }),
+      node({ id: "3", phase: "3", title: "Next", milestone: 2 }),
+      node({ id: "4", phase: "4", title: "Last", milestone: 2 }),
+    ],
+    edges: [
+      { source: "1", target: "5", kind: "depends", blocking: false },
+      { source: "5", target: "2", kind: "depends", blocking: false },
+      { source: "2", target: "3", kind: "depends", blocking: false },
+      { source: "3", target: "4", kind: "depends", blocking: true },
+    ],
+  },
+});
+
+test("phaseRows: multi-milestone plans keep document order per milestone (late phase 5 stays in M1)", () => {
+  assert.deepEqual(phaseRows(lateSnapshot(), null).map((r) => r.label), ["1", "5", "2", "3", "4"]);
+});
+
+for (const mode of [[], ["--graph"]]) {
+  test(`--once ${mode.join(" ")}: late phase 5 in M1 → each milestone heading once, in order`, async (t) => {
+    const fx = fixture({ snapshot: lateSnapshot() });
+    t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+    const out = await runCli(["--once", ...mode, "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+    const lines = out.stdout.split("\n");
+    const at = (re) => lines.findIndex((l) => re.test(l));
+    assert.equal(lines.filter((l) => /M\d — /.test(l)).length, 2);
+    assert.ok(at(/M1 — Core$/) < at(/ 5 +Late/) && at(/ 5 +Late/) < at(/ 2 +Gate/) && at(/ 2 +Gate/) < at(/M2 — Polish$/) && at(/M2 — Polish$/) < at(/ 3 +Next/));
+  });
+}
+
+test("--once --graph: milestone headings keep the rail continuous", async (t) => {
+  const fx = fixture({ snapshot: lateSnapshot() });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "--graph", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.match(out.stdout, /\n +│ +M2 — Polish\n/);
+});
+
+test("fitRows: headings never count as hidden phases; a fully hidden milestone drops its heading", () => {
+  const g = (text, over = {}) => ({ done: false, selected: false, lines: [text], ...over });
+  const groups = [
+    g("M1", { heading: true, milestone: 1 }), g("r1", { done: true, milestone: 1 }), g("r2", { done: true, milestone: 1 }),
+    g("M2", { heading: true, milestone: 2 }), g("r3", { selected: true, milestone: 2 }), g("r4", { milestone: 2 }),
+  ];
+  assert.deepEqual(fitRows(groups, 4, (_s, x) => x), ["  ✓ 2 earlier done phase(s) hidden", "M2", "r3", "r4"]);
 });

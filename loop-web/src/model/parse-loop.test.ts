@@ -112,6 +112,18 @@ describe("parseLoop — state & phase mapping", () => {
     });
   });
 
+  it("orders review phases before attempts when old and current milestones coexist", () => {
+    const rt = parseLoop(input({ runs: [
+      run({ name: "review-p4-acme--api-a2" }),
+      run({ name: "review-p2-acme--api-a12" }),
+      run({ name: "review-p4-acme--api-a1" }),
+      run({ name: "review-acme--api-a99" }),
+    ] }));
+    expect(rt.reviewRunsByRepository["acme--api"].map((r) => [r.phase, r.k])).toEqual([
+      [null, 99], ["2", 12], ["4", 1], ["4", 2],
+    ]);
+  });
+
   it("keeps the engine/model of review runs (leg in flight, meta once ended)", () => {
     const rt = parseLoop(input({
       runs: [
