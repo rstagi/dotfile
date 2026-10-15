@@ -142,9 +142,10 @@ ar_round_status() {
 
 # ar_prompt --role review|critic|respond|confirm --framing F --ledger F --run-dir D.
 # Print the vendored source unchanged, then bind its slots to opaque caller data.
+# Opening reviews have no exchange; other roles see only the latest round stage.
 ar_prompt() {
   emulate -L zsh
-  local role="" framing="" ledger="" run_dir="" section line report i
+  local role="" framing="" ledger="" run_dir="" current_stage="" section line report i
   local -a columns reports labels
   local -A ar_state
   local prompts="$_LOOP_AR_ROOT/.claude/skills/loop-execute/references/ar-prompts.md"
@@ -163,9 +164,14 @@ ar_prompt() {
     *) return 1 ;;
   esac
   _ar_load_round "$ledger" 1 || return 1
-  if [[ -f "$ledger" ]]; then
+  if [[ "$role" != review && -f "$ledger" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       columns=(${(ps:\t:)line})
+      [[ "$columns[2]" == round[1-5] ]] && current_stage="$columns[2]"
+    done < "$ledger"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      columns=(${(ps:\t:)line})
+      [[ "$columns[2]" == "$current_stage" ]] || continue
       case "$columns[3]" in
         review|respond|critic|confirm)
           report="${ledger:a:h:h}/${columns[6]}/report.md"

@@ -228,6 +228,15 @@ for role in review respond critic confirm; do
   case "$role" in review|respond) section=A.2.3 ;; *) section=A.2.4 ;; esac
   assert_contains "$actual" "Role: $role ($section)" "$role selects its paper instructions"
 done
+ar_prompt --role review --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/opening.md"
+assert_exit "$?" 0 "opening review accepts a non-empty ledger"
+python3 - "$TMP/opening.md" <<'PYTEST'
+import sys
+from pathlib import Path
+prompt = Path(sys.argv[1]).read_text()
+assert prompt.split('## Prior exchange (ledger order)\n', 1)[1].strip() == ''
+PYTEST
+assert_exit "$?" 0 "opening review never inherits a prior exchange"
 cp "$LEDGER" "$TMP/ledger-before.tsv"
 rm "$LOOP/runs/a-critic/report.md"
 ar_prompt --role respond --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/missing.md" 2>/dev/null
@@ -235,6 +244,8 @@ assert_exit "$?" 1 "missing exchange report fails instead of omitting evidence"
 assert_eq "$(cat "$TMP/missing.md")" '' "missing evidence emits no partial prompt"
 cmp -s "$LEDGER" "$TMP/ledger-before.tsv"
 assert_exit "$?" 0 "prompt rendering never mutates ledger"
+ar_prompt --role review --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > /dev/null
+assert_exit "$?" 0 "opening review does not require prior report files"
 
 echo "ar: disputed sidecar preserves last reports and critic-added findings"
 # Replace the earlier critic and finish the second inner exchange.
@@ -280,8 +291,26 @@ printf 'No reviewer flags.\nAPPROVE\n' > "$LOOP/runs/round2-r/report.md"
 printf 'AGREE\n' > "$LOOP/runs/round2-c/report.md"
 printf 'F10 [blocker]: missing guard at source:10.\nDISAGREE_EVIDENCE: F10 missed' > "$LOOP/runs/round2-t/report.md"
 printf 'a7\tround2\treview\tclaude\tAPPROVE\truns/round2-r\na8\tround2\tcritic\tgrok\tAGREE\truns/round2-c\na9\tround2\tconfirm\tgpt\tDISAGREE_EVIDENCE\truns/round2-t' >> "$LEDGER"
-(cd "$TMP" && ar_prompt --role respond --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new") > "$TMP/later.md"
-assert_exit "$?" 0 "prompt uses ledger run_dir from another cwd and skips synthetic/fix rows"
+for role in critic respond confirm; do
+  (cd "$TMP" && ar_prompt --role "$role" --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new") > "$TMP/later.md"
+  assert_exit "$?" 0 "$role uses ledger run_dir from another cwd and skips synthetic/fix rows"
+  python3 - "$TMP/later.md" "$LOOP" <<'PYTEST'
+import sys
+from pathlib import Path
+prompt = Path(sys.argv[1]).read_text().split('## Prior exchange (ledger order)\n', 1)[1]
+loop = Path(sys.argv[2])
+reports = [(loop / 'runs' / name / 'report.md').read_text() for name in ('round2-r', 'round2-c', 'round2-t')]
+assert all(prompt.count(report) == 1 for report in reports)
+assert [prompt.index(report) for report in reports] == sorted(prompt.index(report) for report in reports)
+for name in ('z-review', 'a-critic', 'm-response', 'b-last-critic'):
+    assert (loop / 'runs' / name / 'report.md').read_text() not in prompt
+PYTEST
+  assert_exit "$?" 0 "$role includes only current-round reports in ledger order"
+done
+mv "$LOOP/runs/a-critic/report.md" "$TMP/archived-critic.md"
+ar_prompt --role respond --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > /dev/null
+assert_exit "$?" 0 "current-round exchange does not require archived report files"
+mv "$TMP/archived-critic.md" "$LOOP/runs/a-critic/report.md"
 ar_write_disputed --ledger "$LEDGER" > /dev/null
 assert_exit "$?" 0 "third-provider veto can produce a dispute after APPROVE"
 python3 - "$DISPUTED" "$LOOP" <<'PYTEST'
