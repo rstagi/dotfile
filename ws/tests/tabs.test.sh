@@ -42,7 +42,7 @@ assert_eq "$(slot_window "$WT" 2)" "" "resuming one id leaves other sessions sto
 T kill-window -t "$(slot_window "$WT" 1)"
 rm -f "$WS_HOME/argv-1.json"
 "$WS" open api/feat-login --detach
-wait_until test -n "$(slot_window "$WT" 2)"
+wait_until slot_present "$WT" 2
 assert_contains "$(wait_pane "$(slot_window "$WT" 1)" sid-claude-1)" "--resume sid-claude-1" "claude session resumed by id"
 assert_contains "$(wait_pane "$(slot_window "$WT" 2)" sid-codex-2)" "resume sid-codex-2" "codex session resumed by id"
 assert_agent_preamble claude 1
@@ -106,7 +106,7 @@ GROK_RESUME_ID="$(T show -wqv -t "$GW2" @ws_session)"
 T kill-window -t "$GW"; T kill-window -t "$GW2"
 rm -f "$WS_HOME/argv-$GROK_RESUME_ID.json"
 "$WS" open api/grokky --detach
-wait_until test -n "$(slot_window "$GWT" 2)"
+wait_until slot_present "$GWT" 2
 assert_contains "$(wait_pane "$(slot_window "$GWT" 2)" sid-grok-2)" "--resume sid-grok-2" "grok resumed by GROK_SESSION_ID"
 assert_agent_preamble grok "$GROK_RESUME_ID"
 "$WS" add api/grokky --agent gemini --detach 2>/dev/null
@@ -124,7 +124,7 @@ session_forget
 echo "ws: quitting an agent cleanly forgets its session"
 W2="$(slot_window "$WT" 2)"
 T send-keys -t "$W2" Enter
-wait_until test -z "$(slot_window "$WT" 2)"
+wait_until slot_absent "$WT" 2
 assert_eq "$(slot_window "$WT" 2)" "" "window closes when agent exits"
 T kill-window -t "$(slot_window "$WT" 1)"
 assert_eq "$(T has-session -t '=api/feat-login' 2>/dev/null && print alive)" "" "worktree session gone with its last tab"

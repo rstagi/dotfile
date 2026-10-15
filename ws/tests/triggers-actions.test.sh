@@ -215,7 +215,7 @@ ready_probe() {
     tmux_() { local n=$(( $(<"$TMP/ready-polls") + 1 )); print $n > "$TMP/ready-polls"; (( n > after )) && print 1 || print 0; }
     ws_bus_wait_ready 1 @0 )
 }
-ready_probe 55
+(unset WS_READY_TIMEOUT; ready_probe 55) # the suite-wide cap must not mask the default
 assert_exit "$?" "0" "TUI ready after >5s of polling succeeds within the default budget"
 WS_READY_TIMEOUT=0.3 ready_probe 1000
 assert_exit "$?" "1" "WS_READY_TIMEOUT bounds the wait"

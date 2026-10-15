@@ -37,6 +37,8 @@ export WS_BORINGNOTCH_SOCKET="$TMP/unavailable.sock"
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
 export GROK_HOME="$TMP/grokhome"
+# Cap input-readiness waits (default 60s): a send stuck on a TUI that never readies fails fast.
+export WS_READY_TIMEOUT=15
 socket_listener_pid=""
 trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP" "$NOTCH_HOME"; home_guard_check "$real_home_snapshot" || exit 1' EXIT
 WS="$ROOT/ws/ws.sh"
@@ -164,5 +166,8 @@ stop_socket_listener() {
 windows_of() { T list-windows -a -F '#{window_id} #{@ws_path}' | awk -v p="$1" '$2 == p { print $1 }'; }
 # slot_window <worktree> <slot> — window id of that agent session
 slot_window() { T list-windows -a -F '#{window_id} #{@ws_path} #{@ws_slot}' | awk -v p="$1" -v s="$2" '$2 == p && $3 == s { print $1 }'; }
+# slot_present/slot_absent <worktree> <slot> — wait_until predicates (re-evaluated on every poll)
+slot_present() { [[ -n "$(slot_window "$1" "$2")" ]]; }
+slot_absent() { [[ -z "$(slot_window "$1" "$2")" ]]; }
 session_of() { T display -p -t "$1" '#{session_name}'; }
 hook() { WS_WORKSPACE="$1" TMUX_PANE="$(T display -p -t "$2" '#{pane_id}')" "$WS" hook "$3"; }
