@@ -1,5 +1,6 @@
 import type {
   Plan,
+  PlanMilestone,
   Runtime,
   Snapshot,
   Problem,
@@ -132,7 +133,7 @@ function effortIntegrationBranch(plan: Plan, runtime: Runtime | null, repositori
 }
 
 function buildRepositoryInfo(plan: Plan, runtime: Runtime | null): RepositoryInfo[] {
-  const milestone = plan.milestones.find((entry) => entry.number === (runtime?.state?.milestone ?? 1));
+  const milestone = currentPlanMilestone(plan, runtime);
   return plan.repositories.filter((repository) => !milestone || milestone.participants.includes(repository.slug)).map((repository) => {
     const stateRepository = runtime?.state?.repositories?.[repository.slug];
     return {
@@ -153,7 +154,7 @@ function buildPrInfo(plan: Plan, runtime: Runtime | null, repository: string): P
   const stateRepository = runtime?.state?.repositories?.[repository];
   const planRepository = plan.repositories.find((entry) => entry.slug === repository);
   const milestoneNumber = runtime?.state?.milestone ?? 1;
-  const milestone = plan.milestones.find((entry) => entry.number === milestoneNumber);
+  const milestone = currentPlanMilestone(plan, runtime);
   const awaiting = runtime?.state?.awaitingMerge;
   const url = (awaiting?.milestone === milestoneNumber ? awaiting.prs[repository] : null)
     ?? stateRepository?.prUrl
@@ -189,6 +190,12 @@ function buildPrInfo(plan: Plan, runtime: Runtime | null, repository: string): P
   };
 }
 
+/** Participant/branch/PR scoping only applies to explicit `## Milestone` plans; legacy plans use every repository. */
+function currentPlanMilestone(plan: Plan, runtime: Runtime | null): PlanMilestone | undefined {
+  if (!plan.explicitMilestones) return undefined;
+  return plan.milestones.find((entry) => entry.number === (runtime?.state?.milestone ?? 1));
+}
+
 function repositoryKey(repository: string): string {
   return repository.replace("/", "--");
 }
@@ -221,8 +228,8 @@ function buildPlanOverview(plan: Plan, runtime: Runtime | null, repositories: Re
       const runtime = repositories.find((entry) => entry.slug === repository.slug);
       return {
         ...repository,
-        integrationBranch: runtime?.integrationBranch ?? null,
-        pr: runtime?.pr?.url ?? null,
+        integrationBranch: runtime?.integrationBranch ?? (plan.explicitMilestones ? null : repository.integrationBranch),
+        pr: runtime?.pr?.url ?? (plan.explicitMilestones ? null : repository.pr),
       };
     }),
     phaseSummary: plan.phases.map((p) => ({

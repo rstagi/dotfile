@@ -243,6 +243,8 @@ export interface Plan {
   loopConfig: LoopConfig | null;
   repositories: PlanRepository[];
   milestones: PlanMilestone[];
+  /** True only when the plan declares `## Milestone N` sections (legacy `## Phases` = false). */
+  explicitMilestones: boolean;
   phases: PlanPhase[];
   prose: PlanProse;
   warnings: string[];

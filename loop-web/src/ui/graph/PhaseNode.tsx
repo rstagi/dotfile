@@ -24,10 +24,11 @@ export function PhaseNode({ data, selected }: NodeProps) {
   const { node, pr, plan } = data as PhaseNodeData;
   const rt = node.runtime;
   const accent = ACCENT[node.ui];
+  const parked = node.kind === "pr-review" && node.awaitingMerge === true;
 
   return (
     <div
-      className={`node node--${node.ui}${selected ? " node--selected" : ""}`}
+      className={`node node--${node.ui}${parked ? " node--parked" : ""}${selected ? " node--selected" : ""}`}
       data-ui={node.ui}
       style={{ ["--accent" as string]: accent }}
     >
@@ -50,7 +51,15 @@ export function PhaseNode({ data, selected }: NodeProps) {
 
       {showTrace(node) && <Trace mode={traceMode(node)} />}
 
-      <div className="node__meta">{metaBadges(node, pr, plan)}</div>
+      {parked ? (
+        // Parked gate: the resume hint gets its own row; PR badges wrap instead of clipping numbers.
+        <div className="node__meta node__meta--stacked">
+          <div className="node__resume">/loop-execute resume</div>
+          <div className="node__prs">{recordedPrBadges(node)}</div>
+        </div>
+      ) : (
+        <div className="node__meta">{metaBadges(node, pr, plan)}</div>
+      )}
     </div>
   );
 }
@@ -111,14 +120,6 @@ function statusLabel(n: GraphNode): string {
 }
 
 function metaBadges(n: GraphNode, pr?: PrInfo | null, plan?: PlanOverview | null) {
-  if (n.kind === "pr-review" && n.awaitingMerge) {
-    return [
-      <span key="a" className="node__badge" style={{ color: "var(--amber)", borderColor: "var(--amber)" }}>
-        /loop-execute resume
-      </span>,
-      ...recordedPrBadges(n),
-    ];
-  }
   if (n.kind === "pr-review") {
     const verdictBelongsToThisRound = n.phase == null || n.status === "done" || n.status === "blocked";
     const pill = reviewPill(verdictBelongsToThisRound ? pr?.outcome : null);
@@ -172,7 +173,7 @@ function recordedPrBadges(n: GraphNode) {
   return Object.entries(n.prs ?? {})
     .filter((entry): entry is [string, string] => entry[1] != null)
     .map(([slug, url]) => (
-      <a key={slug} className="node__badge" href={url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+      <a key={slug} className="node__badge node__badge--pr" href={url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
         {`${slug === "primary" ? "PR" : slug.split("/").pop()} ${prNumber(url)}`}
       </a>
     ));

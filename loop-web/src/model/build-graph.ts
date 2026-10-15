@@ -218,7 +218,8 @@ function buildExplicitReviewNode(
     milestone: phase.milestone,
     gate: phase.gate,
     status,
-    ui: parked ? "awaiting" : status === "blocked" ? "problem" : resolveUi(status, null, false, paused),
+    // Pause beats the parked "awaiting" cue (an open HIL already reads as awaiting).
+    ui: parked ? (paused ? "paused" : "awaiting") : status === "blocked" ? "problem" : resolveUi(status, null, false, paused),
     pulse: null,
     runtime: null,
     notePending: runtime?.note != null && status !== "done" && status !== "merged",
@@ -325,10 +326,12 @@ export function reviewId(repository: string): string {
   return repository === "primary" ? REVIEW_ID : `${REVIEW_ID}:${repository}`;
 }
 
-/** Repositories reviewed by a phase: its milestone's participants, else every plan repository. */
+/** Repositories reviewed by a phase: its milestone's participants (explicit milestone plans only), else every plan repository. */
 function milestoneParticipants(plan: Plan, phase: PlanPhase): string[] {
-  return plan.milestones.find((milestone) => milestone.number === phase.milestone)?.participants
-    ?? plan.repositories.map((repository) => repository.slug);
+  const milestone = plan.explicitMilestones
+    ? plan.milestones.find((entry) => entry.number === phase.milestone)
+    : undefined;
+  return milestone?.participants ?? plan.repositories.map((repository) => repository.slug);
 }
 
 function repositoryKey(repository: string): string {

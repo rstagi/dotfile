@@ -366,3 +366,39 @@ describe("buildSnapshot — milestone projections", () => {
     expect(snap.graph.nodes.find((n) => n.id === "4")?.prs).toEqual(awaitingMerge.prs);
   });
 });
+
+const LEGACY_DECLARED_REPOS = `# Legacy — Multi-Phase Plan
+## Repositories
+### \`acme/api\`
+- **Verify:** \`npm test\`
+- **Integration branch:** \`feat/api\`
+- **PR:** https://github.com/acme/api/pull/1
+### \`acme/web\`
+- **Verify:** \`npm test\`
+- **Integration branch:** \`feat/web\`
+- **PR:** https://github.com/acme/web/pull/2
+## Phases
+### Phase 1 — API [lane: A]
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+### Phase 2 — Review [kind: pr-review]
+- **Depends on:** Phase 1
+`;
+
+describe("buildSnapshot — legacy plans without milestone sections", () => {
+  it("keeps every declared repository with its plan branch + PR", () => {
+    const snap = buildSnapshot(parsePlan(LEGACY_DECLARED_REPOS), null);
+    expect(snap.effort.repositories.map((r) => [r.slug, r.integrationBranch, r.pr?.url ?? null])).toEqual([
+      ["acme/api", "feat/api", "https://github.com/acme/api/pull/1"],
+      ["acme/web", "feat/web", "https://github.com/acme/web/pull/2"],
+    ]);
+    const web = snap.plan.repositories.find((r) => r.slug === "acme/web");
+    expect(web).toMatchObject({ integrationBranch: "feat/web", pr: "https://github.com/acme/web/pull/2" });
+  });
+
+  it("plans the review stages for every declared repository", () => {
+    const snap = buildSnapshot(parsePlan(LEGACY_DECLARED_REPOS), null);
+    const stages = snap.graph.nodes.find((n) => n.id === "2")!.reviewStages!;
+    expect([...new Set(stages.map((s) => s.repository))]).toEqual(["acme/api", "acme/web"]);
+  });
+});

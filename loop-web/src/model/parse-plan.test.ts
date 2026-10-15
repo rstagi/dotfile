@@ -556,3 +556,82 @@ ${headings.map((heading, i) => `## ${heading}
     expect(parsePlan(plan(["Milestone 1 — Core", "Milestone 3 — Skip"])).warnings.join("\n")).toMatch(/Milestone 3.*expected Milestone 2/i);
   });
 });
+
+describe("parsePlan — milestone guardrails", () => {
+  const REPOS = `## Repositories
+
+### \`acme/api\`
+- **Verify:** \`npm test\`
+
+### \`acme/web\`
+- **Verify:** \`npm test\`
+`;
+
+  it("keeps a single milestones[] entry for a duplicate milestone number", () => {
+    const md = `# Plan
+
+## Milestone 1 — Core
+
+### Phase 1 — Work [lane: A]
+- **Depends on:** none
+
+### Phase 2 — Review [kind: pr-review]
+- **Depends on:** Phase 1
+
+## Milestone 1 — Again
+
+### Phase 3 — More [lane: A]
+- **Depends on:** Phase 2
+`;
+    const plan = parsePlan(md);
+    expect(plan.warnings.join("\n")).toMatch(/Milestone 1.*duplicate/i);
+    expect(plan.milestones.map((m) => [m.number, m.title])).toEqual([[1, "Core"]]);
+    expect(plan.phases.map((p) => p.phase)).toEqual(["1", "2"]);
+  });
+
+  it("flags explicit milestone sections, not legacy ## Phases", () => {
+    expect(parsePlan("# P\n\n## Phases\n\n### Phase 1 — W [lane: A]\n").explicitMilestones).toBe(false);
+    expect(parsePlan("# P\n\n## Milestone 1 — M\n\n### Phase 1 — W [lane: A]\n").explicitMilestones).toBe(true);
+  });
+
+  it("warns when the final review carries [gate: merge]", () => {
+    const legacy = parsePlan("# P\n\n## Phases\n\n### Phase 1 — W [lane: A]\n\n### Phase 2 — R [kind: pr-review] [gate: merge]\n- **Depends on:** Phase 1\n");
+    expect(legacy.warnings.join("\n")).toMatch(/Phase 2.*final.*gate: merge/i);
+    const milestones = parsePlan("# P\n\n## Milestone 1 — A\n\n### Phase 1 — W [lane: A]\n\n### Phase 2 — R [kind: pr-review] [gate: merge]\n- **Depends on:** Phase 1\n\n## Milestone 2 — B\n- **Integration branch:** `feat/b`\n\n### Phase 3 — W [lane: A]\n- **Depends on:** Phase 2\n\n### Phase 4 — R [kind: pr-review] [gate: merge]\n- **Depends on:** Phase 3\n");
+    const text = milestones.warnings.join("\n");
+    expect(text).toMatch(/Phase 4.*final.*gate: merge/i);
+    expect(text).not.toMatch(/Phase 2.*final/i);
+  });
+
+  it("warns on an unknown gate value", () => {
+    const plan = parsePlan("# P\n\n## Phases\n\n### Phase 1 — W [lane: A]\n\n### Phase 2 — R [kind: pr-review] [gate: merged]\n- **Depends on:** Phase 1\n");
+    expect(plan.phases[1].gate).toBeNull();
+    expect(plan.warnings.join("\n")).toMatch(/Phase 2.*unknown gate "merged"/i);
+  });
+
+  it("warns when a bare PR bullet is ambiguous across several participants", () => {
+    const md = `# P
+
+${REPOS}
+## Milestone 1 — Both
+- **PR:** https://github.com/acme/api/pull/1
+
+### Phase 1 — API [lane: A]
+- **Repository:** \`acme/api\`
+
+### Phase 2 — Web [lane: B]
+- **Repository:** \`acme/web\`
+
+### Phase 3 — R [kind: pr-review]
+- **Depends on:** Phase 1, 2
+`;
+    const plan = parsePlan(md);
+    expect(plan.milestones[0].prs).toEqual({ "acme/api": null, "acme/web": null });
+    expect(plan.warnings.join("\n")).toMatch(/Milestone 1.*PR.*ignored/i);
+  });
+
+  it("warns when a milestone has no work phases", () => {
+    const md = "# P\n\n## Milestone 1 — A\n\n### Phase 1 — W [lane: A]\n\n### Phase 2 — R [kind: pr-review] [gate: merge]\n- **Depends on:** Phase 1\n\n## Milestone 2 — Empty\n- **Integration branch:** `feat/b`\n\n### Phase 3 — R [kind: pr-review]\n- **Depends on:** Phase 2\n";
+    expect(parsePlan(md).warnings.join("\n")).toMatch(/Milestone 2.*no work phases/i);
+  });
+});

@@ -52,9 +52,13 @@ export function parsePlan(md: string): Plan {
   const repositories = repositorySection
     ? parseRepositories(repositorySection, loopConfig, warnings)
     : [legacyRepository(loopConfig)];
-  const { phases, milestones } = parseMilestones(lines, repositories, repositorySection != null, warnings);
-  if (phases.some((phase) => phase.kind === "pr-review") && phases.at(-1)?.kind !== "pr-review") {
+  const { phases, milestones, explicitMilestones } = parseMilestones(lines, repositories, repositorySection != null, warnings);
+  const finalPhase = phases.at(-1);
+  if (phases.some((phase) => phase.kind === "pr-review") && finalPhase?.kind !== "pr-review") {
     warnings.push("Executable plans with explicit review phases must end with a PR-review phase");
+  }
+  if (finalPhase?.kind === "pr-review" && finalPhase.gate === "merge") {
+    warnings.push(`Phase ${finalPhase.phase}: the final review must not carry [gate: merge] — the loop would park forever`);
   }
 
   return {
@@ -64,6 +68,7 @@ export function parsePlan(md: string): Plan {
     loopConfig,
     repositories,
     milestones,
+    explicitMilestones,
     phases,
     prose: parseProse(lines),
     warnings,
@@ -77,7 +82,7 @@ function parseMilestones(
   repositories: PlanRepository[],
   multiRepository: boolean,
   warnings: string[],
-): { phases: PlanPhase[]; milestones: PlanMilestone[] } {
+): { phases: PlanPhase[]; milestones: PlanMilestone[]; explicitMilestones: boolean } {
   const sections: MilestoneSection[] = [];
   let current: MilestoneSection | null = null;
   for (const line of lines) {
@@ -102,14 +107,13 @@ function parseMilestones(
   const milestones: PlanMilestone[] = [];
   const seenPhases = new Set<string>();
   const milestonePlan = sections.some((section) => section.explicit);
-  validateMilestoneNumbers(sections, warnings);
-  for (const section of sections) {
+  for (const section of validateMilestoneNumbers(sections, warnings)) {
     const milestonePhases = parsePhases(section.lines, repositories, multiRepository, warnings, section.number, seenPhases);
     phases.push(...milestonePhases);
-    milestones.push(buildMilestone(section, milestonePhases, repositories, milestonePlan));
+    milestones.push(buildMilestone(section, milestonePhases, repositories, milestonePlan, warnings));
   }
-  validateMilestones(milestones, phases, warnings);
-  return { phases, milestones };
+  validateMilestones(milestones, phases, milestonePlan, warnings);
+  return { phases, milestones, explicitMilestones: milestonePlan };
 }
 
 function buildMilestone(
@@ -117,6 +121,7 @@ function buildMilestone(
   phases: PlanPhase[],
   repositories: PlanRepository[],
   milestonePlan: boolean,
+  warnings: string[],
 ): PlanMilestone {
   const firstPhase = section.lines.findIndex((line) => PHASE_HEADING.test(line));
   const header = firstPhase === -1 ? section.lines : section.lines.slice(0, firstPhase);
@@ -124,7 +129,11 @@ function buildMilestone(
     .filter((phase) => phase.kind === "work" && phase.repository)
     .map((phase) => phase.repository))];
   const sharedBranch = stripBackticks(bulletValue(header, "Integration branch"));
-  const sharedPr = participants.length === 1 ? bulletValue(header, "PR") : null;
+  const barePr = bulletValue(header, "PR");
+  const sharedPr = participants.length === 1 ? barePr : null;
+  if (barePr != null && participants.length >= 2) {
+    warnings.push(`Milestone ${section.number}: bare PR bullet ignored with ${participants.length} repositories — use "PR (owner/repo)"`);
+  }
 
   return {
     number: section.number,
@@ -145,25 +154,37 @@ function buildMilestone(
   };
 }
 
-/** Milestones (an implicit `## Phases` counts as 1) must be numbered 1, 2, 3… with no duplicates or gaps. */
-function validateMilestoneNumbers(sections: MilestoneSection[], warnings: string[]): void {
+/** Milestones (an implicit `## Phases` counts as 1) must be numbered 1, 2, 3… with no gaps; duplicates are dropped. */
+function validateMilestoneNumbers(sections: MilestoneSection[], warnings: string[]): MilestoneSection[] {
+  const kept: MilestoneSection[] = [];
   const seen = new Set<number>();
   let expected = 1;
   for (const section of sections) {
     if (seen.has(section.number)) {
-      warnings.push(`Milestone ${section.number} is a duplicate milestone number`);
+      // Same policy as duplicate phases: a second entry would collide on milestone number.
+      warnings.push(`Milestone ${section.number} is a duplicate milestone number — ignoring the repeat and its phases`);
       continue;
     }
     if (section.number !== expected) warnings.push(`Milestone ${section.number} is out of sequence: expected Milestone ${expected}`);
     seen.add(section.number);
+    kept.push(section);
     expected = section.number + 1;
   }
+  return kept;
 }
 
-function validateMilestones(milestones: PlanMilestone[], phases: PlanPhase[], warnings: string[]): void {
+function validateMilestones(
+  milestones: PlanMilestone[],
+  phases: PlanPhase[],
+  milestonePlan: boolean,
+  warnings: string[],
+): void {
   const branches = new Map<string, Set<string>>();
   for (const [index, milestone] of milestones.entries()) {
     const milestonePhases = phases.filter((phase) => phase.milestone === milestone.number);
+    if (milestonePlan && milestone.participants.length === 0) {
+      warnings.push(`Milestone ${milestone.number} has no work phases — its review has no repositories to review`);
+    }
     const lastPhase = milestonePhases.at(-1);
     if (milestone !== milestones.at(-1) && (lastPhase?.kind !== "pr-review" || lastPhase.gate !== "merge")) {
       warnings.push(`Milestone ${milestone.number} must end with a PR-review phase tagged [gate: merge]`);
@@ -354,8 +375,11 @@ function buildPhase(
   const laneMatch = raw.heading.match(LANE_TAG);
   const statusMatch = raw.heading.match(STATUS_TAG);
   const kind = normalizeKind(raw.heading.match(KIND_TAG)?.[1], raw.num, warnings);
-  if (raw.heading.match(GATE_TAG) && kind !== "pr-review") {
+  const rawGate = raw.heading.match(GATE_TAG)?.[1].toLowerCase();
+  if (rawGate && kind !== "pr-review") {
     warnings.push(`Phase ${raw.num}: gate tags are only allowed on PR-review phases`);
+  } else if (rawGate && rawGate !== "merge") {
+    warnings.push(`Phase ${raw.num}: unknown gate "${rawGate}" (merge) — ignoring`);
   }
   const title = raw.heading
     .replace(/`?\[lane:[^\]]*\]`?/i, "")
@@ -384,7 +408,7 @@ function buildPhase(
     milestone,
     title: title || `Phase ${raw.num}`,
     kind,
-    gate: raw.heading.match(GATE_TAG)?.[1].toLowerCase() === "merge" ? "merge" : null,
+    gate: rawGate === "merge" ? "merge" : null,
     lane: laneMatch ? laneMatch[1].trim() : "A",
     status: normalizeStatus(statusMatch?.[1], raw.num, warnings),
     repository,

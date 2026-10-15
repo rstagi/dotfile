@@ -517,3 +517,15 @@ describe("buildGraph — milestone gates and participants", () => {
     expect(g.nodes.find((n) => n.id === "plan")!.ui).toBe("awaiting");
   });
 });
+
+describe("buildGraph — parked gate precedence", () => {
+  const parkedAt1 = (phase: Partial<PhaseRuntime>) => ({
+    ...runtime({ "2": phase }), state: { milestone: 1, awaitingMerge: { milestone: 1, prs: { primary: "https://github.com/acme/api/pull/9" } } },
+  } as unknown as Runtime);
+
+  it("shows a paused parked gate as paused", () => {
+    const gate = buildGraph(parsePlan(MILESTONES), parkedAt1({ paused: true })).nodes.find((n) => n.id === "2")!;
+    expect(gate.awaitingMerge).toBe(true);
+    expect(gate.ui).toBe("paused");
+  });
+});

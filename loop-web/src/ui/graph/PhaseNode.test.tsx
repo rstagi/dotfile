@@ -115,4 +115,14 @@ describe("PhaseNode historical gates", () => {
     expect(html).toContain('href="https://github.com/acme/api/pull/9"');
     expect(html).toContain("/loop-execute resume");
   });
+  it("puts the resume hint on its own row and lets parked PR badges wrap unclipped", () => {
+    const prs = { "acme/api": "https://github.com/acme/api/pull/9", "acme/web": "https://github.com/acme/web/pull/12" };
+    const html = render({ ...gate, status: "running", ui: "awaiting", awaitingMerge: true, prs }, null);
+    expect(html).toContain("node--parked");
+    expect(html).toMatch(/<div class="node__resume"[^>]*>\/loop-execute resume<\/div>/);
+    const row = html.match(/<div class="node__prs">(.*?)<\/div>/)?.[1] ?? "";
+    expect(row).toContain("api #9");
+    expect(row).toContain("web #12");
+    expect(row.match(/node__badge node__badge--pr/g)).toHaveLength(2);
+  });
 });

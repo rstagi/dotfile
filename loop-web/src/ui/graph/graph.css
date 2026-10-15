@@ -155,6 +155,33 @@
   text-overflow: ellipsis;
   overflow: hidden;
 }
+.node__badge--pr {
+  flex-shrink: 0;
+  overflow: visible;
+}
+/* Parked merge gate: resume hint row above a wrapping PR-badge row; title yields a line. */
+.node--parked .node__title {
+  -webkit-line-clamp: 1;
+  max-height: 1.2em;
+}
+.node__meta--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.node__resume {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--amber);
+}
+.node__prs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 6px;
+}
+.node__prs:empty {
+  display: none;
+}
 .node__badge--model {
   color: var(--aqua);
   border-color: rgba(47, 243, 208, 0.22);
