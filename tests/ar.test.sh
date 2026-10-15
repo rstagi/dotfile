@@ -182,4 +182,58 @@ next >/dev/null 2>&1; assert_exit "$?" 1 "mismatched ledger role/stage rejected"
 printf 'a1\tround1\treview\tgpt\tAPPROVE\n' > "$LEDGER"
 next >/dev/null 2>&1; assert_exit "$?" 1 "ledger must have all six columns"
 
+echo "ar: prompt preserves vendored paper and opaque framing"
+PROMPTS="$ROOT/.claude/skills/loop-execute/references/ar-prompts.md"
+LOOP="$TMP/loop with spaces"
+mkdir -p "$LOOP/runs"
+LEDGER="$LOOP/runs/review.ledger.tsv"
+FRAMING="$TMP/framing.md"
+cat > "$FRAMING" <<'EOF'
+Frozen artifact: PR #12 at abc123.
+Literal data: {prior_exchange} $HOME $(touch forbidden) `touch forbidden` \path
+EOF
+ar_prompt --role review --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/prompt.md"
+assert_exit "$?" 0 "render opening review without a ledger"
+head -n "$(wc -l < "$PROMPTS")" "$TMP/prompt.md" > "$TMP/vendored.md"
+diff -u "$PROMPTS" "$TMP/vendored.md" > "$TMP/prompt.diff"
+assert_exit "$?" 0 "all paper sentences and adaptation diff against vendored source"
+assert_contains "$(cat "$TMP/prompt.md")" "$(cat "$FRAMING")" "framing is opaque literal data"
+assert_contains "$(cat "$TMP/prompt.md")" "RUN_DIR=$LOOP/runs/new" "bind report and status output directory"
+assert_contains "$(cat "$TMP/prompt.md")" 'Role: review (A.2.3)' "review uses paper reviewer rules"
+
+echo "ar: exchanges follow ledger order and report paths, not attempt names"
+mkdir -p "$LOOP/runs/z-review" "$LOOP/runs/a-critic" "$LOOP/runs/m-response"
+printf 'F1 [major]: first report\nNEEDS_CHANGES: first\n' > "$LOOP/runs/z-review/report.md"
+printf 'F2 [minor]: critic added issue\nDISAGREE_CONCERN: confirm F2\n' > "$LOOP/runs/a-critic/report.md"
+printf 'F1 [major]: response retains literal {diff}\nF2 [minor]: incorporated\nNEEDS_CHANGES: second\n' > "$LOOP/runs/m-response/report.md"
+cat > "$LEDGER" <<EOF
+a1${T}round1${T}review${T}gpt${T}NEEDS_CHANGES${T}runs/z-review
+a2${T}round1${T}critic${T}claude${T}DISAGREE_CONCERN${T}runs/a-critic
+a3${T}round1${T}respond${T}gpt${T}NEEDS_CHANGES${T}runs/m-response
+EOF
+ar_prompt --role critic --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/exchange.md"
+assert_exit "$?" 0 "read prior reports relative to loop directory"
+python3 - "$TMP/exchange.md" "$LOOP" <<'PYTEST'
+import sys
+from pathlib import Path
+prompt = Path(sys.argv[1]).read_text()
+loop = Path(sys.argv[2])
+reports = [(loop / 'runs' / name / 'report.md').read_text() for name in ('z-review', 'a-critic', 'm-response')]
+assert all(prompt.count(report) == 1 for report in reports)
+assert [prompt.index(report) for report in reports] == sorted(prompt.index(report) for report in reports)
+PYTEST
+assert_exit "$?" 0 "all reports preserved once, in ledger order"
+for role in review respond critic confirm; do
+  actual="$(ar_prompt --role "$role" --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new")"
+  case "$role" in review|respond) section=A.2.3 ;; *) section=A.2.4 ;; esac
+  assert_contains "$actual" "Role: $role ($section)" "$role selects its paper instructions"
+done
+cp "$LEDGER" "$TMP/ledger-before.tsv"
+rm "$LOOP/runs/a-critic/report.md"
+ar_prompt --role respond --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/missing.md" 2>/dev/null
+assert_exit "$?" 1 "missing exchange report fails instead of omitting evidence"
+assert_eq "$(cat "$TMP/missing.md")" '' "missing evidence emits no partial prompt"
+cmp -s "$LEDGER" "$TMP/ledger-before.tsv"
+assert_exit "$?" 0 "prompt rendering never mutates ledger"
+
 test_summary

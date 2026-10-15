@@ -18,6 +18,8 @@
 # A DISPUTED row records the round's <ledger-stem>.disputed.md sidecar. Replay uses
 # that row, so an earlier round's sidecar cannot taint later rounds.
 
+typeset -g _LOOP_AR_ROOT="${${(%):-%x}:A:h}"
+
 # ar_next --rounds N --inner M --ledger F [--start-round r] [--single-round].
 ar_next() {
   emulate -L zsh
@@ -135,6 +137,53 @@ ar_round_status() {
   else
     print -r -- clean
   fi
+}
+
+# ar_prompt --role review|critic|respond|confirm --framing F --ledger F --run-dir D.
+# Print the vendored source unchanged, then bind its slots to opaque caller data.
+ar_prompt() {
+  emulate -L zsh
+  local role="" framing="" ledger="" run_dir="" section line report i
+  local -a columns reports labels
+  local -A ar_state
+  local prompts="$_LOOP_AR_ROOT/.claude/skills/loop-execute/references/ar-prompts.md"
+  while (( $# )); do
+    (( $# >= 2 )) || return 1
+    case "$1" in
+      --role) role="$2" ;; --framing) framing="$2" ;;
+      --ledger) ledger="$2" ;; --run-dir) run_dir="$2" ;; *) return 1 ;;
+    esac
+    shift 2
+  done
+  [[ -r "$prompts" && -f "$framing" && -r "$framing" && -n "$ledger" && -n "$run_dir" ]] || return 1
+  case "$role" in
+    review|respond) section=A.2.3 ;;
+    critic|confirm) section=A.2.4 ;;
+    *) return 1 ;;
+  esac
+  _ar_load_round "$ledger" 1 || return 1
+  if [[ -f "$ledger" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      columns=(${(ps:\t:)line})
+      case "$columns[3]" in
+        review|respond|critic|confirm)
+          report="${ledger:a:h:h}/${columns[6]}/report.md"
+          [[ -f "$report" && -r "$report" ]] || return 1
+          reports+=("$report")
+          labels+=("${columns[1]} | ${columns[2]} | ${columns[3]} | ${columns[4]}") ;;
+      esac
+    done < "$ledger"
+  fi
+  cat -- "$prompts" || return 1
+  printf '\n## Runtime bindings\nRole: %s (%s)\nRUN_DIR=%s\n' "$role" "$section" "${run_dir:a}"
+  printf '\n## Caller framing (verbatim)\n'
+  cat -- "$framing" || return 1
+  printf '\n## Prior exchange (ledger order)\n'
+  for (( i = 1; i <= ${#reports}; i++ )); do
+    printf '\n### %s\n\n' "$labels[i]"
+    cat -- "$reports[i]" || return 1
+    printf '\n'
+  done
 }
 
 _ar_count() { [[ "$1" == [1-5] ]]; }
