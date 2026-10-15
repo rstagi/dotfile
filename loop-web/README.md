@@ -82,6 +82,12 @@ For live dev you run two processes: `npm run dev` (UI on 5173) and
 - **`src/ui/`** — Vite + React + TypeScript. React Flow for the DAG, Framer-Motion CSS for the
   three load-bearing motions (heartbeat, flatline, HIL alarm). "Phosphor Bench" oscilloscope theme.
 
+### Milestones
+
+A plan may carry several `## Milestone N — …` sections. The graph and `loop-top` group phases by milestone; each milestone's `[gate: merge]` review ends it. After the gate verdict the loop status becomes `awaiting-merge` (typed `milestone.awaiting-merge` event, `state.awaitingMerge`): the gate node shows "awaiting merge" with one PR link per repository and the hint `/loop-execute resume`. A human merges and resumes; `milestone.resumed` switches `state.milestone`, replacing the per-repository and loop-level branch/PR/review fields. There is no resume control in the UI or `loop-top`.
+
+The daemon is perpetual, so restart the Loop daemon after upgrading to pick up the new status and events (`launchctl kickstart -k` the loop-web LaunchAgent, or rerun `../loop-web.sh --daemon`).
+
 ### Jev status and replay
 
 The header shows the latest Jev mode, decision count, and fallback count. Route, question, and

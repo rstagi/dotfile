@@ -67,6 +67,11 @@ worktree. The `[status: …]` markers in `.loop/plan.md` are authoritative. Then
 
 Do not start integration phases until their dependency phases are `done`.
 
+**Milestones.** In a plan with milestones, read `state.milestone` (from `.loop/state.json`;
+absent = milestone 1) and never offer or claim a phase of a later milestone than `state.milestone`
+— those stay locked until a human merges the gate and resumes the loop, even if their
+`Depends on` looks satisfied.
+
 ### 3. Conflict-check before claiming
 
 So two worktrees don't collide:
@@ -118,6 +123,8 @@ Every "ask the user" gate becomes deterministic:
 - **Step 1 still re-resolves** the plan from the daemon — freshness matters even more with
   parallel lanes.
 - **No lane menu (step 2):** the given phase *is* the choice.
+- **Milestone refusal:** if the given phase belongs to a later milestone than `state.milestone`,
+  emit `REFUSED: phase belongs to a later milestone`, write blocked status, and stop.
 - **Review refusal:** if the given phase is `[kind: pr-review]`, emit
   `REFUSED: review phases are orchestrator-owned`, write blocked status, and stop.
 - **No claim confirmation (step 4), no git prompt** — you are already in the lane worktree
