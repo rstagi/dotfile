@@ -62,7 +62,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
     repository: null,
     milestone: null,
     status: mapHeaderStatus(plan.status),
-    ui: resolveUi(mapHeaderStatus(plan.status), null, false),
+    ui: resolveUi(mapHeaderStatus(plan.status), null, isAwaitingMergeStatus(plan.status)),
     pulse: null,
     runtime: null,
     notePending: false,
@@ -73,7 +73,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
 
   const explicitReviews = plan.phases.some((phase) => phase.kind === "pr-review");
   const phaseNodes = plan.phases.map((phase) => phase.kind === "pr-review"
-    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], plan.repositories.map((r) => r.slug), runtime?.reviewRunsByRepository ?? {}, runtime?.state?.awaitingMerge ?? null)
+    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], milestoneParticipants(plan, phase), runtime?.reviewRunsByRepository ?? {}, runtime?.state?.awaitingMerge ?? null)
     : buildPhaseNode(phase, runtime?.phases[phase.phase], now));
   const reviewNodes = explicitReviews ? [] : plan.repositories.map((repository) => {
     const legacy = repository.slug === "primary";
@@ -325,6 +325,12 @@ export function reviewId(repository: string): string {
   return repository === "primary" ? REVIEW_ID : `${REVIEW_ID}:${repository}`;
 }
 
+/** Repositories reviewed by a phase: its milestone's participants, else every plan repository. */
+function milestoneParticipants(plan: Plan, phase: PlanPhase): string[] {
+  return plan.milestones.find((milestone) => milestone.number === phase.milestone)?.participants
+    ?? plan.repositories.map((repository) => repository.slug);
+}
+
 function repositoryKey(repository: string): string {
   return repository.replace("/", "--");
 }
@@ -358,6 +364,11 @@ function mapHeaderStatus(s: string | null): PhaseStateStatus {
   if (l.includes("done")) return "done";
   if (l.includes("integrat") || l.includes("progress")) return "running";
   return "todo";
+}
+
+/** Header `Status: awaiting merge` — parked at a milestone merge gate (lifecycle stays todo). */
+function isAwaitingMergeStatus(s: string | null): boolean {
+  return s != null && /awaiting.?merge/i.test(s);
 }
 
 function validStateStatus(s: string | undefined): PhaseStateStatus | undefined {

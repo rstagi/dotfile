@@ -90,6 +90,9 @@ function parseMilestones(
           ? { number: 1, title: "Phases", explicit: false, lines: [] }
           : null;
       if (current) sections.push(current);
+      else if (/^Milestone\b/i.test(heading[1])) {
+        warnings.push(`Ignored heading "${heading[1]}": milestone headings must read "## Milestone N — <outcome>"; its phases are dropped`);
+      }
     } else if (current) {
       current.lines.push(line);
     }
@@ -99,6 +102,7 @@ function parseMilestones(
   const milestones: PlanMilestone[] = [];
   const seenPhases = new Set<string>();
   const milestonePlan = sections.some((section) => section.explicit);
+  validateMilestoneNumbers(sections, warnings);
   for (const section of sections) {
     const milestonePhases = parsePhases(section.lines, repositories, multiRepository, warnings, section.number, seenPhases);
     phases.push(...milestonePhases);
@@ -139,6 +143,21 @@ function buildMilestone(
     })),
     participants,
   };
+}
+
+/** Milestones (an implicit `## Phases` counts as 1) must be numbered 1, 2, 3… with no duplicates or gaps. */
+function validateMilestoneNumbers(sections: MilestoneSection[], warnings: string[]): void {
+  const seen = new Set<number>();
+  let expected = 1;
+  for (const section of sections) {
+    if (seen.has(section.number)) {
+      warnings.push(`Milestone ${section.number} is a duplicate milestone number`);
+      continue;
+    }
+    if (section.number !== expected) warnings.push(`Milestone ${section.number} is out of sequence: expected Milestone ${expected}`);
+    seen.add(section.number);
+    expected = section.number + 1;
+  }
 }
 
 function validateMilestones(milestones: PlanMilestone[], phases: PlanPhase[], warnings: string[]): void {

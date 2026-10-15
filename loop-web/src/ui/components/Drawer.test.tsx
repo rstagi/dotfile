@@ -113,4 +113,29 @@ describe("Drawer merge gate", () => {
     expect(html).toContain('href="https://github.com/acme/api/pull/9"');
     expect(html).not.toContain("/loop-execute resume");
   });
+
+  it("does not show the current milestone's PR or verdict on a historical gate", () => {
+    const current = {
+      url: "https://github.com/acme/web/pull/42", outcome: "blocked" as const, verdict: "m2 broken", reviewPresent: true,
+      reportPath: null, commentUrl: null, reviewSlug: null, reviewAttempt: null,
+    };
+    const html = renderToStaticMarkup(
+      <Drawer node={gate({ awaitingMerge: false, status: "done", ui: "done" })} pr={current} plan={null} runId="r1" currentMilestone={2} onClose={() => {}} />,
+    );
+    expect(html).toContain('href="https://github.com/acme/api/pull/9"');
+    expect(html).not.toContain("pull/42");
+    expect(html).not.toContain("m2 broken");
+    expect(html).not.toContain("PR review");
+  });
+
+  it("infers a done, unparked merge gate is historical without a current milestone", () => {
+    const current = {
+      url: "https://github.com/acme/web/pull/42", outcome: "blocked" as const, verdict: "m2 broken", reviewPresent: true,
+      reportPath: null, commentUrl: null, reviewSlug: null, reviewAttempt: null,
+    };
+    const html = renderToStaticMarkup(
+      <Drawer node={gate({ awaitingMerge: false, status: "done", ui: "done" })} pr={current} plan={null} runId="r1" onClose={() => {}} />,
+    );
+    expect(html).not.toContain("pull/42");
+  });
 });

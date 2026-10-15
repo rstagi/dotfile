@@ -82,6 +82,7 @@ export function App() {
                 ? active?.effort.repositories.find((repository) => repository.slug === selectedNode.repository)?.pr ?? active?.effort.pr ?? null
                 : active?.effort.pr ?? null}
               plan={active?.plan ?? null}
+              currentMilestone={active?.effort.milestone ?? null}
               runId={dataRunId}
               onClose={() => setSelectedId(null)}
             />

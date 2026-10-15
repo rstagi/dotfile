@@ -150,6 +150,18 @@ describe("buildSnapshot — PR info & review preference", () => {
     expect(snap.effort.pr).toMatchObject({ outcome: "done", reviewAttempt: 2 });
   });
 
+  it("keeps the plan PR and branch when state records them as null on a milestone-less plan", () => {
+    const plan = PLAN.replace("- **PR:** _none yet_", "- **PR:** https://github.com/acme/widget/pull/7");
+    const state = JSON.stringify({
+      prUrl: null,
+      integrationBranch: null,
+      repositories: { primary: { prUrl: null, integrationBranch: null } },
+    });
+    const snap = buildSnapshot(parsePlan(plan), parseLoop(loop({ state })), { now: NOW });
+    expect(snap.effort.pr?.url).toBe("https://github.com/acme/widget/pull/7");
+    expect(snap.effort.repositories[0].integrationBranch).toBe("feat/widget-revamp");
+  });
+
   it("builds independent repository PR/review summaries", () => {
     const state = JSON.stringify({
       repositories: {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { GraphNode, PrInfo, PlanOverview, AttemptSummary, ReviewStageRun } from "../../model/types.ts";
 import { problemStyle, uiColor, reviewPill } from "../theme/glyphs.ts";
 import { useReview } from "../hooks/useReview.ts";
+import { isHistoricalReview } from "../graph/PhaseNode.tsx";
 import { Markdown } from "./Markdown.tsx";
 
 interface AttemptDetail {
@@ -20,12 +21,15 @@ export function Drawer({
   pr,
   plan,
   runId,
+  currentMilestone,
   onClose,
 }: {
   node: GraphNode;
   pr: PrInfo | null;
   plan: PlanOverview | null;
   runId: string | null;
+  /** The loop's current milestone; earlier milestones' review nodes never show the live PR/review. */
+  currentMilestone?: number | null;
   onClose: () => void;
 }) {
   const rt = node.runtime;
@@ -88,7 +92,7 @@ export function Drawer({
         {node.kind === "plan" && plan && <PlanSection plan={plan} />}
         {node.kind === "pr-review" && node.phase != null && <MergeGateSection node={node} />}
         {(node.decisions?.length ?? 0) > 0 && <JevDecisionSection decisions={node.decisions!} />}
-        {node.kind === "pr-review" && (
+        {node.kind === "pr-review" && !isHistoricalReview(node, currentMilestone) && (
           <ReviewSection
             runId={runId}
             pr={pr}

@@ -536,3 +536,23 @@ describe("parsePlan — tolerance & warnings", () => {
     expect(plan.warnings.join(" ")).toMatch(/Duplicate Phase 2/);
   });
 });
+
+describe("parsePlan — malformed milestone headings", () => {
+  const plan = (headings: string[]) => `# Plan
+
+${headings.map((heading, i) => `## ${heading}
+
+### Phase ${i + 1} — Work [lane: A]
+- **Depends on:** none
+`).join("\n")}`;
+
+  it.each(["Milestone 2: foo", "Milestone 2", "milestone 2 — foo"])("warns on near-miss heading %s", (heading) => {
+    const parsed = parsePlan(plan(["Milestone 1 — Core", heading]));
+    expect(parsed.warnings.join("\n")).toMatch(new RegExp(`heading "${heading}".*Milestone N — <outcome>`));
+  });
+
+  it("warns on duplicate and non-sequential milestone numbers", () => {
+    expect(parsePlan(plan(["Milestone 1 — Core", "Milestone 1 — Again"])).warnings.join("\n")).toMatch(/Milestone 1.*duplicate/i);
+    expect(parsePlan(plan(["Milestone 1 — Core", "Milestone 3 — Skip"])).warnings.join("\n")).toMatch(/Milestone 3.*expected Milestone 2/i);
+  });
+});

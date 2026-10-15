@@ -137,10 +137,9 @@ function buildRepositoryInfo(plan: Plan, runtime: Runtime | null): RepositoryInf
     const stateRepository = runtime?.state?.repositories?.[repository.slug];
     return {
       slug: repository.slug,
-      integrationBranch: stateRepository?.integrationBranch !== undefined
-        ? stateRepository.integrationBranch
-        : (repository.slug === "primary" ? runtime?.state?.integrationBranch : null)
-          ?? (milestone ? milestone.integrationBranches[repository.slug] ?? null : repository.integrationBranch),
+      integrationBranch: stateRepository?.integrationBranch
+        ?? (repository.slug === "primary" ? runtime?.state?.integrationBranch : null)
+        ?? (milestone ? milestone.integrationBranches[repository.slug] ?? null : repository.integrationBranch),
       verify: repository.verify,
       pr: buildPrInfo(plan, runtime, repository.slug),
     };
@@ -157,9 +156,9 @@ function buildPrInfo(plan: Plan, runtime: Runtime | null, repository: string): P
   const milestone = plan.milestones.find((entry) => entry.number === milestoneNumber);
   const awaiting = runtime?.state?.awaitingMerge;
   const url = (awaiting?.milestone === milestoneNumber ? awaiting.prs[repository] : null)
-    ?? (stateRepository?.prUrl !== undefined ? stateRepository.prUrl
-      : (legacy ? runtime?.state?.prUrl : null)
-        ?? (milestone ? milestone.prs[repository] ?? null : planRepository?.pr ?? null));
+    ?? stateRepository?.prUrl
+    ?? (legacy ? runtime?.state?.prUrl : null)
+    ?? (milestone ? milestone.prs[repository] ?? null : planRepository?.pr ?? null);
   const key = repositoryKey(repository);
   const allReviews = legacy
     ? [...runtime?.reviewRuns ?? [], ...Object.values(runtime?.reviewRunsByRepository ?? {}).flat()]

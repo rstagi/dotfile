@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { GraphNode, PrInfo } from "../../model/types.ts";
-import { PhaseNode } from "./PhaseNode.tsx";
+import { PhaseNode, reviewNodePr } from "./PhaseNode.tsx";
 
 vi.mock("@xyflow/react", () => ({
   Handle: () => null,
@@ -85,5 +85,34 @@ describe("PhaseNode merge gate", () => {
   it("keeps the normal label when not parked", () => {
     const html = render({ kind: "pr-review", phase: "2", repository: null, status: "todo", ui: "todo", gate: "merge" });
     expect(html).not.toContain("AWAITING MERGE");
+  });
+});
+
+describe("PhaseNode historical gates", () => {
+  const currentPr: PrInfo = {
+    url: "https://github.com/acme/web/pull/42", outcome: "blocked", verdict: "m2 broken", reviewPresent: true,
+    reportPath: null, commentUrl: null, reviewSlug: null, reviewAttempt: null,
+  };
+  const gate: Partial<GraphNode> = {
+    kind: "pr-review", phase: "2", repository: null, lane: "review", milestone: 1, gate: "merge", status: "done", ui: "done",
+    prs: { "acme/api": "https://github.com/acme/api/pull/9" },
+  };
+
+  it("never hands a historical gate the current milestone's PR", () => {
+    expect(reviewNodePr(gate as GraphNode, 2, currentPr)).toBeNull();
+    expect(reviewNodePr({ ...gate, milestone: 2 } as GraphNode, 2, currentPr)).toBe(currentPr);
+  });
+
+  it("renders the gate's own recorded PRs instead of 'no PR yet'", () => {
+    const html = render(gate, reviewNodePr(gate as GraphNode, 2, currentPr));
+    expect(html).toContain('href="https://github.com/acme/api/pull/9"');
+    expect(html).not.toContain("pull/42");
+    expect(html).not.toContain("no PR yet");
+  });
+
+  it("renders recorded PRs on a parked gate", () => {
+    const html = render({ ...gate, status: "running", ui: "awaiting", awaitingMerge: true }, null);
+    expect(html).toContain('href="https://github.com/acme/api/pull/9"');
+    expect(html).toContain("/loop-execute resume");
   });
 });

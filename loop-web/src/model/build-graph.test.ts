@@ -463,3 +463,57 @@ describe("buildGraph — milestones", () => {
     expect(gate.awaitingMerge).toBeFalsy();
   });
 });
+
+const TWO_GATES = `# Ship twice — Multi-Phase Plan
+
+## Repositories
+
+### \`acme/api\`
+- **Verify:** \`npm test\`
+
+### \`acme/web\`
+- **Verify:** \`npm test\`
+
+## Milestone 1 — Ship the core
+
+### Phase 1 — Build the core [lane: A]
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+
+### Phase 2 — Review the core [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 1
+
+## Milestone 2 — Ship the web
+
+### Phase 3 — Build the web [lane: B]
+- **Repository:** \`acme/web\`
+- **Depends on:** Phase 2
+
+### Phase 4 — Review the web [kind: pr-review] [gate: merge]
+- **Depends on:** Phase 3
+`;
+
+describe("buildGraph — milestone gates and participants", () => {
+  it("parks only the current milestone's gate", () => {
+    const withState = {
+      ...runtime({}), state: { milestone: 2, awaitingMerge: { milestone: 2, prs: { "acme/web": "https://github.com/acme/web/pull/4" } } },
+    } as unknown as Runtime;
+    const g = buildGraph(parsePlan(TWO_GATES), withState);
+    expect(g.nodes.find((n) => n.id === "2")!.awaitingMerge).toBeFalsy();
+    expect(g.nodes.find((n) => n.id === "2")!.ui).not.toBe("awaiting");
+    expect(g.nodes.find((n) => n.id === "4")!.awaitingMerge).toBe(true);
+    expect(g.nodes.find((n) => n.id === "4")!.ui).toBe("awaiting");
+  });
+
+  it("plans review stages only for the containing milestone's participants", () => {
+    const g = buildGraph(parsePlan(TWO_GATES), null);
+    const repos = (id: string) => [...new Set(g.nodes.find((n) => n.id === id)!.reviewStages!.map((s) => s.repository))];
+    expect(repos("2")).toEqual(["acme/api"]);
+    expect(repos("4")).toEqual(["acme/web"]);
+  });
+
+  it("maps an awaiting-merge plan status to the awaiting state", () => {
+    const g = buildGraph(parsePlan(TWO_GATES.replace("## Repositories", "**Status:** awaiting merge\n\n## Repositories")), null);
+    expect(g.nodes.find((n) => n.id === "plan")!.ui).toBe("awaiting");
+  });
+});

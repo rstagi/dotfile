@@ -13,7 +13,7 @@ import "@xyflow/react/dist/style.css";
 import type { Snapshot, GraphNode } from "../../model/types.ts";
 import { computeLayout } from "./layout.ts";
 import type { LaneBand, MilestoneBand } from "./layout.ts";
-import { PhaseNode } from "./PhaseNode.tsx";
+import { PhaseNode, reviewNodePr } from "./PhaseNode.tsx";
 
 function BandNode({ data }: NodeProps) {
   const band = (data as { band: LaneBand }).band;
@@ -138,7 +138,7 @@ function buildNodes(snapshot: Snapshot, layout: ReturnType<typeof computeLayout>
         node,
         pr: node.repository
           ? snapshot.effort.repositories.find((repository) => repository.slug === node.repository)?.pr ?? snapshot.effort.pr
-          : snapshot.effort.pr,
+          : reviewNodePr(node, snapshot.effort.milestone, snapshot.effort.pr),
         plan,
         selected: node.id === selectedId,
       },
