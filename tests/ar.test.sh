@@ -182,4 +182,184 @@ next >/dev/null 2>&1; assert_exit "$?" 1 "mismatched ledger role/stage rejected"
 printf 'a1\tround1\treview\tgpt\tAPPROVE\n' > "$LEDGER"
 next >/dev/null 2>&1; assert_exit "$?" 1 "ledger must have all six columns"
 
+echo "ar: prompt preserves vendored paper and opaque framing"
+PROMPTS="$ROOT/.claude/skills/loop-execute/references/ar-prompts.md"
+LOOP="$TMP/loop with spaces"
+mkdir -p "$LOOP/runs"
+LEDGER="$LOOP/runs/review.ledger.tsv"
+FRAMING="$TMP/framing.md"
+cat > "$FRAMING" <<'EOF'
+Frozen artifact: PR #12 at abc123.
+Literal data: {prior_exchange} $HOME $(touch forbidden) `touch forbidden` \path
+EOF
+ar_prompt --role review --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/prompt.md"
+assert_exit "$?" 0 "render opening review without a ledger"
+head -n "$(wc -l < "$PROMPTS")" "$TMP/prompt.md" > "$TMP/vendored.md"
+diff -u "$PROMPTS" "$TMP/vendored.md" > "$TMP/prompt.diff"
+assert_exit "$?" 0 "all paper sentences and adaptation diff against vendored source"
+assert_contains "$(cat "$TMP/prompt.md")" "$(cat "$FRAMING")" "framing is opaque literal data"
+assert_contains "$(cat "$TMP/prompt.md")" "RUN_DIR=$LOOP/runs/new" "bind report and status output directory"
+assert_contains "$(cat "$TMP/prompt.md")" 'Role: review (A.2.3)' "review uses paper reviewer rules"
+
+echo "ar: exchanges follow ledger order and report paths, not attempt names"
+mkdir -p "$LOOP/runs/z-review" "$LOOP/runs/a-critic" "$LOOP/runs/m-response"
+printf 'F1 [major]: first report\nNEEDS_CHANGES: first\n' > "$LOOP/runs/z-review/report.md"
+printf 'F2 [minor]: critic added issue\nDISAGREE_CONCERN: confirm F2\n' > "$LOOP/runs/a-critic/report.md"
+printf 'F1 [major]: response retains literal {diff}\nF2 [minor]: incorporated\nNEEDS_CHANGES: second\n' > "$LOOP/runs/m-response/report.md"
+cat > "$LEDGER" <<EOF
+a1${T}round1${T}review${T}gpt${T}NEEDS_CHANGES${T}runs/z-review
+a2${T}round1${T}critic${T}claude${T}DISAGREE_CONCERN${T}runs/a-critic
+a3${T}round1${T}respond${T}gpt${T}NEEDS_CHANGES${T}runs/m-response
+EOF
+ar_prompt --role critic --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/exchange.md"
+assert_exit "$?" 0 "read prior reports relative to loop directory"
+python3 - "$TMP/exchange.md" "$LOOP" <<'PYTEST'
+import sys
+from pathlib import Path
+prompt = Path(sys.argv[1]).read_text()
+loop = Path(sys.argv[2])
+reports = [(loop / 'runs' / name / 'report.md').read_text() for name in ('z-review', 'a-critic', 'm-response')]
+assert all(prompt.count(report) == 1 for report in reports)
+assert [prompt.index(report) for report in reports] == sorted(prompt.index(report) for report in reports)
+PYTEST
+assert_exit "$?" 0 "all reports preserved once, in ledger order"
+for role in review respond critic confirm; do
+  actual="$(ar_prompt --role "$role" --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new")"
+  case "$role" in review|respond) section=A.2.3 ;; *) section=A.2.4 ;; esac
+  assert_contains "$actual" "Role: $role ($section)" "$role selects its paper instructions"
+done
+ar_prompt --role review --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/opening.md"
+assert_exit "$?" 0 "opening review accepts a non-empty ledger"
+python3 - "$TMP/opening.md" <<'PYTEST'
+import sys
+from pathlib import Path
+prompt = Path(sys.argv[1]).read_text()
+assert prompt.split('## Prior exchange (ledger order)\n', 1)[1].strip() == ''
+PYTEST
+assert_exit "$?" 0 "opening review never inherits a prior exchange"
+cp "$LEDGER" "$TMP/ledger-before.tsv"
+rm "$LOOP/runs/a-critic/report.md"
+ar_prompt --role respond --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > "$TMP/missing.md" 2>/dev/null
+assert_exit "$?" 1 "missing exchange report fails instead of omitting evidence"
+assert_eq "$(cat "$TMP/missing.md")" '' "missing evidence emits no partial prompt"
+cmp -s "$LEDGER" "$TMP/ledger-before.tsv"
+assert_exit "$?" 0 "prompt rendering never mutates ledger"
+ar_prompt --role review --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > /dev/null
+assert_exit "$?" 0 "opening review does not require prior report files"
+
+echo "ar: disputed sidecar preserves last reports and critic-added findings"
+# Replace the earlier critic and finish the second inner exchange.
+printf 'F9 [minor]: obsolete review\nNEEDS_CHANGES: obsolete\n' > "$LOOP/runs/z-review/report.md"
+printf 'DISAGREE_EVIDENCE: F9 refuted by source:2\n' > "$LOOP/runs/a-critic/report.md"
+mkdir -p "$LOOP/runs/b-last-critic"
+printf 'F1 is refuted at source:3. F7 [major]: critic-only missing validation at source:4.\nDISAGREE_EVIDENCE: F1 and F7 remain disputed' > "$LOOP/runs/b-last-critic/report.md"
+printf 'a4\tround1\tcritic\tclaude\tDISAGREE_EVIDENCE\truns/b-last-critic\n' >> "$LEDGER"
+assert_eq "$(ar_next --rounds 2 --inner 2 --ledger "$LEDGER")" "disputed${T}disputed${T}-" "writer runs at disagreement cap"
+ar_write_disputed --ledger "$LEDGER" > "$TMP/disputed-path"
+assert_exit "$?" 0 "write disputed sidecar and ledger marker"
+DISPUTED="${LEDGER%.tsv}.disputed.md"
+assert_eq "$(cat "$TMP/disputed-path")" "$DISPUTED" "writer returns sidecar path"
+python3 - "$DISPUTED" "$LOOP" <<'PYTEST'
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+loop = Path(sys.argv[2])
+for name in ('m-response', 'b-last-critic'):
+    assert (loop / 'runs' / name / 'report.md').read_text() in text
+assert 'obsolete review' not in text
+ids = text.split('## Unresolved finding IDs\n', 1)[1].split('\n## ', 1)[0]
+assert ids.strip().splitlines() == ['- F1', '- F2', '- F7']
+PYTEST
+assert_exit "$?" 0 "last R/C reports verbatim, unresolved IDs include critic-only issue"
+assert_eq "$(tail -n 1 "$LEDGER")" "a5${T}disputed${T}disputed${T}-${T}DISPUTED${T}runs" "append frozen six-column disputed row"
+assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" disputed "state machine recognizes writer marker"
+assert_eq "$(ar_next --rounds 2 --inner 2 --ledger "$LEDGER")" "fix1${T}fix${T}claude" "writer advances pipeline to required fix"
+cp "$LEDGER" "$TMP/disputed-ledger.tsv"
+cp "$DISPUTED" "$TMP/disputed-report.md"
+ar_write_disputed --ledger "$LEDGER" > /dev/null
+assert_exit "$?" 0 "replaying disputed writer succeeds"
+cmp -s "$LEDGER" "$TMP/disputed-ledger.tsv"
+assert_exit "$?" 0 "replay does not duplicate ledger row"
+cmp -s "$DISPUTED" "$TMP/disputed-report.md"
+assert_exit "$?" 0 "replay preserves sidecar"
+
+echo "ar: later disputes replace the sidecar, including confirmation-only bugs"
+# Skip runner-only rows in prompt exchange, and resolve paths independently of cwd.
+printf 'a6\tfix1\tfix\tclaude\tNOOP\truns/no-fix-report\n' >> "$LEDGER"
+mkdir -p "$LOOP/runs/round2-r" "$LOOP/runs/round2-c" "$LOOP/runs/round2-t"
+printf 'No reviewer flags.\nAPPROVE\n' > "$LOOP/runs/round2-r/report.md"
+printf 'AGREE\n' > "$LOOP/runs/round2-c/report.md"
+printf 'F10 [blocker]: missing guard at source:10.\nDISAGREE_EVIDENCE: F10 missed' > "$LOOP/runs/round2-t/report.md"
+printf 'a7\tround2\treview\tclaude\tAPPROVE\truns/round2-r\na8\tround2\tcritic\tgrok\tAGREE\truns/round2-c\na9\tround2\tconfirm\tgpt\tDISAGREE_EVIDENCE\truns/round2-t' >> "$LEDGER"
+for role in critic respond confirm; do
+  (cd "$TMP" && ar_prompt --role "$role" --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new") > "$TMP/later.md"
+  assert_exit "$?" 0 "$role uses ledger run_dir from another cwd and skips synthetic/fix rows"
+  python3 - "$TMP/later.md" "$LOOP" <<'PYTEST'
+import sys
+from pathlib import Path
+prompt = Path(sys.argv[1]).read_text().split('## Prior exchange (ledger order)\n', 1)[1]
+loop = Path(sys.argv[2])
+reports = [(loop / 'runs' / name / 'report.md').read_text() for name in ('round2-r', 'round2-c', 'round2-t')]
+assert all(prompt.count(report) == 1 for report in reports)
+assert [prompt.index(report) for report in reports] == sorted(prompt.index(report) for report in reports)
+for name in ('z-review', 'a-critic', 'm-response', 'b-last-critic'):
+    assert (loop / 'runs' / name / 'report.md').read_text() not in prompt
+PYTEST
+  assert_exit "$?" 0 "$role includes only current-round reports in ledger order"
+done
+mv "$LOOP/runs/a-critic/report.md" "$TMP/archived-critic.md"
+ar_prompt --role respond --framing "$FRAMING" --ledger "$LEDGER" --run-dir "$LOOP/runs/new" > /dev/null
+assert_exit "$?" 0 "current-round exchange does not require archived report files"
+mv "$TMP/archived-critic.md" "$LOOP/runs/a-critic/report.md"
+ar_write_disputed --ledger "$LEDGER" > /dev/null
+assert_exit "$?" 0 "third-provider veto can produce a dispute after APPROVE"
+python3 - "$DISPUTED" "$LOOP" <<'PYTEST'
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+loop = Path(sys.argv[2])
+assert text.startswith('# Disputed AR round2\n')
+assert (loop / 'runs/round2-r/report.md').read_text() in text
+assert (loop / 'runs/round2-t/report.md').read_text() in text
+assert '## Unresolved finding IDs\n- F10\n' in text
+assert 'F1 [major]' not in text and 'F7' not in text
+PYTEST
+assert_exit "$?" 0 "latest round uses confirming critic and critic-only finding"
+assert_eq "$(tail -n 1 "$LEDGER")" "a10${T}disputed${T}disputed${T}-${T}DISPUTED${T}runs" "append after unterminated ledger line"
+assert_eq "$(ar_round_status --ledger "$LEDGER" --round 2)" disputed "APPROVE plus critic-only issue remains disputed"
+
+# Simulate a crash after sidecar publication but before the atomic ledger rename.
+head -n 9 "$LEDGER" > "$TMP/pre-marker.tsv"
+cp "$TMP/pre-marker.tsv" "$LEDGER"
+ar_write_disputed --ledger "$LEDGER" > /dev/null
+assert_exit "$?" 0 "replay safely publishes a previously unrecorded sidecar"
+assert_eq "$(wc -l < "$LEDGER" | tr -d ' ')" 10 "recovery appends exactly one marker"
+
+# A missing current report must preserve the prior evidence and ledger.
+head -n 9 "$LEDGER" > "$TMP/pre-marker.tsv"
+cp "$TMP/pre-marker.tsv" "$LEDGER"
+cp "$DISPUTED" "$TMP/prior-disputed.md"
+rm "$LOOP/runs/round2-t/report.md"
+ar_write_disputed --ledger "$LEDGER" > /dev/null 2>&1
+assert_exit "$?" 1 "missing last critic report fails"
+cmp -s "$LEDGER" "$TMP/pre-marker.tsv"
+assert_exit "$?" 0 "missing evidence cannot append a marker"
+cmp -s "$DISPUTED" "$TMP/prior-disputed.md"
+assert_exit "$?" 0 "missing evidence cannot replace prior dispute"
+
+echo "ar: invalid prompt and dispute inputs do not produce outputs"
+for args in '--role unknown' '--framing /no/such/file' '--unexpected value'; do
+  ar_prompt --role review --framing "$FRAMING" --ledger "$TMP/empty.tsv" --run-dir "$LOOP/runs/new" ${=args} > "$TMP/invalid.md" 2>/dev/null
+  assert_exit "$?" 1 "invalid prompt arguments: $args"
+  assert_eq "$(cat "$TMP/invalid.md")" '' "invalid arguments emit no prompt"
+done
+ar_prompt --role review --framing "$FRAMING" --ledger > /dev/null 2>&1
+assert_exit "$?" 1 "missing prompt flag value rejected"
+printf 'a1\tround1\treview\tgpt\tAPPROVE\truns/z-review\n' > "$TMP/incomplete.tsv"
+ar_write_disputed --ledger "$TMP/incomplete.tsv" > /dev/null 2>&1
+assert_exit "$?" 1 "review without disagreement cannot be disputed"
+printf 'a2\tround1\tcritic\tclaude\tAGREE\truns/a-critic\n' >> "$TMP/incomplete.tsv"
+ar_write_disputed --ledger "$TMP/incomplete.tsv" > /dev/null 2>&1
+assert_exit "$?" 1 "agreement cannot be disputed"
+
 test_summary

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# AR shared library. Sourced; no runners, edits, or GitHub operations.
+# AR shared library. Sourced; no runners, artifact edits, or GitHub operations.
 #
 # Frozen ledger contract (Phases 4–9): one row per completed run, six TSV columns:
 #   a<k>  stage  role  provider  verdict  run_dir
@@ -17,6 +17,9 @@
 # Completed rows are replayed in file order. No rows are written for skipped rounds.
 # A DISPUTED row records the round's <ledger-stem>.disputed.md sidecar. Replay uses
 # that row, so an earlier round's sidecar cannot taint later rounds.
+# Its synthetic run_dir is the sidecar's parent (runs); it has no runner report.
+
+typeset -g _LOOP_AR_ROOT="${${(%):-%x}:A:h}"
 
 # ar_next --rounds N --inner M --ledger F [--start-round r] [--single-round].
 ar_next() {
@@ -135,6 +138,130 @@ ar_round_status() {
   else
     print -r -- clean
   fi
+}
+
+# ar_prompt --role review|critic|respond|confirm --framing F --ledger F --run-dir D.
+# Print the vendored source unchanged, then bind its slots to opaque caller data.
+# Opening reviews have no exchange; other roles see only the latest round stage.
+ar_prompt() {
+  emulate -L zsh
+  local role="" framing="" ledger="" run_dir="" current_stage="" section line report i
+  local -a columns reports labels
+  local -A ar_state
+  local prompts="$_LOOP_AR_ROOT/.claude/skills/loop-execute/references/ar-prompts.md"
+  while (( $# )); do
+    (( $# >= 2 )) || return 1
+    case "$1" in
+      --role) role="$2" ;; --framing) framing="$2" ;;
+      --ledger) ledger="$2" ;; --run-dir) run_dir="$2" ;; *) return 1 ;;
+    esac
+    shift 2
+  done
+  [[ -r "$prompts" && -f "$framing" && -r "$framing" && -n "$ledger" && -n "$run_dir" ]] || return 1
+  case "$role" in
+    review|respond) section=A.2.3 ;;
+    critic|confirm) section=A.2.4 ;;
+    *) return 1 ;;
+  esac
+  _ar_load_round "$ledger" 1 || return 1
+  if [[ "$role" != review && -f "$ledger" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      columns=(${(ps:\t:)line})
+      [[ "$columns[2]" == round[1-5] ]] && current_stage="$columns[2]"
+    done < "$ledger"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      columns=(${(ps:\t:)line})
+      [[ "$columns[2]" == "$current_stage" ]] || continue
+      case "$columns[3]" in
+        review|respond|critic|confirm)
+          report="${ledger:a:h:h}/${columns[6]}/report.md"
+          [[ -f "$report" && -r "$report" ]] || return 1
+          reports+=("$report")
+          labels+=("${columns[1]} | ${columns[2]} | ${columns[3]} | ${columns[4]}") ;;
+      esac
+    done < "$ledger"
+  fi
+  cat -- "$prompts" || return 1
+  printf '\n## Runtime bindings\nRole: %s (%s)\nRUN_DIR=%s\n' "$role" "$section" "${run_dir:a}"
+  printf '\n## Caller framing (verbatim)\n'
+  cat -- "$framing" || return 1
+  printf '\n## Prior exchange (ledger order)\n'
+  for (( i = 1; i <= ${#reports}; i++ )); do
+    printf '\n### %s\n\n' "$labels[i]"
+    cat -- "$reports[i]" || return 1
+    printf '\n'
+  done
+}
+
+# ar_write_disputed --ledger F → sidecar path. Replays never duplicate the marker.
+# The cap is enforced by ar_next; this writer requires a pending disagreement.
+ar_write_disputed() {
+  emulate -L zsh
+  local ledger="" line active="" last_role="" max_attempt=0 report_r report_c
+  local disputed tmp_report="" tmp_ledger=""
+  local -a columns reviewer critic
+  local -A ar_state
+  [[ $# == 2 && "$1" == --ledger && -n "$2" ]] || return 1
+  ledger="$2"
+  [[ -f "$ledger" && -r "$ledger" ]] || return 1
+  _ar_load_round "$ledger" 1 || return 1
+  disputed="${ledger%.tsv}.disputed.md"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    columns=(${(ps:\t:)line})
+    (( ${columns[1]#a} > max_attempt )) && max_attempt="${columns[1]#a}"
+    if [[ "$columns[2]" == round[1-5] && "$columns[2]" != "$active" ]]; then
+      active="$columns[2]"; reviewer=(); critic=()
+    fi
+    last_role="$columns[3]"
+    case "$last_role" in
+      review|respond) reviewer=("${columns[@]}") ;;
+      critic|confirm) critic=("${columns[@]}") ;;
+    esac
+  done < "$ledger"
+  if [[ "$last_role" == disputed && -f "$disputed" ]]; then
+    print -r -- "$disputed"; return 0
+  fi
+  [[ "$last_role" == critic || "$last_role" == confirm || "$last_role" == disputed ]] || return 1
+  (( ${#reviewer} == 6 && ${#critic} == 6 )) && [[ "$critic[5]" != AGREE ]] || return 1
+  report_r="${ledger:a:h:h}/${reviewer[6]}/report.md"
+  report_c="${ledger:a:h:h}/${critic[6]}/report.md"
+  [[ -f "$report_r" && -r "$report_r" && -f "$report_c" && -r "$report_c" ]] || return 1
+  {
+    tmp_report="$(mktemp "$disputed.tmp.XXXXXX")" || return 1
+    tmp_ledger="$(mktemp "$ledger.tmp.XXXXXX")" || return 1
+    {
+      printf '# Disputed AR %s\n\n## Unresolved finding IDs\n' "$active"
+      _ar_disputed_ids "$report_r" "$report_c" || return 1
+      printf '\n## Verification required\nVerify these disputed findings against the code before accepting or rejecting them.\n'
+      printf '\n## Last reviewer report (%s | %s)\n\n' "$reviewer[1]" "$reviewer[3]"
+      cat -- "$report_r" || return 1
+      printf '\n\n## Last critic report (%s | %s)\n\n' "$critic[1]" "$critic[3]"
+      cat -- "$report_c" || return 1
+      printf '\n'
+    } > "$tmp_report" || return 1
+    # Normalize a missing final newline before appending, retaining every row.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      print -r -- "$line"
+    done < "$ledger" > "$tmp_ledger"
+    if [[ "$last_role" != disputed ]]; then
+      printf 'a%d\tdisputed\tdisputed\t-\tDISPUTED\t%s\n' \
+        "$(( max_attempt + 1 ))" "${ledger:a:h:t}" >> "$tmp_ledger" || return 1
+    fi
+    # Publish evidence first. A crash before the ledger rename can safely replay.
+    mv -f -- "$tmp_report" "$disputed" || return 1
+    mv -f -- "$tmp_ledger" "$ledger" || return 1
+    print -r -- "$disputed"
+  } always {
+    [[ -n "$tmp_report" ]] && rm -f -- "$tmp_report"
+    [[ -n "$tmp_ledger" ]] && rm -f -- "$tmp_ledger"
+  }
+}
+
+_ar_disputed_ids() {
+  awk -F '[^[:alnum:]_]+' '{
+    for (i = 1; i <= NF; i++)
+      if ($i ~ /^F[1-9][0-9]*$/ && !seen[$i]++) print "- " $i
+  }' "$@"
 }
 
 _ar_count() { [[ "$1" == [1-5] ]]; }
