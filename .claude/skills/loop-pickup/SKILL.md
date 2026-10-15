@@ -69,7 +69,9 @@ Do not start integration phases until their dependency phases are `done`.
 
 **Milestones.** In a plan with milestones, read `state.milestone` from `.loop/state.json`; when
 that file is absent (a fresh worktree), ask the daemon — `GET /api/loops/<id>/plan` → `.milestone`
-— and, if the daemon is down, take the lowest milestone whose gate phase is not `done` in the plan.
+— and, if the daemon is down, read the plan: when plan `**Status:**` is `awaiting merge`, the current milestone is the one whose gate is the last `done` gate
+(the loop is parked there; nothing later is claimable); otherwise take the lowest milestone whose gate phase is not `done`.
+If neither state nor daemon is available and the status is unclear, refuse every later-milestone claim.
 Then never offer or claim a phase of a later milestone than `state.milestone` — those stay locked
 until a human merges the gate and resumes the loop, even if their `Depends on` looks satisfied —
 and never claim a phase of an earlier (shipped) milestone either (inspecting it read-only is fine).

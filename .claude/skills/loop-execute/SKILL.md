@@ -92,7 +92,8 @@ non-final milestone ends with one `[kind: pr-review]` `[gate: merge]` phase; eve
 of milestone N+1 must list that gate in `Depends on` **explicitly** — missing → reject, never
 infer it; milestones ≥2 declare their integration branch (milestone line or per-repository
 `(owner/repo)` line; no global fallback); a branch never repeats for the same repository
-across milestones. Branch precedence: milestone repository line > milestone line >
+across milestones; `[gate: merge]` on the final milestone → warn (nothing to park for; it runs
+as an ordinary terminal review). Branch precedence: milestone repository line > milestone line >
 (milestone 1 only) `## Repositories` override > Loop config. Only milestone-1 participants
 go through `loop-repo.sh check`/adoption; M≥2 branch names are checked by name only — no
 `check`, no `prepare` (their branches and worktrees are created fresh at resume).
@@ -121,7 +122,9 @@ moments.
 ### 3. Init
 
 `loop-state.sh init` with runtime state v2 from the protocol; set `state.milestone = 1` (also
-for milestone-less plans). For every repository — with milestones, the milestone-1 participants only — run
+for milestone-less plans). Record `state.runtimeRepo` + `state.runtimeRoot` only when the effort changes the Loop runtime
+(self-hosted: the repository whose integration worktree is `RUNTIME_ROOT`, and that path, once
+prepared); otherwise leave both `null`. For every repository — with milestones, the milestone-1 participants only — run
 `loop-repo.sh prepare --repo <owner/repo> --run-id <runId> --integration-branch <branch>`.
 It fetches GitHub's default ref and either creates the integration branch/worktree from that
 exact fetched SHA under `~/.loop/worktrees/<runId>/<owner--repo>/integration`, or adopts the
@@ -392,7 +395,8 @@ After the `final` run, promote its verdict, report path, and comment URL into
 Wait for every participating repository of this milestone. Aggregate verdict precedence is `blocked > question > done`. If any
 repository is blocked, mark the explicit review phase `blocked` and use the normal HIL/retry path;
 otherwise promote it to `done`. Repush after promotion. On a `[gate: merge]` review, park instead of respawning
-(never the "later phases" path below):
+(never the "later phases" path below) — park only when a later milestone exists; a gate on the
+final milestone is an ordinary terminal review (finish below):
 
 1. Persist `state.awaitingMerge {milestone, prs{slug:url}}` with one gate PR URL per participating
    repository (`loop-state.sh set`), and record the verdicts in `state.repositories[slug].review`.
@@ -431,8 +435,13 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
 
 1. **Recover the park.** If `awaitingMerge` is unset but the current milestone's gate review is
    `done` with every participant's gate PR recorded (crash between aggregation and step 8.1),
-   rebuild `awaitingMerge {milestone, prs{slug:url}}` from `state.repositories[slug].prUrl` and
-   continue; never re-run the gate review.
+   rebuild `awaitingMerge {milestone, prs{slug:url}}` from `state.repositories[slug].prUrl`,
+   persist it with `loop-state.sh set '.awaitingMerge = …'` (`check` reads it from disk), then
+   re-run step-8 park items 2-4 (idempotent): plan Status `awaiting merge` push, the
+   `milestone.awaiting-merge` event, the notification. Continue to check; never re-run the gate
+   review. **Crash after apply:** `milestones[N].prs` recorded for the previous milestone,
+   `awaitingMerge` null and `sub/REVIEW_READY` present → the patch is already applied:
+   run resume step 5 only.
 2. **Check.** `loop-milestone.sh check --state .loop/state.json`: exit 3 (open) → report each open
    PR, stop, change nothing; exit 4 (closed unmerged) → open a HIL for the human (reopen or
    re-plan), stop; exit 1 (gh/state error) → report it, stop; exit 0 (all merged) → continue.
@@ -445,11 +454,12 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    `PATCH="$(loop-milestone.sh advance ...)"; loop-state.sh set ". + $PATCH"` (the patch JSON is a
    valid jq literal). `. + ` replaces each top-level key wholesale — `repositories` becomes exactly
    the next participants and `prUrl`/`review`/`reviewPipeline`/`awaitingMerge` reset to `null`, with
-   new `milestone`, `integrationWorktree`, `integrationBranch`, `runtimeRoot`, `milestones[N].prs`
+   new `milestone`, `integrationWorktree`, `integrationBranch`, `runtimeRepo`, `runtimeRoot`, `milestones[N].prs`
    history. Never deep-merge with `*` (keeps stale repositories) or `set` the bare patch (drops the
-   rest of state). When the effort changes the Loop runtime itself, the patch's `runtimeRoot` is
-   the host repository's new integration worktree (or its retained old one when the host sits the
-   milestone out): switch `RUNTIME_ROOT` to it before composing any later prompt.
+   rest of state). When the effort changes the Loop
+   runtime itself (`runtimeRepo` set), `runtimeRoot` is the host repository's new integration
+   worktree (or its retained old one when the host sits the milestone out):
+   switch `RUNTIME_ROOT` to it before composing any later prompt; patch `runtimeRoot` null (no host) → keep the installed runtime.
 5. **Restart.** Set plan Status back to `in progress` + `loop-plan.sh push`; remove
    `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); respawn the
    orchestrator for the new milestone (the SUB then schedules only its phases).

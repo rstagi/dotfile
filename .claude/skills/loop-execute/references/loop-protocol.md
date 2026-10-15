@@ -170,7 +170,8 @@ Worktrees live outside the repo (ralph convention):
   coordinator checkout) when checked out, else this path on that branch. Adopted worktrees
   are the user's; never remove them. All repository merges/pushes happen only here.
 - Milestones: milestone 1 keeps `…/<owner--repo>/integration` (above); milestones ≥2 use
-  `…/<owner--repo>/integration-<branch-slug>`, created fresh from the fetched default and never
+  `…/<owner--repo>/integration-<branch-slug>-<hash8>` (`<hash8>` = first 8 hex of the sha1 of
+  the exact branch name, so same-slug branches never collide), created fresh from the fetched default and never
   adopted. Old non-adopted worktrees are retired only after the next milestone's are prepared.
 
 ## Daemon & events
@@ -263,6 +264,7 @@ fields — keep the shape:
   "runId": "loop-<effort-slug>-<date>-<HHMMSS|rand>",
   "effort": "...",
   "milestone": 1,
+  "runtimeRepo": null, "runtimeRoot": null,
   "awaitingMerge": { "milestone": 1, "prs": { "owner/api": "<gate PR url>" } },
   "milestones": { "1": { "prs": { "owner/api": "<gate PR url>" } } },
   "repositories": {
@@ -289,7 +291,9 @@ fields — keep the shape:
 `milestone` is the current milestone (1 at init, also for milestone-less plans). `awaitingMerge`
 is set only while parked at a gate and cleared (`null`) on resume; `milestones[N].prs` records
 each shipped milestone's gate PRs. On a milestone change `repositories` is replaced by the new
-milestone's participants.
+milestone's participants. `runtimeRepo` (slug) + `runtimeRoot` (abs path) are set only when the
+effort changes the Loop runtime itself (self-hosted: the repository whose integration worktree is
+`RUNTIME_ROOT`); otherwise both stay `null`.
 
 Legacy scalar `integrationBranch/integrationWorktree/prUrl/review` state migrates to the
 synthetic `primary` repository. Singular daemon projections remain for legacy consumers.
@@ -336,8 +340,9 @@ Loop runtime itself; otherwise use `~/dotfile`. The runner resolves its Jev clie
 config, and emitter from that same directory. Compose later SUB prompts from
 `$RUNTIME_ROOT/.claude/skills/loop-execute/{SKILL.md,references/loop-protocol.md}` too, so
 merged self-hosting changes run without mutating the installed checkout. With milestones, a
-resume that advances the milestone switches `RUNTIME_ROOT` to the patch's `runtimeRoot` (the new
-integration worktree) — the old one may be retired, so never keep composing prompts from it.
+resume that advances the milestone switches `RUNTIME_ROOT` to the patch's `runtimeRoot` only when it is non-null
+(self-hosted: the host's new integration worktree, or its retained old one when the host sits the
+milestone out) — the old one may be retired, so never keep composing prompts from it; a null `runtimeRoot` keeps the installed runtime (`~/dotfile`).
 
 Detached, so runners survive orchestrator death:
 
@@ -1029,8 +1034,11 @@ truth for code, the plan/daemon for claims + phase status, state for attempt boo
   and do not re-run the gate review; a SUB writes `blocked` and exits, only a human resume leaves
   the park. Applies while `state.awaitingMerge` is set, whatever the plan or daemon status says.
 - Gate review `done` for the current milestone but `state.awaitingMerge` unset (crash before
-  parking finished) → recover `awaitingMerge` from the gate review's recorded PR URLs; never
-  re-run the gate review.
+  parking finished) → recover `awaitingMerge` from the gate review's recorded PR URLs, persist it
+  (`check` reads it from disk) and redo the park's Status push, event and notification
+  (idempotent); never re-run the gate review.
+- `milestones[N].prs` recorded for the previous milestone, `awaitingMerge` null and `sub/REVIEW_READY` present
+  (crash after the advance patch was applied, before restart) → run resume step 5 only (plan Status push, `milestone.resumed`, clear the marker, respawn).
 - Phases of a milestone whose gate PRs are merged are permanently shipped: never re-check them
   against a later integration tip (squash/rebase merges rewrite it) and never re-run them.
   Reconcile git against the current milestone's integration branches only.

@@ -79,7 +79,7 @@ Author the plan in the **canonical plan format** (see
   `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
   refresh endpoint"), never "Phase 1" or a vague label — the title usually seeds the PR
   title.
-- **Milestones** — default to none (one `## Phases` list, one PR per repository). Propose milestones only when the effort is too big for one PR and each milestone leaves main shippable on its own; confirm in the step-1 question gate. Each non-final milestone ends with a `[kind: pr-review]` `[gate: merge]` phase, and the next milestone's root phases list that gate in `Depends on`; every milestone declares its own integration branch. Grammar and template: `references/plan-format.md` → Milestones.
+- **Milestones** — default to none (one `## Phases` list, one PR per repository). Propose milestones only when the effort is too big for one PR and each milestone leaves main shippable on its own; confirm in the step-1 question gate. Each non-final milestone ends with a `[kind: pr-review]` `[gate: merge]` phase, and the next milestone's root phases list that gate in `Depends on`; milestones ≥2 must declare their own integration branch; milestone 1 may fall back to Loop config. Grammar and template: `references/plan-format.md` → Milestones.
 - **Terminal review phase** — every executable plan ends with one explicit
   `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
   It represents the bounded per-repository reviews run by `loop-execute`; it has no

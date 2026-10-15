@@ -67,7 +67,8 @@ milestones.
   `awaiting-merge` (plan Status `awaiting merge`) until a human merges and runs
   `/loop-execute resume`.
 - **Worktrees.** Milestone 1 keeps `…/<owner--repo>/integration`; milestones ≥2 use
-  `…/<owner--repo>/integration-<branch-slug>`, always created fresh from the fetched default
+  `…/<owner--repo>/integration-<branch-slug>-<hash8>` (`<hash8>` = 8-char sha1 of the exact
+  branch), always created fresh from the fetched default
   branch (adoption of an existing branch/worktree applies to milestone 1 only).
 
 ## Document template
