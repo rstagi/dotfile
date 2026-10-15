@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { planReviewRuns, reviewStageRuns } from "./review-stages.ts";
 import type { ReviewRun } from "./types.ts";
 
-const LOOP_REVIEW = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../loop-review.sh");
+const LEGACY_STAGES = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "legacy-stages.tsv"), "utf8");
 
 function run(over: Partial<ReviewRun> & { k: number }): ReviewRun {
   return { runDir: `runs/review-p7-acme--api-a${over.k}`, status: null, phase: "7", repository: "acme--api", ...over };
@@ -16,10 +16,10 @@ describe("planReviewRuns", () => {
     ["shallow", 1], ["shallow", 2], ["shallow", 3],
     ["medium", 1], ["medium", 3],
     ["max", 2],
-  ] as const)("matches loop-review.sh stages for %s ×%i", (tier, rounds) => {
-    const tsv = execFileSync("zsh", [LOOP_REVIEW, "stages", "--tier", tier, "--rounds", String(rounds), "--models-conf", "/dev/null"], { encoding: "utf8" });
-    const expected = tsv.trim().split("\n").map((line) => {
-      const [k, stage, chain] = line.split("\t");
+  ] as const)("matches legacy stages fixture for %s ×%i", (tier, rounds) => {
+    const expected = LEGACY_STAGES.trim().split("\n")
+      .filter((line) => line.startsWith(`${tier}\t${rounds}\t`)).map((line) => {
+      const [, , k, stage, chain] = line.split("\t");
       return { k: Number(k.slice(1)), stage, chain };
     });
     expect(planReviewRuns(tier, rounds)).toEqual(expected);
