@@ -88,6 +88,30 @@ A plan may carry several `## Milestone N — …` sections. The graph and `loop-
 
 The daemon is perpetual, so restart the Loop daemon after upgrading to pick up the new status and events (`launchctl kickstart -k` the loop-web LaunchAgent, or rerun `../loop-web.sh --daemon`).
 
+### AR review protocol
+
+New PR-review phases use `[review: standard|max]` (default standard), with `[rounds: N]`
+and `[inner: N]` both defaulting to 2 (1..5). A reviewer R reviews a frozen artifact; critic C
+audits the review from another provider. GPT→Claude, Claude→Grok, and Grok→GPT rotate across
+outer rounds. Standard uses Sol / Opus / Grok; max uses Astra / Fable / Grok. Only the fixer
+edits code between rounds. The first review's `APPROVE` plus C's `AGREE` triggers a third-provider
+confirmation: `AGREE` skips later rounds and proceeds to final; a veto makes that provider the
+critic for the remaining inner exchanges. Disagreement at the inner cap writes `.disputed.md`
+for verification against code. An Opus final reviewer posts the sole GitHub review.
+
+The daemon reads `runs/review-p<N>-<owner--repo>.ledger.tsv`: six columns (`a<k>`, stage,
+role, provider, verdict token, run directory relative to `.loop/`). Roles are
+`review|critic|respond|confirm|disputed|fix|final`. The graph folds these completed runs and
+infers skipped rounds from clean confirmation; no skipped ledger rows are stored. Resume uses
+`loop-review.sh recover`, reconciles the GitHub final marker, then calls `next`. Legacy
+shallow/medium plans still render from the static fixture, but execution and the tier endpoint
+reject those tiers.
+
+After pulling the AR update, restart with
+`launchctl kickstart -k gui/$(id -u)/com.rstagi.loop-web`, check
+`curl -fsS http://localhost:7717/api/health`, and retag active legacy review phases to standard
+or max before execution. See [the protocol](../.claude/skills/loop-execute/references/loop-protocol.md).
+
 ### Jev status and replay
 
 The header shows the latest Jev mode, decision count, and fallback count. Route, question, and

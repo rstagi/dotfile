@@ -9,9 +9,9 @@ alias loop-plan="$HOME/dotfile/loop-plan.sh"
 alias loop-repo="$HOME/dotfile/loop-repo.sh"
 # Milestone merge gate: check gate PR states, advance (prepare next milestone, print state patch).
 alias loop-milestone="$HOME/dotfile/loop-milestone.sh"
-# Review pipeline shape: tier + rounds → ordered review runs (used by loop-execute supervise).
+# AR PR review ledger: next/record/recover/prompt (used by loop-execute supervise).
 alias loop-review="$HOME/dotfile/loop-review.sh"
-# Adversarial plan review: 3 read-only reviewers on a drafted plan (used by multiphase-plan).
+# AR plan review: rotating reviewer ↔ critic on a frozen draft (used by multiphase-plan).
 alias loop-plan-review="$HOME/dotfile/loop-plan-review.sh"
 # Two-tier self-recycling orchestrator: supervise spawns this detached; it respawns SUB instances.
 alias loop-orchestrator="$HOME/dotfile/loop-orchestrator.sh"
