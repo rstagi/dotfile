@@ -472,6 +472,20 @@ assert_contains "$INVOCATIONS" 'focus on the cache tests' "sends the new note co
 assert_eq "$(jq -r '.sessionId' "$RUN_DIR/meta.json")" "sess-note" "meta keeps the session id"
 unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
 
+echo "runner: an AR reviewer note edit restarts a fresh call, never resuming the session"
+ctl_run note-ar
+print -r -- "old guidance" > "$CTL/notes/1.md"
+export FAKE_CODEX_OUTCOME=done FAKE_CODEX_SLEEP=10 FAKE_CODEX_SESSION=ar-must-be-fresh
+( sleep 1; print -r -- "check the cache tests" > "$CTL/notes/1.md" ) &
+ctl_exec --chain review-gpt --review-tier standard
+assert_exit "$RC" "0" "AR attempt completes"
+assert_eq "$(print -r -- "$INVOCATIONS" | grep -c '^codex exec --json ')" "2" "two fresh calls"
+assert_eq "$(print -r -- "$INVOCATIONS" | grep -c 'exec resume')" "0" "never resumes the reviewer session"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'implement phase' "restart carries the full prompt"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'check the cache tests' "restart carries the updated note"
+assert_eq "$(jq -r '.sessionId' "$RUN_DIR/meta.json")" "ar-must-be-fresh" "meta records the fresh call's session"
+unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
+
 echo "runner: deleting an existing note mid-run tells the agent it was removed"
 ctl_run note-removed
 print -r -- "temporary guidance" > "$CTL/notes/1.md"

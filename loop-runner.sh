@@ -485,6 +485,7 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
 }
 
 apply_note_change() { # resume the interrupted session with the new note (same attempt, no retry used)
+  # AR reviewer/critic/confirmer calls restart fresh from the full prompt instead
   local sid content prompt="$RUN_DIR/note-$(( NOTE_ROUND + 1 )).md"
   sid="$(jq -r '.session_id // .sessionId // .thread_id // (.msg.session_id? // empty) // empty' \
     "$TRANSCRIPT" 2>/dev/null | head -1)"
@@ -501,7 +502,14 @@ $(cat "$NOTE_FILE")
 Incorporate it and continue the phase from where you stopped."
   fi
   [[ -f "$TRANSCRIPT" ]] && mv "$TRANSCRIPT" "$RUN_DIR/transcript.pre-note-$NOTE_ROUND.jsonl"
-  if [[ -n "$sid" ]]; then
+  if [[ "$CHAIN_NAME" == review-(gpt|claude|grok) ]]; then # AR R/C/T: fresh call, never resume
+    sid="" NOTE_SID="" RESUME_SID=""
+    if [[ "$NOTE_SIG" == 0 ]]; then
+      cp "$RUN_DIR/prompt.md" "$prompt"
+    else
+      { cat "$RUN_DIR/prompt.md"; print -r -- ""; print -r -- "Latest steering note (notes/$PHASE.md):"; cat "$NOTE_FILE"; } > "$prompt"
+    fi
+  elif [[ -n "$sid" ]]; then
     NOTE_SID="$sid" RESUME_SID="$sid"
     print -r -- "$content" > "$prompt"
   else # nothing to resume yet: restart the leg with the note appended
