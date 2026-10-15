@@ -355,7 +355,8 @@ review-note aliases, honor them against each integration worktree throughout thi
 and fold them verbatim into every reviewer/remediator prompt.
 
 **Self-hosted review:** when this effort changes Loop itself, read §8 and the protocol from `RUNTIME_ROOT` at `REVIEW_READY`
-(`.claude/skills/loop-execute/SKILL.md` and `references/loop-protocol.md` there), even if you
+(`.claude/skills/loop-execute/SKILL.md` and
+`.claude/skills/loop-execute/references/loop-protocol.md` there), even if you
 loaded an installed skill earlier. Use the merged runtime's `loop-review.sh`, `loop-runner.sh`,
 configuration, and prompt references. A pipeline failure follows HIL; do not silently fall back
 to the old workflow.
@@ -411,7 +412,8 @@ call with prior exchange and answer inlined, never `--resume`; retain the origin
 
 The CLI owns rotation (round 1 gpt→claude, round 2 claude→grok, round 3 grok→gpt), inner caps,
 and the fix rule. R reviews/responds, C audits against code, and T confirms a candidate clean
-opening pair. R/C/T **never post or mutate GitHub** or edit the artifact. T `AGREE` skips remaining outer rounds
+opening pair (the first R review is `APPROVE` and C answers `AGREE`). R/C/T
+**never post or mutate GitHub** or edit the artifact. T `AGREE` skips remaining outer rounds
 and jumps to `final`; no skipped ledger rows are written. A T veto makes T the active critic
 for the remaining inner loop. At the inner cap the disputed sidecar preserves both positions,
 including critic-added issues; disputed > findings > clean. Only the fixer edits code between
@@ -489,6 +491,26 @@ merge every PR. Notify once with final PRs/verdicts, unlock, stop.
   (protocol § Milestones). **If `LOOP_SUB=1` (you are a SUB instance):** FIRST, if
   `sub/handoff.md` exists, read it **once** and rename it to `sub/handoff.consumed-<k>.md`
   (single-consumption); then reconcile as above and run steps 4-7 under the recycle loop below.
+
+**Review resume** *(supervise / single-tier only)*. Reload §8/protocol from `RUNTIME_ROOT`
+for self-hosted review, then replay each repository's pinned pipeline in this order:
+recover → GitHub final-marker reconcile → `next`. First inspect live run pids and reattach;
+never rerun a live pid, repeat a remediation push, or duplicate the final review.
+
+- Run `recover` for finished-but-unrecorded artifacts. Handle invalid verdict exit 2 with the
+  same persisted single-retry allowance from §8, never a new allowance after a crash.
+- If remediation may have committed/pushed before its status or row was written,
+  reconcile local and remote HEAD with the recorded starting/final SHAs and verification
+  evidence. Recover `PUSHED|NOOP` and record it without invoking remediation again. If evidence
+  cannot prove completion, block that repository for reconciliation instead of repeating a push.
+- Query all PR reviews for the protocol's exact phase-scoped final marker. If found,
+  recover its actual event/URL into the final run status and record idempotently, then promote
+  the repository result. Do this even when the process crashed before writing status; never
+  repost. The actual GitHub event determines outcome, not a stale process exit or stage flag.
+- Only then call `next` with persisted tier/rounds/inner/ledger. Keep the current round's
+  artifact: keep the persisted `headSha` within the inner loop, refreshing only for a new
+  outer round after any verified fix. Preserve prior reports and retry evidence. The ledger
+  derives the next step; do not reconstruct a static run list or trust a stage cursor.
 
 **Milestone resume** *(human only, `LOOP_SUB` unset; the loop is parked — `state.awaitingMerge`
 set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll for merges.

@@ -112,6 +112,14 @@ assert_contains "$PROTOCOL" 'read §8 and this protocol from `RUNTIME_ROOT` at `
 assert_eq "$([[ "$PROTOCOL" == *'review-adv-'* || "$PROTOCOL" == *'loop-review.sh stages'* ]] && echo stale || echo current)" current "protocol has no old chains or run-list command"
 assert_eq "$([[ "$PROTOCOL" == *'"stage": "round1"'* || "$PROTOCOL" == *'LOOP_REVIEW_ROUNDS_<TIER>'* ]] && echo stale || echo current)" current "protocol has no static cursor or per-tier defaults"
 
+echo "review workflow: crash-resume replays evidence before scheduling"
+assert_contains "$SKILL" '**Review resume**' "resume documents the AR pipeline"
+assert_contains "$SKILL" 'recover → GitHub final-marker reconcile → `next`' "resume order protects external effects"
+assert_contains "$SKILL" 'never rerun a live pid, repeat a remediation push, or duplicate the final review' "resume preserves completed work"
+assert_contains "$SKILL" 'reconcile local and remote HEAD with the recorded starting/final SHAs' "partial push recovery uses git evidence"
+assert_contains "$SKILL" 'recover its actual event/URL into the final run status and record idempotently' "recovers final post after process crash"
+assert_contains "$SKILL" 'keep the persisted `headSha` within the inner loop' "resume never refreshes a frozen artifact"
+
 echo "review workflow: remediation skill owns Opus delegation"
 assert_eq "$([[ "$FIX_SKILL" == *'disable-model-invocation: true'* ]] && echo blocked || echo invocable)" "invocable" "headless fix runs can invoke the skill"
 assert_contains "$FIX_SKILL" 'Write `RUN_DIR/remediation-plan.md`' "records reconciliation before fixes"
