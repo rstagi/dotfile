@@ -32,7 +32,7 @@ describe("planReviewRuns", () => {
 });
 
 describe("reviewStageRuns", () => {
-  const config = { tier: "shallow" as const, rounds: 2 };
+  const config = { tier: "shallow" as const, rounds: 2, inner: 2 };
 
   it("lists every planned run as todo before anything ran", () => {
     expect(reviewStageRuns(config, "7", ["acme/api"], {})).toEqual([

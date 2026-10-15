@@ -207,15 +207,20 @@ export interface PlanPhase {
   doneWhen: string | null;
   verify: string | null;
   notes: string | null;
-  /** PR-review phases only: `[review: tier]` (default medium) + `[rounds: N]` (null = tier default). */
+  /** PR-review phases only: defaults to standard with two outer rounds. */
   review: ReviewConfig | null;
 }
 
-export type ReviewTier = "shallow" | "medium" | "max";
+/** Historical tiers remain readable; execution only accepts standard|max. */
+export type LegacyReviewTier = "shallow" | "medium";
+export type ReviewTier = "standard" | "max" | LegacyReviewTier;
 
 export interface ReviewConfig {
   tier: ReviewTier;
+  /** Null preserves the historical tier default for legacy plans. */
   rounds: number | null;
+  /** Maximum reviewer/critic exchanges per outer round; defaults to 2. */
+  inner: number;
 }
 
 /** Free-form prose sections of the plan markdown (each nullable). Rendered in the drawer. */
