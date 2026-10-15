@@ -391,7 +391,7 @@
 }
 .review-pipeline__run {
   display: grid;
-  grid-template-columns: 30px 56px 48px 64px 1fr;
+  grid-template-columns: 30px 64px 48px 64px minmax(0, 1fr);
   gap: 6px;
   padding: 2px 0;
   border-bottom: 1px solid var(--hairline);
@@ -399,6 +399,11 @@
 .review-pipeline__k,
 .review-pipeline__chain {
   color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+.review-pipeline__detail {
+  display: block;
+  overflow-wrap: anywhere;
 }
 .attempt {
   display: grid;

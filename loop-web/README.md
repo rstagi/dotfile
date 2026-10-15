@@ -132,6 +132,7 @@ horizontal lanes as a first-class concept, and our DAGs are tiny, so a determini
   followed by the maximum remaining path as `planned`. A clean third-provider confirmation
   marks later rounds `skipped`, preserving the actual final attempt number. Ledger rows flow
   through `parseLoop` and `materialize`; run directories supply live state and engine/model.
+  The drawer shows each run's role, provider, and verdict beside its live model.
   Historical shallow/medium tiers retain their static shape, checked against
   `src/model/legacy-stages.tsv`.
 

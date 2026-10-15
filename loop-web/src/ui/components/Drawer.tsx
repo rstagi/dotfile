@@ -183,11 +183,14 @@ function ReviewPipelineSection({ stages }: { stages: ReviewStageRun[] }) {
           {repositories.length > 1 && <div className="review-pipeline__repo">{repository}</div>}
           {stages.filter((s) => s.repository === repository).map((s) => (
             <div className="review-pipeline__run" key={s.k} title={s.summary ?? undefined}>
-              <span className="review-pipeline__k">a{s.k}</span>
-              <span>{s.stage}</span>
-              <span className="review-pipeline__chain">{s.chain.replace("review-", "")}</span>
+              <span className="review-pipeline__k">{s.k > 0 ? `a${s.k}` : "—"}</span>
+              <span>{s.stage}{s.role && s.role !== s.stage && <span className="review-pipeline__detail">{s.role}</span>}</span>
+              <span className="review-pipeline__chain">{s.provider ?? s.chain.replace("review-", "")}</span>
               <span style={{ color: runColor(s.state) }}>{s.state}</span>
-              <span className="review-pipeline__chain">{s.engine ? [s.engine, s.model].filter(Boolean).join(":") : "—"}</span>
+              <span className="review-pipeline__chain">
+                {s.engine ? [s.engine, s.model].filter(Boolean).join(":") : "—"}
+                {s.verdict && <span className="review-pipeline__detail">{s.verdict}</span>}
+              </span>
             </div>
           ))}
         </div>
