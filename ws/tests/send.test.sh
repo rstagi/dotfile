@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: `ws send` delivery: paste, inbox, Stop hooks, cancellation, readiness and robustness.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws send: idle named target receives one bracketed multiline prompt with sender id"
@@ -54,7 +54,6 @@ PY_STOP
 )" "$WS hook stop" "Codex Stop uses synchronous bus delivery"
 assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$GROK_HOME/hooks/ws.json")" "$WS hook stop" "Grok Stop uses synchronous bus delivery"
 
-pane_received() { [[ "$(tail -1 "$WS_HOME/pane-$1.jsonl" 2>/dev/null | jq -r '.text')" == "$2" ]]; }
 echo "ws send: continuation Stops block only for new messages; cancellation pastes on verified idle"
 for agent in claude codex grok; do
   BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"
@@ -435,10 +434,10 @@ rm -f "$WS_HOME/tui-delay"
 
 echo "ws send: inbox lock timeout reports the lock instead of failing silently"
 ROBUST_INBOX_LOCK="$WS_HOME/sessions/$SEND_ID/inbox.lock"
-(zmodload zsh/system; : >> "$ROBUST_INBOX_LOCK"; zsystem flock -f robust_fd "$ROBUST_INBOX_LOCK"; : > "$TMP/robust-inbox-held"; sleep 4) &
+(zmodload zsh/system; : >> "$ROBUST_INBOX_LOCK"; zsystem flock -f robust_fd "$ROBUST_INBOX_LOCK"; : > "$TMP/robust-inbox-held"; sleep 1) &
 robust_holder=$!
 wait_until test -e "$TMP/robust-inbox-held"
-out="$(WS_SESSION=1 "$WS" send "$SEND_ID" "lock timeout" 2>&1)"
+out="$(WS_LOCK_SCALE=0.1 WS_SESSION=1 "$WS" send "$SEND_ID" "lock timeout" 2>&1)"
 assert_exit "$?" "1" "contended inbox lock times out"
 assert_contains "$out" "timed out waiting for lock" "lock timeout emits a diagnostic"
 wait "$robust_holder"

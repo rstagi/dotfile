@@ -49,7 +49,7 @@ cmd_send() {
       ws_bus_wait_ready "$id" "$win" || ws_bus_queued_die "$id" "send: message queued; session #$id input not ready"
     fi
     lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-    { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
+    { : >> "$lock" && zsystem flock -t "$(lock_wait 3)" -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
       ws_bus_queued_die "$id" "send: message queued; session #$id busy"
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
     rc=$?
@@ -88,7 +88,7 @@ ws_bus_deliver_retry() {
     [[ -n "$win" ]] || return 0
     [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle ]] || continue
     lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
-    { : >> "$lock" && zsystem flock -t 3 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || continue
+    { : >> "$lock" && zsystem flock -t "$(lock_wait 3)" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || continue
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "" 1
     rc=$?
     exec {lockfd}>&-
@@ -285,7 +285,7 @@ ws_bus_stop() {
   local id="$1" inbox="$WS_SESSIONS/$1/inbox"
   [[ "$id" == <-> && -f "$WS_SESSIONS/$id/meta" ]] || { print '{}'; return 0; }
   : >> "$inbox.lock"
-  (zsystem flock -t 1 -i 0.01 "$inbox.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $inbox.lock"; exit 1; }; ws_bus_stop_locked "$id")
+  (zsystem flock -t "$(lock_wait 1)" -i 0.01 "$inbox.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $inbox.lock"; exit 1; }; ws_bus_stop_locked "$id")
 }
 
 # Drained messages stay in inbox.inflight.<hook pid> until the hook has written the reply

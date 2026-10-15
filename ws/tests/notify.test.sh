@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: Notification adapters (terminal-notifier, osascript, boringnotch, custom), details, sounds, dismissal, notifier build.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws hook: notifies via terminal-notifier (sound, click focuses the tab) when unfocused"
@@ -179,7 +179,8 @@ rm -f "$TMP/locked" "$FAKE_EVENT_OUT"
 zsh -fc 'zmodload zsh/system; zsystem flock -f fd "$1" && : > "$2" && sleep 4' _ "$HOOK_LOCK" "$TMP/locked" &
 holder_pid=$!
 wait_until test -e "$TMP/locked"
-WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle </dev/null
+# WS_LOCK_SCALE: the hook gives up after 0.2s instead of 2s (same path, shorter wait).
+WS_LOCK_SCALE=0.1 WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle </dev/null
 sleep 0.2
 assert_eq "$(T display -p -t "$NWIN" '#{@ws_state}')" "working" "unlocked hook leaves state untouched"
 assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "unlocked hook emits nothing"
@@ -543,7 +544,7 @@ assert_eq "$(afplay_log)" "$ROOT/assets/ws/sounds/waiting.wav" "nested notch fal
 
 echo "ws hook: auto uses osascript when terminal-notifier is absent"
 mkdir -p "$TMP/fallback-bin"
-for cmd in tmux jq git date cat cut afplay; do
+for cmd in tmux jq git date cat cut afplay grep; do
   ln -s "$(command -v "$cmd")" "$TMP/fallback-bin/$cmd"
 done
 ln -s "$TMP/bin/osascript" "$TMP/fallback-bin/osascript"

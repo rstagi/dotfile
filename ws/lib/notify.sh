@@ -97,7 +97,7 @@ notify_claim() {
   [[ "$id" == ws:?* && "$seq" == <1-> ]] || return 0
   zmodload zsh/system 2>/dev/null
   lock="${TMPDIR:-/tmp}/ws-notify-${WS_TMUX_SOCKET:-default}-$win.lock"
-  { : >>"$lock" && zsystem flock -t 2 -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
+  { : >>"$lock" && zsystem flock -t "$(lock_wait 2)" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
   last="$(tmux_ display -p -t "$win" '#{@ws_notify_seq}' 2>/dev/null)"
   [[ "$last" == <-> ]] && (( seq <= last )) && return 1
   tmux_ set -w -t "$win" @ws_notify_seq "$seq" 2>/dev/null

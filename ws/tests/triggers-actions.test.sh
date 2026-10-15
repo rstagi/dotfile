@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: `ws on` registration, cycles, spawn, failures, queued sends, spawn prompts, ready timeout.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws on: rejects direct and transitive cycles; removal cancels a pending action"
@@ -215,7 +215,7 @@ ready_probe() {
     tmux_() { local n=$(( $(<"$TMP/ready-polls") + 1 )); print $n > "$TMP/ready-polls"; (( n > after )) && print 1 || print 0; }
     ws_bus_wait_ready 1 @0 )
 }
-ready_probe 55
+(unset WS_READY_TIMEOUT; ready_probe 55) # the suite-wide cap must not mask the default
 assert_exit "$?" "0" "TUI ready after >5s of polling succeeds within the default budget"
 WS_READY_TIMEOUT=0.3 ready_probe 1000
 assert_exit "$?" "1" "WS_READY_TIMEOUT bounds the wait"

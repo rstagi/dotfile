@@ -37,8 +37,22 @@ export WS_BORINGNOTCH_SOCKET="$TMP/unavailable.sock"
 export WS_AGENT_SHELL="zsh -fc"
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
 export GROK_HOME="$TMP/grokhome"
+# Cap input-readiness waits (default 60s): a send stuck on a TUI that never readies fails fast.
+export WS_READY_TIMEOUT=15
 socket_listener_pid=""
-trap '[[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null; tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null; rm -rf "$TMP" "$NOTCH_HOME"; home_guard_check "$real_home_snapshot" || exit 1' EXIT
+trap ws_tests_cleanup EXIT
+# ws_tests_cleanup — EXIT trap: stop this suite's background jobs and tmux server, drop the hook
+# locks ws keeps in ${TMPDIR:-/tmp}, then fail if the real agent hooks/config changed.
+# Detached retries (setsid) exit on their own once their tmux server is gone.
+ws_tests_cleanup() {
+  [[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null
+  local -a pids=(${(s.:.)${(j.:.)${(v)jobstates#*:*:}}})
+  (( $#pids )) && kill ${pids%%=*} 2>/dev/null
+  tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null
+  rm -f "${TMPDIR:-/tmp}"/ws-hook-"$WS_TMUX_SOCKET"-*.lock(N)
+  rm -rf "$TMP" "$NOTCH_HOME" 2>/dev/null || { sleep 1; rm -rf "$TMP" "$NOTCH_HOME"; }
+  home_guard_check "$real_home_snapshot" || exit 1
+}
 WS="$ROOT/ws/ws.sh"
 export WS_TEST_CLI="$WS"
 T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
@@ -109,7 +123,7 @@ make_repo() {
 wait_pane() {
   local i out
   for i in {1..30}; do
-    out="$(T capture-pane -p -t "$1" 2>/dev/null)"
+    out="$(T capture-pane -pJ -t "$1" 2>/dev/null)"
     [[ "$out" == *"$2"* ]] && { print -r -- "$out"; return 0; }
     sleep 0.1
   done
@@ -164,5 +178,20 @@ stop_socket_listener() {
 windows_of() { T list-windows -a -F '#{window_id} #{@ws_path}' | awk -v p="$1" '$2 == p { print $1 }'; }
 # slot_window <worktree> <slot> — window id of that agent session
 slot_window() { T list-windows -a -F '#{window_id} #{@ws_path} #{@ws_slot}' | awk -v p="$1" -v s="$2" '$2 == p && $3 == s { print $1 }'; }
+# slot_present/slot_absent <worktree> <slot> — wait_until predicates (re-evaluated on every poll)
+slot_present() { [[ -n "$(slot_window "$1" "$2")" ]]; }
+slot_absent() { [[ -z "$(slot_window "$1" "$2")" ]]; }
 session_of() { T display -p -t "$1" '#{session_name}'; }
 hook() { WS_WORKSPACE="$1" TMUX_PANE="$(T display -p -t "$2" '#{pane_id}')" "$WS" hook "$3"; }
+# Shared by areas in different groups (a group runs without the others' definitions).
+pane_received() { [[ "$(tail -1 "$WS_HOME/pane-$1.jsonl" 2>/dev/null | jq -r '.text')" == "$2" ]]; }
+lifecycle_exit_count() { [[ "$(jq -sr 'map(select(.event == "exit")) | length' "$WS_HOME/sessions/$1/events")" == "$2" ]]; }
+spawn_done_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
+
+# ws_tests_seed — fixtures workspace.test.sh leaves for later areas, for groups run without it:
+# the api repo ($REPO) and session #1 (the WS_SESSION=1 sender).
+ws_tests_seed() {
+  REPO="$(make_repo api)"
+  "$WS" new --repo "$REPO" --branch seed --detach >/dev/null
+  [[ -f "$WS_HOME/sessions/1/meta" ]] || { print -u2 "ws tests: seed did not create session #1"; exit 1; }
+}

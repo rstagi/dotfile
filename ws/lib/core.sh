@@ -25,7 +25,15 @@ with_lock() {
   local f="$1"
   shift
   : >> "$f.lock" # flock won't create it
-  (zsystem flock -t 3 -i 0.01 "$f.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $f.lock"; exit 1; }; "$@")
+  (zsystem flock -t "$(lock_wait 3)" -i 0.01 "$f.lock" 2>/dev/null || { print -u2 "ws: timed out waiting for lock: $f.lock"; exit 1; }; "$@")
+}
+
+# lock_wait <seconds> — a lock timeout scaled by WS_LOCK_SCALE (tests; default 1). Scaling every
+# wait alike keeps their budgets under the agents' 5s hook timeout in proportion.
+lock_wait() {
+  local scale="${WS_LOCK_SCALE:-1}"
+  [[ "$scale" == (<->|<->.<->|.<->) ]] || scale=1
+  printf '%g\n' "$(( $1 * scale ))"
 }
 
 # rewrite <file> <awk args...> — replaces the file with awk's output, atomically.

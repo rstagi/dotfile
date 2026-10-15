@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: Review fixes: pane ownership, async done, lock bootstrap, delayed delivery, stop lock.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 # --- review fixes: pane ownership, async done, lock bootstrap, delayed delivery, stop lock ---
@@ -44,7 +44,7 @@ F2S_SRC="$(T display -p -t "$F2S_WIN" '#{@ws_session}')"
 F2S_META="$WS_HOME/sessions/$F2S_SRC/meta"
 jq '.spawned = true' "$F2S_META" > "$F2S_META.fixture" && mv "$F2S_META.fixture" "$F2S_META"
 F2S_BEFORE="$(windows_of "$TRIGGER_WT")"
-print 6 > "$WS_HOME/tui-delay"
+print 3 > "$WS_HOME/tui-delay"
 "$WS" add api/triggers --detach
 F2S_TWIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$F2S_BEFORE"))"
 F2S_TGT="$(T display -p -t "$F2S_TWIN" '#{@ws_session}')"
@@ -59,17 +59,24 @@ assert_exit "$?" "0" "detached worker delivers once the slow target is ready"
 rm -f "$WS_HOME/tui-delay"
 
 echo "ws hook (F8): a Stop that waits on the hook lock still settles the tab and drains the inbox"
-F8_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$DEFAULT_WIN.lock"
-hook api/triggers "$DEFAULT_WIN" working </dev/null
-(unset WS_SESSION; "$WS" send "$DEFAULT_ID" 'f8 msg' 2>/dev/null)
+# Own live target: F2's trigger delivered to DEFAULT_ID, whose fake agent read it and exited.
+F8_BEFORE="$(windows_of "$TRIGGER_WT")"
+"$WS" add api/triggers --detach
+F8_WIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$F8_BEFORE"))"
+F8_ID="$(T display -p -t "$F8_WIN" '#{@ws_session}')"
+F8_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$F8_WIN.lock"
+hook api/triggers "$F8_WIN" working </dev/null
+(unset WS_SESSION; "$WS" send "$F8_ID" 'f8 msg' 2>/dev/null)
+assert_exit "$?" "0" "send to the working tab queues without waiting"
 rm -f "$TMP/f8-held" "$TMP/f8-release"
 (zmodload zsh/system; : >> "$F8_LOCK"; zsystem flock -f f8_fd "$F8_LOCK"; : > "$TMP/f8-held"
   while [[ ! -e "$TMP/f8-release" ]]; do sleep 0.05; done) &
 f8_holder=$!
 wait_until test -e "$TMP/f8-held"
-(sleep 6; : > "$TMP/f8-release") &
-hook api/triggers "$DEFAULT_WIN" stop </dev/null >/dev/null
-f8_settled() { [[ "$(T show -wqv -t "$DEFAULT_WIN" @ws_state)" != working ]]; }
+# WS_LOCK_SCALE: Stop starves after 0.3s (not 3s) and hands off to the detached retry.
+(sleep 1.5; : > "$TMP/f8-release") &
+WS_LOCK_SCALE=0.1 hook api/triggers "$F8_WIN" stop </dev/null >/dev/null
+f8_settled() { [[ "$(T show -wqv -t "$F8_WIN" @ws_state)" != working ]]; }
 WS_TEST_WAIT=12 wait_until f8_settled
 assert_exit "$?" "0" "lock-starved Stop does not leave the tab working"
 wait "$f8_holder"

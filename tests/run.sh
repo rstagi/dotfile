@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Run every tests/*.test.sh and the ws suite (ws/tests/run.sh); exit non-zero if any fails. Also
+# Run every tests/*.test.sh and, concurrently, the ws suite (ws/tests/run.sh); exit non-zero if any fails. Also
 # syntax-checks the loop-*.sh + ws scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
 # Discard caller loop/color settings; each suite configures its own environment.
 set -u
@@ -31,15 +31,23 @@ for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-no
 done
 echo
 
+# The ws suite (the slowest, own sandboxes) runs in the background alongside the loop suites.
+ws_pid=""
+if [[ -f "$ROOT/ws/tests/run.sh" ]]; then # needs the repo's ws/; absent from copied-runner fixtures
+  zsh "$ROOT/ws/tests/run.sh" > "$TEST_HOME_DIR/ws.log" 2>&1 &
+  ws_pid=$!
+fi
+
 for t in "$HERE"/*.test.sh; do
   echo "== ${t:t} =="
   zsh "$t" || fail=1
   echo
 done
 
-if [[ -f "$ROOT/ws/tests/run.sh" ]]; then # needs the repo's ws/; absent from copied-runner fixtures
+if [[ -n "$ws_pid" ]]; then
   echo "== ws/tests/run.sh =="
-  zsh "$ROOT/ws/tests/run.sh" || fail=1
+  wait "$ws_pid" || fail=1
+  cat "$TEST_HOME_DIR/ws.log"
   echo
 fi
 
