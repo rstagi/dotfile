@@ -435,10 +435,10 @@ rm -f "$WS_HOME/tui-delay"
 
 echo "ws send: inbox lock timeout reports the lock instead of failing silently"
 ROBUST_INBOX_LOCK="$WS_HOME/sessions/$SEND_ID/inbox.lock"
-(zmodload zsh/system; : >> "$ROBUST_INBOX_LOCK"; zsystem flock -f robust_fd "$ROBUST_INBOX_LOCK"; : > "$TMP/robust-inbox-held"; sleep 4) &
+(zmodload zsh/system; : >> "$ROBUST_INBOX_LOCK"; zsystem flock -f robust_fd "$ROBUST_INBOX_LOCK"; : > "$TMP/robust-inbox-held"; sleep 1) &
 robust_holder=$!
 wait_until test -e "$TMP/robust-inbox-held"
-out="$(WS_SESSION=1 "$WS" send "$SEND_ID" "lock timeout" 2>&1)"
+out="$(WS_LOCK_SCALE=0.1 WS_SESSION=1 "$WS" send "$SEND_ID" "lock timeout" 2>&1)"
 assert_exit "$?" "1" "contended inbox lock times out"
 assert_contains "$out" "timed out waiting for lock" "lock timeout emits a diagnostic"
 wait "$robust_holder"

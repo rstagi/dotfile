@@ -179,7 +179,8 @@ rm -f "$TMP/locked" "$FAKE_EVENT_OUT"
 zsh -fc 'zmodload zsh/system; zsystem flock -f fd "$1" && : > "$2" && sleep 4' _ "$HOOK_LOCK" "$TMP/locked" &
 holder_pid=$!
 wait_until test -e "$TMP/locked"
-WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle </dev/null
+# WS_LOCK_SCALE: the hook gives up after 0.2s instead of 2s (same path, shorter wait).
+WS_LOCK_SCALE=0.1 WS_NOTIFY=1 WS_NOTIFIER="$TMP/custom adapters/capture" hook api/feat-login "$NWIN" idle </dev/null
 sleep 0.2
 assert_eq "$(T display -p -t "$NWIN" '#{@ws_state}')" "working" "unlocked hook leaves state untouched"
 assert_eq "$([[ -e "$FAKE_EVENT_OUT" ]] && print yes)" "" "unlocked hook emits nothing"

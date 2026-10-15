@@ -44,7 +44,7 @@ F2S_SRC="$(T display -p -t "$F2S_WIN" '#{@ws_session}')"
 F2S_META="$WS_HOME/sessions/$F2S_SRC/meta"
 jq '.spawned = true' "$F2S_META" > "$F2S_META.fixture" && mv "$F2S_META.fixture" "$F2S_META"
 F2S_BEFORE="$(windows_of "$TRIGGER_WT")"
-print 6 > "$WS_HOME/tui-delay"
+print 3 > "$WS_HOME/tui-delay"
 "$WS" add api/triggers --detach
 F2S_TWIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$F2S_BEFORE"))"
 F2S_TGT="$(T display -p -t "$F2S_TWIN" '#{@ws_session}')"
@@ -73,8 +73,9 @@ rm -f "$TMP/f8-held" "$TMP/f8-release"
   while [[ ! -e "$TMP/f8-release" ]]; do sleep 0.05; done) &
 f8_holder=$!
 wait_until test -e "$TMP/f8-held"
-(sleep 6; : > "$TMP/f8-release") &
-hook api/triggers "$F8_WIN" stop </dev/null >/dev/null
+# WS_LOCK_SCALE: Stop starves after 0.3s (not 3s) and hands off to the detached retry.
+(sleep 1.5; : > "$TMP/f8-release") &
+WS_LOCK_SCALE=0.1 hook api/triggers "$F8_WIN" stop </dev/null >/dev/null
 f8_settled() { [[ "$(T show -wqv -t "$F8_WIN" @ws_state)" != working ]]; }
 WS_TEST_WAIT=12 wait_until f8_settled
 assert_exit "$?" "0" "lock-starved Stop does not leave the tab working"

@@ -37,7 +37,7 @@ cmd_hook() {
     return 0
   fi
   # Stop shares a 5s hook timeout with the hook and inbox locks: never wait on resume ids.
-  record_resume_id "$payload" "$([[ "$event" == stop ]] && print 0 || print 3)"
+  record_resume_id "$payload" "$([[ "$event" == stop ]] && print 0 || lock_wait 3)"
   local win lock lockfd prev last state agent_id="" applied=0
   [[ -n "$payload" ]] && agent_id="$(print -r -- "$payload" | jq -r '.agent_id // empty' 2>/dev/null)"
   agent_id="${agent_id//[^A-Za-z0-9_-]/_}"
@@ -47,7 +47,7 @@ cmd_hook() {
   # starved, hands settling the tab to a detached retry rather than dropping the event.
   local lock_wait=2
   [[ "$event" != stop ]] || lock_wait=3
-  { : >>"$lock" && zsystem flock -t "$lock_wait" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || {
+  { : >>"$lock" && zsystem flock -t "$(lock_wait "$lock_wait")" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || {
     [[ "$event" != stop ]] || ws_bus_detach "$WS_BIN" _hook-retry "$(tmux_ show -wqv -t "$TMUX_PANE" @ws_seq 2>/dev/null)"
     [[ -z "$reply" ]] || print -r -- "$reply"
     return 0

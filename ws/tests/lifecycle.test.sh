@@ -193,7 +193,7 @@ for exit_code in 0 17; do
   wait_until lifecycle_exit_count "$EXIT_TARGET_ID" "$(( exit_code == 0 ? 1 : 2 ))"
   EXIT_TID="$("$WS" on "$EXIT_ID" exit --send-to "$EXIT_TARGET_ID" "exit action $exit_code")"
   # Keep the exit action waiting for its resumed TUI while a concurrent send runs.
-  print 6 > "$WS_HOME/tui-delay"
+  print 3 > "$WS_HOME/tui-delay"
   # Resume is deliberately unavailable: send must retain the message, never paste into
   # the dead source. This private fixture releases the lock immediately after send.
   EXIT_OPEN_LOCK="$WS_HOME/sessions/$EXIT_ID/open.lock"
@@ -205,7 +205,8 @@ for exit_code in 0 17; do
   assert_exit "$?" "0" "exit $exit_code publishes while its action is still waiting"
   assert_eq "$(T show -wqv -t "$EXIT_WIN" @ws_session)" "" "exit $exit_code source is no longer deliverable"
   assert_eq "$(T show -wqv -t "$EXIT_WIN" @ws_main)" "" "exit $exit_code clears its idle delivery tag"
-  out="$("$WS" send "$EXIT_ID" "during exit $exit_code" 2>&1)"
+  # WS_LOCK_SCALE: send gives up on the held open lock after 0.3s, well within the 3s TUI delay.
+  out="$(WS_LOCK_SCALE=0.1 "$WS" send "$EXIT_ID" "during exit $exit_code" 2>&1)"
   assert_exit "$?" "75" "exit $exit_code send reports unavailable resume"
   assert_contains "$(cat "$WS_HOME/sessions/$EXIT_ID/inbox")" "during exit $exit_code" "exit $exit_code send stays durable"
   exec {exit_open_fd}>&-
