@@ -194,7 +194,7 @@ Endpoints (POST bodies are JSON built injection-safely with `jq`):
 - `POST /api/loops/:runId/state` — the full state.json contents.
 - `POST /api/loops/:runId/event` `{ event, phase?, repository?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — folded verbatim.
 - `POST /api/loops/:runId/finish` accepts v2 `{ status?, finishedAt?, repositories:{slug:{prUrl?,review?}} }`; legacy scalar `prUrl/review` remains accepted. For explicit plans it is ignored until the terminal review phase is `done|merged`.
-- `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, planText }` — how a fresh checkout fetches the plan with **no worktree needed**.
+- `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, milestone, milestoneTotal, awaitingMerge, planText }` — how a fresh checkout fetches the plan (and the current milestone) with **no worktree needed**.
 - `POST /api/loops/:runId/note` `{ key, markdown }` to write or `{ key, clear:true }` to delete a steering note; rejects archived loops.
 - `POST /api/loops/:runId/archive` · `/unarchive` — manual archive flag on the store record (`loop-top archive [runId]`): listed as `archived` regardless of the worktree; worktrees untouched.
 - `POST /api/loops/:runId/control` `{ action:"pause"|"resume", phase? }` writes/removes `control/pause[-<N>]`; `{ action:"model", phase, leg|null }` writes/removes `control/model-<N>` (409 once the phase has started; invalid leg → 400). Rejects archived loops (410). The snapshot gains loop-level `paused` and per-node `paused`, `modelOverride`; UI state `paused`. `{ action:"review", phase, tier }` rewrites a not-yet-started review phase's `[review: …]` tag in plan.md (drops `[rounds: …]` → tier default).
@@ -221,8 +221,8 @@ completed phase ranks remain monotone.
 | `hil.raise` / `hil.resolve` | orchestrator (loop-state.sh log) | phase |
 | `review.finish` | orchestrator | phase, repository, outcome, summary |
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
-| `milestone.awaiting-merge` | supervise (loop-state.sh log) | milestone, prs |
-| `milestone.resumed` | supervise (loop-state.sh log) | milestone |
+| `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |
+| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto | phase, detail |
@@ -231,9 +231,10 @@ completed phase ranks remain monotone.
 | `note.applied` | loop-runner.sh (live note resume) | phase, repository |
 | `jev.decision` | runner (route) or SUB (question/risk) | phase, attempt, stage, mode, candidate, confidence/probabilities, appliedAction, fallbackReason, resolvedModel, evidenceChecked/evidenceSources, questionRound, head, required/completed/remaining gates, focus, ts |
 
-Both `milestone.*` events are typed and loop-level: they never promote a phase (the keyword
-fallback would read "merg…" as a merge), and `milestone.awaiting-merge` drives the
-`awaiting-merge` loop status from `state.awaitingMerge`.
+`loop-state.sh log` carries only phase/repository/detail, so both `milestone.*` payloads ride in
+`detail` as compact text (structured data lives in `state.awaitingMerge`). Both are typed and
+loop-level: they never promote a phase (the keyword fallback would read "merg…" as a merge), and
+`milestone.awaiting-merge` drives the `awaiting-merge` loop status from `state.awaitingMerge`.
 
 `progress.note` is the progress narration — kept on the timeline, promotes
 nothing in the lattice.

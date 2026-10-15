@@ -108,15 +108,21 @@ export function inferLoop({ cwd, localRunId = null, branch = null, originSlug = 
   return null;
 }
 
-/** Snapshot graph nodes (+ coordinator state for worktrees) → ordered display rows. */
+/** Snapshot graph nodes (+ coordinator state for worktrees) → ordered display rows: natural
+ * phase order, or — with ≥2 milestones — milestone then document (snapshot) order, so a late
+ * phase inserted into an earlier milestone stays under its heading. */
 export function phaseRows(snapshot, state) {
   const nodes = snapshot?.graph?.nodes ?? [];
   const labelOf = new Map(nodes.map((n) => [n.id, n.phase ?? n.id]));
   const depEdges = (snapshot?.graph?.edges ?? []).filter((e) => e.kind === "depends");
   const plannedLeg = firstTaskLeg();
+  const byMilestone = milestoneTitles(snapshot).size > 0;
+  const order = byMilestone
+    ? (a, b) => (a.milestone ?? Infinity) - (b.milestone ?? Infinity) || nodes.indexOf(a) - nodes.indexOf(b)
+    : (a, b) => comparePhase(a.phase ?? a.id, b.phase ?? b.id);
   return nodes
     .filter((n) => n.kind === "phase" || n.kind === "pr-review")
-    .sort((a, b) => comparePhase(a.phase ?? a.id, b.phase ?? b.id))
+    .sort(order)
     .map((n) => {
       const ps = state?.phases?.[n.id] ?? {};
       const parked = n.awaitingMerge === true;
@@ -699,7 +705,10 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
     const heading = [];
     if (titles.size && r.milestone != null && r.milestone !== currentMilestone) {
       currentMilestone = r.milestone;
-      heading.push({ done: false, selected: false, lines: [paint(STYLE.bold, truncate(`  M${r.milestone} — ${titles.get(r.milestone) ?? ""}`, width))] });
+      const text = `M${r.milestone} — ${titles.get(r.milestone) ?? ""}`;
+      // In --graph the heading carries the rails running between the previous row and this one.
+      const line = layout ? "  " + rails(layout.entries[i - 1]?.gap ?? "") + paint(STYLE.bold, truncate(text, width - 2 - railW)) : paint(STYLE.bold, truncate(`  ${text}`, width));
+      heading.push({ heading: true, milestone: r.milestone, done: false, selected: false, lines: [line] });
     }
     const cols = [
       r.label.padEnd(labelW),
@@ -738,7 +747,7 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
       lines.push(paint(STYLE.dim, lead) + paint(STYLE.yellow, truncate(gateText(r.gate.prs), width - lead.length)));
     }
     if (entry) lines.push(...entry.after.map((l) => "  " + rails(l)));
-    return [...heading, { done: r.icon === ICONS.done, selected: isSelected, lines }];
+    return [...heading, { milestone: r.milestone, done: r.icon === ICONS.done, selected: isSelected, lines }];
   });
   out.push(...fitRows(groups, height ? height - out.length - (keys ? 3 : 2) : Infinity, paint));
   if (rows.length === 0) out.push(paint(STYLE.dim, "  (no phases yet)"));
@@ -871,17 +880,17 @@ function graphLayout(rows, edges) {
     });
     const after = extra.length ? [connector(cols, c, extra, "fork")] : [];
     while (cols.length && cols[cols.length - 1] == null) cols.pop();
-    entries.push({ row, before, node, mid, after });
+    entries.push({ row, before, node, mid, after, gap: railCells(cols, -1) });
   }
   const width = Math.max(0, ...entries.flatMap((e) => [...e.before, e.node, ...e.after].map((l) => l.length)));
   return { entries, width };
 }
 
-/** Kahn's algorithm, always taking the ready phase with the lowest number; cycles append in order. */
+/** Kahn's algorithm, always taking the earliest ready row (rows arrive display-ordered); cycles append in order. */
 function topoOrder(rows, deps) {
   const indeg = new Map(rows.map((r) => [r.id, 0]));
   for (const e of deps) indeg.set(e.target, indeg.get(e.target) + 1);
-  const sorted = [...rows].sort((a, b) => comparePhase(a.label, b.label));
+  const sorted = rows;
   const out = [];
   const done = new Set();
   while (out.length < rows.length) {
@@ -942,17 +951,20 @@ function connector(cols, c, others, kind) {
 }
 
 /** Fit row groups into `avail` lines: hide the earliest done phases first (with a summary
- * line), then scroll a window that keeps the selected row visible. */
-function fitRows(groups, avail, paint) {
+ * line; a milestone heading goes with its last row), then scroll a window that keeps the
+ * selected row visible. Headings never count as phases. */
+export function fitRows(groups, avail, paint) {
   const count = (gs) => gs.reduce((n, g) => n + g.lines.length, 0);
+  const phases = (gs) => gs.filter((g) => !g.heading).length;
   if (count(groups) <= avail) return groups.flatMap((g) => g.lines);
-  const kept = [...groups];
+  let kept = [...groups];
   let hidden = 0;
   while (count(kept) + 1 > avail) {
-    const i = kept.findIndex((g) => g.done && !g.selected);
+    const i = kept.findIndex((g) => g.done && !g.selected && !g.heading);
     if (i < 0) break;
     kept.splice(i, 1);
     hidden++;
+    kept = kept.filter((g) => !g.heading || kept.some((o) => !o.heading && o.milestone === g.milestone));
   }
   const head = hidden ? [paint(STYLE.dim, `  ${ICONS.done} ${hidden} earlier done phase(s) hidden`)] : [];
   const room = avail - head.length;
@@ -969,9 +981,9 @@ function fitRows(groups, avail, paint) {
     else break;
   }
   const lines = [...head];
-  if (start > 0) lines.push(paint(STYLE.dim, `  … ${start} more above`));
+  if (start > 0) lines.push(paint(STYLE.dim, `  … ${phases(kept.slice(0, start))} more above`));
   lines.push(...kept.slice(start, end).flatMap((g) => g.lines));
-  if (end < kept.length) lines.push(paint(STYLE.dim, `  … ${kept.length - end} more below`));
+  if (end < kept.length) lines.push(paint(STYLE.dim, `  … ${phases(kept.slice(end))} more below`));
   return lines;
 }
 

@@ -67,10 +67,12 @@ worktree. The `[status: …]` markers in `.loop/plan.md` are authoritative. Then
 
 Do not start integration phases until their dependency phases are `done`.
 
-**Milestones.** In a plan with milestones, read `state.milestone` (from `.loop/state.json`;
-absent = milestone 1) and never offer or claim a phase of a later milestone than `state.milestone`
-— those stay locked until a human merges the gate and resumes the loop, even if their
-`Depends on` looks satisfied.
+**Milestones.** In a plan with milestones, read `state.milestone` from `.loop/state.json`; when
+that file is absent (a fresh worktree), ask the daemon — `GET /api/loops/<id>/plan` → `.milestone`
+— and, if the daemon is down, take the lowest milestone whose gate phase is not `done` in the plan.
+Then never offer or claim a phase of a later milestone than `state.milestone` — those stay locked
+until a human merges the gate and resumes the loop, even if their `Depends on` looks satisfied —
+and never claim a phase of an earlier (shipped) milestone either (inspecting it read-only is fine).
 
 ### 3. Conflict-check before claiming
 
@@ -123,8 +125,9 @@ Every "ask the user" gate becomes deterministic:
 - **Step 1 still re-resolves** the plan from the daemon — freshness matters even more with
   parallel lanes.
 - **No lane menu (step 2):** the given phase *is* the choice.
-- **Milestone refusal:** if the given phase belongs to a later milestone than `state.milestone`,
-  emit `REFUSED: phase belongs to a later milestone`, write blocked status, and stop.
+- **Milestone refusal:** resolve `state.milestone` as in step 2. If the given phase belongs to a
+  later milestone, emit `REFUSED: phase belongs to a later milestone`; if to an earlier one, emit
+  `REFUSED: phase belongs to a shipped milestone`. Either way write blocked status and stop.
 - **Review refusal:** if the given phase is `[kind: pr-review]`, emit
   `REFUSED: review phases are orchestrator-owned`, write blocked status, and stop.
 - **No claim confirmation (step 4), no git prompt** — you are already in the lane worktree

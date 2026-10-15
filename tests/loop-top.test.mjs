@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { gateText, inferLoop, milestoneTitles, phaseRows, pickerRows, pipelineSummary, tierChoices } from "../loop-top.mjs";
+import { fitRows, gateText, inferLoop, milestoneTitles, phaseRows, pickerRows, pipelineSummary, tierChoices } from "../loop-top.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "loop-top.mjs");
 
@@ -620,4 +620,57 @@ test("pickerRows: awaiting-merge sits after active, before finished; the runId s
   ]);
   assert.deepEqual(rows.map((r) => r.split(/\s+/)[1]), ["live", "park", "fin"]);
   assert.match(rows[1], /^awaiting-merge  park /);
+});
+
+// A late phase 5 inserted into milestone 1 (stable ids): plan order 1, 5, 2 | 3, 4.
+const lateSnapshot = () => ({
+  effort: { milestone: 1, milestoneTotal: 2, integrationBranch: "feat/m1" },
+  graph: {
+    milestones: MILESTONES,
+    nodes: [
+      node({ id: "1", phase: "1", title: "Work", ui: "done", milestone: 1 }),
+      node({ id: "5", phase: "5", title: "Late", ui: "done", milestone: 1 }),
+      node({ id: "2", phase: "2", kind: "pr-review", gate: "merge", lane: "review", title: "Gate", ui: "done", milestone: 1 }),
+      node({ id: "3", phase: "3", title: "Next", milestone: 2 }),
+      node({ id: "4", phase: "4", title: "Last", milestone: 2 }),
+    ],
+    edges: [
+      { source: "1", target: "5", kind: "depends", blocking: false },
+      { source: "5", target: "2", kind: "depends", blocking: false },
+      { source: "2", target: "3", kind: "depends", blocking: false },
+      { source: "3", target: "4", kind: "depends", blocking: true },
+    ],
+  },
+});
+
+test("phaseRows: multi-milestone plans keep document order per milestone (late phase 5 stays in M1)", () => {
+  assert.deepEqual(phaseRows(lateSnapshot(), null).map((r) => r.label), ["1", "5", "2", "3", "4"]);
+});
+
+for (const mode of [[], ["--graph"]]) {
+  test(`--once ${mode.join(" ")}: late phase 5 in M1 → each milestone heading once, in order`, async (t) => {
+    const fx = fixture({ snapshot: lateSnapshot() });
+    t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+    const out = await runCli(["--once", ...mode, "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+    const lines = out.stdout.split("\n");
+    const at = (re) => lines.findIndex((l) => re.test(l));
+    assert.equal(lines.filter((l) => /M\d — /.test(l)).length, 2);
+    assert.ok(at(/M1 — Core$/) < at(/ 5 +Late/) && at(/ 5 +Late/) < at(/ 2 +Gate/) && at(/ 2 +Gate/) < at(/M2 — Polish$/) && at(/M2 — Polish$/) < at(/ 3 +Next/));
+  });
+}
+
+test("--once --graph: milestone headings keep the rail continuous", async (t) => {
+  const fx = fixture({ snapshot: lateSnapshot() });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "--graph", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.match(out.stdout, /\n +│ +M2 — Polish\n/);
+});
+
+test("fitRows: headings never count as hidden phases; a fully hidden milestone drops its heading", () => {
+  const g = (text, over = {}) => ({ done: false, selected: false, lines: [text], ...over });
+  const groups = [
+    g("M1", { heading: true, milestone: 1 }), g("r1", { done: true, milestone: 1 }), g("r2", { done: true, milestone: 1 }),
+    g("M2", { heading: true, milestone: 2 }), g("r3", { selected: true, milestone: 2 }), g("r4", { milestone: 2 }),
+  ];
+  assert.deepEqual(fitRows(groups, 4, (_s, x) => x), ["  ✓ 2 earlier done phase(s) hidden", "M2", "r3", "r4"]);
 });

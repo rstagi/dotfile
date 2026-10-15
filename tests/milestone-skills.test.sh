@@ -5,10 +5,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 source "$HERE/lib.sh"
 
+# assert_lacks <haystack> <needle> <msg>
+assert_lacks() { assert_eq "$([[ "$1" == *"$2"* ]] && echo present || echo absent)" absent "$3"; }
+
 FORMAT="$(cat "$ROOT/.claude/skills/multiphase-plan/references/plan-format.md")"
 PLAN_SKILL="$(cat "$ROOT/.claude/skills/multiphase-plan/SKILL.md")"
 PICKUP="$(cat "$ROOT/.claude/skills/loop-pickup/SKILL.md")"
 HANDOFF="$(cat "$ROOT/.claude/skills/loop-handoff/SKILL.md")"
+PROTOCOL="$(cat "$ROOT/.claude/skills/loop-execute/references/loop-protocol.md")"
 CLAUDE_MD="$(cat "$ROOT/CLAUDE.md")"
 README="$(cat "$ROOT/loop-web/README.md")"
 
@@ -38,9 +42,22 @@ assert_contains "$PLAN_SKILL" '  - milestones: one PR, or several' "step-1 quest
 echo "milestone skills: loop-pickup respects the current milestone"
 assert_contains "$PICKUP" 'never offer or claim a phase of a later milestone than `state.milestone`' "pickup never claims later milestone"
 assert_contains "$PICKUP" 'REFUSED: phase belongs to a later milestone' "pickup auto refusal"
+assert_contains "$PICKUP" '`GET /api/loops/<id>/plan` → `.milestone`' "pickup: no state.json → daemon milestone"
+assert_contains "$PICKUP" 'lowest milestone whose gate phase is not `done`' "pickup: daemon-down fallback"
+assert_lacks "$PICKUP" 'absent = milestone 1' "pickup: no blind milestone-1 default"
+assert_contains "$PICKUP" 'never claim a phase of an earlier (shipped) milestone' "pickup never claims earlier milestone"
+assert_contains "$PICKUP" 'REFUSED: phase belongs to a shipped milestone' "pickup auto refusal: earlier milestone"
 
 echo "milestone skills: loop-handoff never completes a later milestone"
 assert_contains "$HANDOFF" 'never mark a phase of a later milestone than `state.milestone` `done`' "handoff never marks later milestone done"
+assert_contains "$HANDOFF" '`GET /api/loops/<id>/plan` → `.milestone`' "handoff: no state.json → daemon milestone"
+assert_contains "$HANDOFF" 'lowest milestone whose gate phase is not `done`' "handoff: daemon-down fallback"
+assert_contains "$HANDOFF" 'never change the status of a phase of an earlier (shipped) milestone' "handoff never touches earlier milestone"
+
+echo "milestone skills: loop-protocol milestone events carry their payload in detail"
+assert_contains "$PROTOCOL" '| `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |' "awaiting-merge detail"
+assert_contains "$PROTOCOL" '| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` |' "resumed detail"
+assert_lacks "$PROTOCOL" '| milestone, prs |' "no unsupported milestone/prs fields"
 
 echo "milestone skills: CLAUDE.md + README"
 assert_contains "$CLAUDE_MD" '**Milestones:**' "CLAUDE.md milestones paragraph"
