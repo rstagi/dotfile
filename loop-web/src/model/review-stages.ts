@@ -1,6 +1,6 @@
 // AR pipelines replay completed ledger rows, then show the maximum remaining path.
-// Historical shallow/medium pipelines keep their original fixed attempt positions.
-import type { ReviewChain, ReviewConfig, ReviewLedgerEntry, ReviewProvider, ReviewRole, ReviewRun, ReviewRunState, ReviewStageRun, ReviewTier } from "./types.ts";
+// Pre-AR pipelines (no ledger rows or pinned config, but run dirs) keep their fixed positions.
+import type { ReviewChain, ReviewConfig, ReviewLedgerEntry, ReviewPipelineConfig, ReviewProvider, ReviewRole, ReviewRun, ReviewRunState, ReviewStageRun, ReviewTier } from "./types.ts";
 
 export interface PlannedReviewRun {
   k: number;
@@ -15,6 +15,7 @@ interface ArStep {
 }
 
 export const DEFAULT_REVIEW_ROUNDS: Record<ReviewTier, number> = { standard: 2, shallow: 1, medium: 3, max: 2 };
+const DEFAULT_REVIEW_INNER = 2;
 const PROVIDERS = ["gpt", "claude", "grok"] as const;
 
 /** Fold each repository separately; `primary` yields to repository keys from live data. */
@@ -24,21 +25,26 @@ export function reviewStageRuns(
   planRepositories: string[],
   runsByRepository: Record<string, ReviewRun[]>,
   ledger: ReviewLedgerEntry[] = [],
+  pinned: ReviewPipelineConfig[] = [],
 ): ReviewStageRun[] {
   const phaseLedger = ledger.filter((row) => row.phase === phase);
   const ranKeys = [...new Set([
     ...Object.keys(runsByRepository).filter((key) => runsByRepository[key].some((r) => r.phase === phase)),
     ...phaseLedger.map((row) => row.repository),
+    ...pinned.filter((c) => c.phase === phase).map((c) => c.repository),
   ])];
   const keys = planRepositories.length === 1 && planRepositories[0] === "primary" && ranKeys.length
     ? ranKeys : planRepositories.map((slug) => slug.replace("/", "--"));
   return keys.flatMap((key) => {
     const runs = new Map((runsByRepository[key] ?? []).filter((r) => r.phase === phase).map((r) => [r.k, r]));
     const repository = key.replace("--", "/");
-    if (config.tier === "shallow" || config.tier === "medium") {
+    const rows = phaseLedger.filter((row) => row.repository === key);
+    const started = pinned.find((c) => c.phase === phase && c.repository === key);
+    if (started) return arStageRuns(started, repository, rows, runs);
+    if (config.tier === "shallow" || config.tier === "medium" || (!rows.length && runs.size)) {
       return planReviewRuns(config.tier, config.rounds).map((p) => foldRun(repository, p, runs.get(p.k)));
     }
-    return arStageRuns(config, repository, phaseLedger.filter((row) => row.repository === key), runs);
+    return arStageRuns(config, repository, rows, runs);
   });
 }
 
@@ -64,6 +70,7 @@ export function planReviewRuns(tier: ReviewTier, rounds: number | null): Planned
 
 function arStageRuns(config: ReviewConfig, repository: string, ledger: ReviewLedgerEntry[], runs: Map<number, ReviewRun>): ReviewStageRun[] {
   const rounds = config.rounds ?? DEFAULT_REVIEW_ROUNDS[config.tier];
+  const inner = config.inner ?? DEFAULT_REVIEW_INNER;
   const out: ReviewStageRun[] = ledger.map((row) => ({
     ...foldArRun(repository, row.k, row, runs.get(row.k)),
     state: "done" as const, verdict: row.verdict, runDir: row.runDir,
@@ -71,7 +78,7 @@ function arStageRuns(config: ReviewConfig, repository: string, ledger: ReviewLed
   const replay = [...ledger];
   let k = Math.max(0, ...ledger.map((row) => row.k));
   let step: ArStep | null;
-  while ((step = nextArStep(replay, rounds, config.inner))) {
+  while ((step = nextArStep(replay, rounds, inner))) {
     k++;
     out.push(foldArRun(repository, k, step, runs.get(k)));
     replay.push(hypotheticalRow(step, k, replay));
@@ -87,7 +94,7 @@ function arStageRuns(config: ReviewConfig, repository: string, ledger: ReviewLed
       ...foldArRun(repository, --skippedK, { stage: `fix${round}`, role: "fix", provider: "claude" }), state: "skipped",
     });
     const skippedReplay: ReviewLedgerEntry[] = [];
-    while ((step = nextArStep(skippedReplay, rounds, config.inner, round + 1)) && step.role !== "final") {
+    while ((step = nextArStep(skippedReplay, rounds, inner, round + 1)) && step.role !== "final") {
       skipped.push({ ...foldArRun(repository, --skippedK, step), state: "skipped" });
       skippedReplay.push(hypotheticalRow(step, -skippedK, skippedReplay));
     }

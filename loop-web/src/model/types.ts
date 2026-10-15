@@ -219,9 +219,18 @@ export type ReviewTier = "standard" | "max" | LegacyReviewTier;
 
 export interface ReviewConfig {
   tier: ReviewTier;
-  /** Null preserves the historical tier default for legacy plans. */
+  /** Null = untagged: execution resolves LOOP_REVIEW_ROUNDS_DEFAULT (legacy tiers: their historical default). */
   rounds: number | null;
-  /** Maximum reviewer/critic exchanges per outer round; defaults to 2. */
+  /** Maximum reviewer/critic exchanges per outer round; null = LOOP_REVIEW_INNER_DEFAULT. */
+  inner: number | null;
+}
+
+/** Limits `loop-review.sh next` pinned for one repository's started AR pipeline. */
+export interface ReviewPipelineConfig {
+  phase: string;
+  repository: string;
+  tier: ReviewTier;
+  rounds: number;
   inner: number;
 }
 
@@ -400,6 +409,7 @@ export interface Runtime {
   reviewRuns: ReviewRun[];
   reviewRunsByRepository: Record<string, ReviewRun[]>;
   reviewLedger?: ReviewLedgerEntry[];
+  reviewConfigs?: ReviewPipelineConfig[];
   /** Legacy reserved notes/pr-review.md steering note. */
   reviewNote: string | null;
   reviewNotes: Record<string, string>;

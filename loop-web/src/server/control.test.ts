@@ -81,6 +81,16 @@ describe("review tier control endpoint", () => {
     expect(new Set(stages.map((r) => r.repository))).toEqual(new Set(["acme/api"]));
   });
 
+  it("reads pinned review limits so a started pipeline renders its real rounds", async () => {
+    const runs = path.join(root, "runs");
+    fs.mkdirSync(runs, { recursive: true });
+    fs.writeFileSync(path.join(runs, "review-p2-acme--api.ledger.config.json"), JSON.stringify({ tier: "standard", rounds: 1, inner: 1 }));
+    expect((await control({ action: "review", phase: "2", tier: "standard" })).status).toBe(200);
+    const snapshot = await (await fetch(url.replace(/control$/, "snapshot"))).json() as Snapshot;
+    const stages = snapshot.graph.nodes.find((n) => n.id === "2")!.reviewStages!;
+    expect(stages.map((r) => r.stage)).not.toContain("round2");
+  });
+
   it.each(["shallow", "medium", "huge"])("rejects tier %s without editing the plan", async (tier) => {
     const response = await control({ action: "review", phase: "2", tier });
     expect(response.status).toBe(400);

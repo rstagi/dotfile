@@ -436,23 +436,23 @@ describe("parsePlan — phases", () => {
     const tagged = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\` \`[review: max]\` \`[rounds: 2]\`\n- **Depends on:** Phase 2\n`);
     const review = tagged.phases.at(-1)!;
     expect(review.title).toBe("Review pull requests");
-    expect(review.review).toEqual({ tier: "max", rounds: 2, inner: 2 });
+    expect(review.review).toEqual({ tier: "max", rounds: 2, inner: null });
 
     const plain = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review pull requests \`[lane: review]\` \`[status: todo]\` \`[kind: pr-review]\`\n- **Depends on:** Phase 2\n`);
-    expect(plain.phases.at(-1)!.review).toEqual({ tier: "standard", rounds: 2, inner: 2 });
+    expect(plain.phases.at(-1)!.review).toEqual({ tier: "standard", rounds: null, inner: null });
     expect(plain.phases[0].review).toBeNull();
   });
 
   it("warns on an unknown review tier or out-of-range rounds and falls back to defaults", () => {
     const bad = parsePlan(`${MULTI_REPO}\n### Phase 3 — Review \`[lane: review]\` \`[kind: pr-review]\` \`[review: huge]\` \`[rounds: 9]\`\n- **Depends on:** Phase 2\n`);
-    expect(bad.phases.at(-1)!.review).toEqual({ tier: "standard", rounds: 2, inner: 2 });
+    expect(bad.phases.at(-1)!.review).toEqual({ tier: "standard", rounds: null, inner: null });
     expect(bad.warnings.join("\n")).toMatch(/Phase 3.*review tier/i);
     expect(bad.warnings.join("\n")).toMatch(/Phase 3.*rounds/i);
   });
 
   it.each(["shallow", "medium"])("preserves legacy %s reviews with a warning for historical plans", (tier) => {
     const plan = parsePlan(`# History\n\n## Phases\n\n### Phase 1 — Review [kind: pr-review] [review: ${tier}]\n`);
-    expect(plan.phases[0].review).toEqual({ tier, rounds: null, inner: 2 });
+    expect(plan.phases[0].review).toEqual({ tier, rounds: null, inner: null });
     expect(plan.warnings.join("\n")).toMatch(new RegExp(`Phase 1.*legacy.*${tier}`, "i"));
     expect(plan.warnings.join("\n")).toMatch(/standard\|max/);
   });
@@ -463,10 +463,10 @@ describe("parsePlan — phases", () => {
     expect(plan.warnings).toEqual([]);
   });
 
-  it.each(["", " ", "0", "6", "-1", "1.5", "many", "Infinity"])("warns and defaults to inner 2 for an invalid cap: %j", (inner) => {
+  it.each(["", " ", "0", "6", "-1", "1.5", "many", "Infinity"])("warns and leaves an invalid inner cap to the runtime default: %j", (inner) => {
     const plan = parsePlan(`# AR\n\n## Phases\n\n### Phase 1 — Review [kind: pr-review] [inner: ${inner}]\n`);
-    expect(plan.phases[0].review).toEqual({ tier: "standard", rounds: 2, inner: 2 });
-    expect(plan.warnings.join("\n")).toMatch(/Phase 1.*inner.*1\.\.5.*default.*2/i);
+    expect(plan.phases[0].review).toEqual({ tier: "standard", rounds: null, inner: null });
+    expect(plan.warnings.join("\n")).toMatch(/Phase 1.*inner.*1\.\.5.*runtime default/i);
   });
 
   it("warns when work appears after the last explicit PR-review phase", () => {

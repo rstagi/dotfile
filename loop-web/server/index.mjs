@@ -628,12 +628,18 @@ function readLoopInput(loopDir) {
   const runsDir = path.join(loopDir, "runs");
   const runs = [];
   const reviewLedgers = [];
+  const reviewConfigs = [];
   if (isDir(runsDir)) {
     for (const name of safeReaddir(runsDir)) {
       const d = path.join(runsDir, name);
       if (/^review-p\d+-.+\.ledger\.tsv$/.test(name) && !isDir(d)) {
         const content = readText(d);
         if (content !== null) reviewLedgers.push({ name, content });
+        continue;
+      }
+      if (/^review-p\d+-.+\.ledger\.config\.json$/.test(name) && !isDir(d)) {
+        const content = readText(d);
+        if (content !== null) reviewConfigs.push({ name, content });
         continue;
       }
       if (!isDir(d)) continue;
@@ -678,6 +684,7 @@ function readLoopInput(loopDir) {
     events: readText(path.join(loopDir, "events.jsonl")),
     runs,
     reviewLedgers,
+    reviewConfigs,
     hil,
     notes,
     control: readControl(loopDir),

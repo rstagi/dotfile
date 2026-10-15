@@ -73,7 +73,7 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
 
   const explicitReviews = plan.phases.some((phase) => phase.kind === "pr-review");
   const phaseNodes = plan.phases.map((phase) => phase.kind === "pr-review"
-    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], milestoneParticipants(plan, phase), runtime?.reviewRunsByRepository ?? {}, runtime?.state?.awaitingMerge ?? null, runtime?.reviewLedger ?? [])
+    ? buildExplicitReviewNode(phase, runtime?.phases[phase.phase], milestoneParticipants(plan, phase), runtime?.reviewRunsByRepository ?? {}, runtime?.state?.awaitingMerge ?? null, runtime?.reviewLedger ?? [], runtime?.reviewConfigs ?? [])
     : buildPhaseNode(phase, runtime?.phases[phase.phase], now));
   const reviewNodes = explicitReviews ? [] : plan.repositories.map((repository) => {
     const legacy = repository.slug === "primary";
@@ -204,6 +204,7 @@ function buildExplicitReviewNode(
   reviewRuns: Record<string, ReviewRun[]>,
   awaitingMerge: NonNullable<StateJson["awaitingMerge"]> | null,
   ledger: NonNullable<Runtime["reviewLedger"]>,
+  pinned: NonNullable<Runtime["reviewConfigs"]>,
 ): GraphNode {
   const status = validStateStatus(runtime?.state?.status) ?? mapPlanStatus(phase.status);
   const paused = (runtime?.paused ?? false) || status === "paused";
@@ -228,7 +229,7 @@ function buildExplicitReviewNode(
     paused,
     modelOverride: runtime?.modelOverride ?? null,
     review: phase.review,
-    reviewStages: phase.review ? reviewStageRuns(phase.review, phase.phase, repositories, reviewRuns, ledger) : [],
+    reviewStages: phase.review ? reviewStageRuns(phase.review, phase.phase, repositories, reviewRuns, ledger, pinned) : [],
     ...(parked ? { awaitingMerge: true, prs: { ...awaitingMerge.prs } } : {}),
   };
 }

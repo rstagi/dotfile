@@ -8,6 +8,12 @@ import type { ReviewRun } from "./types.ts";
 
 const LEGACY_STAGES = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "legacy-stages.tsv"), "utf8");
 
+function pinned(config: object) {
+  return parseLoop({ present: true, state: null, events: null, runs: [], hil: [], notes: [],
+    reviewConfigs: [{ name: "review-p7-acme--api.ledger.config.json", content: JSON.stringify(config) }],
+  }).reviewConfigs!;
+}
+
 function ledger(...lines: string[]) {
   return parseLoop({ present: true, state: null, events: null, runs: [], hil: [], notes: [],
     reviewLedgers: [{ name: "review-p7-acme--api.ledger.tsv", content: lines.join("\n") }],
@@ -77,6 +83,36 @@ describe("AR reviewStageRuns", () => {
     expect(out[5]).toMatchObject({ k: 6, stage: "fix1", role: "fix", state: "running" });
     expect(out[6]).toMatchObject({ stage: "round2", role: "review", provider: "claude", state: "planned" });
     expect(out.some((r) => r.state === "skipped")).toBe(false);
+  });
+});
+
+describe("reviewStageRuns protocol format", () => {
+  it("renders a historical max review without a ledger or pinned config in its original shape", () => {
+    const done = Array.from({ length: 12 }, (_, i) => run({ k: i + 1, meta: { engineExit: 0 }, status: { outcome: "done" } }));
+    const out = reviewStageRuns({ tier: "max", rounds: 3, inner: 2 }, "7", ["acme/api"], { "acme--api": done });
+    expect(out.map((r) => [r.k, r.stage, r.chain, r.state])).toEqual(
+      planReviewRuns("max", 3).map((p) => [p.k, p.stage, p.chain, "done"]));
+    expect(out.some((r) => r.role)).toBe(false);
+  });
+
+  it("renders a started pipeline from its pinned limits, not the plan's omitted defaults", () => {
+    const rows = ledger(
+      "a1\tround1\treview\tgpt\tNEEDS_CHANGES\truns/review-p7-acme--api-a1",
+      "a2\tround1\tcritic\tclaude\tAGREE\truns/review-p7-acme--api-a2",
+      "a3\tfix1\tfix\tclaude\tPUSHED\truns/review-p7-acme--api-a3",
+      "a4\tround2\treview\tclaude\tNEEDS_CHANGES\truns/review-p7-acme--api-a4",
+      "a5\tround2\tcritic\tgrok\tAGREE\truns/review-p7-acme--api-a5",
+    );
+    const out = reviewStageRuns({ tier: "standard", rounds: null, inner: null }, "7", ["acme/api"], {}, rows,
+      pinned({ tier: "standard", rounds: 3, inner: 2 }));
+    expect(out.find((r) => r.k === 6)).toMatchObject({ stage: "fix2", role: "fix" });
+  });
+
+  it("treats a pinned config as AR even before its first ledger row", () => {
+    const out = reviewStageRuns({ tier: "max", rounds: null, inner: null }, "7", ["acme/api"],
+      { "acme--api": [run({ k: 1, leg: { engine: "codex", model: "gpt-6-astra" } })] }, [], pinned({ tier: "max", rounds: 1, inner: 1 }));
+    expect(out[0]).toMatchObject({ k: 1, role: "review", provider: "gpt", state: "running" });
+    expect(out.at(-1)).toMatchObject({ role: "final" });
   });
 });
 

@@ -424,7 +424,7 @@ function buildPhase(
   };
 }
 
-/** New plans default to standard ×2; historical tiers keep their original defaults. */
+/** Omitted or invalid limits stay null: loop-models.conf resolves them at execution time. */
 function parseReviewConfig(heading: string, phaseNum: string, warnings: string[]): ReviewConfig {
   const rawTier = heading.match(REVIEW_TAG)?.[1]?.toLowerCase();
   let tier: ReviewTier = "standard";
@@ -435,18 +435,18 @@ function parseReviewConfig(heading: string, phaseNum: string, warnings: string[]
   }
 
   const rawRounds = heading.match(ROUNDS_TAG)?.[1];
-  let rounds: number | null = tier === "shallow" || tier === "medium" ? null : 2;
+  let rounds: number | null = null;
   if (rawRounds != null) {
     const n = Number(rawRounds);
     if (Number.isInteger(n) && n >= 1 && n <= REVIEW_ROUNDS_CAP) rounds = n;
     else warnings.push(`Phase ${phaseNum}: rounds must be 1..${REVIEW_ROUNDS_CAP} — using the tier default`);
   }
   const rawInner = heading.match(INNER_TAG)?.[1];
-  let inner = 2;
+  let inner: number | null = null;
   if (rawInner != null) {
     const n = Number(rawInner);
     if (Number.isInteger(n) && n >= 1 && n <= REVIEW_ROUNDS_CAP) inner = n;
-    else warnings.push(`Phase ${phaseNum}: inner must be 1..${REVIEW_ROUNDS_CAP} — using default 2`);
+    else warnings.push(`Phase ${phaseNum}: inner must be 1..${REVIEW_ROUNDS_CAP} — using the runtime default`);
   }
   return { tier, rounds, inner };
 }

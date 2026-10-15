@@ -5,6 +5,7 @@ import type {
   Attempt,
   ReviewRun,
   ReviewLedgerEntry,
+  ReviewPipelineConfig,
   ReviewRole,
   ReviewProvider,
   RawEvent,
@@ -50,6 +51,8 @@ export interface LoopInput {
   hil: RawHil[];
   notes: RawNote[];
   reviewLedgers?: { name: string; content: string }[];
+  /** `<ledger-stem>.config.json` limits pinned by `loop-review.sh next`. */
+  reviewConfigs?: { name: string; content: string }[];
   /** Parsed `.loop/control/` (pause flags + model overrides); absent → nothing controlled. */
   control?: LoopControl;
 }
@@ -119,7 +122,8 @@ export function parseLoop(input: LoopInput): Runtime {
   }
 
   return { present: true, state: state ?? null, phases, events, reviewRuns,
-    reviewRunsByRepository, reviewLedger: parseReviewLedgers(input.reviewLedgers ?? []), reviewNote, reviewNotes, control };
+    reviewRunsByRepository, reviewLedger: parseReviewLedgers(input.reviewLedgers ?? []),
+    reviewConfigs: parseReviewConfigs(input.reviewConfigs ?? []), reviewNote, reviewNotes, control };
 }
 
 function parseReviewLedgers(ledgers: NonNullable<LoopInput["reviewLedgers"]>): ReviewLedgerEntry[] {
@@ -143,6 +147,18 @@ function parseReviewLedgers(ledgers: NonNullable<LoopInput["reviewLedgers"]>): R
     }
   }
   return entries;
+}
+
+function parseReviewConfigs(configs: NonNullable<LoopInput["reviewConfigs"]>): ReviewPipelineConfig[] {
+  const out: ReviewPipelineConfig[] = [];
+  const limit = (n: unknown) => Number.isInteger(n) && (n as number) >= 1;
+  for (const config of configs) {
+    const name = config.name.match(/^review-p(\d+)-(.+)\.ledger\.config\.json$/);
+    const raw = name ? safeJson<{ tier?: unknown; rounds?: unknown; inner?: unknown }>(config.content) : null;
+    if (!raw || (raw.tier !== "standard" && raw.tier !== "max") || !limit(raw.rounds) || !limit(raw.inner)) continue;
+    out.push({ phase: name![1], repository: name![2], tier: raw.tier, rounds: raw.rounds as number, inner: raw.inner as number });
+  }
+  return out;
 }
 
 // --- run dirs ------------------------------------------------------------------------
