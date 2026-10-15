@@ -510,7 +510,7 @@ test("control review: rewrites the review phase's [review:] tag in plan.md; guar
   assert.equal((await control({ action: "review", phase: "2", tier: "huge" })).status, 400);
   assert.equal((await control({ action: "review", phase: "1", tier: "max" })).status, 400, "not a review phase");
   fs.writeFileSync(planFile, fs.readFileSync(planFile, "utf8").replace("`[status: todo]` `[kind: pr-review]`", "`[status: running]` `[kind: pr-review]`"));
-  assert.equal((await control({ action: "review", phase: "2", tier: "shallow" })).status, 409, "already started");
+  assert.equal((await control({ action: "review", phase: "2", tier: "standard" })).status, 409, "already started");
 });
 
 test("control model: accepts grok legs alongside codex|claude; rejects unknown engines", async (t) => {
