@@ -317,15 +317,40 @@ test("phaseRows + --once: review phases carry their tier; the model column shows
   const snapshot = { graph: { nodes: [
     node({ id: "1", phase: "1", title: "Work", ui: "done" }),
     node({ id: "2", phase: "2", kind: "pr-review", lane: "review", title: "Deep review", ui: "todo", review: { tier: "max", rounds: 2 } }),
-    node({ id: "3", phase: "3", kind: "pr-review", lane: "review", title: "Default review", ui: "todo", review: { tier: "medium", rounds: null } }),
+    node({ id: "3", phase: "3", kind: "pr-review", lane: "review", title: "Default review", ui: "todo", review: { tier: "standard", rounds: null } }),
   ] } };
-  assert.deepEqual(phaseRows(snapshot, null).map((r) => r.review), [null, { tier: "max", rounds: 2 }, { tier: "medium", rounds: null }]);
+  assert.deepEqual(phaseRows(snapshot, null).map((r) => r.review), [null, { tier: "max", rounds: 2 }, { tier: "standard", rounds: null }]);
 
   const fx = fixture({ snapshot });
   t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
   const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
   assert.match(out.stdout, /2 +Deep review +review +max review ×2 /);
-  assert.match(out.stdout, /3 +Default review +review +medium review ×3 /); // tier default from loop-models.conf
+  assert.match(out.stdout, /3 +Default review +review +standard review ×2 /);
+});
+
+test("--once: shared rounds apply to every tier; explicit historical rounds stay visible", async (t) => {
+  const snapshot = { graph: { nodes: [
+    node({ id: "1", phase: "1", kind: "pr-review", review: { tier: "standard", rounds: null } }),
+    node({ id: "2", phase: "2", kind: "pr-review", review: { tier: "max", rounds: null } }),
+    node({ id: "3", phase: "3", kind: "pr-review", review: { tier: "medium", rounds: 3 } }),
+    node({ id: "4", phase: "4", kind: "pr-review", review: { tier: "shallow", rounds: 1 } }),
+  ] } };
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const conf = path.join(fx.root, "models.conf");
+  fs.writeFileSync(conf, "LOOP_REVIEW_ROUNDS_DEFAULT=4\nLOOP_REVIEW_ROUNDS_MAX=5\n");
+  const env = { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store, LOOP_MODELS_CONF: conf };
+  const configured = await runCli(["--once", "loop-demo"], { cwd: fx.root, env });
+  assert.equal(configured.code, 0, configured.stderr);
+  assert.match(configured.stdout, /standard review ×4/);
+  assert.match(configured.stdout, /max review ×4/);
+  assert.match(configured.stdout, /medium review ×3/);
+  assert.match(configured.stdout, /shallow review ×1/);
+  fs.writeFileSync(conf, "");
+  const fallback = await runCli(["--once", "loop-demo"], { cwd: fx.root, env });
+  assert.equal(fallback.code, 0, fallback.stderr);
+  assert.match(fallback.stdout, /standard review ×2/);
+  assert.match(fallback.stdout, /max review ×2/);
 });
 
 const stage = (k, stg, chain, state, repository = "acme/api", over = {}) =>
@@ -527,22 +552,28 @@ test("control model: accepts grok legs alongside codex|claude; rejects unknown e
   assert.match((await bad.json()).error, /codex\|claude\|grok/);
 });
 
-test("tierChoices: one line per tier with default rounds + models, current tier marked", () => {
+test("tierChoices: standard and max show shared rounds, inner cap and provider rotation", () => {
   const conf = [
-    "LOOP_REVIEW_ROUNDS_SHALLOW=1", "LOOP_REVIEW_ROUNDS_MEDIUM=3", "LOOP_REVIEW_ROUNDS_MAX=2",
-    'CHAIN_REVIEW_SHALLOW_ADV_A=("claude:opus");  EFFORT_REVIEW_SHALLOW_ADV_A=high',
-    'CHAIN_REVIEW_SHALLOW_FIX=("claude:sonnet")',
-    'CHAIN_REVIEW_SHALLOW_FINAL=("claude:opus")',
-    'CHAIN_REVIEW_MEDIUM_ADV_A=("codex:@sol")', 'CHAIN_REVIEW_MEDIUM_ADV_B=("claude:opus")', 'CHAIN_REVIEW_MEDIUM_ADV_C=("grok:default")',
-    'CHAIN_REVIEW_MEDIUM_FIX=("claude:opus")', 'CHAIN_REVIEW_MEDIUM_FINAL=("claude:opus")',
-    'CHAIN_REVIEW_MAX_ADV_A=("codex:@astra")', 'CHAIN_REVIEW_MAX_ADV_B=("claude:fable")',
+    "LOOP_REVIEW_ROUNDS_DEFAULT=4", "LOOP_REVIEW_INNER_DEFAULT=3", "LOOP_REVIEW_ROUNDS_MAX=5",
+    'CHAIN_REVIEW_STANDARD_GPT=("codex:@sol" "claude:sonnet")',
+    'CHAIN_REVIEW_STANDARD_CLAUDE=("claude:opus")', 'CHAIN_REVIEW_STANDARD_GROK=("grok:default")',
+    'CHAIN_REVIEW_STANDARD_FIX=("claude:opus")', 'CHAIN_REVIEW_STANDARD_FINAL=("claude:opus")',
+    'CHAIN_REVIEW_MAX_GPT=("codex:@astra")', 'CHAIN_REVIEW_MAX_CLAUDE=("claude:fable")',
+    'CHAIN_REVIEW_MAX_GROK=("grok:default")',
     'CHAIN_REVIEW_MAX_FIX=("claude:opus")', 'CHAIN_REVIEW_MAX_FINAL=("claude:opus")',
   ].join("\n");
-  const lines = tierChoices(conf, "medium");
-  assert.equal(lines.length, 3);
-  assert.match(lines[0], /^shallow +×1 +review claude:opus · fix claude:sonnet · final claude:opus$/);
-  assert.match(lines[1], /^medium +×3 +review codex:@sol \+ claude:opus \+ grok:default · fix claude:opus · final claude:opus +\(current\)$/);
-  assert.match(lines[2], /^max +×2 +review codex:@astra \+ claude:fable/);
+  assert.deepEqual(tierChoices(conf, "standard"), [
+    "standard ×4 · inner 3 · R/C rotation codex:@sol → claude:opus → grok:default · fix claude:opus · final claude:opus  (current)",
+    "max      ×4 · inner 3 · R/C rotation codex:@astra → claude:fable → grok:default · fix claude:opus · final claude:opus",
+  ]);
+});
+
+test("tierChoices: missing knobs fall back to two rounds and two inner exchanges", () => {
+  const lines = tierChoices("", "medium");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^standard ×2 · inner 2 · R\/C rotation /);
+  assert.match(lines[1], /^max +×2 · inner 2 · R\/C rotation /);
+  assert.ok(lines.every((line) => !line.includes("(current)")));
 });
 
 // ---- milestones: grouped rows, parked merge gate, current-milestone header ----

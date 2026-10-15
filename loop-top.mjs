@@ -342,14 +342,15 @@ function pickTier(row) {
   return res.stdout.trim().split(/\s+/)[0] || null;
 }
 
-/** One picker line per review tier: `tier ×rounds review <adversaries> · fix <m> · final <m>`. */
+/** One picker line per AR tier: rounds, inner cap, rotating providers, fixer and final. */
 export function tierChoices(confText, current = null) {
   const first = (key) => chainHead(confText, `REVIEW_${key}`);
-  return ["shallow", "medium", "max"].map((tier) => {
+  const rounds = confText.match(/^LOOP_REVIEW_ROUNDS_DEFAULT=(\d+)/m)?.[1] ?? 2;
+  const inner = confText.match(/^LOOP_REVIEW_INNER_DEFAULT=(\d+)/m)?.[1] ?? 2;
+  return ["standard", "max"].map((tier) => {
     const T = tier.toUpperCase();
-    const rounds = confText.match(new RegExp(`^LOOP_REVIEW_ROUNDS_${T}=(\\d+)`, "m"))?.[1] ?? { shallow: 1, medium: 3, max: 3 }[tier];
-    const reviewers = [first(`${T}_ADV_A`), first(`${T}_ADV_B`), first(`${T}_ADV_C`)].filter(Boolean).join(" + ");
-    const line = `${tier.padEnd(8)} ×${rounds}  review ${reviewers} · fix ${first(`${T}_FIX`)} · final ${first(`${T}_FINAL`)}`;
+    const reviewers = [first(`${T}_GPT`), first(`${T}_CLAUDE`), first(`${T}_GROK`)].filter(Boolean).join(" → ");
+    const line = `${tier.padEnd(8)} ×${rounds} · inner ${inner} · R/C rotation ${reviewers} · fix ${first(`${T}_FIX`)} · final ${first(`${T}_FINAL`)}`;
     return tier === current ? `${line}  (current)` : line;
   });
 }
@@ -987,11 +988,10 @@ export function fitRows(groups, avail, paint) {
   return lines;
 }
 
-/** "max review ×2"; an untagged round count falls back to LOOP_REVIEW_ROUNDS_<TIER> in loop-models.conf. */
+/** "max review ×2"; untagged rounds use the shared default in loop-models.conf. */
 function reviewText({ tier, rounds }) {
-  const conf = readFileSafe(MODELS_CONF).match(new RegExp(`^LOOP_REVIEW_ROUNDS_${tier.toUpperCase()}=(\\d+)`, "m"));
-  const fallback = { shallow: 1, medium: 3, max: 3 }[tier];
-  return `${tier} review ×${rounds ?? (conf ? Number(conf[1]) : fallback)}`;
+  const conf = readFileSafe(MODELS_CONF).match(/^LOOP_REVIEW_ROUNDS_DEFAULT=(\d+)/m);
+  return `${tier} review ×${rounds ?? (conf ? Number(conf[1]) : 2)}`;
 }
 
 /** Title as displayed: 📝 marks a phase with a steering note (emoji = 2 cols = 2 UTF-16 units). */
