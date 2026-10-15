@@ -31,6 +31,9 @@ done
 
 die() { print -u2 "loop-repo: $1"; exit "${2:-1}"; }
 
+milestone_re='^[1-9][0-9]*$'
+[[ "$MILESTONE" =~ $milestone_re ]] || die "invalid milestone '$MILESTONE'"
+
 validate_slug() {
   local slug_re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
   [[ "$1" =~ $slug_re ]] \
@@ -268,8 +271,6 @@ prepare)
   [[ -n "$REPO" ]] || die "prepare requires --repo"
   [[ -n "$RUN_ID" ]] || die "prepare requires --run-id"
   validate_run_id
-  milestone_re='^[1-9][0-9]*$'
-  [[ "$MILESTONE" =~ $milestone_re ]] || die "invalid milestone '$MILESTONE'"
   checked="$(check_repo)" || exit $?
   checkout="$(print -r -- "$checked" | jq -r .sourceRoot)"
   default_branch="$(print -r -- "$checked" | jq -r .defaultBranch)"

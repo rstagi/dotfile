@@ -151,6 +151,20 @@ $ROOT/loop-milestone.sh advance --state "$TMP/s4.json" --next 2 --branches "$BRA
 assert_exit "$?" "1" "advance without awaitingMerge refused"
 $ROOT/loop-milestone.sh advance --state "$STATE" --next 3 --branches "$BRANCHES" >/dev/null 2>&1
 assert_exit "$?" "1" "next must be parked milestone + 1"
+# bounded <cmd...>: kill after 5s (a hung parser would otherwise spin forever).
+bounded() {
+  setopt local_options no_monitor no_notify
+  "$@" & local pid=$!
+  ( sleep 5; kill -9 $pid 2>/dev/null ) &
+  local killer=$! rc
+  wait $pid; rc=$?
+  kill $killer 2>/dev/null
+  return $rc
+}
+for opt in --state --next --branches; do
+  bounded $ROOT/loop-milestone.sh advance $opt >/dev/null 2>&1
+  assert_exit "$?" "1" "$opt without a value refused"
+done
 
 echo "loop-milestone: self-hosted runtime"
 # acme/zdot hosts the Loop scripts (committed) and sorts after acme/web; state has no runtimeRoot.
@@ -207,5 +221,68 @@ assert_exit "$rc" "0" "later advance with retained host"
 assert_eq "$(print -r -- "$out" | jq -r .runtimeRoot)" "$OLD_Z" "retained host runtime root survives later milestones"
 [[ -d "$OLD_Z" ]]
 assert_exit "$?" "0" "retained host worktree still present"
+
+echo "loop-milestone: installed runtime never guesses a host"
+# Scripts run from the installed checkout ($ROOT); no runtimeRoot/runtimeRepo in state.
+RUN=run-inst
+for pair in "acme/api feat/m1-api-inst" "acme/web feat/m1-web-inst"; do
+  $ROOT/loop-repo.sh prepare --repo ${pair%% *} --run-id $RUN --integration-branch ${pair#* } >/dev/null
+done
+I1_API="$LOOP_WORKTREE_ROOT/$RUN/acme--api/integration"
+I1_WEB="$LOOP_WORKTREE_ROOT/$RUN/acme--web/integration"
+jq -n --arg run "$RUN" --arg api "$API_PR" --arg web "$WEB_PR" --arg apiwt "$I1_API" --arg webwt "$I1_WEB" \
+  '{runId:$run, milestone:1, integrationBranch:"feat/m1-api-inst", integrationWorktree:$apiwt,
+    repositories:{
+      "acme/api":{integrationBranch:"feat/m1-api-inst", integrationWorktree:$apiwt, adopted:false},
+      "acme/web":{integrationBranch:"feat/m1-web-inst", integrationWorktree:$webwt, adopted:false}},
+    awaitingMerge:{milestone:1, prs:{"acme/api":$api, "acme/web":$web}}}' > "$TMP/inst1.json"
+out="$($ROOT/loop-milestone.sh advance --state "$TMP/inst1.json" --next 2 \
+  --branches '{"acme/api":"feat/m2-api-inst","acme/web":"feat/m2-web-inst"}')"; rc=$?
+assert_exit "$rc" "0" "installed advance to M2"
+assert_eq "$(print -r -- "$out" | jq -c '[.runtimeRoot, .runtimeRepo]')" "[null,null]" "no host: runtimeRoot/runtimeRepo null"
+I2_API="$(print -r -- "$out" | jq -r '.repositories["acme/api"].integrationWorktree')"
+I2_WEB="$(print -r -- "$out" | jq -r '.repositories["acme/web"].integrationWorktree')"
+assert_eq "$(print -r -- "$out" | jq -r .integrationWorktree)" "$I2_API" "integrationWorktree still first participant"
+[[ ! -e "$I1_API" && ! -e "$I1_WEB" ]]
+assert_exit "$?" "0" "every M1 worktree retired"
+jq --argjson patch "$out" --arg api "$API_PR" '. + $patch | .awaitingMerge = {milestone:2, prs:{"acme/api":$api}}' \
+  "$TMP/inst1.json" > "$TMP/inst2.json"
+out="$($ROOT/loop-milestone.sh advance --state "$TMP/inst2.json" --next 3 \
+  --branches '{"acme/api":"feat/m3-api-inst","acme/web":"feat/m3-web-inst"}')"; rc=$?
+assert_exit "$rc" "0" "installed advance to M3"
+assert_eq "$(print -r -- "$out" | jq -c '[.runtimeRoot, .runtimeRepo]')" "[null,null]" "M3 runtimeRoot still null"
+[[ -d "$I2_API" || -d "$I2_WEB" ]]
+assert_exit "$?" "1" "every M2 worktree retired"
+
+echo "loop-milestone: runtimeRepo host sits out M2, rejoins M3"
+RUN=run-rejoin
+for pair in "acme/zdot feat/m1-zdot-rejoin" "acme/web feat/m1-web-rejoin"; do
+  $ROOT/loop-repo.sh prepare --repo ${pair%% *} --run-id $RUN --integration-branch ${pair#* } >/dev/null
+done
+R1_Z="$LOOP_WORKTREE_ROOT/$RUN/acme--zdot/integration"
+R1_WEB="$LOOP_WORKTREE_ROOT/$RUN/acme--web/integration"
+jq -n --arg run "$RUN" --arg api "$API_PR" --arg web "$WEB_PR" --arg zwt "$R1_Z" --arg webwt "$R1_WEB" \
+  '{runId:$run, milestone:1, runtimeRepo:"acme/zdot", runtimeRoot:$zwt, integrationWorktree:$zwt,
+    repositories:{
+      "acme/zdot":{integrationBranch:"feat/m1-zdot-rejoin", integrationWorktree:$zwt, adopted:false},
+      "acme/web":{integrationBranch:"feat/m1-web-rejoin", integrationWorktree:$webwt, adopted:false}},
+    awaitingMerge:{milestone:1, prs:{"acme/zdot":$api, "acme/web":$web}}}' > "$TMP/rejoin1.json"
+out="$($ROOT/loop-milestone.sh advance --state "$TMP/rejoin1.json" --next 2 --branches '{"acme/web":"feat/m2-web-rejoin"}')"; rc=$?
+assert_exit "$rc" "0" "host sits out M2"
+assert_eq "$(print -r -- "$out" | jq -c '[.runtimeRoot, .runtimeRepo]')" "[\"$R1_Z\",\"acme/zdot\"]" "runtime stays in retained host worktree"
+[[ -d "$R1_Z" && ! -e "$R1_WEB" ]]
+assert_exit "$?" "0" "host retained, web retired"
+jq --argjson patch "$out" --arg web "$WEB_PR" '. + $patch | .awaitingMerge = {milestone:2, prs:{"acme/web":$web}}' \
+  "$TMP/rejoin1.json" > "$TMP/rejoin2.json"
+R3_Z="$LOOP_WORKTREE_ROOT/$RUN/acme--zdot/integration-feat-m3-zdot-rejoin-$(branch_hash feat/m3-zdot-rejoin)"
+RB='{"acme/zdot":"feat/m3-zdot-rejoin","acme/web":"feat/m3-web-rejoin"}'
+out="$($ROOT/loop-milestone.sh advance --state "$TMP/rejoin2.json" --next 3 --branches "$RB")"; rc=$?
+assert_exit "$rc" "0" "host rejoins M3"
+assert_eq "$(print -r -- "$out" | jq -c '[.runtimeRoot, .runtimeRepo]')" "[\"$R3_Z\",\"acme/zdot\"]" "runtime moves to host's new M3 worktree"
+[[ ! -e "$R1_Z" ]]
+assert_exit "$?" "0" "stale retained host worktree retired"
+out2="$($ROOT/loop-milestone.sh advance --state "$TMP/rejoin2.json" --next 3 --branches "$RB")"; rc=$?
+assert_exit "$rc" "0" "rejoin retry"
+assert_eq "$out2" "$out" "rejoin retry yields same patch"
 
 test_summary

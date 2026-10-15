@@ -68,6 +68,9 @@ assert_eq "$(print "$out" | jq -r .mode)" "create" "check reports create mode fo
 assert_eq "$(print "$out" | jq -r .adoptWorktree)" "null" "create mode has no adopt worktree"
 $ROOT/loop-repo.sh check --repo acme/api --integration-branch trunk >/dev/null 2>&1
 assert_exit "$?" "4" "default branch refused as integration branch"
+out="$($ROOT/loop-repo.sh check --repo acme/api --integration-branch feat/api --milestone abc 2>&1)"
+assert_exit "$?" "1" "check refuses invalid milestone"
+assert_contains "$out" "invalid milestone 'abc'" "invalid milestone reported, no arithmetic error"
 
 echo "loop-repo: check reports adopt mode for an existing branch, refuses dirty worktrees"
 git -C "$CHECKOUT" branch feat/collision
@@ -229,11 +232,11 @@ M2_WT="$(print "$m2_out" | jq -r .integrationWorktree)"
 assert_eq "$M2_WT" "$LOOP_WORKTREE_ROOT/run-1/acme--api/integration-feat-api-milestone-2-$(printf %s feat/api-milestone-2 | shasum | cut -c1-8)" "later milestone path includes branch slug + hash"
 assert_eq "$(print "$m2_out" | jq -r .baseSha)" "$M2_BASE" "later milestone fetches the latest default"
 assert_eq "$(print "$m2_out" | jq -r .adopted)" "false" "later milestone creates rather than adopts"
-if [[ -d "$M2_WT" ]]; then
-  assert_eq "$(git -C "$M2_WT" rev-parse HEAD)" "$M2_BASE" "later milestone starts exactly at default"
-  [[ -e "$M2_WT/result.txt" ]]
-  assert_exit "$?" "1" "previous integration changes do not leak into new milestone"
-fi
+[[ -d "$M2_WT" ]]
+assert_exit "$?" "0" "later milestone worktree exists"
+assert_eq "$(git -C "$M2_WT" rev-parse HEAD 2>/dev/null)" "$M2_BASE" "later milestone starts exactly at default"
+[[ -d "$M2_WT" && ! -e "$M2_WT/result.txt" ]]
+assert_exit "$?" "0" "previous integration changes do not leak into new milestone"
 assert_eq "$(cat "$WT/result.txt")" "api" "first milestone worktree remains available"
 
 echo "loop-repo: same-slug branches get distinct paths"
