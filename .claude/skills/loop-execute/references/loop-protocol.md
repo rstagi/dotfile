@@ -264,7 +264,7 @@ fields — keep the shape:
   "runId": "loop-<effort-slug>-<date>-<HHMMSS|rand>",
   "effort": "...",
   "milestone": 1,
-  "runtimeRepo": null, "runtimeRoot": null,
+  "runtimeRepo": null, "runtimeRoot": null, "runtimeAdopted": null, "resumePending": null,
   "awaitingMerge": { "milestone": 1, "prs": { "owner/api": "<gate PR url>" } },
   "milestones": { "1": { "prs": { "owner/api": "<gate PR url>" } } },
   "repositories": {
@@ -293,7 +293,10 @@ is set only while parked at a gate and cleared (`null`) on resume; `milestones[N
 each shipped milestone's gate PRs. On a milestone change `repositories` is replaced by the new
 milestone's participants. `runtimeRepo` (slug) + `runtimeRoot` (abs path) are set only when the
 effort changes the Loop runtime itself (self-hosted: the repository whose integration worktree is
-`RUNTIME_ROOT`); otherwise both stay `null`.
+`RUNTIME_ROOT`); otherwise both stay `null`. `runtimeAdopted` mirrors that worktree's `adopted`
+flag so a host retained across a milestone it sits out is never retired if it is the user's.
+`resumePending` is the milestone a resume applied but has not finished restarting (set by the
+`advance` patch, cleared last by resume step 5); `null` otherwise.
 
 Legacy scalar `integrationBranch/integrationWorktree/prUrl/review` state migrates to the
 synthetic `primary` repository. Singular daemon projections remain for legacy consumers.
@@ -1037,8 +1040,10 @@ truth for code, the plan/daemon for claims + phase status, state for attempt boo
   parking finished) → recover `awaitingMerge` from the gate review's recorded PR URLs, persist it
   (`check` reads it from disk) and redo the park's Status push, event and notification
   (idempotent); never re-run the gate review.
-- `milestones[N].prs` recorded for the previous milestone, `awaitingMerge` null and `sub/REVIEW_READY` present
-  (crash after the advance patch was applied, before restart) → run resume step 5 only (plan Status push, `milestone.resumed`, clear the marker, respawn).
+- `state.resumePending` equals `state.milestone` (crash after the advance patch was applied, before restart)
+  → run resume step 5 only (plan Status push, `milestone.resumed`, clear the marker, respawn), then
+  clear `resumePending`. Milestone history and `sub/REVIEW_READY` are not evidence: both persist
+  through every later milestone's own review barrier.
 - Phases of a milestone whose gate PRs are merged are permanently shipped: never re-check them
   against a later integration tip (squash/rebase merges rewrite it) and never re-run them.
   Reconcile git against the current milestone's integration branches only.

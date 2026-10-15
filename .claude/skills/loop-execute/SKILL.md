@@ -439,9 +439,10 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    persist it with `loop-state.sh set '.awaitingMerge = …'` (`check` reads it from disk), then
    re-run step-8 park items 2-4 (idempotent): plan Status `awaiting merge` push, the
    `milestone.awaiting-merge` event, the notification. Continue to check; never re-run the gate
-   review. **Crash after apply:** `milestones[N].prs` recorded for the previous milestone,
-   `awaitingMerge` null and `sub/REVIEW_READY` present → the patch is already applied:
-   run resume step 5 only.
+   review. **Crash after apply:** `state.resumePending` equals `state.milestone` → the patch is
+   already applied but the restart never finished: run resume step 5 only. (Recorded milestone
+   history or a present `sub/REVIEW_READY` alone prove nothing — both persist through every later
+   milestone's own review.)
 2. **Check.** `loop-milestone.sh check --state .loop/state.json`: exit 3 (open) → report each open
    PR, stop, change nothing; exit 4 (closed unmerged) → open a HIL for the human (reopen or
    re-plan), stop; exit 1 (gh/state error) → report it, stop; exit 0 (all merged) → continue.
@@ -454,15 +455,16 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    `PATCH="$(loop-milestone.sh advance ...)"; loop-state.sh set ". + $PATCH"` (the patch JSON is a
    valid jq literal). `. + ` replaces each top-level key wholesale — `repositories` becomes exactly
    the next participants and `prUrl`/`review`/`reviewPipeline`/`awaitingMerge` reset to `null`, with
-   new `milestone`, `integrationWorktree`, `integrationBranch`, `runtimeRepo`, `runtimeRoot`, `milestones[N].prs`
-   history. Never deep-merge with `*` (keeps stale repositories) or `set` the bare patch (drops the
+   new `milestone`, `integrationWorktree`, `integrationBranch`, `runtimeRepo`, `runtimeRoot`,
+   `runtimeAdopted`, `resumePending` (= the new milestone), `milestones[N].prs` history. Never deep-merge with `*` (keeps stale repositories) or `set` the bare patch (drops the
    rest of state). When the effort changes the Loop
    runtime itself (`runtimeRepo` set), `runtimeRoot` is the host repository's new integration
    worktree (or its retained old one when the host sits the milestone out):
    switch `RUNTIME_ROOT` to it before composing any later prompt; patch `runtimeRoot` null (no host) → keep the installed runtime.
 5. **Restart.** Set plan Status back to `in progress` + `loop-plan.sh push`; remove
    `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); respawn the
-   orchestrator for the new milestone (the SUB then schedules only its phases).
+   orchestrator for the new milestone (the SUB then schedules only its phases); last,
+   `loop-state.sh set '.resumePending = null'` (every restart item above is idempotent).
 
 ### Sub recycle *(mode: `sub` only)*
 

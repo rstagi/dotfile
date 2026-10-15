@@ -119,6 +119,7 @@ assert_eq "$(print -r -- "$out" | jq -r '.repositories["acme/api"].integrationWo
 assert_eq "$(print -r -- "$out" | jq -r '.repositories["acme/web"].integrationWorktree')" "$NEW_WEB" "web worktree"
 assert_eq "$(print -r -- "$out" | jq -r '.repositories | keys | length')" "2" "repositories replaced with participants"
 assert_eq "$(print -r -- "$out" | jq -r '.awaitingMerge')" "null" "gate cleared"
+assert_eq "$(print -r -- "$out" | jq -r '.resumePending')" "2" "patch marks the restart pending"
 assert_eq "$(print -r -- "$out" | jq -r --arg u "$API_PR" '.milestones["1"].prs["acme/api"] == $u')" "true" "history records old PRs"
 assert_eq "$(print -r -- "$out" | jq -r .runtimeRoot)" "$NEW_API" "runtime root follows the old runtime repo"
 assert_eq "$(print -r -- "$out" | jq -r .integrationBranch)" "feat/m2-api" "top-level integration branch"
@@ -284,5 +285,31 @@ assert_exit "$?" "0" "stale retained host worktree retired"
 out2="$($ROOT/loop-milestone.sh advance --state "$TMP/rejoin2.json" --next 3 --branches "$RB")"; rc=$?
 assert_exit "$rc" "0" "rejoin retry"
 assert_eq "$out2" "$out" "rejoin retry yields same patch"
+
+echo "loop-milestone: adopted host sits out M2, rejoins M3"
+# M1 adopted the host's existing worktree (outside the run root): it is the user's, never retired.
+RUN=run-adopt
+A1_Z="$TMP/zdot-adopted"
+git -C "$TMP/zdot" worktree add -q -b feat/m1-zdot-adopt "$A1_Z" main
+$ROOT/loop-repo.sh prepare --repo acme/web --run-id $RUN --integration-branch feat/m1-web-adopt >/dev/null
+A1_WEB="$LOOP_WORKTREE_ROOT/$RUN/acme--web/integration"
+jq -n --arg run "$RUN" --arg api "$API_PR" --arg web "$WEB_PR" --arg zwt "$A1_Z" --arg webwt "$A1_WEB" \
+  '{runId:$run, milestone:1, runtimeRepo:"acme/zdot", runtimeRoot:$zwt, integrationWorktree:$zwt,
+    repositories:{
+      "acme/zdot":{integrationBranch:"feat/m1-zdot-adopt", integrationWorktree:$zwt, adopted:true},
+      "acme/web":{integrationBranch:"feat/m1-web-adopt", integrationWorktree:$webwt, adopted:false}},
+    awaitingMerge:{milestone:1, prs:{"acme/zdot":$api, "acme/web":$web}}}' > "$TMP/adopt1.json"
+out="$($ROOT/loop-milestone.sh advance --state "$TMP/adopt1.json" --next 2 --branches '{"acme/web":"feat/m2-web-adopt"}')"; rc=$?
+assert_exit "$rc" "0" "adopted host sits out M2"
+assert_eq "$(print -r -- "$out" | jq -c '[.runtimeRoot, .runtimeAdopted]')" "[\"$A1_Z\",true]" "retained host keeps its adopted flag"
+jq --argjson patch "$out" --arg web "$WEB_PR" '. + $patch | .awaitingMerge = {milestone:2, prs:{"acme/web":$web}}' \
+  "$TMP/adopt1.json" > "$TMP/adopt2.json"
+A3_Z="$LOOP_WORKTREE_ROOT/$RUN/acme--zdot/integration-feat-m3-zdot-adopt-$(branch_hash feat/m3-zdot-adopt)"
+AB='{"acme/zdot":"feat/m3-zdot-adopt","acme/web":"feat/m3-web-adopt"}'
+out="$($ROOT/loop-milestone.sh advance --state "$TMP/adopt2.json" --next 3 --branches "$AB" 2>&1)"; rc=$?
+assert_exit "$rc" "0" "adopted host rejoins M3"
+assert_eq "$(print -r -- "$out" | jq -c '[.runtimeRoot, .runtimeAdopted]')" "[\"$A3_Z\",false]" "runtime moves to host's new M3 worktree"
+[[ -d "$A1_Z" ]]
+assert_exit "$?" "0" "adopted retained host worktree never retired"
 
 test_summary

@@ -12,9 +12,11 @@ set -u -o pipefail
 #     state.runtimeRepo, else owner of state.runtimeRoot, else repo whose old/new worktree holds
 #     this script, else none (installed runtime; never guessed). runtimeRoot -> host's new worktree
 #     if it participates (a rejoining host's stale retained worktree retires), its retained one if
-#     not (kept), null without a host. Prints the state patch JSON (milestone, repositories,
-#     runtimeRoot, runtimeRepo, integrationWorktree/integrationBranch (participating host, else
-#     first participant), prUrl/review/reviewPipeline/awaitingMerge: null, milestones history) to
+#     not (kept; runtimeAdopted carries its ownership so an adopted one is never retired), null
+#     without a host. Prints the state patch JSON (milestone, repositories,
+#     runtimeRoot, runtimeRepo, runtimeAdopted, integrationWorktree/integrationBranch (participating host, else
+#     first participant), prUrl/review/reviewPipeline/awaitingMerge: null, resumePending: N (the
+#     restart clears it last; marks a crash between apply and restart), milestones history) to
 #     apply via `loop-state.sh set ". + $patch"`; never writes state. Failures surface loop-repo's
 #     exit code.
 
@@ -125,7 +127,8 @@ retire_old() {
   rows="$(jq -r '.repositories // {} | to_entries[] | "\(.key)\t\(.value.integrationWorktree // "")\t\(.value.adopted // false)"' "$STATE")"
   if [[ -n "$host" && -n "${prepared[$host]:-}" ]]; then
     wt="$(retained_root)"
-    [[ -n "$wt" ]] && rows+=$'\n'"$host"$'\t'"$wt"$'\tfalse'
+    adopted="$(jq -r '.runtimeAdopted // false' "$STATE")"
+    [[ -n "$wt" ]] && rows+=$'\n'"$host"$'\t'"$wt"$'\t'"$adopted"
   fi
   while IFS=$'\t' read -r slug wt adopted; do
     [[ -n "$wt" && "$adopted" != true ]] || continue
@@ -148,28 +151,34 @@ retire_old() {
 
 # State patch for `loop-state.sh set ". + $patch"`: top-level keys replace wholesale.
 print_patch() {
-  local old="$1" host="$2" repos slug root_slug root_wt=""
+  local old="$1" host="$2" repos slug root_slug root_wt="" root_adopted=null
   repos="$(for slug in ${(k)prepared}; do print -r -- "$slug"; print -r -- "${prepared[$slug]}"; done \
     | jq -Rn '[inputs] | [range(0; length; 2) as $i | {key: .[$i], value: (.[$i+1] | fromjson)}] | from_entries')"
   root_slug="$(jq -r 'keys | sort | .[0]' <<< "$repos")"
   if [[ -n "$host" && -n "${prepared[$host]:-}" ]]; then
     root_slug="$host"
     root_wt="$(jq -r .integrationWorktree <<< "${prepared[$host]}")"
+    root_adopted="$(jq '.adopted // false' <<< "${prepared[$host]}")"
   elif [[ -n "$host" ]]; then
     # Host sits this milestone out: the runtime stays in its retained worktree.
     root_wt="$(jq -r --arg h "$host" '.repositories[$h].integrationWorktree // .runtimeRoot // ""' "$STATE")"
+    # Its ownership travels with it: an adopted (user's) worktree must never be retired later.
+    root_adopted="$(jq --arg h "$host" '.repositories[$h].adopted // .runtimeAdopted // false' "$STATE")"
   fi
   jq -cn --slurpfile state "$STATE" --argjson repos "$repos" --argjson old "$old" \
-    --argjson next "$NEXT" --arg root "$root_slug" --arg root_wt "$root_wt" --arg host "$host" '
+    --argjson next "$NEXT" --arg root "$root_slug" --arg root_wt "$root_wt" --arg host "$host" \
+    --argjson root_adopted "$root_adopted" '
     $state[0] as $s
     | {milestone: $next,
        runtimeRoot: (if $root_wt != "" then $root_wt else null end),
        runtimeRepo: (if $host != "" then $host else null end),
+       runtimeAdopted: (if $host != "" then $root_adopted else null end),
        integrationWorktree: $repos[$root].integrationWorktree,
        integrationBranch: $repos[$root].integrationBranch,
        repositories: $repos,
        prUrl: null, review: null, reviewPipeline: null,
        awaitingMerge: null,
+       resumePending: $next,
        milestones: (($s.milestones // {}) + {($old | tostring): {prs: ($s.awaitingMerge.prs // {})}})}'
 }
 

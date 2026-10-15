@@ -108,7 +108,11 @@ assert_contains "$SKILL" 'patch `runtimeRoot` null (no host) → keep the instal
 assert_contains "$SKILL" 'persist it with `loop-state.sh set '"'"'.awaitingMerge = …'"'"'`' "recovered park is persisted before check"
 assert_contains "$SKILL" 're-run step-8 park items 2-4 (idempotent)' "recovered park redoes Status/event/notify"
 assert_contains "$SKILL" 'run resume step 5 only' "skill: crash after apply → restart only"
-assert_contains "$PROTOCOL" '`milestones[N].prs` recorded for the previous milestone, `awaitingMerge` null and `sub/REVIEW_READY` present' "protocol: crash after apply detected"
+assert_contains "$PROTOCOL" '`state.resumePending` equals `state.milestone` (crash after the advance patch was applied, before restart)' "protocol: crash after apply keyed on resumePending"
+print -r -- "$PROTOCOL" | grep -qF '`milestones[N].prs` recorded for the previous milestone, `awaitingMerge` null and `sub/REVIEW_READY` present'
+assert_exit "$?" "1" "protocol: ambiguous crash-after-apply predicate gone"
+assert_contains "$SKILL" '**Crash after apply:** `state.resumePending` equals `state.milestone`' "skill: crash after apply keyed on resumePending"
+assert_contains "$SKILL" "loop-state.sh set '.resumePending = null'" "skill: restart clears resumePending last"
 assert_contains "$PROTOCOL" 'run resume step 5 only (plan Status push, `milestone.resumed`, clear the marker, respawn)' "protocol: crash after apply → restart only"
 assert_contains "$SKILL" 'park only when a later milestone exists' "final-milestone gate never parks"
 assert_contains "$SKILL" '`[gate: merge]` on the final milestone → warn' "preflight warns on a final-milestone gate"
