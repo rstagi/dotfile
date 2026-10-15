@@ -40,7 +40,7 @@ zsh tests/plan-review.test.sh
 # loop-top only
 node --test tests/loop-top.test.mjs
 
-# ws (terminal workspaces) tests
+# ws (terminal workspaces) tests: 4 groups in parallel; one group: zsh ws/tests/run.sh core|send|triggers|misc
 zsh ws/tests/run.sh
 
 # Loop Observatory (loop-web) tests + build
@@ -73,7 +73,7 @@ loop-web.sh             Loop Observatory launcher (--daemon = central observer o
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
 ws/ws.sh                Terminal workspaces entry: env/config, sources ws/lib/*, command dispatch (see ws/README.md)
 ws/lib/                 ws modules: core, workspace, tabs, hooks, notify, picker, bus (registry + send/inbox), triggers (done/on)
-ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh sourced in order by run.sh
+ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh, sourced in order per parallel group by run.sh
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)

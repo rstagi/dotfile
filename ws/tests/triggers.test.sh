@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: `ws on` fan-in basics.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws on: fan-in waits for all sources and expands outputs in source order"
@@ -27,6 +27,8 @@ assert_eq "$reply" "{}" "first source alone does not deliver"
 hook api/triggers "$TARGET_WIN" working </dev/null
 printf beta | WS_SESSION="$SOURCE_B" "$WS" done -
 assert_exit "$?" "0" "last source completion publishes and fires"
+# done returns before its detached trigger worker acts: wait for the fired record.
+wait_until test -f "$WS_HOME/triggers/archive/$TID.json"
 reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"results $SOURCE_A,$SOURCE_B: alpha \"quoted\" \$literal"$'\n'"beta" "fan-in expands literal output text and ordered ids"
 assert_eq "$("$WS" triggers)" "" "fired trigger is no longer pending"
@@ -40,6 +42,7 @@ for source_id in "$SOURCE_A" "$SOURCE_B"; do
   repeat_pids+=($!)
 done
 for pid in $repeat_pids; do wait "$pid"; assert_exit "$?" "0" "concurrent repeat completion succeeds"; done
+wait_until test -f "$WS_HOME/triggers/archive/$SATISFIED_TID.json"
 reply="$(hook api/triggers "$TARGET_WIN" stop </dev/null)"
 assert_eq "$(print -r -- "$reply" | jq -r '.reason // empty')" "[ws #$TARGET_ID]"$'\n'"already $SOURCE_A,$SOURCE_B" "already-satisfied trigger delivers exactly once"
 assert_eq "$(hook api/triggers "$TARGET_WIN" stop </dev/null)" "{}" "repeat completion never queues another action"

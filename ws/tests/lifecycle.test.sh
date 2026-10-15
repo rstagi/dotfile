@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: `ws done`/`show`, exit events, exit path ownership and late/nested hooks.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws done: file output is durable; user-opened tab stays; show resolves names"
@@ -59,7 +59,6 @@ assert_exit "$?" "1" "send rejects session declared done through CLI"
 assert_contains "$out" "--force required" "send explains done guard"
 
 echo "ws lifecycle: agent exit emits its actual code and preserves done output"
-lifecycle_exit_count() { [[ "$(jq -sr 'map(select(.event == "exit")) | length' "$WS_HOME/sessions/$1/events")" == "$2" ]]; }
 lifecycle_done_stopped() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
 T send-keys -t "$DONE_WIN" Enter
 wait_until lifecycle_exit_count "$DONE_ID" 1
@@ -111,7 +110,6 @@ META="$WS_HOME/sessions/$SPAWN_ID/meta"
 jq '.spawned = true | .resume_id = "spawn-resume"' "$META" > "$META.fixture"
 mv "$META.fixture" "$META"
 T send-keys -t "$SPAWN_WIN" done Enter
-spawn_done_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
 wait_until spawn_done_closed "$SPAWN_ID"
 assert_exit "$?" "0" "spawned tab closes when its agent declares done"
 assert_eq "$(awk -F '\t' -v id="$SPAWN_ID" '$4 == id' "$(git -C "$DONE_WT" rev-parse --absolute-git-dir)/ws-sessions")" "" "spawned done frees its workspace slot row"

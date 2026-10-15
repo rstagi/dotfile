@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: `ws send` delivery: paste, inbox, Stop hooks, cancellation, readiness and robustness.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws send: idle named target receives one bracketed multiline prompt with sender id"
@@ -54,7 +54,6 @@ PY_STOP
 )" "$WS hook stop" "Codex Stop uses synchronous bus delivery"
 assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$GROK_HOME/hooks/ws.json")" "$WS hook stop" "Grok Stop uses synchronous bus delivery"
 
-pane_received() { [[ "$(tail -1 "$WS_HOME/pane-$1.jsonl" 2>/dev/null | jq -r '.text')" == "$2" ]]; }
 echo "ws send: continuation Stops block only for new messages; cancellation pastes on verified idle"
 for agent in claude codex grok; do
   BUS_WIN="$("$WS" list | awk -F '\t' -v p="$SEND_WT" -v a="$agent" '$3 == p && $4 == a {print $5; exit}')"

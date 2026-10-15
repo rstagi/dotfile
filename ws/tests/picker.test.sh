@@ -1,7 +1,7 @@
 #!/bin/zsh
 # ws tests: Pins, picker rows/summary/cursor, unread marks, ws claude adoption, stopped-workspace restore.
-# Not standalone: ws/tests/run.sh sources helpers.sh then the area files in order, in one process,
-# because workspaces, tabs and global session ids carry over between areas.
+# Not standalone: ws/tests/run.sh sources helpers.sh then its group's area files in order, in one
+# process, because workspaces, tabs and global session ids carry over within a group.
 (( $+functions[ws_tests_require_sandbox] )) && ws_tests_require_sandbox || { print -u2 "run via: zsh ws/tests/run.sh"; exit 2; }
 
 echo "ws pin: pinned workspaces listed first in the picker, grouped by repo"

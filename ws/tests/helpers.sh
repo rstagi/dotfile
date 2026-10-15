@@ -183,3 +183,15 @@ slot_present() { [[ -n "$(slot_window "$1" "$2")" ]]; }
 slot_absent() { [[ -z "$(slot_window "$1" "$2")" ]]; }
 session_of() { T display -p -t "$1" '#{session_name}'; }
 hook() { WS_WORKSPACE="$1" TMUX_PANE="$(T display -p -t "$2" '#{pane_id}')" "$WS" hook "$3"; }
+# Shared by areas in different groups (a group runs without the others' definitions).
+pane_received() { [[ "$(tail -1 "$WS_HOME/pane-$1.jsonl" 2>/dev/null | jq -r '.text')" == "$2" ]]; }
+lifecycle_exit_count() { [[ "$(jq -sr 'map(select(.event == "exit")) | length' "$WS_HOME/sessions/$1/events")" == "$2" ]]; }
+spawn_done_closed() { [[ "$("$WS" sessions "$1" | cut -f5,6)" == $'stopped\tdone' ]]; }
+
+# ws_tests_seed — fixtures workspace.test.sh leaves for later areas, for groups run without it:
+# the api repo ($REPO) and session #1 (the WS_SESSION=1 sender).
+ws_tests_seed() {
+  REPO="$(make_repo api)"
+  "$WS" new --repo "$REPO" --branch seed --detach >/dev/null
+  [[ -f "$WS_HOME/sessions/1/meta" ]] || { print -u2 "ws tests: seed did not create session #1"; exit 1; }
+}
