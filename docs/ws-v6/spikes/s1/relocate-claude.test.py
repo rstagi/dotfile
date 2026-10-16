@@ -42,6 +42,18 @@ class RelocationTest(unittest.TestCase):
             self.assertEqual(actual[0]['message']['content'], 'Remember SAPPHIRE-731.')
             self.assertEqual(source.read_text(), original)
 
+    def test_rewrite_refuses_existing_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / 'source.jsonl'
+            target = Path(root) / 'existing.jsonl'
+            source.write_text('{"cwd":"/tmp/home-a/repo"}\n')
+            target.write_text('Preserve this existing transcript.\n')
+            result = subprocess.run([str(SCRIPT), '--rewrite', str(source), str(target),
+                                     '/tmp/home-a', '/tmp/home-b'], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(target.read_text(), 'Preserve this existing transcript.\n')
+            self.assertEqual(source.read_text(), '{"cwd":"/tmp/home-a/repo"}\n')
+
     def test_experiment_does_not_send_script_source_to_agent(self):
         with tempfile.TemporaryDirectory() as root:
             fake = Path(root) / 'claude'

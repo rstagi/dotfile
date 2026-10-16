@@ -105,7 +105,7 @@ def rewrite(source, target, old_home, new_home):
     new_home = os.path.normpath(new_home)
     if not old_home.startswith('/') or not new_home.startswith('/'):
         raise ValueError('Home paths must be absolute.')
-    if old_home == '/' or new_home == '/' or old_home == new_home:
+    if not old_home.strip('/') or not new_home.strip('/') or old_home == new_home:
         raise ValueError('Home paths must differ and must not be the root directory.')
     # Match a path component boundary. Preserve unrelated path prefixes.
     pattern = re.compile(re.escape(old_home.rstrip('/')) + r'(?=/|$|[\s\"\x27<>])')
