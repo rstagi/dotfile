@@ -1,5 +1,6 @@
 - We are in 2026
-- In all interactions and commit messages, be extremely concise and sacrifice grammar for the sake of concision.
+- Be extremely concise in all interactions. In replies, follow the STE rules below and do not sacrifice grammar.
+- In commit messages, be extremely concise and sacrifice grammar for the sake of concision.
 
 ## Philosophy
 
@@ -62,6 +63,11 @@ Use the `parallel-search` MCP for up-to-date info beyond knowledge cutoff: `web_
 ## Browser Automation
 
 Use `/agent-browser` skill for browser automation. Use `--session <name>` to preserve sessions.
+
+## Simplified Technical English (STE)
+
+- When you write or edit text that an agent will read, use the asd-ste100 skill in Strict mode. This text includes skill and tool descriptions, system prompts, agent instructions, CLAUDE.md/AGENTS.md, inter-agent messages, and error messages that agents parse.
+- Write your replies to me in STE-flavored mode. You do not need to load the skill for each reply. Apply its rules as you write. Use short sentences, active voice and simple tenses. Write one idea per sentence. Do not use semicolons, phrasal verbs, hedge stacks, marketing adjectives or filler. Keep the subject, the verb and the articles. Do not drop words to save space.
 
 ## Documentation
 
