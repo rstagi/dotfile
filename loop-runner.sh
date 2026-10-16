@@ -504,8 +504,10 @@ Incorporate it and continue the phase from where you stopped."
   [[ -f "$TRANSCRIPT" ]] && mv "$TRANSCRIPT" "$RUN_DIR/transcript.pre-note-$NOTE_ROUND.jsonl"
   if [[ "$CHAIN_NAME" == review-(gpt|claude|grok) ]]; then # AR R/C/T: fresh call, never resume
     sid="" NOTE_SID="" RESUME_SID=""
-    if [[ "$NOTE_SIG" == 0 ]]; then
-      cp "$RUN_DIR/prompt.md" "$prompt"
+    if [[ "$NOTE_SIG" == 0 ]]; then # prompt.md still embeds the old note: void it explicitly
+      { cat "$RUN_DIR/prompt.md"; print -r -- "";
+        print -r -- "Steering note removed by the user (notes/$PHASE.md): note removed. Disregard the Repository steering notes section above."
+      } > "$prompt"
     else
       { cat "$RUN_DIR/prompt.md"; print -r -- ""; print -r -- "Latest steering note (notes/$PHASE.md):"; cat "$NOTE_FILE"; } > "$prompt"
     fi

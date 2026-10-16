@@ -496,6 +496,19 @@ assert_exit "$RC" "0" "attempt completes after removal"
 assert_contains "$INVOCATIONS" 'note removed' "says the note was removed"
 unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
 
+echo "runner: deleting a note mid AR reviewer call restarts fresh and says it was removed"
+ctl_run note-ar-removed
+print -r -- "temporary guidance" > "$CTL/notes/1.md"
+export FAKE_CODEX_OUTCOME=done FAKE_CODEX_SLEEP=10 FAKE_CODEX_SESSION=ar-rm-fresh
+( sleep 1; rm -f "$CTL/notes/1.md" ) &
+ctl_exec --chain review-gpt --review-tier standard
+assert_exit "$RC" "0" "AR attempt completes after removal"
+assert_eq "$(print -r -- "$INVOCATIONS" | grep -c 'exec resume')" "0" "never resumes the reviewer session"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'implement phase' "restart carries the full prompt"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'note removed' "restart says the note was removed"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'Disregard the Repository steering notes section' "restart voids the embedded note"
+unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
+
 echo "runner: control/model-<phase> overrides the first leg of the task chain"
 ctl_run model-override
 print -r -- "claude:claude-opus-5-5" > "$CTL/control/model-1"
