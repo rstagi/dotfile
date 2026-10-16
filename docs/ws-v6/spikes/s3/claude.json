@@ -1,0 +1,170 @@
+{
+  "projection": "Quota fields, usage, and identity field names only. Other fields are omitted.",
+  "statusline_callbacks": [
+    {
+      "received_at_utc": "2026-10-16T21:32:29.810620Z",
+      "input": {}
+    },
+    {
+      "received_at_utc": "2026-10-16T21:32:31.074020Z",
+      "input": {
+        "rate_limits": {
+          "five_hour": {
+            "used_percentage": 0,
+            "resets_at": 1792203600
+          },
+          "seven_day": {
+            "used_percentage": 14,
+            "resets_at": 1792483200
+          }
+        }
+      }
+    },
+    {
+      "received_at_utc": "2026-10-16T21:32:32.431503Z",
+      "input": {
+        "rate_limits": {
+          "five_hour": {
+            "used_percentage": 0,
+            "resets_at": 1792203600
+          },
+          "seven_day": {
+            "used_percentage": 14,
+            "resets_at": 1792483200
+          }
+        }
+      }
+    },
+    {
+      "received_at_utc": "2026-10-16T21:32:33.105665Z",
+      "input": {
+        "rate_limits": {
+          "five_hour": {
+            "used_percentage": 0,
+            "resets_at": 1792203600
+          },
+          "seven_day": {
+            "used_percentage": 14,
+            "resets_at": 1792483200
+          }
+        }
+      }
+    },
+    {
+      "received_at_utc": "2026-10-16T21:32:34.079282Z",
+      "input": {
+        "rate_limits": {
+          "five_hour": {
+            "used_percentage": 0,
+            "resets_at": 1792203600
+          },
+          "seven_day": {
+            "used_percentage": 14,
+            "resets_at": 1792483200
+          }
+        }
+      }
+    }
+  ],
+  "headless": {
+    "capture_file_mtime_utc": "2026-10-16T21:33:36.653415Z",
+    "statusline_callback_count": 0,
+    "stream_events": [
+      {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+          "status": "allowed",
+          "resetsAt": 1792203600,
+          "rateLimitType": "five_hour",
+          "overageStatus": "rejected",
+          "overageDisabledReason": "out_of_credits",
+          "isUsingOverage": false,
+          "unifiedWindows": {
+            "five_hour": {
+              "utilization": 0,
+              "resetsAt": 1792203600
+            },
+            "seven_day": {
+              "utilization": 0.14,
+              "resetsAt": 1792483200
+            }
+          }
+        },
+        "uuid": "<redacted-event>",
+        "session_id": "<redacted-session>"
+      }
+    ],
+    "result_usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 4009,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 236,
+      "output_tokens_details": {
+        "thinking_tokens": 214
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 4009,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "global",
+      "iterations": [],
+      "speed": "standard",
+      "fallback_credit": null
+    }
+  },
+  "usage_http": {
+    "method": "GET",
+    "path": "https://api.anthropic.com/api/oauth/usage",
+    "status": 200,
+    "received_at_utc": "2026-10-16T21:31:58.674218Z",
+    "http_date": "Fri, 16 Oct 2026 21:31:58 GMT",
+    "body": {
+      "five_hour": {
+        "utilization": 0.0,
+        "resets_at": "2026-10-17T02:19:59.531483+00:00",
+        "limit_dollars": null,
+        "used_dollars": null,
+        "remaining_dollars": null,
+        "locked_reason": null
+      },
+      "seven_day": {
+        "utilization": 15.0,
+        "resets_at": "2026-10-20T07:59:59.531506+00:00",
+        "limit_dollars": null,
+        "used_dollars": null,
+        "remaining_dollars": null,
+        "locked_reason": null
+      }
+    }
+  },
+  "identity": {
+    "config": {
+      "oauthAccount": {
+        "accountUuid": "<redacted-account>",
+        "organizationUuid": "<redacted-organization>"
+      }
+    },
+    "profile_http": {
+      "method": "GET",
+      "path": "https://api.anthropic.com/api/oauth/profile",
+      "status": 200,
+      "body": {
+        "account": {
+          "uuid": "<redacted-account>",
+          "email": "<redacted-email>"
+        },
+        "organization": {
+          "uuid": "<redacted-organization>"
+        }
+      }
+    },
+    "profile_account_matches_launch_config": true,
+    "profile_organization_matches_launch_config": true,
+    "quota_payload_contains_account_id": false
+  }
+}

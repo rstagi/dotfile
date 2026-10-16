@@ -1,0 +1,109 @@
+{
+  "date": "2026-10-16",
+  "host": "macOS arm64",
+  "agent_home_mode": "sandbox",
+  "live_fallback": false,
+  "versions": {
+    "claude": "2.1.302",
+    "codex": "0.159.2",
+    "grok": "1.0.52"
+  },
+  "agent_calls": [
+    {
+      "n": 1,
+      "runner": "grok",
+      "operation": "--help",
+      "result": "success"
+    },
+    {
+      "n": 2,
+      "runner": "codex",
+      "operation": "--ignore-user-config --ignore-rules app-server",
+      "result": "rejected flags before initialization"
+    },
+    {
+      "n": 3,
+      "runner": "claude",
+      "operation": "interactive synthetic prompt",
+      "result": "stopped at onboarding before inference"
+    },
+    {
+      "n": 4,
+      "runner": "codex",
+      "operation": "app-server initialize, account/read, two account/rateLimits/read requests",
+      "result": "success, no inference"
+    },
+    {
+      "n": 5,
+      "runner": "claude",
+      "operation": "interactive synthetic prompt with statusLine recorder",
+      "result": "one synthetic turn, five status-line callbacks"
+    },
+    {
+      "n": 6,
+      "runner": "codex",
+      "operation": "exec with a synthetic prompt and read-only sandbox",
+      "result": "one synthetic turn, one token-count event"
+    },
+    {
+      "n": 7,
+      "runner": "grok",
+      "operation": "agent stdio, initialize, two unprefixed x.ai/billing requests",
+      "result": "method not found, no inference"
+    },
+    {
+      "n": 8,
+      "runner": "grok",
+      "operation": "agent stdio, initialize, two _x.ai/billing requests",
+      "result": "success, no inference"
+    },
+    {
+      "n": 9,
+      "runner": "claude",
+      "operation": "-p with a synthetic prompt and stream-json output",
+      "result": "one synthetic turn, one rate-limit event, no status-line callback"
+    },
+    {
+      "n": 10,
+      "runner": "grok",
+      "operation": "-p with a synthetic prompt and streaming-json output",
+      "result": "one synthetic turn, usage and end records"
+    }
+  ],
+  "synthetic_prompts": [
+    "Reply with S3_CLAUDE_DONE only. Do not use tools.",
+    "Reply with S3_CODEX_DONE only. Do not use tools.",
+    "Reply with S3_CLAUDE_HEADLESS_DONE only. Do not use tools.",
+    "Reply with S3_GROK_DONE only. Do not use tools."
+  ],
+  "read_only_http_requests": [
+    {
+      "runner": "claude",
+      "method": "GET",
+      "path": "/api/oauth/usage",
+      "count": 1
+    },
+    {
+      "runner": "claude",
+      "method": "GET",
+      "path": "/api/oauth/profile",
+      "count": 1
+    },
+    {
+      "runner": "grok",
+      "method": "GET",
+      "path": "/v1/billing?format=credits",
+      "count": 1
+    }
+  ],
+  "grok_upstream_commit": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+  "sample_policy": "These samples use field allowlists. Account identifiers and email addresses use redaction markers. No credential or signature appears.",
+  "sampling_limits": [
+    "One account per runner.",
+    "Two immediate quota polls per RPC source.",
+    "No forced exhaustion, reset, account switch, or long-term freshness test.",
+    "No 5-hour Codex or Grok window appeared.",
+    "Grok omitted creditUsagePercent in all billing captures."
+  ],
+  "context7_available": false
+}
