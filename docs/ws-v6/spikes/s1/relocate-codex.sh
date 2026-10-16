@@ -57,7 +57,9 @@ def main():
                                     stdout=output, stderr=errors, timeout=180)
         if result.returncode:
             raise SystemExit(f'Agent call failed. Inspect {root / (label + ".stderr")} and {label}.jsonl.')
-        events = [json.loads(line) for line in (root / (label + '.jsonl')).read_text().splitlines()]
+        # Split on LF only. JSON strings can hold raw U+0085, U+2028 and U+2029.
+        lines = (root / (label + '.jsonl')).read_bytes().decode().split('\n')
+        events = [json.loads(line) for line in lines if line]
         if any(event.get('type') in ('error', 'turn.failed') for event in events):
             raise SystemExit(f'Agent returned an error. Inspect {root / (label + ".jsonl")}.')
         threads = [event['thread_id'] for event in events if event.get('type') == 'thread.started']
@@ -88,7 +90,7 @@ def main():
         ['resume', session, 'Read marker.txt in your current working directory with the shell tool once. '
          'Do not read other files. What code word did I ask you to remember? '
          'Reply with the code word only. Do not write files.'], 'resume')
-    rows = [json.loads(line) for line in source_bytes.decode().splitlines()]
+    rows = [json.loads(line) for line in source_bytes.decode().split('\n') if line]
     summary = dict(date=str(date.today()), agent_home_mode='sandbox', session_id=session,
                    code_word=word, requested_model='gpt-6.1-sol',
                    version=subprocess.check_output([executable, '--version'], text=True,

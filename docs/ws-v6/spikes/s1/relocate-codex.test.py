@@ -37,7 +37,8 @@ class RelocationTest(unittest.TestCase):
             result = subprocess.run([str(SCRIPT), '--rewrite', str(source), str(target),
                                      '/tmp/home-a', '/tmp/home-b'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            actual = [json.loads(line) for line in target.read_text().splitlines()]
+            # Split on LF only. JSON strings can hold raw U+0085, U+2028 and U+2029.
+            actual = [json.loads(line) for line in target.read_bytes().decode().split('\n') if line]
             self.assertEqual(actual[0]['payload'], {'id': 'thread-1', 'cwd': '/tmp/home-b/repo'})
             self.assertEqual(actual[1]['payload']['cwd'], '/tmp/home-b/repo')
             self.assertEqual(json.loads(actual[2]['payload']['arguments']),
@@ -71,8 +72,10 @@ rollout = folder / ('rollout-test-' + session + '.jsonl')
 if 'resume' not in args:
     word = re.search(r'code word (TOPAZ-[A-F0-9]+)', args[-1]).group(1)
     folder.mkdir(parents=True)
-    rollout.write_text(json.dumps({'type': 'session_meta', 'payload': {
-        'id': session, 'cwd': os.getcwd(), 'word': word}}) + '\\n')
+    # Raw line separators are valid inside JSON strings. Readers must split on LF only.
+    rollout.write_bytes((json.dumps({'type': 'session_meta', 'payload': {
+        'id': session, 'cwd': os.getcwd(), 'word': word, 'note': 'a\\u2028b\\x85c'}},
+        ensure_ascii=False) + '\\n').encode())
     # A source index exists. A resume must work without its transfer.
     (home / 'state_5.sqlite').write_text('source-only index')
     answer = 'STORED'
@@ -80,13 +83,15 @@ else:
     assert args[args.index('resume') + 1] == session
     assert not list(home.glob('*.sqlite'))
     assert sorted(p.name for p in home.iterdir()) in (['sessions'], ['auth.json', 'sessions'])
-    row = json.loads(rollout.read_text())
+    row = json.loads(rollout.read_bytes().decode())
     assert row['payload']['cwd'] == os.getcwd()
     answer = row['payload']['word']
     with rollout.open('a') as stream:
         stream.write(json.dumps({'type': 'turn_context', 'payload': {'cwd': os.getcwd()}}) + '\\n')
 output.write_text(answer + '\\n')
-print(json.dumps({'type': 'thread.started', 'thread_id': session}))
+sys.stdout.buffer.write((json.dumps({'type': 'thread.started', 'thread_id': session,
+                                     'note': 'a\\u2029b'}, ensure_ascii=False) + '\\n').encode())
+sys.stdout.flush()
 print(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 1}}))
 ''')
             fake.chmod(0o755)

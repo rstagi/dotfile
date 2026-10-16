@@ -66,11 +66,11 @@ The worktree has the same relative path, `repo`, under each home.
 3. Derive the destination project key from the canonical absolute path `B/repo`.
 4. Replace each character outside `[A-Za-z0-9]` with `-` in that path.
 5. Create `$TARGET_CLAUDE_CONFIG_DIR/projects/<project-key>/`.
-6. Parse each source JSONL record.
-7. Replace the `A` path prefix with `B` in every JSON string value.
-8. Require a path boundary after that prefix. Preserve unrelated prefixes.
+6. Split the source on LF only. Parse each JSONL record.
+7. Replace the `A` path prefix with `B` in every JSON string value. Reject a home that contains a quote, a backslash, or a control character.
+8. Match whole paths only. The prefix must start the string, follow `file://`, or follow a non-path character. It must end at `/` or at the end of the string. Preserve unrelated prefixes.
 9. Preserve record order, session IDs, UUIDs, parent links, tool IDs, and reference hashes.
-10. Write `<session-id>.jsonl` as a new file with mode `0600`.
+10. Write `<session-id>.jsonl` as a new file with mode `0600`. Encode every record before you create the file.
 11. Start `claude --resume <session-id> -p` from `B/repo` with the target config directory.
 
 Use the script's rewrite interface for step 6 through step 10:
@@ -152,8 +152,8 @@ Let `A` and `B` denote two absolute home paths with the same relative worktree p
 3. Find the source rollout whose filename contains the session ID.
 4. Preserve its relative path, `sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl`.
 5. Create the corresponding parent directories under the destination `CODEX_HOME`.
-6. Parse every JSONL record. Replace the `A` prefix with `B` in JSON string values.
-7. Require a path boundary after the prefix. Preserve unrelated prefixes, JSON keys, and record order.
+6. Split the rollout on LF only. Parse every JSONL record. Replace the `A` prefix with `B` in JSON string values.
+7. Use the Claude path boundaries. Preserve unrelated prefixes, JSON keys, and record order.
 8. Preserve session IDs, thread IDs, turn IDs, tool links, and opaque reasoning content.
 9. Write the destination as a new file with mode `0600`. Refuse an existing destination.
 10. Authenticate in the destination home. Resume the explicit ID from `B/repo`.

@@ -107,23 +107,39 @@ def rewrite(source, target, old_home, new_home):
         raise ValueError('Home paths must be absolute.')
     if not old_home.strip('/') or not new_home.strip('/') or old_home == new_home:
         raise ValueError('Home paths must differ and must not be the root directory.')
-    # Match a path component boundary. Preserve unrelated path prefixes.
-    pattern = re.compile(re.escape(old_home.rstrip('/')) + r'(?=/|$|[\s\"\x27<>])')
+    # Raw quotes, backslashes or control characters break serialized JSON inside strings.
+    if any(char in '"\\' or ord(char) < 0x20 or 0x7f <= ord(char) <= 0x9f
+           for char in old_home + new_home):
+        raise ValueError('Home paths must not contain quotes, backslashes or control characters.')
+    # Match whole paths only. A path character before the home makes it part of another path.
+    # A file:// URL is the one allowed path prefix. A home must end with / or the string.
+    pattern = re.compile(r'(?:(?<=file://)|(?<![\w.~/+@%-]))' + re.escape(old_home)
+                         + r'(?=/|\Z)')
 
     def replace(value):
         if isinstance(value, str):
-            return pattern.sub(lambda match: new_home.rstrip('/'), value)
+            return pattern.sub(lambda match: new_home, value)
         if isinstance(value, list):
             return [replace(item) for item in value]
         if isinstance(value, dict):
             return {key: replace(item) for key, item in value.items()}
         return value
 
-    rows = [replace(json.loads(line)) for line in Path(source).read_text().splitlines()]
+    # Split on LF only. JSON strings can hold raw U+0085, U+2028 and U+2029.
+    lines = Path(source).read_bytes().decode().split('\n')
+    output = b''.join(encode(replace(json.loads(line))) for line in lines if line)
+    # Create the target only after every record is ready. A failure leaves no partial file.
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, 'w') as output:
-        for row in rows:
-            output.write(json.dumps(row, ensure_ascii=False) + '\n')
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(output)
+
+
+def encode(row):
+    try:
+        return (json.dumps(row, ensure_ascii=False) + '\n').encode()
+    except UnicodeEncodeError:
+        # Escape lone surrogates. UTF-8 cannot encode them raw.
+        return (json.dumps(row) + '\n').encode()
 
 
 if __name__ == '__main__':
