@@ -1,7 +1,8 @@
 use std::{env, error::Error, path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use tokio::net::UnixStream;
+
+mod client;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -14,6 +15,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Serve the local API on the Unix socket.
+    Daemon,
     /// Show the daemon version and uptime.
     Ping,
 }
@@ -32,13 +35,18 @@ async fn main() -> ExitCode {
 async fn run(cli: Cli) -> Result<()> {
     let socket = socket_path()?;
     match cli.command {
+        Command::Daemon => ws_daemon::run(&socket).await.map_err(|error| {
+            format!(
+                "Cannot serve the daemon socket at {}: {error}",
+                socket.display()
+            )
+        })?,
         Command::Ping => {
-            UnixStream::connect(&socket).await.map_err(|error| {
-                format!(
-                    "Cannot connect to the daemon at {}: {error}. Start it with `ws daemon`.",
-                    socket.display()
-                )
-            })?;
+            let response = client::ping(&socket).await?;
+            println!(
+                "wsd {} (uptime: {}s)",
+                response.version, response.uptime_secs
+            );
         }
     }
     Ok(())
