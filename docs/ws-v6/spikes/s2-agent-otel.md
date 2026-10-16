@@ -1,12 +1,14 @@
-# S2 — Agent OTel export: Claude Code
+# S2 — Agent OTel export: Claude Code and Codex
 
 ## Question
 
-Which signals can Claude Code export to a local OTLP receiver?
+Which signals can Claude Code and Codex export to a local OTLP receiver?
 Do custom resource attributes and an environment `TRACEPARENT` survive?
 Can hooks identify turn and tool boundaries?
 
 ## Method
+
+### Claude Code
 
 Test date: 2026-10-16. Agent: Claude Code **2.1.302**.
 The `haiku` alias resolved to `claude-haiku-5-5`.
@@ -73,9 +75,75 @@ and [hook reference](https://code.claude.com/docs/en/hooks) supplied the configu
 No Context7 tool was available in this runner.
 The findings below describe captured requests, including differences from the tracing documentation.
 
+### Codex CLI
+
+Test date: 2026-10-16. Agent: **codex-cli 0.159.2**.
+Every probe selected `gpt-6.1-sol` with reasoning effort `low`.
+
+Agent-home mode: **sandbox**. The probes used a temporary `HOME`, `CODEX_HOME`,
+`CLAUDE_CONFIG_DIR`, and `XDG_CONFIG_HOME`.
+The sandbox received copies of `auth.json` and `models_cache.json` from the live Codex home.
+The copied ChatGPT credentials authenticated all eight probes.
+No live fallback was necessary.
+Every run used `--ignore-user-config --ignore-rules` in an empty temporary project.
+No sandbox `config.toml` existed.
+The live Codex configuration retained its original SHA-256.
+All sessions and rollouts belonged to the sandbox.
+
+Eight synthetic inference calls and two inspection calls (`--version`, `exec --help`) used the entire **10-call allowance**.
+Each inference call created a new session and returned `S2_CODEX_DONE`.
+Each executed one shell command through `exec_command` inside the `functions.exec` wrapper.
+The wrapper produced a second OTel tool-result record without a second shell command.
+The `failure` probe executed `exit 7`.
+The `no-parent` probe omitted `TRACEPARENT`, so its `printenv TRACEPARENT` exited 1.
+The other six shell commands exited 0.
+
+Every inference call passed **all `[otel]` settings through `-c` flags**.
+No command edited `~/.codex/config.toml`.
+The baseline configured all three exporters:
+
+```sh
+-c 'otel.environment="s2-spike"'
+-c 'otel.log_user_prompt=false'
+-c 'analytics.enabled=true'
+-c 'otel.exporter={otlp-http={endpoint="http://127.0.0.1:<port>/v1/logs",protocol="json"}}'
+-c 'otel.trace_exporter={otlp-http={endpoint="http://127.0.0.1:<port>/v1/traces",protocol="json"}}'
+-c 'otel.metrics_exporter={otlp-http={endpoint="http://127.0.0.1:<port>/v1/metrics",protocol="json"}}'
+```
+
+Replace `<port>` with the capture sink's selected port.
+Codex uses `json` or `binary` as the protocol value.
+These values differ from Claude's environment protocol names.
+Each endpoint included its full signal path.
+The probes reused the Phase 6 sink without changes.
+They set `OTEL_METRIC_EXPORT_INTERVAL=1000`.
+They supplied these resource attributes and trace context:
+
+```sh
+OTEL_RESOURCE_ATTRIBUTES=ws.session.id=s2-codex-session,ws.parent_session.id=s2-codex-parent,ws.device.id=s2-codex-device,ws.project=s2-codex-project
+TRACEPARENT=00-11111111111111111111111111111111-2222222222222222-01
+```
+
+The recorder used the same stdin JSON and receipt-time format as the Claude recorder.
+Each run configured exactly the six Codex hook events in `ws/lib/tabs.sh:135-148`.
+The recorder replaced `ws hook <state>` and returned no output.
+Thus the probes exercised Codex callbacks without starting ws or tmux.
+The invocation included `--dangerously-bypass-hook-trust`, as the ws invocation does.
+It also included `--dangerously-bypass-approvals-and-sandbox` for the synthetic command.
+Permission prompts therefore did not occur.
+The sink stopped two seconds after each agent exited.
+
+The official [advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced#observability-and-telemetry)
+and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+supplied the exporter settings and the analytics dependency.
+No Context7 tool was available in this runner.
+The results below describe captured requests from this installed version.
+
 ## Findings
 
-### Signals and switches
+### Claude Code
+
+#### Signals and switches
 
 Counts below are HTTP requests, not individual records.
 `M`, `L`, and `T` mean metrics, logs, and traces.
@@ -104,7 +172,7 @@ The observed metrics were `claude_code.session.count`, `claude_code.cost.usage`,
 `claude_code.token.usage`, and `claude_code.active_time.total`.
 They supplied counters and data-point attributes, rather than execution boundaries.
 
-### Resource attributes and trace context
+#### Resource attributes and trace context
 
 All four synthetic `ws.*` values survived on every captured signal's resource.
 They also appeared as attributes on log records and spans.
@@ -137,7 +205,7 @@ Enhanced-only tracing therefore did not provide a complete session trace in thes
 The documentation describes interaction parenting more broadly than these observations support.
 Do not assume the enhanced beta switch alone supplies that behavior on this version.
 
-### Model and tool records
+#### Model and tool records
 
 The event body contains the full name below.
 The `event.name` attribute contains its suffix, such as `api_request`.
@@ -166,7 +234,7 @@ Tool spans included `tool_use_id` and `gen_ai.tool.call.id`.
 This was not a separate tool-result log containing stdout.
 The hook's `tool_response` also contained stdout, stderr, and interruption status.
 
-### Hook boundaries
+#### Hook boundaries
 
 Every run produced exactly this callback sequence:
 
@@ -202,7 +270,7 @@ interactive mode, and blocked Stop hooks were not tested.
 The settings included `PostToolUseFailure`, but that hook did not fire.
 These results establish the successful non-interactive path only.
 
-### Evidence and reproduction
+#### Evidence and reproduction
 
 The [sample manifest](s2/samples/manifest.json) lists selected request bodies and their original hashes.
 Samples preserve full selected payload structures after redaction.
@@ -264,23 +332,278 @@ python3 -I -m py_compile docs/ws-v6/spikes/s2/capture-sink.py
 The tests cover raw JSON, chunked binary bodies, compressed bodies, duplicate requests,
 and omission of authorization headers from saved metadata.
 
+### Codex CLI
+
+#### Signals and switches
+
+Counts below are HTTP requests, not records or model calls.
+All rows used JSON except `protobuf`, which used `protocol="binary"` for all exporters.
+
+| Probe | Change from baseline | Metrics / logs / traces |
+|---|---|---|
+| baseline | All three exporters enabled | 6 / 7 / 3 |
+| protobuf | Binary protobuf protocol | 6 / 7 / 3 |
+| off | All three exporter values `"none"` | 0 / 0 / 0 |
+| analytics-off | `analytics.enabled=false` | 0 / 6 / 3 |
+| prompt-enabled | `otel.log_user_prompt=true` | 5 / 4 / 3 |
+| trace-off | `otel.trace_exporter="none"` | 6 / 7 / 0 |
+| failure | Shell command `exit 7` | 6 / 4 / 3 |
+| no-parent | No environment `TRACEPARENT` | 7 / 5 / 3 |
+
+The three signal routes were `/v1/metrics`, `/v1/logs`, and `/v1/traces`.
+JSON requests used `application/json`.
+Binary requests used `application/x-protobuf`.
+The `binary` setting controlled all three signal encodings.
+`analytics.enabled=false` disabled custom OTLP metrics while logs and traces continued.
+A receiver endpoint alone does not enable exporters whose value is `"none"`.
+The probes did not test gRPC or environment-only endpoint configuration.
+
+Selected metrics included `codex.tool.call`, `codex.tool.call.duration_ms`,
+`codex.hooks.run`, `codex.hooks.run.duration_ms`, `codex.turn.e2e_duration_ms`,
+`codex.turn.token_usage`, `codex.websocket.request`, and `codex.websocket.request.duration_ms`.
+The exports contained additional startup, filesystem, plugin, and MCP activity.
+Metrics describe aggregated activity and do not supply call identifiers.
+
+#### Resource attributes and trace context
+
+**All four supplied `ws.*` values survived on every captured resource for every enabled signal.**
+The built-in resource identified `service.name=codex_exec` and `service.version=0.159.2`.
+The log records also carried `conversation.id`, which matched the hook `session_id`.
+Use the resource's `ws.session.id` as the WS identity.
+
+**Codex honored the environment parent for the main execution trace.**
+In both baseline protocols, `codex.exec` used trace ID `11111111111111111111111111111111`
+and parent span ID `2222222222222222`.
+The main `session_task.turn` and its sampling spans used that trace.
+The JSON baseline exported **1,307 spans across 29 traces**.
+Of those spans, 1,012 used the supplied trace ID.
+The binary baseline exported 1,305 spans across 28 traces.
+Of those spans, 1,011 used the supplied trace ID.
+The no-parent control exported 1,299 spans across 33 traces and none used the supplied trace ID.
+
+The main trace included this execution path:
+
+```text
+supplied parent → codex.exec → … → session_task.turn → session_task.run → run_turn
+  run_turn → run_sampling_request → try_run_sampling_request → stream_request
+```
+
+The ellipsis omits captured infrastructure ancestors.
+There were two `run_sampling_request` spans for the shell-command turn.
+`session_task.turn` carried `turn.id`, `model`, `codex.turn.reasoning_effort`,
+and `codex.turn.token_usage.*` fields.
+The token fields covered input, cached input, cache-write input, non-cached input,
+output, reasoning output, and total tokens.
+
+The nested shell execution exported `exec_command` and `unified_exec.exec_command` in a **different trace**.
+Their `call_id` matched the shell hook's `tool_use_id`.
+`unified_exec.exec_command` also carried `conversation.id` and `turn_id`.
+Background work produced further traces.
+Raw native traces therefore do not implement WS's one-trace-per-session contract.
+
+The shell process inherited the original environment `TRACEPARENT` unchanged.
+Codex did not replace its parent span ID with the current tool span ID.
+With trace export disabled, all six model transport/completion records lacked OTLP trace and span IDs.
+Even with tracing enabled, the baseline completion logs lacked those IDs.
+Resource identity survives independently of native trace parenting.
+
+#### Model and tool records
+
+Codex identifies each named event through its `event.name` attribute.
+The OTLP body was null on the selected structured events.
+Common session records carried `event.timestamp`, `app.version`, `auth_mode`,
+`originator`, `terminal.type`, `model`, `slug`, and `conversation.id`.
+Authenticated records also contained account identity fields, which the committed samples redact.
+
+| Event | Observed fields beyond common attributes |
+|---|---|
+| `codex.conversation_starts` | `approval_policy`, `sandbox_policy`, `provider_name`, `reasoning_effort`, `reasoning_summary`, `mcp_servers`, authentication-presence flags |
+| `codex.api_request` | `attempt`, `duration_ms`, `http.response.status_code`, `success`, `endpoint`, authentication-presence flags |
+| `codex.websocket_request` | `duration_ms`, `success`, `auth.connection_reused`, authentication-presence flags |
+| `codex.sse_event` with `event.kind=response.completed` | `input_token_count`, `output_token_count`, `cached_token_count`, `cache_write_token_count`, `reasoning_token_count`, `tool_token_count`, optional `ttft_ms`, `model_reasoning_effort` |
+| `codex.user_prompt` | `prompt_length`, `prompt` |
+| `codex.tool_decision` | `tool_name`, `tool_namespace`, `call_id`, `decision`, `source` |
+| `codex.tool_result` | `tool_name`, `tool_namespace`, `call_id`, `duration_ms`, `success`, `arguments`, `output`, `output_truncated`, `tool_result_seq`, `agent_name`, MCP fields |
+
+**The baseline `codex.api_request` described `/models`, not model inference.**
+The model used WebSockets.
+Three `codex.sse_event` completion records included one prewarm completion with zero output tokens.
+The other two completions represented the tool request and final answer.
+Do not count every completion as a user-visible model step without classifying prewarm activity.
+
+The baseline WebSocket request durations were 1, 0, and 0 milliseconds.
+The two `responses_websocket.stream_request` spans lasted about 2065 and 1248 milliseconds.
+The sampling spans lasted about 2197 and 1254 milliseconds and included tool dispatch.
+Do not equate the whole sampling interval with model latency.
+Thus `codex.websocket_request.duration_ms` did not measure full inference latency in this probe.
+The completion logs did not contain a full inference duration or a request identifier.
+**Logs alone did not establish exact model-call start times.**
+Use native streaming spans to measure request intervals with native tracing.
+Otherwise record timing as estimated or retain completion events without claiming exact model spans.
+
+`otel.log_user_prompt=false` replaced prompt content with `[REDACTED]`.
+The prompt-enabled probe exported the synthetic prompt.
+The baseline still exported tool arguments and output.
+Prompt redaction does not remove tool content or account identity fields.
+
+Each run with logs enabled exported two tool-result records.
+One described `functions.exec` and the other described its nested `functions.exec_command`.
+Only the nested shell call had the tested pre/post hook pair.
+The hooks therefore did not cover every OTel tool operation.
+Wrapper operations need their own tool-result policy if WS represents them as spans.
+Match its `call_id` to `tool_use_id` rather than counting both results as shell executions.
+
+The [failure excerpt](s2/samples/codex-failure-logs.json) reports `success="true"` for the shell tool.
+The [exec output](s2/samples/codex-failure-exec.jsonl) records command exit code 7 and status `failed`.
+The PostToolUse callback still fired and supplied an empty output string.
+This result distinguishes tool transport success from shell command success.
+Neither that callback nor its OTel tool-result record supplied the command exit code.
+
+#### Hook boundaries and current ws mapping
+
+Every probe produced this callback sequence, including the failed shell command:
+
+```text
+UserPromptSubmit → PreToolUse → PostToolUse → Stop
+```
+
+The [baseline hook sample](s2/samples/codex-baseline-hooks.jsonl) preserves all callback fields.
+Every callback carried `session_id`, `turn_id`, `hook_event_name`, `model`, and `permission_mode`.
+Prompt submission included `prompt`.
+Both tool callbacks included `tool_name=Bash`, `tool_input.command`, and the same `tool_use_id`.
+PostToolUse supplied `tool_response` as a string, without duration or structured exit status.
+Stop supplied `stop_hook_active=false` and `last_assistant_message`.
+
+| Codex event | Current injected command | Required WS interpretation |
+|---|---|---|
+| `UserPromptSubmit` | `ws hook working` | Start the turn identified by `turn_id`. |
+| `PreToolUse` | `ws hook working` | Start a child tool span identified by `tool_use_id`. |
+| `PostToolUse` | `ws hook working` | End that tool span. Preserve its output and resolve command status separately. |
+| `PermissionRequest` | `ws hook waiting` | Record a wait within the active turn or tool. Do not end the turn. |
+| `Stop` | `ws hook stop` | End the turn if ws accepts Stop. A blocked Stop continues the turn. |
+| `Interrupt` | `ws hook cancel` | End the matching turn as interrupted. Reject stale turn IDs. |
+
+The injection loop assigns the first three callbacks the same `working` state.
+`ws/lib/hooks.sh` reads `hook_event_name` and `turn_id` before it changes that state.
+It emits notifications only when the state changes.
+Consequently, its current notifications cannot reconstruct every pre/post boundary.
+Phase 18 must retain each callback's original event name, IDs, and payload before state reduction.
+The existing state mapping can continue to drive the tab display.
+
+The callbacks establish logical boundaries for these completed shell turns.
+They do not supply execution timestamps.
+The baseline recorder received the tool callbacks 84.29 ms apart.
+The corresponding OTel tool result reported 40 ms.
+Receipt time includes hook startup and scheduling.
+PermissionRequest and Interrupt did not fire, so their mapping above comes from the injection code.
+Interactive sessions, resumed turns, denied tools, asynchronous tools, blocked Stop hooks,
+and process termination remain untested.
+
+#### Evidence and reproduction
+
+The [Codex manifest](s2/samples/codex-manifest.json) records each run's flags, counts, and trace totals.
+It records source request hashes for each selected signal.
+The Codex OTLP samples merge decoded requests and retain selected records.
+Trace excerpts include execution spans and their captured ancestors.
+Metric excerpts retain selected execution metrics.
+The samples do not represent complete original wire requests.
+The transformation redacted identity, paths, and unrelated context values.
+It used stable synthetic identifiers across logs, spans, and callbacks.
+The `.pb` samples contain redacted protobuf, with `.pb.json` companions.
+Their companion trace and span IDs use base64, as the protobuf JSON mapping requires.
+The HTTP JSON samples retain hexadecimal trace and span IDs.
+Raw captures remain in the temporary sandbox.
+
+To reproduce the baseline:
+
+1. Create a temporary agent home and an empty project.
+2. Copy Codex authentication and the model cache into the temporary `CODEX_HOME`.
+3. Start the capture sink and use its port in the three exporter flags above.
+4. Apply the resource attributes and trace context above.
+5. Create the recorder from the Claude reproduction section.
+6. Construct the six hook flags with this zsh loop:
+
+```sh
+hook_flags=()
+for event in UserPromptSubmit PreToolUse PostToolUse PermissionRequest Stop Interrupt; do
+  command_json=$(jq -rn --arg c "python3 -I \"$S2_HOOK_RECORDER\"" '$c | @json')
+  hook_flags+=(-c "hooks.$event=[{hooks=[{type=\"command\",command=$command_json}]}]")
+done
+```
+
+Run `codex exec` with those hook flags and the six baseline configuration flags above.
+Add these arguments:
+
+```sh
+--skip-git-repo-check --ignore-user-config --ignore-rules --json
+--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
+-c 'features.shell_snapshot=false' -c 'model_reasoning_effort="low"'
+-C "$S2_PROJECT" -m gpt-6.1-sol
+```
+
+Use the synthetic prompt:
+
+```text
+Run exactly one exec_command tool call with this command: printf S2_CODEX_TOOL; printenv TRACEPARENT. Then reply S2_CODEX_DONE. Do not read files or use other tools.
+```
+
+Check sink requests after the process exits and the two-second drain interval ends.
+For binary probes, replace every exporter protocol value with `binary`.
+The settings table defines the remaining probe variants.
+
 ## Verdict
 
-**Partial.** Local metrics and logs work. Custom resource attributes survive on all three signals.
-The hook callbacks identify the successful turn and tool boundaries.
-Detailed beta tracing also honors the inbound parent and exports a coherent turn trace.
-Enhanced-only tracing does not meet that requirement in this installation.
+**Partial for both agents.** Both agents export local logs and metrics with custom resource attributes.
+Both agents also export native traces under the tested settings.
+The tested callbacks identify completed turn and shell-tool boundaries.
+They do not provide precise execution timestamps.
+
+Claude requires the detailed beta pair for the coherent parented turn trace observed here.
+Codex's main trace honors `TRACEPARENT`, but nested tools and background work create additional traces.
+Neither agent's tested native export provides the complete WS trace contract without normalization.
+
+**`wsd` must synthesize these canonical spans for both agents:**
+
+- One turn segment from prompt submission to an accepted Stop, interruption, or process exit.
+- One child tool span per pre/post callback pair, matched by tool-use ID.
+- One phase-attempt segment when a Loop runner executes a phase.
+- Model-call spans where agent records establish their timing and identity.
+  Codex's default completion logs support token attribution but require estimated timing or optional native streaming spans.
+
+Use the WS session ULID to derive the canonical trace ID.
+Add span links for parent sessions, dependencies, and Loop relations.
+Keep native traces optional and prevent duplicate canonical model/tool spans.
+Do not create a session span that remains open across turns.
 
 ## Impact on the plan
 
-Keep architecture §7's hook-based span synthesis as the reliable baseline.
-Phase 18 should preserve both `prompt_id` and `tool_use_id` from callback JSON.
-Phase 41 should support standard logs and metrics without requiring beta tracing.
-Its receiver must accept JSON and protobuf on each OTLP route.
+Keep architecture §7's hook-based turn/tool synthesis as the baseline.
+Phase 18 must preserve every callback before state reduction.
+Preserve Claude's `prompt_id`, Codex's `turn_id`, and both agents' tool-use identifiers.
+A display-state notification stream loses boundaries when consecutive callbacks all map to `working`.
+Use callback receipt times as observations and retain agent durations separately.
+A blocked Stop must continue the same turn.
 
-Phases that consume model events can use `api_request` durations and request IDs.
-They should join tool results by `tool_use_id`, rather than time alone.
-A detailed-tracing option can use the WS session trace ID through `TRACEPARENT`.
-That option needs the detailed pair, explicit capability checks, and a decision about duplicate synthesized spans.
-The detailed exporter exposes additional context and overrides logs/traces encoding in this test.
-Keep it optional until its version-dependent behavior receives integration coverage.
+Phase 41 must inject three independent Codex exporter configurations through `-c` flags.
+Codex metrics also require analytics to remain enabled.
+The receiver must accept JSON and protobuf on every OTLP route.
+Resource `ws.session.id` supplies correlation even when native trace context is absent.
+Keep beta Claude tracing and Codex native tracing optional.
+Native tool traces can differ from the WS session trace.
+
+Phase 42 can implement successful shell boundaries from these samples.
+It must also close interrupted or abandoned spans and test the unobserved lifecycle paths.
+Do not infer a failed command from Codex's OTel `success` field alone.
+
+**Revise Phase 43 at the milestone gate.**
+Claude model events provide request IDs, token counts, and durations.
+Codex WebSocket inference uses completion logs rather than the captured `/models` API event.
+Its completion logs provide tokens but no full inference duration or request ID.
+Pair transport/completion observations only with explicit uncertainty and prewarm classification.
+Use native streaming spans to measure Codex request intervals.
+Otherwise retain completion events or mark synthesized timing as estimated.
+Match tool results by tool-use ID rather than time alone.
+
+The detailed Claude exporter exposes additional context and overrides logs/traces encoding in this installation.
+Codex exports tool content even with prompt logging disabled.
+Retain version checks, content controls, and integration coverage for optional native tracing.
