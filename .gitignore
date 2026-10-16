@@ -2,6 +2,7 @@
 nvim/.claude/
 loop-web/node_modules/
 loop-web/dist/
+wsd/target/
 /.loop-secrets/
 
 # Tool-managed skills (Claude account sync, BrowserOS) + macOS metadata
