@@ -19,11 +19,17 @@ between repositories.
 - Each work-phase heading ends with `` `[lane: X]` `` and
   `` `[status: todo|in-progress|blocked|done]` ``. A review phase adds
   `` `[kind: pr-review]` ``; phases without `kind:` are work phases.
-- A review phase may add `` `[review: shallow|medium|max]` `` (default `medium`) and
-  `` `[rounds: N]` `` (default per tier: shallow 1, medium 3, max 3; `1 ≤ N ≤ 5`). shallow = one
-  Opus reviewer, Sonnet fixes; medium = Sol + Opus + Grok adversaries, Opus fixes; max = Astra +
-  Fable + Grok adversaries, Opus fixes; every tier ends with one Opus verdict. `loop-review.sh stages` turns
-  the pair into the run list.
+- A review phase may add `` `[review: standard|max]` `` (default `standard`),
+  `` `[rounds: N]` `` (default 2 outer rounds), and `` `[inner: N]` `` (default 2 inner
+  exchanges per round). Both counts accept `1 ≤ N ≤ 5`. Tiers shallow and medium are
+  rejected by execution paths; use standard or max for new plans.
+  Standard rotates Sol / Opus / Grok; max rotates Astra / Fable / Grok, with reviewer R
+  and critic C from different providers. Each inner exchange is R's review or response
+  followed by C's audit. An opening approval agreed by C requires the third provider's
+  confirmation before clean early stop. Disagreement at the inner cap writes disputed
+  evidence for verification against the code. Only the fixer/planner edits the artifact,
+  between outer rounds. PR review uses Opus fixes when needed and ends with one Opus
+  verdict; `loop-review.sh next` advances the ledger-driven pipeline.
 - A review phase that ends a non-final milestone adds `` `[gate: merge]` `` (see
   **Milestones** below); the tag is only valid together with `[kind: pr-review]`.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
@@ -156,7 +162,7 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 - **Done when:** <both lanes merged and green>
 - **Estimate:** <min–max min · confidence · basis>
 
-### Phase 5 — Review pull requests `[lane: review]` `[status: todo]` `[kind: pr-review]` `[review: medium]`
+### Phase 5 — Review pull requests `[lane: review]` `[status: todo]` `[kind: pr-review]` `[review: standard]`
 - **Depends on:** Phase 4
 - **Parallelizable with:** none — review barrier
 - **Done when:** every repository PR has a non-blocking review verdict

@@ -78,6 +78,8 @@ export interface StateReviewPipeline {
   stage?: string;
   tier?: ReviewTier;
   rounds?: number;
+  inner?: number;
+  ledger?: string;
   headSha?: string;
 }
 
@@ -207,15 +209,29 @@ export interface PlanPhase {
   doneWhen: string | null;
   verify: string | null;
   notes: string | null;
-  /** PR-review phases only: `[review: tier]` (default medium) + `[rounds: N]` (null = tier default). */
+  /** PR-review phases only: defaults to standard with two outer rounds. */
   review: ReviewConfig | null;
 }
 
-export type ReviewTier = "shallow" | "medium" | "max";
+/** Historical tiers remain readable; execution only accepts standard|max. */
+export type LegacyReviewTier = "shallow" | "medium";
+export type ReviewTier = "standard" | "max" | LegacyReviewTier;
 
 export interface ReviewConfig {
   tier: ReviewTier;
+  /** Null = untagged: execution resolves LOOP_REVIEW_ROUNDS_DEFAULT (legacy tiers: their historical default). */
   rounds: number | null;
+  /** Maximum reviewer/critic exchanges per outer round; null = LOOP_REVIEW_INNER_DEFAULT. */
+  inner: number | null;
+}
+
+/** Limits `loop-review.sh next` pinned for one repository's started AR pipeline. */
+export interface ReviewPipelineConfig {
+  phase: string;
+  repository: string;
+  tier: ReviewTier;
+  rounds: number;
+  inner: number;
 }
 
 /** Free-form prose sections of the plan markdown (each nullable). Rendered in the drawer. */
@@ -346,23 +362,43 @@ export interface ReviewRun {
   leg?: LegJson | null;
 }
 
-/** loop-review.sh chain names — one run of a review pipeline uses exactly one. */
-export type ReviewChain = "review-adv-a" | "review-adv-b" | "review-adv-c" | "review-fix" | "review-final";
+export type ReviewRole = "review" | "critic" | "respond" | "confirm" | "disputed" | "fix" | "final";
+export type ReviewProvider = "gpt" | "claude" | "grok" | "-";
 
-export type ReviewRunState = "todo" | "running" | "done" | "question" | "blocked" | "failed";
-
-/** One run (`a<k>`) of an explicit review phase's pipeline for one repository: the planned
- * stage from tier + rounds, folded with its run dir when one exists. */
-export interface ReviewStageRun {
+/** Completed AR run, in ledger order. Disputed markers have no runner directory. */
+export interface ReviewLedgerEntry {
+  phase: string;
   repository: string;
   k: number;
-  /** `round<r>` | `fix<r>` | `final`. */
+  stage: string;
+  role: ReviewRole;
+  provider: ReviewProvider;
+  verdict: string;
+  runDir: string;
+}
+
+/** Current and historical chain names; review-disputed is a marker without a runner. */
+export type ReviewChain = "review-adv-a" | "review-adv-b" | "review-adv-c" | "review-gpt" | "review-claude" | "review-grok" | "review-disputed" | "review-fix" | "review-final";
+
+export type ReviewRunState = "todo" | "planned" | "skipped" | "running" | "done" | "question" | "blocked" | "failed";
+
+/** One ledger run or a possible remaining stage, folded with live runner data. */
+export interface ReviewStageRun {
+  repository: string;
+  /** Actual/planned attempt number; negative display keys identify inferred skips. */
+  k: number;
+  /** `round<r>` | `fix<r>` | `disputed` | `final`. */
   stage: string;
   chain: ReviewChain;
   state: ReviewRunState;
   engine: string | null;
   model: string | null;
   summary: string | null;
+  /** AR fields; absent for historical static pipelines. */
+  role?: ReviewRole;
+  provider?: ReviewProvider;
+  verdict?: string | null;
+  runDir?: string | null;
 }
 
 export interface Runtime {
@@ -372,6 +408,8 @@ export interface Runtime {
   events: RawEvent[];
   reviewRuns: ReviewRun[];
   reviewRunsByRepository: Record<string, ReviewRun[]>;
+  reviewLedger?: ReviewLedgerEntry[];
+  reviewConfigs?: ReviewPipelineConfig[];
   /** Legacy reserved notes/pr-review.md steering note. */
   reviewNote: string | null;
   reviewNotes: Record<string, string>;

@@ -284,96 +284,128 @@ run_review() { # run_review <chain> [codex outcome] [extra runner args...]
   INVOCATIONS="$(cat "$FAKE_ENGINE_LOG")"
 }
 
-echo "runner: review tiers pick per-role chains and efforts (default tier: medium)"
-run_review review-adv-a done
-assert_exit "$RC" "0" "medium adversary A completes"
-assert_contains "$INVOCATIONS" '-m gpt-6-sol' "medium adversary A is Sol"
-assert_contains "$INVOCATIONS" 'model_reasoning_effort="xhigh"' "medium adversary A runs at xhigh"
+echo "runner: review tiers pick per-role chains and efforts (default tier: standard)"
+run_review review-gpt done
+assert_exit "$RC" "0" "standard GPT reviewer completes"
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "standard GPT reviewer is Sol"
+assert_contains "$INVOCATIONS" 'model_reasoning_effort="xhigh"' "standard GPT reviewer runs at xhigh"
 assert_eq "$(jq -r '.effort' "$RUN_DIR/meta.json")" "xhigh" "meta records the effort passed"
-assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "adversary has no fallback reviewer"
+assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "reviewer has no fallback reviewer"
 
-run_review review-adv-b
-assert_exit "$RC" "0" "medium adversary B completes"
-assert_contains "$INVOCATIONS" 'claude -p --model opus ' "medium adversary B is Opus"
-assert_contains "$INVOCATIONS" '--effort xhigh' "medium adversary B runs at xhigh"
+run_review review-claude
+assert_exit "$RC" "0" "standard Claude reviewer completes"
+assert_contains "$INVOCATIONS" 'claude -p --model opus ' "standard Claude reviewer is Opus"
+assert_contains "$INVOCATIONS" '--effort xhigh' "standard Claude reviewer runs at xhigh"
 
-run_review review-adv-c
-assert_exit "$RC" "0" "medium adversary C completes"
-assert_contains "$INVOCATIONS" 'grok --prompt-file ' "medium adversary C is Grok (headless, prompt from file)"
+run_review review-grok
+assert_exit "$RC" "0" "standard Grok reviewer completes"
+assert_contains "$INVOCATIONS" 'grok --prompt-file ' "standard Grok reviewer is Grok (headless, prompt from file)"
 assert_contains "$INVOCATIONS" '--always-approve' "grok skips approvals"
 assert_contains "$INVOCATIONS" '--output-format streaming-messages-json' "grok streams a claude-shaped transcript"
-assert_contains "$INVOCATIONS" '--effort xhigh' "medium adversary C runs at xhigh"
+assert_contains "$INVOCATIONS" '--effort xhigh' "standard Grok reviewer runs at xhigh"
 assert_eq "$([[ "$INVOCATIONS" == *' -m '* ]] && echo yes || echo no)" "no" "grok:default runs the CLI's default (latest) model"
 assert_eq "$(jq -r '.engine' "$RUN_DIR/meta.json")" "grok" "meta records the grok engine"
 assert_eq "$(jq -r '.model' "$RUN_DIR/meta.json")" "grok-4.7" "meta records the concrete model from the init event"
 assert_eq "$(jq -r '.sessionId' "$RUN_DIR/meta.json")" "s-grok" "meta keeps the grok session for resume"
 assert_eq "$(cat "$RUN_DIR/last.md")" "grok done" "final message extracted to last.md"
-assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "adversary C has no fallback reviewer"
+assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "Grok reviewer has no fallback reviewer"
 
 run_review review-fix
-assert_exit "$RC" "0" "medium remediation coordinator completes"
-assert_contains "$INVOCATIONS" 'claude -p --model opus ' "medium fixes run on Opus"
+assert_exit "$RC" "0" "standard remediation coordinator completes"
+assert_contains "$INVOCATIONS" 'claude -p --model opus ' "standard fixes run on Opus"
 assert_contains "$INVOCATIONS" '--effort medium' "fixes run at medium effort"
 assert_eq "$([[ "$INVOCATIONS" == *'--agents'* ]] && echo yes || echo no)" "no" "remediation delegation belongs to the skill"
 assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "remediation coordinator has no model fallback"
 
 run_review review-final
-assert_exit "$RC" "0" "medium verdict completes"
+assert_exit "$RC" "0" "standard verdict completes"
 assert_contains "$INVOCATIONS" 'claude -p --model opus ' "verdict runs on Opus"
-assert_contains "$INVOCATIONS" '--effort xhigh' "medium verdict runs at xhigh"
+assert_contains "$INVOCATIONS" '--effort xhigh' "standard verdict runs at xhigh"
 assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "final reviewer has no model fallback"
 
 echo "runner: max tier — Astra keeps codex ultra, Fable at max, verdict at max"
-run_review review-adv-a done --review-tier max
-assert_contains "$INVOCATIONS" '-m gpt-6-astra' "max adversary A is Astra"
+run_review review-gpt done --review-tier max
+assert_exit "$RC" "0" "max review-gpt completes"
+assert_contains "$INVOCATIONS" '-m gpt-6-astra' "max GPT reviewer is Astra"
 assert_contains "$INVOCATIONS" 'model_reasoning_effort="ultra"' "codex keeps ultra"
-run_review review-adv-b rate-limit --review-tier max
-assert_contains "$INVOCATIONS" 'claude -p --model fable ' "max adversary B is Fable"
+run_review review-claude rate-limit --review-tier max
+assert_exit "$RC" "0" "max review-claude completes"
+assert_contains "$INVOCATIONS" 'claude -p --model fable ' "max Claude reviewer is Fable"
 assert_contains "$INVOCATIONS" '--effort max' "Fable runs at max"
 run_review review-final rate-limit --review-tier max
+assert_exit "$RC" "0" "max review-final completes"
 assert_contains "$INVOCATIONS" '--effort max' "max verdict runs at max"
-run_review review-adv-c rate-limit --review-tier max
-assert_contains "$INVOCATIONS" 'grok --prompt-file ' "max adversary C is Grok"
+run_review review-grok rate-limit --review-tier max
+assert_exit "$RC" "0" "max review-grok completes"
+assert_contains "$INVOCATIONS" 'grok --prompt-file ' "max Grok reviewer is Grok"
 assert_contains "$INVOCATIONS" '--effort xhigh' "grok has no max: clamped to xhigh"
 assert_eq "$(jq -r '.effort' "$RUN_DIR/meta.json")" "xhigh" "meta records the clamped effort"
 
-echo "runner: shallow tier — one Opus reviewer, Sonnet fixes, no adversary B"
-run_review review-adv-a rate-limit --review-tier shallow
-assert_contains "$INVOCATIONS" 'claude -p --model opus ' "shallow reviewer is Opus"
-assert_contains "$INVOCATIONS" '--effort high' "shallow reviewer runs at high"
-run_review review-fix rate-limit --review-tier shallow
-assert_contains "$INVOCATIONS" 'claude -p --model sonnet ' "shallow fixes run on Sonnet"
-assert_contains "$INVOCATIONS" '--effort medium' "shallow fixes run at medium"
-run_review review-adv-b rate-limit --review-tier shallow
-assert_exit "$RC" "1" "shallow has no adversary B (usage error)"
-run_review review-adv-c rate-limit --review-tier shallow
-assert_exit "$RC" "1" "shallow has no adversary C (usage error)"
-run_review review-adv-a rate-limit --review-tier huge
-assert_exit "$RC" "1" "unknown tier is a usage error"
+run_review review-fix rate-limit --review-tier max
+assert_exit "$RC" "0" "max remediation coordinator completes"
+assert_contains "$INVOCATIONS" 'claude -p --model opus ' "max fixes run on Opus"
+assert_contains "$INVOCATIONS" '--effort medium' "max fixes run at medium effort"
+
+run_review review-gpt done --review-tier standard
+assert_exit "$RC" "0" "explicit standard tier completes"
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "explicit standard GPT reviewer is Sol"
+
+for tier in shallow medium huge; do
+  run_review review-gpt done --review-tier "$tier"
+  assert_exit "$RC" "1" "$tier tier is a usage error"
+  assert_contains "$(cat "$RUN_DIR.out")" "review tier '$tier'" "identifies rejected tier $tier"
+  assert_contains "$(cat "$RUN_DIR.out")" 'standard|max' "lists supported tiers for $tier"
+  assert_eq "$INVOCATIONS" "" "rejected tier $tier never starts an engine"
+done
+
+echo "runner: review configuration defaults"
+review_defaults="$(
+  source "$ROOT/loop-models.conf"
+  print -r -- "$LOOP_REVIEW_TIER_DEFAULT:$LOOP_REVIEW_ROUNDS_DEFAULT:$LOOP_REVIEW_INNER_DEFAULT:$LOOP_REVIEW_ROUNDS_CAP:${LOOP_PLAN_REVIEW_ROUNDS:-unset}"
+)"
+assert_eq "$review_defaults" "standard:2:2:5:2" "shared review defaults apply to both tiers and plan review"
+legacy_rounds="$(
+  unset LOOP_REVIEW_ROUNDS_SHALLOW LOOP_REVIEW_ROUNDS_MEDIUM LOOP_REVIEW_ROUNDS_MAX
+  source "$ROOT/loop-models.conf"
+  print -r -- "${LOOP_REVIEW_ROUNDS_SHALLOW-unset}:${LOOP_REVIEW_ROUNDS_MEDIUM-unset}:${LOOP_REVIEW_ROUNDS_MAX-unset}"
+)"
+assert_eq "$legacy_rounds" "unset:unset:unset" "per-tier round defaults are removed"
 
 echo "runner: plan review — Sol + Opus + Grok at high, no fallback"
-run_review plan-review-a done
-assert_exit "$RC" "0" "plan reviewer A completes"
-assert_contains "$INVOCATIONS" '-m gpt-6-sol' "plan reviewer A is Sol"
-assert_contains "$INVOCATIONS" 'model_reasoning_effort="high"' "plan reviewer A runs at high"
-assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "plan reviewer A has no fallback"
-run_review plan-review-b
-assert_exit "$RC" "0" "plan reviewer B completes"
-assert_contains "$INVOCATIONS" 'claude -p --model opus ' "plan reviewer B is Opus"
-assert_contains "$INVOCATIONS" '--effort high' "plan reviewer B runs at high"
-run_review plan-review-c
-assert_exit "$RC" "0" "plan reviewer C completes"
-assert_contains "$INVOCATIONS" 'grok --prompt-file ' "plan reviewer C is Grok"
-assert_contains "$INVOCATIONS" '--effort high' "plan reviewer C runs at high"
+run_review plan-review-gpt done
+assert_exit "$RC" "0" "plan GPT reviewer completes"
+assert_contains "$INVOCATIONS" '-m gpt-6-sol' "plan GPT reviewer is Sol"
+assert_contains "$INVOCATIONS" 'model_reasoning_effort="high"' "plan GPT reviewer runs at high"
+assert_eq "$(print -r -- "$INVOCATIONS" | wc -l | tr -d ' ')" "1" "plan GPT reviewer has no fallback"
+run_review plan-review-claude
+assert_exit "$RC" "0" "plan Claude reviewer completes"
+assert_contains "$INVOCATIONS" 'claude -p --model opus ' "plan Claude reviewer is Opus"
+assert_contains "$INVOCATIONS" '--effort high' "plan Claude reviewer runs at high"
+run_review plan-review-grok
+assert_exit "$RC" "0" "plan Grok reviewer completes"
+assert_contains "$INVOCATIONS" 'grok --prompt-file ' "plan Grok reviewer is Grok"
+assert_contains "$INVOCATIONS" '--effort high' "plan Grok reviewer runs at high"
 run_review plan-review-d
 assert_exit "$RC" "1" "unknown plan reviewer is a usage error"
 
-echo "runner: legacy chain names keep in-flight loops working (max tier)"
-run_review review-astra done
-assert_exit "$RC" "0" "legacy review-astra completes"
-assert_contains "$INVOCATIONS" '-m gpt-6-astra' "review-astra → max adversary A"
-run_review review-fable
-assert_contains "$INVOCATIONS" 'claude -p --model fable ' "review-fable → max adversary B"
+echo "runner: removed chain names are usage errors"
+for chain in review-adv-a review-adv-b review-adv-c review-astra review-fable plan-review-a plan-review-b plan-review-c; do
+  run_review "$chain" done
+  assert_exit "$RC" "1" "removed $chain is rejected"
+  assert_contains "$(cat "$RUN_DIR.out")" "removed chain '$chain'" "identifies removed $chain"
+  assert_contains "$(cat "$RUN_DIR.out")" 'use ' "suggests replacement for $chain"
+  assert_eq "$INVOCATIONS" "" "removed $chain never starts an engine"
+done
+
+echo "runner: legacy tier flags are rejected for every chain"
+for chain in task plan-review-gpt; do
+  for tier in shallow medium; do
+    run_review "$chain" done --review-tier "$tier"
+    assert_exit "$RC" "1" "$chain rejects explicit $tier tier"
+    assert_contains "$(cat "$RUN_DIR.out")" "review tier '$tier'" "$chain identifies rejected $tier tier"
+    assert_eq "$INVOCATIONS" "" "$chain never starts an engine with $tier tier"
+  done
+done
 
 echo "runner: a claude leg configured at ultra is clamped to max"
 { cat "$ROOT/loop-models.conf"; print -r -- 'CHAIN_TASK=("claude:opus")'; print -r -- 'EFFORT_TASK=ultra'; } > "$TMP/ultra-models.conf"
@@ -440,6 +472,20 @@ assert_contains "$INVOCATIONS" 'focus on the cache tests' "sends the new note co
 assert_eq "$(jq -r '.sessionId' "$RUN_DIR/meta.json")" "sess-note" "meta keeps the session id"
 unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
 
+echo "runner: an AR reviewer note edit restarts a fresh call, never resuming the session"
+ctl_run note-ar
+print -r -- "old guidance" > "$CTL/notes/1.md"
+export FAKE_CODEX_OUTCOME=done FAKE_CODEX_SLEEP=10 FAKE_CODEX_SESSION=ar-must-be-fresh
+( sleep 1; print -r -- "check the cache tests" > "$CTL/notes/1.md" ) &
+ctl_exec --chain review-gpt --review-tier standard
+assert_exit "$RC" "0" "AR attempt completes"
+assert_eq "$(print -r -- "$INVOCATIONS" | grep -c '^codex exec --json ')" "2" "two fresh calls"
+assert_eq "$(print -r -- "$INVOCATIONS" | grep -c 'exec resume')" "0" "never resumes the reviewer session"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'implement phase' "restart carries the full prompt"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'check the cache tests' "restart carries the updated note"
+assert_eq "$(jq -r '.sessionId' "$RUN_DIR/meta.json")" "ar-must-be-fresh" "meta records the fresh call's session"
+unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
+
 echo "runner: deleting an existing note mid-run tells the agent it was removed"
 ctl_run note-removed
 print -r -- "temporary guidance" > "$CTL/notes/1.md"
@@ -448,6 +494,19 @@ export FAKE_CODEX_OUTCOME=done FAKE_CODEX_SLEEP=10 FAKE_CODEX_SESSION=sess-rm
 ctl_exec
 assert_exit "$RC" "0" "attempt completes after removal"
 assert_contains "$INVOCATIONS" 'note removed' "says the note was removed"
+unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
+
+echo "runner: deleting a note mid AR reviewer call restarts fresh and says it was removed"
+ctl_run note-ar-removed
+print -r -- "temporary guidance" > "$CTL/notes/1.md"
+export FAKE_CODEX_OUTCOME=done FAKE_CODEX_SLEEP=10 FAKE_CODEX_SESSION=ar-rm-fresh
+( sleep 1; rm -f "$CTL/notes/1.md" ) &
+ctl_exec --chain review-gpt --review-tier standard
+assert_exit "$RC" "0" "AR attempt completes after removal"
+assert_eq "$(print -r -- "$INVOCATIONS" | grep -c 'exec resume')" "0" "never resumes the reviewer session"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'implement phase' "restart carries the full prompt"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'note removed' "restart says the note was removed"
+assert_contains "$(cat "$RUN_DIR/note-1.md")" 'Disregard the Repository steering notes section' "restart voids the embedded note"
 unset FAKE_CODEX_SLEEP FAKE_CODEX_SESSION
 
 echo "runner: control/model-<phase> overrides the first leg of the task chain"
@@ -502,7 +561,7 @@ assert_eq "$(jq -r '.model' "$RUN_DIR/meta.json")" "claude-opus-5-5" "meta recor
 unset FAKE_CODEX_MODELS
 
 echo "runner: a grok session resumes with --engine grok"
-run_review review-adv-c rate-limit --resume s-grok --engine grok
+run_review review-grok rate-limit --resume s-grok --engine grok
 assert_exit "$RC" "0" "grok resume completes"
 assert_contains "$INVOCATIONS" '--resume s-grok' "resumes the grok session by id"
 

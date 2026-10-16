@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildGraph } from "./build-graph.ts";
 import { parsePlan } from "./parse-plan.ts";
-import type { Runtime, PhaseRuntime, Attempt, Graph, PrInfo } from "./types.ts";
+import type { Runtime, PhaseRuntime, Attempt, Graph, PrInfo, ReviewRole, ReviewProvider } from "./types.ts";
 
 /** Minimal PrInfo for the review-node tests — fills the review-detail fields with nulls. */
 function pr(over: Partial<PrInfo>): PrInfo {
@@ -169,19 +169,46 @@ describe("buildGraph — review tier on PR-review nodes", () => {
   it("carries the parsed tier + rounds onto pr-review nodes only", () => {
     const tagged = REVIEW_ROUNDS.replace(/(### Phase 4[^\n]*\[kind: pr-review\]`?)/, "$1 `[review: shallow]` `[rounds: 2]`");
     const graph = buildGraph(parsePlan(tagged), null);
-    expect(node(graph, "4").review).toEqual({ tier: "shallow", rounds: 2 });
-    expect(node(graph, "2").review).toEqual({ tier: "medium", rounds: null });
+    expect(node(graph, "4").review).toEqual({ tier: "shallow", rounds: 2, inner: null });
+    expect(node(graph, "2").review).toEqual({ tier: "standard", rounds: null, inner: null });
     expect(node(graph, "1").review ?? null).toBeNull();
   });
 });
 
 describe("buildGraph — review pipeline sub-stages", () => {
+  it("keeps AR ledgers scoped to their phase and repository", () => {
+    const rt = runtime({});
+    rt.reviewLedger = [
+      { phase: "4", repository: "acme--api", k: 1, stage: "round1", role: "review", provider: "gpt", verdict: "NEEDS_CHANGES", runDir: "runs/review-p4-acme--api-a1" },
+      { phase: "2", repository: "acme--web", k: 1, stage: "final", role: "final", provider: "claude", verdict: "APPROVE", runDir: "runs/review-p2-acme--web-a1" },
+    ];
+    const stages = node(buildGraph(parsePlan(MULTI_REPO_REVIEW), rt), "4").reviewStages!;
+    expect(stages[0]).toMatchObject({ repository: "acme/api", role: "review", provider: "gpt", verdict: "NEEDS_CHANGES", state: "done" });
+    expect(stages.find((r) => r.repository === "acme/web")).toMatchObject({ k: 1, role: "review", state: "planned", verdict: null });
+    expect(stages.filter((r) => r.state === "done")).toHaveLength(1);
+  });
+
+  it("renders an untagged started pipeline from its pinned runtime limits", () => {
+    const rt = runtime({});
+    const row = (k: number, stage: string, role: ReviewRole, provider: ReviewProvider, verdict: string) =>
+      ({ phase: "4", repository: "acme--api", k, stage, role, provider, verdict, runDir: `runs/review-p4-acme--api-a${k}` });
+    rt.reviewLedger = [
+      row(1, "round1", "review", "gpt", "NEEDS_CHANGES"), row(2, "round1", "critic", "claude", "AGREE"),
+      row(3, "fix1", "fix", "claude", "PUSHED"),
+      row(4, "round2", "review", "claude", "NEEDS_CHANGES"), row(5, "round2", "critic", "grok", "AGREE"),
+    ];
+    rt.reviewConfigs = [{ phase: "4", repository: "acme--api", tier: "standard", rounds: 3, inner: 2 }];
+    const stages = node(buildGraph(parsePlan(MULTI_REPO_REVIEW), rt), "4").reviewStages!;
+    expect(stages.find((r) => r.repository === "acme/api" && r.k === 6)).toMatchObject({ stage: "fix2", role: "fix" });
+  });
+
   it("lists the phase's pipeline runs with their live state", () => {
     const rt = runtime({});
     rt.reviewRunsByRepository = {
       "acme--api": [{ k: 1, runDir: "runs/review-p4-acme--api-a1", phase: "4", repository: "acme--api", status: null, leg: { engine: "codex", model: "@sol" } }],
     };
-    const graph = buildGraph(parsePlan(MULTI_REPO_REVIEW), rt);
+    const legacy = MULTI_REPO_REVIEW.replace(/(### Phase 4[^\n]*)/, "$1 `[review: medium]`");
+    const graph = buildGraph(parsePlan(legacy), rt);
     const stages = node(graph, "4").reviewStages ?? [];
     expect(stages).toHaveLength(24); // medium ×3 = 12 runs × 2 repositories
     expect(stages[0]).toMatchObject({ repository: "acme/api", k: 1, stage: "round1", state: "running", model: "@sol" });

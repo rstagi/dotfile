@@ -8,9 +8,9 @@ set -u -o pipefail
 #
 # Usage:
 #   loop-runner.sh --worktree <path> --run-dir <abs path> --prompt-file <f>
-#     [--chain task|escalate|review-adv-a|review-adv-b|review-adv-c|review-fix|review-final
-#              |plan-review-a|plan-review-b|plan-review-c]
-#     [--review-tier shallow|medium|max]   (review chains; default LOOP_REVIEW_TIER_DEFAULT)
+#     [--chain task|escalate|review-gpt|review-claude|review-grok|review-fix|review-final
+#              |plan-review-gpt|plan-review-claude|plan-review-grok]
+#     [--review-tier standard|max]   (review chains; default LOOP_REVIEW_TIER_DEFAULT)
 #     [--timeout <s>] [--verify-cmd <cmd>]
 #     [--resume <sessionId> --engine codex|claude|grok] [--models-conf <f>] [--budget <usd>]
 #     [--loop-dir <d>]   (default: RUN_DIR/../.. — the coordinator .loop/)
@@ -106,22 +106,20 @@ LOOP_JEV_ROUTE_MIN_CONFIDENCE="${LOOP_JEV_ROUTE_MIN_CONFIDENCE:-0.8}"
 export LOOP_JEV_KEY_FILE LOOP_JEV_MODE LOOP_JEV_MODE_EXPLICIT
 BUDGET="${BUDGET:-$LOOP_BUDGET_USD}"
 
-# Legacy review chain names (in-flight loops) map onto the max tier's adversaries.
-case "$CHAIN_NAME" in
-review-astra) CHAIN_NAME=review-adv-a REVIEW_TIER=max ;;
-review-fable) CHAIN_NAME=review-adv-b REVIEW_TIER=max ;;
-esac
+[[ -z "$REVIEW_TIER" || "$REVIEW_TIER" == (standard|max) ]] || {
+  echo "loop-runner: unknown review tier '$REVIEW_TIER' (standard|max)" >&2; exit 1
+}
 
 EFFORT=""
 case "$CHAIN_NAME" in
 task) chain=("${CHAIN_TASK[@]}"); EFFORT="${EFFORT_TASK:-}"; TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_TASK}" ;;
 escalate) chain=("${CHAIN_ESCALATE[@]}"); EFFORT="${EFFORT_ESCALATE:-}"; TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_ESCALATE}" ;;
-review-adv-a|review-adv-b|review-adv-c|review-fix|review-final)
-  REVIEW_TIER="${REVIEW_TIER:-${LOOP_REVIEW_TIER_DEFAULT:-medium}}"
-  [[ "$REVIEW_TIER" == (shallow|medium|max) ]] || {
-    echo "loop-runner: unknown review tier '$REVIEW_TIER' (shallow|medium|max)" >&2; exit 1
+review-gpt|review-claude|review-grok|review-fix|review-final)
+  REVIEW_TIER="${REVIEW_TIER:-${LOOP_REVIEW_TIER_DEFAULT:-standard}}"
+  [[ "$REVIEW_TIER" == (standard|max) ]] || {
+    echo "loop-runner: unknown review tier '$REVIEW_TIER' (standard|max)" >&2; exit 1
   }
-  review_role="${${CHAIN_NAME#review-}//-/_}"   # adv_a | adv_b | adv_c | fix | final
+  review_role="${CHAIN_NAME#review-}"   # gpt | claude | grok | fix | final
   review_var="REVIEW_${(U)REVIEW_TIER}_${(U)review_role}"
   chain_var="CHAIN_$review_var" effort_var="EFFORT_$review_var"
   (( ${(P)+chain_var} )) && (( ${#${(P)chain_var}} )) || {
@@ -135,11 +133,17 @@ review-adv-a|review-adv-b|review-adv-c|review-fix|review-final)
     TIMEOUT="${TIMEOUT:-$LOOP_TIMEOUT_REVIEW}"
   fi
   ;;
-plan-review-a|plan-review-b|plan-review-c)
+plan-review-gpt|plan-review-claude|plan-review-grok)
   plan_role="${(U)CHAIN_NAME#plan-review-}"
   chain=("${(@P)${:-CHAIN_PLAN_REVIEW_$plan_role}}")
   EFFORT="${(P)${:-EFFORT_PLAN_REVIEW_$plan_role}:-}"
   TIMEOUT="${TIMEOUT:-${LOOP_TIMEOUT_PLAN_REVIEW:-$LOOP_TIMEOUT_REVIEW}}"
+  ;;
+review-adv-*|review-astra|review-fable)
+  echo "loop-runner: removed chain '$CHAIN_NAME' (use review-gpt|review-claude|review-grok)" >&2; exit 1
+  ;;
+plan-review-a|plan-review-b|plan-review-c)
+  echo "loop-runner: removed chain '$CHAIN_NAME' (use plan-review-gpt|plan-review-claude|plan-review-grok)" >&2; exit 1
   ;;
 *) echo "loop-runner: unknown chain '$CHAIN_NAME'" >&2; exit 1 ;;
 esac
@@ -481,6 +485,7 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
 }
 
 apply_note_change() { # resume the interrupted session with the new note (same attempt, no retry used)
+  # AR reviewer/critic/confirmer calls restart fresh from the full prompt instead
   local sid content prompt="$RUN_DIR/note-$(( NOTE_ROUND + 1 )).md"
   sid="$(jq -r '.session_id // .sessionId // .thread_id // (.msg.session_id? // empty) // empty' \
     "$TRANSCRIPT" 2>/dev/null | head -1)"
@@ -497,7 +502,16 @@ $(cat "$NOTE_FILE")
 Incorporate it and continue the phase from where you stopped."
   fi
   [[ -f "$TRANSCRIPT" ]] && mv "$TRANSCRIPT" "$RUN_DIR/transcript.pre-note-$NOTE_ROUND.jsonl"
-  if [[ -n "$sid" ]]; then
+  if [[ "$CHAIN_NAME" == review-(gpt|claude|grok) ]]; then # AR R/C/T: fresh call, never resume
+    sid="" NOTE_SID="" RESUME_SID=""
+    if [[ "$NOTE_SIG" == 0 ]]; then # prompt.md still embeds the old note: void it explicitly
+      { cat "$RUN_DIR/prompt.md"; print -r -- "";
+        print -r -- "Steering note removed by the user (notes/$PHASE.md): note removed. Disregard the Repository steering notes section above."
+      } > "$prompt"
+    else
+      { cat "$RUN_DIR/prompt.md"; print -r -- ""; print -r -- "Latest steering note (notes/$PHASE.md):"; cat "$NOTE_FILE"; } > "$prompt"
+    fi
+  elif [[ -n "$sid" ]]; then
     NOTE_SID="$sid" RESUME_SID="$sid"
     print -r -- "$content" > "$prompt"
   else # nothing to resume yet: restart the leg with the note appended

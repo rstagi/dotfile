@@ -4,6 +4,10 @@ import type {
   LoopControl,
   Attempt,
   ReviewRun,
+  ReviewLedgerEntry,
+  ReviewPipelineConfig,
+  ReviewRole,
+  ReviewProvider,
   RawEvent,
   StateJson,
   MetaJson,
@@ -46,6 +50,9 @@ export interface LoopInput {
   runs: RawRunDir[];
   hil: RawHil[];
   notes: RawNote[];
+  reviewLedgers?: { name: string; content: string }[];
+  /** `<ledger-stem>.config.json` limits pinned by `loop-review.sh next`. */
+  reviewConfigs?: { name: string; content: string }[];
   /** Parsed `.loop/control/` (pause flags + model overrides); absent → nothing controlled. */
   control?: LoopControl;
 }
@@ -64,6 +71,7 @@ const EMPTY: Runtime = {
   events: [],
   reviewRuns: [],
   reviewRunsByRepository: {},
+  reviewLedger: [],
   reviewNote: null,
   reviewNotes: {},
   control: NO_CONTROL,
@@ -114,7 +122,43 @@ export function parseLoop(input: LoopInput): Runtime {
   }
 
   return { present: true, state: state ?? null, phases, events, reviewRuns,
-    reviewRunsByRepository, reviewNote, reviewNotes, control };
+    reviewRunsByRepository, reviewLedger: parseReviewLedgers(input.reviewLedgers ?? []),
+    reviewConfigs: parseReviewConfigs(input.reviewConfigs ?? []), reviewNote, reviewNotes, control };
+}
+
+function parseReviewLedgers(ledgers: NonNullable<LoopInput["reviewLedgers"]>): ReviewLedgerEntry[] {
+  const entries: ReviewLedgerEntry[] = [];
+  for (const ledger of ledgers) {
+    const name = ledger.name.match(/^review-p(\d+)-(.+)\.ledger\.tsv$/);
+    if (!name) continue;
+    const seen = new Set<number>();
+    for (const line of ledger.content.split(/\r?\n/)) {
+      const columns = line.split("\t");
+      if (columns.length !== 6) continue;
+      const [attempt, stage, role, provider, verdict, runDir] = columns;
+      if (!/^a[1-9]\d*$/.test(attempt) || !/^(round\d+|fix\d+|disputed|final)$/.test(stage)
+        || !/^(review|critic|respond|confirm|disputed|fix|final)$/.test(role)
+        || !/^(gpt|claude|grok|-)$/.test(provider) || !verdict || !runDir) continue;
+      const k = Number(attempt.slice(1));
+      if (seen.has(k)) continue;
+      seen.add(k);
+      entries.push({ phase: name[1], repository: name[2], k, stage, role: role as ReviewRole,
+        provider: provider as ReviewProvider, verdict, runDir });
+    }
+  }
+  return entries;
+}
+
+function parseReviewConfigs(configs: NonNullable<LoopInput["reviewConfigs"]>): ReviewPipelineConfig[] {
+  const out: ReviewPipelineConfig[] = [];
+  const limit = (n: unknown) => Number.isInteger(n) && (n as number) >= 1;
+  for (const config of configs) {
+    const name = config.name.match(/^review-p(\d+)-(.+)\.ledger\.config\.json$/);
+    const raw = name ? safeJson<{ tier?: unknown; rounds?: unknown; inner?: unknown }>(config.content) : null;
+    if (!raw || (raw.tier !== "standard" && raw.tier !== "max") || !limit(raw.rounds) || !limit(raw.inner)) continue;
+    out.push({ phase: name![1], repository: name![2], tier: raw.tier, rounds: raw.rounds as number, inner: raw.inner as number });
+  }
+  return out;
 }
 
 // --- run dirs ------------------------------------------------------------------------

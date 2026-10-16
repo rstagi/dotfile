@@ -104,6 +104,8 @@ function render(record: LoopRecord, live: LoopInput, opts: MaterializeOpts): Sna
     state: JSON.stringify(effectiveState(record)),
     events: eventsToJsonl(record.events),
     runs: live.runs,
+    reviewLedgers: live.reviewLedgers,
+    reviewConfigs: live.reviewConfigs,
     hil: live.hil,
     notes: live.notes,
     control: live.control,

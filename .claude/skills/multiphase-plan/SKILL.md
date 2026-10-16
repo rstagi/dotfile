@@ -7,7 +7,7 @@ description: >-
   source of truth. Use when asked to "plan this out", "make a multi-phase plan", "break
   this into parallel phases", or before spinning up parallel worktrees for a larger effort.
   For Loop plans, estimate and size phases to fit one 30-minute execution attempt where the
-  work can be bounded. The draft is cross-checked by an adversarial plan review (Codex + Claude + Grok) unless invoked as `light <goal>`.
+  work can be bounded. The draft is cross-checked by rotating reviewer/critic plan-review rounds (Codex, Claude, Grok) unless invoked as `light <goal>`.
 argument-hint: "[light] <goal> (optional)"
 ---
 
@@ -26,8 +26,9 @@ independent), never a *goal* you bend the plan toward. A fully sequential, singl
 is a normal, expected, good outcome — most plans are mostly sequential. More lanes is not
 better.
 
-**Modes.** By default the drafted plan goes through an **adversarial plan review** (step 3)
-before it is registered. If the argument starts with the word `light` (e.g.
+**Modes.** By default the drafted plan goes through **rotating reviewer/critic plan-review
+rounds** (step 3) before it is registered: up to `LOOP_PLAN_REVIEW_ROUNDS` (default 2),
+stopping early on `clean`. If the argument starts with the word `light` (e.g.
 `/multiphase-plan light add a --json flag`), strip it from the goal and skip step 3 — use it
 for small or low-risk plans.
 
@@ -59,7 +60,7 @@ work well — **do not plan blind**:
   - repositories touched and each repository's `Verify:` gate (never invent one)
   - integration branch, when the default would be wrong
   - milestones: one PR, or several (propose several only when the effort is too big for one PR)
-  - review tier (`shallow`/`medium`/`max`, rounds) — propose one from size and risk
+  - review tier (`standard`/`max`, outer rounds, inner cap) — propose one from size and risk
 
   Settle the "silly" things here — naming, which repo, which command runs the tests — so the
   adversarial review spends its effort on the plan's real weaknesses. Ask a follow-up batch
@@ -84,15 +85,17 @@ Author the plan in the **canonical plan format** (see
   `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
   It represents the bounded per-repository reviews run by `loop-execute`; it has no
   `Repository:`, branch, or Verify command. **If the request already names a review tier**
-  (e.g. "review: max", "shallow review", "max review, 2 rounds" — from the user or a calling
-  agent's args), use it verbatim (with `[rounds: N]` if given) and skip the heuristic below.
-  Otherwise propose its depth with
-  `` `[review: shallow|medium|max]` `` from the effort's size and risk: `shallow` for small,
-  low-risk changes; `medium` (the default — omit the tag) for normal work; `max` for large
-  efforts or anything touching security, auth, money, or data integrity. Add
-  `` `[rounds: N]` `` only to deviate from the tier default (1/3/3, max 5). State the chosen
-  tier and why in the plan so the user can override it. The plan remains editable during
-  execution and after review; follow the insertion rules in `references/plan-format.md`.
+  (e.g. "review: max", "max review, 2 rounds" — from the user or a calling agent's args),
+  use it with `[rounds: N]` and `[inner: N]` if given, and skip the heuristic below. Only
+  `standard` and `max` are accepted; tiers shallow and medium are rejected, so resolve an
+  explicitly requested legacy tier in step 1. Otherwise propose
+  `` `[review: standard|max]` `` from the effort's size and risk: `standard` (the default —
+  omit the tag) for normal work; `max` for large efforts or anything touching security,
+  auth, money, or data integrity. Both tiers default to 2 outer rounds and inner cap 2;
+  add `` `[rounds: N]` `` or `` `[inner: N]` `` to override (`1 ≤ N ≤ 5`). Standard rotates
+  Sol / Opus / Grok; max rotates Astra / Fable / Grok. State the chosen tier and why in
+  the plan so the user can override it. The plan remains editable during execution and
+  after review; follow the insertion rules in `references/plan-format.md`.
 - **Time bounds for Loop plans** — estimate each phase's active work from pickup through
   implementation, focused verification, handoff, and the expected merge gate. Inspect the
   touched code and verification commands; use actual durations from comparable Loop
@@ -165,22 +168,47 @@ exists to prevent.
 
 ### 3. Adversarial plan review (skipped in `light` mode)
 
-Write the draft to `.loop/plan.md` (with the header from step 4) and run three independent,
-read-only reviewers — Sol (Codex), Opus (Claude), Grok — in parallel, one round:
+Write the draft to `.loop/plan.md` (with the header from step 4). Read
+`LOOP_PLAN_REVIEW_ROUNDS` from `loop-models.conf` (default 2, range 1..5), then run round 1:
 
-    ~/dotfile/loop-plan-review.sh run     # defaults: --dir .loop, --plan-file .loop/plan.md, --worktree .
+    ~/dotfile/loop-plan-review.sh run --round 1
+    # defaults: --dir .loop, --plan-file .loop/plan.md, --worktree .
+    # optional: --inner M (default LOOP_REVIEW_INNER_DEFAULT=2, range 1..5)
 
-It blocks until all three finish (≤15 min each; models/effort in `loop-models.conf`
-`CHAIN_PLAN_REVIEW_*`) and prints one `<reviewer> \t <exit> \t <report.md|->` row per
-reviewer. Exit 2 = no usable report: tell the user and continue unreviewed. A failed
-reviewer is noted, not retried. Grok sends the repository to xAI.
+Each call synchronously drives **one independent round**, with the plan and code frozen
+throughout that round. The shared AR protocol runs reviewer R → critic C → on disagreement,
+R response → C again, up to the inner cap. A first `APPROVE` + `AGREE` needs an `AGREE`
+confirmation from the third provider T to stop clean; a T veto takes over the critic slot.
+Providers rotate: round 1 Sol → Opus (T = Grok), round 2 Opus → Grok (T = Sol), round 3
+Grok → Sol (T = Opus), repeating thereafter. Plan review always uses the standard providers
+at effort `high`, regardless of the plan's terminal PR-review tier. Chains and per-call
+timeouts are configured in `loop-models.conf` (`CHAIN_PLAN_REVIEW_GPT|CLAUDE|GROK`). Every
+call is a fresh runner with the prior exchange inlined. Grok sends the repository to xAI.
 
-**Reconcile here, in this chat.** Read every report. For each finding, check it against the
-code yourself, then accept (edit the plan) or reject (one-line reason). Merge duplicates
-across reviewers — agreement between providers raises confidence, but isn't proof. Show the
-user a compact disposition table (`finding · reviewers · accept/reject · why`). Only findings
-that need a **user decision** (scope, product trade-off, a missing gate) go back to the user,
-batched into one question; settle everything else yourself. Then continue to step 4.
+The command prints one TSV line:
+
+    clean|findings|disputed \t <converged review path> \t <ledger>
+
+Status precedence is `disputed` > `findings` > `clean`. Runs live under
+`runs/plan-review-<stamp>-r<r>-<k>`, beside the round's independent `.ledger.tsv` and, when
+unresolved at the inner cap, `.ledger.disputed.md`. The converged review path is the last R
+report, including for disputed rounds. A disputed round is never clean; its sidecar preserves
+the last R/C reports and unresolved finding IDs, including critic-added issues. Exit 2 = no
+usable review: report the provider failure and continue to step 4 explicitly unreviewed;
+do not substitute another provider or treat partial reports as convergence. Invalid verdict
+format gets one fresh-runner retry with a reminder; a second invalid verdict exits 2.
+
+**Reconcile here, in this chat, between rounds.** Read the converged review and any disputed
+sidecar (`<ledger without .tsv>.disputed.md`). Verify every finding and every disputed item
+against the code yourself, then accept (edit the plan) or reject (one-line evidence-backed
+reason). Do not edit the plan during an inner exchange. Show a compact disposition table
+(`round · finding · accept/reject · why`). Only findings that need a **user decision**
+(scope, product trade-off, a missing gate) go back to the user, batched into one question;
+settle everything else yourself.
+
+After reconciling and editing the plan, run the next independent round (`--round 2`, then
+higher as configured), up to `LOOP_PLAN_REVIEW_ROUNDS`. Stop early on `clean`; otherwise
+complete the configured rounds, reconcile the final findings/disputes, and continue to step 4.
 
 ### 4. Register on the daemon
 
@@ -204,7 +232,7 @@ immediately and lets `loop-handoff` repush from here. Mention the user can add `
 `.gitignore` if they don't want the plan committed.
 
 The review tier was settled in step 1 — don't ask again. (It stays changeable later, before
-the review phase starts: rewrite its `` `[review: …]` `` / `` `[rounds: …]` `` tags and
+the review phase starts: rewrite its `` `[review: …]` `` / `` `[rounds: …]` `` / `` `[inner: …]` `` tags and
 `loop-plan.sh push`, or `m` on the review phase in `loop-top`.) Only if step 1 left it open —
 e.g. the user skipped it — ask it now, in one message.
 

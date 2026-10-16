@@ -2,7 +2,7 @@
 
 The shared contract between the `loop-execute` orchestrator skill, the `loop-*.sh` scripts
 (`~/dotfile/loop-runner.sh`, `loop-merge.sh`, `loop-notify.sh`, `loop-state.sh`,
-`loop-plan.sh`, `loop-repo.sh`, `loop-models.conf`), and the `--auto` modes of `loop-pickup` / `loop-handoff` /
+`loop-plan.sh`, `loop-repo.sh`, `loop-review.sh`, `loop-ar.sh`, `loop-models.conf`), and the `--auto` modes of `loop-pickup` / `loop-handoff` /
 `pr-review`. Everything machine-parsed lives here; change it in lockstep everywhere.
 
 ## Contents
@@ -52,16 +52,20 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   update + `loop-plan.sh note`. Runners NEVER: push, open PRs, push the plan document,
   touch files outside their worktree, or ask the user. A
   runner's final act is writing `status.json`.
-- **Adversarial review runner** — per tier (§ PR review phase pipeline): shallow one Opus
-  reviewer; medium Sol (Codex) + Opus (Claude Code); max Astra (Codex) + Fable (Claude Code).
-  Each independently reviews a pinned PR head, saves a local report, and never posts to or
-  mutates GitHub.
-- **Remediation coordinator** — after every round but the last: Opus (Sonnet in shallow)
-  through Claude Code. It reconciles the round's reports through `/pr-review-fix-all`
-  (medium/max delegate accepted independent fix groups to Opus subagents; shallow fixes
-  itself), then integrates, verifies, commits, and pushes.
-- **Final review runner** — Opus through Claude Code after the last round. It reconciles that
-  round's reports (shallow: reviews the code itself) and posts the pipeline's only GitHub review.
+- **Reviewer R** — a fresh read-only runner producing numbered findings and a verdict for
+  a frozen artifact. R also handles `respond`, with the prior exchange inlined in its prompt.
+- **Critic C** — a fresh read-only runner from a different provider auditing R's review
+  against the artifact and codebase. C references finding IDs and grounds disagreement in code.
+- **Third provider T** — the provider outside R/C for this outer round. Its `confirm` run
+  uses the critic prompt to audit an initially clean review; a veto makes T the active critic
+  for the rest of that round's inner loop. R/C/T rotate (§ PR review phase pipeline).
+- **Remediation coordinator** — Opus through Claude Code, only between outer rounds and
+  only when the fix rule requires it. Through `/pr-review-fix-all` it verifies the converged
+  review and disputed items, delegates independent fix groups to Opus subagents, then
+  integrates, verifies, commits, and fast-forward pushes. It alone edits the PR artifact.
+- **Final review runner** — Opus through Claude Code after the terminal outer round or a
+  clean early stop. It verifies that round's converged review and disputed items against
+  current code, then posts the pipeline's only GitHub review.
 - **Scripts** — mechanism only (spawn/merge/notify/state; `loop-plan.sh` registers/pushes/
   notes the plan on the daemon — the local backend). They never decide; the orchestrator
   switches on their exit codes.
@@ -138,9 +142,13 @@ State lives in the launching coordinator checkout (add `.loop/` to
     stderr.log  verify.log   # wrapper-captured
     leg.json                 # wrapper-written at each leg launch: engine, model, effort, startedAt (live model while in flight)
     meta.json                # wrapper-written: engine, model, sessionId, exit, head shas
-  runs/review-p<N>-<owner--repo>-a<k>/ # review phase N, k from `loop-review.sh stages`
-    report.md                     # reviewer/final report (round<r> + final rows)
-    remediation-plan.md           # reconciled plan + disposition evidence (fix<r> rows)
+  runs/review-p<N>-<owner--repo>.ledger.tsv # six-column completed-run ledger
+  runs/review-p<N>-<owner--repo>.ledger.config.json # pinned tier/rounds/inner for recovery
+  runs/review-p<N>-<owner--repo>.ledger.disputed.md # current capped disagreement, if any
+  runs/review-p<N>-<owner--repo>-a<k>/ # review phase N, k from `loop-review.sh next`
+    prompt.md  meta.json  status.json # same runner artifacts as phase attempts
+    report.md                     # R/C/T exchange or final report
+    remediation-plan.md           # finding/dispute dispositions (fix<r> only)
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
   notes/<key>.md             # explicit phase number; legacy pr-review.* keys accepted
@@ -272,8 +280,9 @@ fields — keep the shape:
       "sourceRoot": "<mapped checkout>", "defaultBranch": "main", "baseSha": "<sha>",
       "integrationBranch": "feat/<effort-slug>",
       "integrationWorktree": "<abs path>", "adopted": false, "prUrl": null,
-      "reviewPipeline": { "phase": 7, "stage": "round1", "tier": "medium", "rounds": 3,
-                          "headSha": "<sha for current review round>" },
+      "reviewPipeline": { "phase": 7, "tier": "standard", "rounds": 2, "inner": 2,
+                          "headSha": "<sha for current review round>",
+                          "ledger": "runs/review-p7-owner--api.ledger.tsv" },
       "review": { "outcome": "done|question|blocked", "summary": "...",
                   "reportPath": "runs/review-p7-owner--api-a9/report.md", "commentUrl": "..." }
     }
@@ -342,7 +351,9 @@ Resolve `RUNTIME_ROOT` to the repository integration worktree when the effort ch
 Loop runtime itself; otherwise use `~/dotfile`. The runner resolves its Jev client, model
 config, and emitter from that same directory. Compose later SUB prompts from
 `$RUNTIME_ROOT/.claude/skills/loop-execute/{SKILL.md,references/loop-protocol.md}` too, so
-merged self-hosting changes run without mutating the installed checkout. With milestones, a
+merged self-hosting changes run without mutating the installed checkout. At `REVIEW_READY`,
+the supervisor also reloads §8 and the protocol from `RUNTIME_ROOT` before starting review;
+this includes self-hosted terminal review of the changed pipeline itself. With milestones, a
 resume that advances the milestone switches `RUNTIME_ROOT` to the patch's `runtimeRoot` only when it is non-null
 (self-hosted: the host's new integration worktree, or its retained old one when the host sits the
 milestone out) — the old one may be retired, so never keep composing prompts from it; a null `runtimeRoot` keeps the installed runtime (`~/dotfile`).
@@ -533,23 +544,26 @@ CHAIN_TASK_LIGHT=("codex:@terra" "${CHAIN_TASK[@]}")
 CHAIN_ESCALATE=("claude:fable+opus")
 CHAIN_ORCHESTRATE=("claude:opus")
 EFFORT_TASK=high  EFFORT_ESCALATE=high  EFFORT_ORCHESTRATE=high
-# review tiers: CHAIN_REVIEW_<TIER>_<ROLE> + EFFORT_REVIEW_<TIER>_<ROLE>, ROLE ∈ ADV_A|ADV_B|ADV_C|FIX|FINAL
-CHAIN_REVIEW_SHALLOW_ADV_A=("claude:opus")   EFFORT_REVIEW_SHALLOW_ADV_A=high
-CHAIN_REVIEW_SHALLOW_FIX=("claude:sonnet")   EFFORT_REVIEW_SHALLOW_FIX=medium
-CHAIN_REVIEW_SHALLOW_FINAL=("claude:opus")   EFFORT_REVIEW_SHALLOW_FINAL=high
-CHAIN_REVIEW_MEDIUM_ADV_A=("codex:@sol")     EFFORT_REVIEW_MEDIUM_ADV_A=xhigh
-CHAIN_REVIEW_MEDIUM_ADV_B=("claude:opus")    EFFORT_REVIEW_MEDIUM_ADV_B=xhigh
-CHAIN_REVIEW_MEDIUM_ADV_C=("grok:default")   EFFORT_REVIEW_MEDIUM_ADV_C=xhigh
-CHAIN_REVIEW_MEDIUM_FIX=("claude:opus")      EFFORT_REVIEW_MEDIUM_FIX=medium
-CHAIN_REVIEW_MEDIUM_FINAL=("claude:opus")    EFFORT_REVIEW_MEDIUM_FINAL=xhigh
-CHAIN_REVIEW_MAX_ADV_A=("codex:@astra")      EFFORT_REVIEW_MAX_ADV_A=ultra
-CHAIN_REVIEW_MAX_ADV_B=("claude:fable")      EFFORT_REVIEW_MAX_ADV_B=max
-CHAIN_REVIEW_MAX_ADV_C=("grok:default")      EFFORT_REVIEW_MAX_ADV_C=max
-CHAIN_REVIEW_MAX_FIX=("claude:opus")         EFFORT_REVIEW_MAX_FIX=medium
-CHAIN_REVIEW_MAX_FINAL=("claude:opus")       EFFORT_REVIEW_MAX_FINAL=max
-LOOP_REVIEW_TIER_DEFAULT=medium
-LOOP_REVIEW_ROUNDS_SHALLOW=1  LOOP_REVIEW_ROUNDS_MEDIUM=3  LOOP_REVIEW_ROUNDS_MAX=3
+# Provider slots rotate between R, C, and T; FIX and FINAL always use Claude.
+# CHAIN_REVIEW_<STANDARD|MAX>_<GPT|CLAUDE|GROK|FIX|FINAL>, matching EFFORT_*.
+CHAIN_REVIEW_STANDARD_GPT=("codex:@sol");    EFFORT_REVIEW_STANDARD_GPT=xhigh
+CHAIN_REVIEW_STANDARD_CLAUDE=("claude:opus"); EFFORT_REVIEW_STANDARD_CLAUDE=xhigh
+CHAIN_REVIEW_STANDARD_GROK=("grok:default"); EFFORT_REVIEW_STANDARD_GROK=xhigh
+CHAIN_REVIEW_STANDARD_FIX=("claude:opus");  EFFORT_REVIEW_STANDARD_FIX=medium
+CHAIN_REVIEW_STANDARD_FINAL=("claude:opus"); EFFORT_REVIEW_STANDARD_FINAL=xhigh
+CHAIN_REVIEW_MAX_GPT=("codex:@astra");       EFFORT_REVIEW_MAX_GPT=ultra
+CHAIN_REVIEW_MAX_CLAUDE=("claude:fable");    EFFORT_REVIEW_MAX_CLAUDE=max
+CHAIN_REVIEW_MAX_GROK=("grok:default");      EFFORT_REVIEW_MAX_GROK=max
+CHAIN_REVIEW_MAX_FIX=("claude:opus");        EFFORT_REVIEW_MAX_FIX=medium
+CHAIN_REVIEW_MAX_FINAL=("claude:opus");      EFFORT_REVIEW_MAX_FINAL=max
+LOOP_REVIEW_TIER_DEFAULT=standard
+LOOP_REVIEW_ROUNDS_DEFAULT=2
+LOOP_REVIEW_INNER_DEFAULT=2
 LOOP_REVIEW_ROUNDS_CAP=5
+LOOP_PLAN_REVIEW_ROUNDS=2
+CHAIN_PLAN_REVIEW_GPT=("codex:@sol");    EFFORT_PLAN_REVIEW_GPT=high
+CHAIN_PLAN_REVIEW_CLAUDE=("claude:opus"); EFFORT_PLAN_REVIEW_CLAUDE=high
+CHAIN_PLAN_REVIEW_GROK=("grok:default");  EFFORT_PLAN_REVIEW_GROK=high
 LOOP_BUDGET_USD=15        # per attempt, claude legs only (codex/grok have no budget flag)
 LOOP_CHECKPOINT_SEC=1800  # hard ceiling across all legs/retries of one phase attempt
 LOOP_TIMEOUT_TASK=1800    # 30m
@@ -576,11 +590,12 @@ Effort is per chain, not per engine: the runner maps the chain's `EFFORT_*` to C
 `-c model_reasoning_effort="<level>"` (adds `ultra` on Sol/Astra), and Grok `--effort <level>`
 (`low|medium|high|xhigh`; `max`/`ultra` clamp to `xhigh`). Defaults: implementing
 `high` (Sol, Sonnet, escalation), fixing `medium` (Opus), orchestrating `high`, reviewing per
-tier (shallow `high`, medium `xhigh`, max `max`/`ultra`, Grok `xhigh`). Orchestrator and reviewers never use
+tier (standard `xhigh`; max GPT `ultra`, Claude/Grok `max`, with Grok clamped to `xhigh`). Orchestrator and reviewers never use
 multi-agent workflows (`ultracode`): runners are one-shot `-p` processes, and the review
 pipeline is already multi-agent. `meta.json.effort` records the level used.
-`--chain review-adv-a|review-adv-b|review-adv-c|review-fix|review-final` requires `--review-tier`
-(default `LOOP_REVIEW_TIER_DEFAULT`); legacy `review-astra`/`review-fable` = max `adv-a`/`adv-b`.
+`--chain review-gpt|review-claude|review-grok|review-fix|review-final` accepts `--review-tier`
+(default `LOOP_REVIEW_TIER_DEFAULT`). Plan review uses `plan-review-gpt|plan-review-claude|plan-review-grok`.
+Provider chain selection follows the rotated role, rather than assigning one chain permanently to R or C.
 
 Leg grammar: `engine:model[+fallback[,fallback2]]`. The `+` list maps to Claude's native
 `--fallback-model` (comma-separated; CLI retries the primary each turn) — so intra-Claude
@@ -637,6 +652,8 @@ an answer, then `loop-runner.sh --resume <sessionId> --engine <same engine>` wit
 as the prompt — **in a fresh attempt dir** (`-a<K+1>`, answer as its `prompt.md`), never the
 original run dir (rerunning there would clobber the transcript and session id). If resume
 fails, fall back to a fresh attempt with the answer prepended via `answers/<phase-slug>.md`.
+R/C/T questions instead start a fresh call at the frozen head with the prior exchange and
+answer inlined (§ PR review phase pipeline); they never use `--resume`.
 
 ### Ordinary question triage
 
@@ -728,7 +745,7 @@ policy mappings, then reports per-stage and overall agreement and fallback rates
 use the frozen `lastSnapshot.decisions`, matching Observatory reload behavior.
 
 Latency, runner retries, and cost appear only when those numeric fields were recorded; otherwise
-the report marks each metric `unavailable`. Synthetic fixtures cover the three stages, archive
+the report marks each metric `unavailable`. Synthetic fixtures cover the three decision points, archive
 reload, explicit off mode, missing credentials, and API failure, but validate mechanics only and
 must never be used to claim savings. Keep routing in shadow unless observed loop data supports the
 configured active threshold; `LOOP_JEV_MODE=active` remains an explicit opt-in.
@@ -773,67 +790,192 @@ you must stop early, skip the handoff and write status.json with outcome questio
 
 ## PR review phase pipeline
 
-Every explicit `[kind: pr-review]` phase runs a tiered pipeline per repository. The phase
-heading may carry `[review: shallow|medium|max]` (default `LOOP_REVIEW_TIER_DEFAULT`, medium)
-and `[rounds: N]` (default `LOOP_REVIEW_ROUNDS_<TIER>`, 1/3/3; `1 ≤ N ≤ LOOP_REVIEW_ROUNDS_CAP`).
+Every explicit `[kind: pr-review]` phase runs one Adversarial Review (AR) pipeline per
+repository. The heading accepts `[review: standard|max]` (default
+`LOOP_REVIEW_TIER_DEFAULT=standard`), `[rounds: N]` (default `LOOP_REVIEW_ROUNDS_DEFAULT=2`),
+and `[inner: M]` (default `LOOP_REVIEW_INNER_DEFAULT=2`). Both counts are integers 1..5;
+`LOOP_REVIEW_ROUNDS_CAP=5`. Legacy tiers shallow and medium are rejected by execution paths;
+historical Observatory/loop-top displays may still render them with a warning.
 
-| Tier | Adversaries per round (`review-adv-a` / `-b` / `-c`) | Fix (`review-fix`) | Verdict (`review-final`) |
-|------|------|------|------|
-| `shallow` | Opus `high` (one reviewer) | Sonnet `medium`, no subagents | Opus `high`, reviews the code itself |
-| `medium` (default) | Sol `xhigh` + Opus `xhigh` + Grok `xhigh` | Opus `medium` + Opus fixers | Opus `xhigh` |
-| `max` | Astra `ultra` + Fable `max` + Grok `xhigh` | Opus `medium` + Opus fixers | Opus `max` |
+| Tier | GPT slot | Claude slot | Grok slot | Fix (`review-fix`) | Final (`review-final`) |
+|------|----------|-------------|-----------|--------------------|------------------------|
+| `standard` (default) | Sol `xhigh` | Opus `xhigh` | Grok `xhigh` | Opus `medium` | Opus `xhigh` |
+| `max` | Astra `ultra` | Fable `max` | Grok `max` | Opus `medium` | Opus `max` |
 
-medium/max run one adversary per provider (GPT, Claude, Grok). The Grok adversary sends the PR's
-repository to xAI.
+These are configured efforts; the runner clamps Grok `max` to `xhigh`. A Grok call sends
+the PR repository to xAI. Each provider chain has one leg; failure never substitutes another
+provider. `loop-ar.sh` is the shared sourced core: verdict parsing, rotation, state machine,
+prompt rendering, and disputed writer. `loop-review.sh` is its PR-facing CLI.
 
-`loop-review.sh stages --tier <T> --rounds <N>` generates the ordered run list (TSV
-`a<k> stage chain`). medium/max: rounds `r < N` run the adversary trio (`round<r>`) then
-`fix<r>`; round N runs the trio then `final`. shallow: rounds `r < N` run one reviewer then
-`fix<r>`; the last round is `final` alone. medium 3 is twelve runs:
+For self-hosted changes, the supervisor must read §8 and this protocol from `RUNTIME_ROOT` at `REVIEW_READY`,
+then invoke that runtime's scripts, model config, and vendored prompts. The installed skill
+loaded before the effort began may be stale. A pipeline failure follows the normal HIL path;
+a human may choose a manual `/pr-review` fallback.
 
-| Run | Stage | Chain | GitHub mutation |
-|-----|-------|-------|-----------------|
-| `a1`–`a3` | `round1` | `review-adv-a`, `review-adv-b`, `review-adv-c` | none |
-| `a4` | `fix1` | `review-fix` | commit + push only |
-| `a5`–`a7` | `round2` | `review-adv-a`, `review-adv-b`, `review-adv-c` | none |
-| `a8` | `fix2` | `review-fix` | commit + push only |
-| `a9`–`a11` | `round3` | `review-adv-a`, `review-adv-b`, `review-adv-c` | none |
-| `a12` | `final` | `review-final` | one PR review |
+### Rotation and frozen exchange
 
-Rows within a repository are strictly ordered (a round's adversaries run concurrently);
-different repositories may advance concurrently under `LOOP_MAX_PARALLEL`. Run artifacts use
-`review-p<N>-<owner--repo>-a<k>`, where `<N>` is the review phase number and `k` comes from the
-generator. Every run passes `--review-tier <T>`.
+Let P = (gpt, claude, grok), zero-indexed. For outer round r:
+R = P[(r−1) mod 3], C = P[r mod 3], T = P[(r+1) mod 3]. Model names come from the chosen tier.
 
-Before each round, fetch the PR and capture its current head SHA into
-`repositories[slug].reviewPipeline.headSha`. Every adversary prompt receives that exact SHA, the
-PR URL, project instructions, verify commands, and the repository steering note. Each prompt says:
+| Outer round (repeats every 3) | R | C | T |
+|-------------------------------|---|---|---|
+| 1 | gpt | claude | grok |
+| 2 | claude | grok | gpt |
+| 3 | grok | gpt | claude |
 
+Before each outer round, fetch the PR and capture its current head SHA into
+`repositories[slug].reviewPipeline.headSha`. Persist that SHA before the opening review;
+every R/C/T prompt in the round receives the same SHA, PR URL, project instructions,
+verification commands, repository steering note, and full PR inspection methodology.
+The artifact stays frozen throughout the inner loop; only the remediation coordinator edits
+it between outer rounds. If the PR head changes externally, do not combine reports from
+incompatible heads or silently recapture the SHA mid-round: block that repository for reconciliation.
+
+Runs within a round are sequential: `review` (R) → `critic` (C), then on disagreement
+`respond` (R) → `critic` (active C), repeating only up to the inner cap. By definition,
+the opening `review` + `critic` is inner round 1; each later `respond` + `critic` adds one.
+The default cap 2 therefore permits one response. Different repository pipelines may advance
+concurrently under `LOOP_MAX_PARALLEL`.
+
+R writes at most ten numbered findings, `F1`…`F10`, with severity
+`[blocker]`, `[major]`, or `[minor]`. Its last non-empty line must be exactly
+`APPROVE` or `NEEDS_CHANGES: <top issue>`. C has the frozen artifact, codebase, and R's review,
+references finding IDs, and ends with exactly one of
+`AGREE`, `DISAGREE_EVIDENCE: <summary>`, or `DISAGREE_CONCERN: <summary>`.
+Evidence disagreement cites code; a concern requires R to find the confirming or refuting code.
+On `AGREE`, R keeps every flag. On `DISAGREE_EVIDENCE`, R revises the flagged finding against
+C's cited code. On `DISAGREE_CONCERN`, R must cite code confirming the bug to keep it, or code
+refuting it to drop it. A bare rebuttal is invalid.
+
+The vendored `references/ar-prompts.md` contains the paper's appendix A.2.3/A.2.4 verbatim,
+plus Loop's finding/verdict/output adaptation. `ar_prompt` composes that source, opaque caller
+framing, and the current round's prior exchange in ledger order (`{prior_exchange}`). Do not
+paraphrase the paper prompts. Every R/C/T call is fresh; never resume a provider session.
+Opening R has no prior exchange; C, `respond`, and T receive the relevant inlined exchange,
+never unrelated runs or GitHub reviews/comments. Use the full `pr-review` checkout/run/checklist
+methodology at the frozen SHA, overriding its posting and artifact-editing workflow.
+
+Every round is local-only. R/C/T never edit the artifact, commit, push, post to GitHub, or
+mutate the ledger/prior reports. Each writes `RUN_DIR/report.md` and `RUN_DIR/status.json`.
+A provider failure blocks that repository pipeline; other repositories may continue. An
+exit-10 `checkpoint:true` is a timed status request: answer and continue the same step at the
+same head, using a fresh R/C/T call with the exchange inlined. Do not advance before completion.
+
+### Early stop, cap, and fix rule
+
+If R's first review is `APPROVE` and C answers `AGREE`, run T as `confirm` with the same
+critic prompt and full context. T `AGREE` skips every remaining outer round and goes straight
+to `final` (plan review: done). No `skipped` ledger rows are written; consumers infer skips
+from the clean `confirm`. If T disagrees, T becomes the critic for the rest of that inner loop;
+the cap still applies and the round can no longer be clean, even if R later approves.
+The `confirm` does not consume another inner round; a veto at inner cap 1 goes directly to disputed.
+
+At the inner cap without agreement, `ar_write_disputed` writes
+`<ledger-stem>.disputed.md` and appends a synthetic `disputed` row. It preserves the
+last R report and last critic report verbatim and unresolved finding IDs, including critic-added issues.
+The sidecar uses the ledger filename without `.tsv` as its stem. A disputed round is never
+clean. The fixer/final reviewer/planner must verify disputed items against code; reaching the
+cap alone does not pause for HIL. Round status precedence is `disputed` > `findings` > `clean`.
+The ledger's dispute row associates the sidecar with its round; an older sidecar must not make
+a later round disputed.
+
+After round r < N, run `fix<r>` iff the last R verdict is `NEEDS_CHANGES` or the round's
+`.disputed.md` exists (as identified by that round's dispute row). Otherwise advance without
+a fix. A clean confirmed early stop bypasses fixes and later rounds. Round N always proceeds
+to `final`, with its converged review and any current disputed items, rather than fixing again.
+
+### Ledger and CLI
+
+Persist `reviewPipeline = {phase, tier, rounds, inner, headSha, ledger}` under each repository;
+`ledger` is the loop-relative `runs/review-p<N>-<owner--repo>.ledger.tsv`. Initialize a fresh
+pipeline when the ready review phase number changes. There is no persisted next-stage cursor:
+replay of the ledger selects the next step.
+
+The ledger has no header and exactly six tab-separated columns, one row per completed run:
+
+```text
+a<k>	stage	role	provider	verdict	run_dir
 ```
-Perform the full pr-review inspection adversarially against <PR URL> at exactly <head SHA>.
-Use its checkout/run/checklist methodology, but override its posting step: do not call any
-GitHub mutation endpoint, do not post a review/comment, and do not push. Review independently;
-do not read the sibling review runs, earlier review runs, their reports/transcripts/status files,
-or existing GitHub reviews/comments. Save the complete findings to RUN_DIR/report.md, then
-write RUN_DIR/status.json with {"outcome":"done|question|blocked","summary":"..."}.
+
+`run_dir` is relative to the loop directory; `a<k>` is the pipeline-scoped idempotency key.
+`stage` is `round<r>` for R/C/T exchanges, `disputed` for the synthetic marker, `fix<r>` for
+remediation, or `final`. Providers are `gpt|claude|grok`; `fix`/`final` use `claude`, and
+`disputed` uses `-` and the sidecar's parent directory (`runs`) instead of a runner directory.
+Verdicts are tokens only, without the report's colon/summary:
+
+| Role | Verdict column |
+|------|----------------|
+| `review`, `respond` | `APPROVE` or `NEEDS_CHANGES` |
+| `critic`, `confirm` | `AGREE`, `DISAGREE_EVIDENCE`, or `DISAGREE_CONCERN` |
+| `disputed` | `DISPUTED` |
+| `fix` | `PUSHED` or `NOOP` |
+| `final` | `REQUEST_CHANGES`, `COMMENT`, or `APPROVE` |
+
+```sh
+loop-review.sh next --tier <T> --rounds <N> --inner <M> --ledger <F>
+loop-review.sh record --ledger <F> --run-dir <D> --stage <S> --role <R> --provider <P>
+loop-review.sh recover --ledger <F> --runs-dir <runs>
+loop-review.sh prompt --role <R> --pr <url> --head <sha> --notes <file> --ledger <F> --run-dir <D>
 ```
 
-Every round is local-only. A reviewer failure blocks the repository after its siblings finish;
-never substitute a model. An exit-10 `checkpoint:true` is a timed status request: the supervisor
-answers and resumes the same stage at the same PR head while other repositories continue. Do not
-advance the stage until it finishes.
+- `next` returns TSV `a<k> stage role chain`, or `done`. It replays `ar_next`, resolves the
+  provider chain (`review-gpt|review-claude|review-grok`, or `review-fix|review-final`), and
+  writes a dispute sidecar/row itself when needed; never spawn a `disputed` runner. That
+  synthetic row consumes its own `a<k>`. `next` also saves tier/rounds/inner to
+  `<ledger-stem>.config.json`, so `recover` replays the same limits.
+- `record` is atomic (temporary file + rename), idempotent per `a<k>`; duplicate
+  recording is a no-op. It validates role/provider/verdict and ordering before append.
+  Fix records require `status.json` result `PUSHED|NOOP`, full `headBefore`/`headAfter`,
+  remote and branch (plus worktree when needed); check remote HEAD with `git ls-remote`.
+  `PUSHED` requires a changed head; `NOOP` an unchanged head. Both require remote evidence,
+  never status alone. Final records require the actual posted event and `commentUrl`.
+- `recover` records finished-but-unrecorded run directories of this pipeline in numeric
+  order, requiring `meta.json` and `status.json`, successful engine completion, and usable
+  outputs. Optional `meta.json.review = {stage, role, provider}` pins recovery metadata;
+  otherwise replay derives it. A directory without completed metadata is not proof of success.
+- `prompt` renders R/C/T through `ar_prompt` with full PR framing, the pinned head, and
+  steering notes (pass a readable empty file when none). For `fix`/`final`, it supplies only
+  the current round's converged review (last R report) plus current disputed items, if any.
+  The supervisor adds integration worktree/branch/remote and verification execution inputs.
+
+Supervise drives each repository as `recover` → `next` → spawn → `record`, with GitHub
+final-marker reconciliation on resume as specified below. Run artifacts use
+`review-p<N>-<owner--repo>-a<k>`, where k comes from `next`. Every runner passes
+`--chain <chain> --review-tier <T>` and runs detached; wait for completion and record it
+before asking for another step. Preserve `headSha` across all calls of the current round.
+
+A `record` exit 2 means no usable last verdict line: append no row and re-run the same step once with a format reminder.
+Retain the invalid output and retry-used evidence in the run artifacts so a crash cannot
+reset the allowance. A second invalid verdict blocks that repository pipeline and follows
+the normal HIL path. This rule also applies when `recover` encounters an invalid verdict;
+never treat malformed output as agreement or advance the ledger past it.
+
+Example: standard, two outer rounds, inner cap 2. R revises once in round 1, fixes are pushed,
+and round 2 is confirmed clean (a first-round clean confirmation would instead jump to final):
+
+| Run | Stage | Role | Provider | Chain | Verdict |
+|-----|-------|------|----------|-------|---------|
+| `a1` | `round1` | `review` | gpt | `review-gpt` | `NEEDS_CHANGES` |
+| `a2` | `round1` | `critic` | claude | `review-claude` | `DISAGREE_EVIDENCE` |
+| `a3` | `round1` | `respond` | gpt | `review-gpt` | `NEEDS_CHANGES` |
+| `a4` | `round1` | `critic` | claude | `review-claude` | `AGREE` |
+| `a5` | `fix1` | `fix` | claude | `review-fix` | `PUSHED` |
+| `a6` | `round2` | `review` | claude | `review-claude` | `APPROVE` |
+| `a7` | `round2` | `critic` | grok | `review-grok` | `AGREE` |
+| `a8` | `round2` | `confirm` | gpt | `review-gpt` | `AGREE` |
+| `a9` | `final` | `final` | claude | `review-final` | `APPROVE` |
 
 ### Remediation (`fix<r>`)
 
-Run `review-fix` in the repository integration worktree after every report of round `r` exists.
-Its prompt passes only that round's reports plus the remediation execution inputs and says:
+Run `review-fix` in the repository integration worktree only after the round's inner loop
+has ended and the fix rule holds. Invoke the skill with one converged review and any current
+disputed sidecar, not a set of independent reports:
 
 ```
 Invoke `/pr-review-fix-all` with:
-- report: <absolute review-adv-a report.md of round r>
-- report: <absolute review-adv-b report.md of round r>   (omitted in shallow)
-- report: <absolute review-adv-c report.md of round r>   (omitted in shallow)
-- tier: <shallow|medium|max>
+- report: <absolute last R report.md of round r>
+- disputed: <absolute current .disputed.md, if any>
+- tier: <standard|max>
 - run-dir: <absolute fix RUN_DIR>
 - worktree: <absolute repository integration worktree>
 - branch: <integration branch>
@@ -843,24 +985,24 @@ Invoke `/pr-review-fix-all` with:
 Follow that skill through its final status.json. Do not implement remediation outside it.
 ```
 
-The skill reconciles all findings into `remediation-plan.md`, groups non-overlapping work and,
-in medium/max, spawns at most three `pr-review-fixer` subagents (latest Opus), serializing
-overlaps or dependencies; in shallow the coordinator applies fixes itself. Subagents edit and
-test only; the coordinator owns integration, verification, commits, and fast-forward push. It
-does not create an empty commit when no findings are accepted. Confirm the remote PR head moved
-to the pushed SHA before starting the next round. Any unresolved accepted finding or failed
-verification yields `blocked` and stops this repository pipeline.
+The coordinator verifies every finding and disputed item (including critic-only concerns)
+against code before accepting or rejecting it, recording dispositions in `remediation-plan.md`.
+It groups independent work and spawns at most three `pr-review-fixer` subagents (latest Opus),
+serializing overlapping files or dependencies. Subagents edit/test only; the coordinator owns
+integration, verification, commits, and fast-forward push. Do not create an empty commit or
+push when nothing is accepted. Verify remote HEAD before recording `PUSHED|NOOP` and starting
+the next round. Unresolved accepted findings or failed verification block that repository.
 
 ### Final review (`final`)
 
-Run `review-final` only after the last round's adversaries completed against the same current
-head (shallow: right after the previous fix, or first). It reads those reports plus current code
-(shallow: it performs the full `pr-review` inspection itself, local-only until posting),
-independently verifies and deduplicates findings, and saves the reconciled review in
-`report.md`. Earlier-round reports are stale remediation history and are not verdict inputs.
+Run `review-final` after the last outer round or a confirmed clean early stop, at the same
+current head reviewed by that round. It reads one converged review (last R report), the current
+`.disputed.md` when the round is disputed, and current code. It independently verifies and
+deduplicates findings, including critic-added disputed items, saving the reconciled review in
+`report.md`. Earlier-round reports are stale remediation history, not verdict inputs.
 
-Post exactly one review through `POST /repos/<owner>/<repo>/pulls/<n>/reviews`, pinning
-`commit_id` to the reviewed head and selecting `event` from unresolved validated severities:
+Post exactly one review using `gh api --method POST repos/<owner>/<repo>/pulls/<n>/reviews`,
+pinning `commit_id` to the reviewed head and selecting `event` from unresolved validated severities:
 
 - one or more `[blocker]` findings → `REQUEST_CHANGES`;
 - otherwise one or more `[major]` findings → `COMMENT`;
@@ -868,19 +1010,41 @@ Post exactly one review through `POST /repos/<owner>/<repo>/pulls/<n>/reviews`, 
 
 Put findings in inline review comments where the diff permits and keep the overall body
 concise. End the body with `:)` and include
-`<!-- loop-review:<runId>:p<N>:<owner--repo>:final -->`. Before posting, query existing PR reviews
-for that marker; if it exists, reuse its URL instead of posting again. Save `html_url` as
-`status.json.commentUrl`. Map the GitHub event to repository outcome:
-`REQUEST_CHANGES → blocked`, `COMMENT → question`, `APPROVE → done`. Promote the final run's
-`report.md`, the final summary, and comment URL to `repositories[slug].review`, then emit one
-aggregate `review.finish` event.
+`<!-- loop-review:<runId>:p<N>:<owner--repo>:final -->`. Before posting, query all existing PR reviews
+for that marker; if it exists, reuse its URL and actual event instead of posting again. Save
+`html_url` as `status.json.commentUrl` and the posted event as `status.json.event`. Map the event
+to repository outcome: `REQUEST_CHANGES → blocked`, `COMMENT → question`, `APPROVE → done`.
+Record the final row even when its outcome is question/blocked: the posted review is complete.
+Promote `report.md`, summary, and comment URL to `repositories[slug].review`, then emit one
+aggregate `review.finish` event. Do not equate a completed ledger with an approving verdict.
 
-Persist `reviewPipeline` as `{phase, stage, tier, rounds, headSha}`; `stage` is the next stage
-name to execute from the generated list (initially its first), advancing only after the prior
-stage succeeds, then `done`. Initialize a fresh pipeline when the ready review phase number
-changes. Resume regenerates the list from the persisted `tier`/`rounds`. Crash-resume trusts
-phase-scoped completed run artifacts plus git/GitHub evidence over a stale stage field; it never
-reruns a live pid, repeats a completed remediation push, or duplicates that phase's final review.
+### Review recovery
+
+Resume order is recover → GitHub final-marker reconcile → `next`. First inspect pipeline
+run-directory pids and reattach to any live call without spawning a duplicate. Run `recover`
+for completed metadata/results that have no row; a live process is never a completed run.
+Then query all PR reviews on GitHub for the phase-scoped final marker. If present, recover its actual event/URL
+into the final run's status, record it idempotently, and promote the repository result; do not
+post again even if the process crashed before writing status. Only then call `next`.
+
+Trust the phase-scoped ledger, completed artifacts, and git/GitHub evidence over stale
+bookkeeping: never rerun a live pid, repeat a remediation push, or duplicate the final review.
+If remediation pushed before its status/row was written, reconcile its recorded head evidence
+with local and remote integration HEAD and recover `PUSHED|NOOP` before continuing, without
+invoking the fixer again. If the evidence cannot prove completion, block for reconciliation.
+Keep the round's persisted head on inner-loop resume; capture a new head only at the next
+outer-round boundary after any verified fix. Replay, rather than a cached stage, drives recovery.
+
+### Plan review uses the same AR core
+
+`loop-plan-review.sh run --round r [--inner M]` drives one independent outer round synchronously
+with its own ledger and `ar_next --start-round r --single-round`. It prints TSV
+`status <converged review path> <ledger>`, status precedence `disputed` > `findings` > `clean`;
+exit 2 means no usable review. Plan review uses standard provider slots at effort `high`.
+The planner verifies the converged review and disputed items against code, edits the plan
+between outer rounds, and runs up to `LOOP_PLAN_REVIEW_ROUNDS=2`, stopping early on `clean`.
+The reviewer/critic never edit the plan; only the planner does. Provider failure is reported,
+never substituted. The PR final-post workflow does not apply to plan review.
 
 ## Merge policy (loop-merge.sh, serialized — one merge at a time)
 
@@ -978,7 +1142,8 @@ on their ~2s watchdog tick.
   `meta.json` keeps `sessionId`. The SUB marks the phase `paused`, never retries/escalates,
   and never schedules a phase whose `control/pause-<N>` exists. Each tick, a `paused` phase
   whose pause file is gone (and the loop is not paused) resumes with `loop-runner.sh --resume
-  <sessionId> --engine <engine>` in a new attempt dir (fresh start if no `sessionId`).
+  <sessionId> --engine <engine>` in a new attempt dir (fresh start if no `sessionId`). R/C/T
+  review calls instead restart fresh at the pinned head with their prior exchange inlined.
 - **Loop pause** (`control/pause`): loop-orchestrator.sh kills the SUB tree — neither a crash
   nor a recycle — emits `loop.paused`, waits for the file to clear, emits `loop.resumed`, and
   respawns a SUB with the `resume` prompt. Every runner (review runners included) halts itself
@@ -986,7 +1151,9 @@ on their ~2s watchdog tick.
   and reports "paused" in its progress read.
 - **Live notes:** when `notes/<N>.md` changes during a running attempt, the runner kills the
   engine and resumes the same session with "Steering note updated…" plus the note — same
-  attempt, no retry consumed, deadline unchanged — and emits `note.applied`.
+  attempt, no retry consumed, deadline unchanged — and emits `note.applied`. For R/C/T,
+  restart a fresh call with the updated note and inlined exchange, never resume the session;
+  preserve the frozen head and original deadline.
 - **Model override** (`control/model-<N>`): honored only before the phase starts; see § Model
   chains.
 
@@ -1012,7 +1179,7 @@ the auto skills; the **orchestrator** owns the plan document and everything cros
 | Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + `loop-plan.sh push` (re-register/overwrite the plan on the daemon) + a `progress.note`. |
 | PR link (orchestrator, at effort completion) | record each `repositories[slug].prUrl`; with milestones the PR is per milestone per participant and its URL also goes into that milestone's `PR` bullet. |
 | Milestone gate (supervise, after the gate review aggregates) | `state.awaitingMerge` + plan Status `awaiting merge` + `loop-plan.sh push` + `milestone.awaiting-merge` event + notify; keep `sub/REVIEW_READY`, unlock, stop (no `finish`). |
-| Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every staged pipeline reaches its final Opus review; plan remains `integrating`. |
+| Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every AR pipeline reaches its final Opus review; plan remains `integrating`. |
 
 "done" in loop mode = merged into the phase repository's integration branch. Humans merge
 one PR per repository.
@@ -1030,9 +1197,11 @@ truth for code, the plan/daemon for claims + phase status, state for attempt boo
 - `MERGE_HEAD` in any repository integration worktree → finish or abort before anything else.
 - Phase `done` in the plan/daemon but lane branch not merged (or
   vice versa) → repair from git.
-- Review pipeline stage: live pid → re-attach; completed `status.json` → advance; remediation
-  commit already on the remote integration branch → do not repeat it; final GitHub review marker
-  already present → record its URL and mark `done` without posting again.
+- Review pipeline: follow § Review recovery in order: recover → GitHub final-marker reconcile → `next`.
+  Reattach to live pids; record completed-but-unrecorded metadata before selecting work.
+  Reconcile a completed remediation push from git/remote evidence without invoking it again.
+  Recover a posted final marker's event/URL and repository outcome without posting again.
+  R/C/T use fresh calls with inlined exchange when continuation is needed, never session resume.
 - `state.awaitingMerge` set → parked at a milestone merge gate: do not respawn the orchestrator
   and do not re-run the gate review; a SUB writes `blocked` and exits, only a human resume leaves
   the park. Applies while `state.awaitingMerge` is set, whatever the plan or daemon status says.

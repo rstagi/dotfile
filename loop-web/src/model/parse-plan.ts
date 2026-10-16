@@ -27,8 +27,9 @@ const STATUS_TAG = /\[status:\s*([^\]]+?)\s*\]/i;
 const KIND_TAG = /\[kind:\s*([^\]]+?)\s*\]/i;
 const REVIEW_TAG = /\[review:\s*([^\]]+?)\s*\]/i;
 const ROUNDS_TAG = /\[rounds:\s*([^\]]+?)\s*\]/i;
+const INNER_TAG = /\[inner:\s*([^\]]*?)\s*\]/i;
 const GATE_TAG = /\[gate:\s*([^\]]+?)\s*\]/i;
-const REVIEW_TIERS: ReviewTier[] = ["shallow", "medium", "max"];
+const REVIEW_TIERS: ReviewTier[] = ["standard", "max", "shallow", "medium"];
 /** Mirrors LOOP_REVIEW_ROUNDS_CAP in loop-models.conf. */
 const REVIEW_ROUNDS_CAP = 5;
 
@@ -387,6 +388,7 @@ function buildPhase(
     .replace(/`?\[kind:[^\]]*\]`?/i, "")
     .replace(/`?\[review:[^\]]*\]`?/i, "")
     .replace(/`?\[rounds:[^\]]*\]`?/i, "")
+    .replace(/`?\[inner:[^\]]*\]`?/i, "")
     .replace(/`?\[gate:[^\]]*\]`?/i, "")
     .replace(/^\s*[—–-]\s*/, "")
     .replace(/`/g, "")
@@ -422,12 +424,15 @@ function buildPhase(
   };
 }
 
-/** `[review: shallow|medium|max]` + `[rounds: 1..cap]`; bad values warn and fall back. */
+/** Omitted or invalid limits stay null: loop-models.conf resolves them at execution time. */
 function parseReviewConfig(heading: string, phaseNum: string, warnings: string[]): ReviewConfig {
   const rawTier = heading.match(REVIEW_TAG)?.[1]?.toLowerCase();
-  let tier: ReviewTier = "medium";
+  let tier: ReviewTier = "standard";
   if (rawTier && (REVIEW_TIERS as string[]).includes(rawTier)) tier = rawTier as ReviewTier;
-  else if (rawTier) warnings.push(`Phase ${phaseNum}: unknown review tier "${rawTier}" (shallow|medium|max) — using medium`);
+  else if (rawTier) warnings.push(`Phase ${phaseNum}: unknown review tier "${rawTier}" (standard|max) — using standard`);
+  if (tier === "shallow" || tier === "medium") {
+    warnings.push(`Phase ${phaseNum}: legacy review tier "${tier}" retained for history — use standard|max for execution`);
+  }
 
   const rawRounds = heading.match(ROUNDS_TAG)?.[1];
   let rounds: number | null = null;
@@ -436,7 +441,14 @@ function parseReviewConfig(heading: string, phaseNum: string, warnings: string[]
     if (Number.isInteger(n) && n >= 1 && n <= REVIEW_ROUNDS_CAP) rounds = n;
     else warnings.push(`Phase ${phaseNum}: rounds must be 1..${REVIEW_ROUNDS_CAP} — using the tier default`);
   }
-  return { tier, rounds };
+  const rawInner = heading.match(INNER_TAG)?.[1];
+  let inner: number | null = null;
+  if (rawInner != null) {
+    const n = Number(rawInner);
+    if (Number.isInteger(n) && n >= 1 && n <= REVIEW_ROUNDS_CAP) inner = n;
+    else warnings.push(`Phase ${phaseNum}: inner must be 1..${REVIEW_ROUNDS_CAP} — using the runtime default`);
+  }
+  return { tier, rounds, inner };
 }
 
 function normalizeKind(

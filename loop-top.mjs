@@ -29,14 +29,17 @@ const LIST_HINTS = "↑↓ select · ⏎ details · n note · x pause · X pause
 const DETAIL_HINTS = "esc back · ↑↓ prev/next · n note · x pause · X pause loop · m model · p plan";
 const ICONS = { done: "✓", running: "◐", awaiting: "⏸", paused: "‖", problem: "✗", blocked: "✗", todo: "·" };
 /** Review pipeline run state (snapshot `reviewStages[].state`) → glyph. */
-const RUN_ICONS = { done: "✓", running: "◐", todo: "·", question: "⏸", blocked: "✗", failed: "✗" };
-const CHAIN_KEYS = { "review-adv-a": "ADV_A", "review-adv-b": "ADV_B", "review-adv-c": "ADV_C", "review-fix": "FIX", "review-final": "FINAL" };
+const RUN_ICONS = { done: "✓", running: "◐", todo: "·", planned: "·", skipped: "↷", question: "⏸", blocked: "✗", failed: "✗" };
+const CHAIN_KEYS = {
+  "review-gpt": "GPT", "review-claude": "CLAUDE", "review-grok": "GROK", "review-fix": "FIX", "review-final": "FINAL",
+  "review-adv-a": "ADV_A", "review-adv-b": "ADV_B", "review-adv-c": "ADV_C",
+};
 const WAITING_TEXT = "waiting on you (orchestrator)";
 const AWAITING_MERGE_TEXT = "awaiting merge";
 const RESUME_HINT = "/loop-execute resume";
 const ESC = "\x1b[";
 const STYLE = { dim: "2", bold: "1", green: "32", yellow: "33", red: "31", cyan: "36" };
-const ICON_STYLE = { "✓": STYLE.green, "◐": STYLE.cyan, "⏸": STYLE.yellow, "‖": STYLE.yellow, "✗": STYLE.red, "·": STYLE.dim };
+const ICON_STYLE = { "✓": STYLE.green, "◐": STYLE.cyan, "⏸": STYLE.yellow, "‖": STYLE.yellow, "✗": STYLE.red, "·": STYLE.dim, "↷": STYLE.dim };
 
 if (isMain()) {
   main(process.argv.slice(2)).catch((err) => {
@@ -342,14 +345,15 @@ function pickTier(row) {
   return res.stdout.trim().split(/\s+/)[0] || null;
 }
 
-/** One picker line per review tier: `tier ×rounds review <adversaries> · fix <m> · final <m>`. */
+/** One picker line per AR tier: rounds, inner cap, rotating providers, fixer and final. */
 export function tierChoices(confText, current = null) {
   const first = (key) => chainHead(confText, `REVIEW_${key}`);
-  return ["shallow", "medium", "max"].map((tier) => {
+  const rounds = confText.match(/^LOOP_REVIEW_ROUNDS_DEFAULT=(\d+)/m)?.[1] ?? 2;
+  const inner = confText.match(/^LOOP_REVIEW_INNER_DEFAULT=(\d+)/m)?.[1] ?? 2;
+  return ["standard", "max"].map((tier) => {
     const T = tier.toUpperCase();
-    const rounds = confText.match(new RegExp(`^LOOP_REVIEW_ROUNDS_${T}=(\\d+)`, "m"))?.[1] ?? { shallow: 1, medium: 3, max: 3 }[tier];
-    const reviewers = [first(`${T}_ADV_A`), first(`${T}_ADV_B`), first(`${T}_ADV_C`)].filter(Boolean).join(" + ");
-    const line = `${tier.padEnd(8)} ×${rounds}  review ${reviewers} · fix ${first(`${T}_FIX`)} · final ${first(`${T}_FINAL`)}`;
+    const reviewers = [first(`${T}_GPT`), first(`${T}_CLAUDE`), first(`${T}_GROK`)].filter(Boolean).join(" → ");
+    const line = `${tier.padEnd(8)} ×${rounds} · inner ${inner} · R/C rotation ${reviewers} · fix ${first(`${T}_FIX`)} · final ${first(`${T}_FINAL`)}`;
     return tier === current ? `${line}  (current)` : line;
   });
 }
@@ -728,13 +732,13 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
     } else {
       lines.push(`${cursor}${paint(ICON_STYLE[r.icon], r.icon)} ${cols.join("  ")}`);
     }
-    if (r.icon !== ICONS.done && r.stages.some((st) => st.state !== "todo")) {
+    if (r.icon !== ICONS.done && r.stages.some((st) => !["todo", "planned", "skipped"].includes(st.state))) {
       const pipeline = pipelineSummary(r.stages);
       const repoW = pipeline.length > 1 ? Math.max(...pipeline.map((l) => l.repository.length)) + 2 : 0;
       const lead = `  ${entry ? entry.mid.padEnd(railW) : "    "}  `;
       for (const l of pipeline) {
         const text = truncate((repoW ? l.repository.padEnd(repoW) : "") + l.text, width - lead.length);
-        lines.push(paint(STYLE.dim, lead) + text.replace(/[✓◐⏸✗·]/g, (g) => paint(ICON_STYLE[g], g)));
+        lines.push(paint(STYLE.dim, lead) + text.replace(/[✓◐⏸✗·↷]/g, (g) => paint(ICON_STYLE[g], g)));
       }
     }
     if (showWorktrees && (r.branch || r.worktree)) {
@@ -757,7 +761,7 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
 }
 
 /** Phase detail pane for the selected row: everything the snapshot + state know about it. */
-function renderDetails(frame, id, { width, height, color, banner }) {
+export function renderDetails(frame, id, { width, height, color, banner }) {
   const paint = (style, s) => (color ? `${ESC}${style}m${s}${ESC}0m` : s);
   const { snapshot, state } = frame;
   const node = snapshot?.graph?.nodes?.find((n) => n.id === id);
@@ -774,7 +778,7 @@ function renderDetails(frame, id, { width, height, color, banner }) {
     field("repository", node.repository);
     field("model", row.model);
     field("override", row.modelOverride);
-    if (row.review) field("review", `${reviewText(row.review)} (tier: shallow | medium | max)`);
+    if (row.review) field("review", `${reviewText(row.review)} (tier: standard | max)`);
     field("depends on", row.deps.join(", ") || null);
     field("branch", row.branch);
     field("worktree", row.worktree?.replace(os.homedir(), "~"));
@@ -987,11 +991,10 @@ export function fitRows(groups, avail, paint) {
   return lines;
 }
 
-/** "max review ×2"; an untagged round count falls back to LOOP_REVIEW_ROUNDS_<TIER> in loop-models.conf. */
+/** "max review ×2"; untagged rounds use the shared default in loop-models.conf. */
 function reviewText({ tier, rounds }) {
-  const conf = readFileSafe(MODELS_CONF).match(new RegExp(`^LOOP_REVIEW_ROUNDS_${tier.toUpperCase()}=(\\d+)`, "m"));
-  const fallback = { shallow: 1, medium: 3, max: 3 }[tier];
-  return `${tier} review ×${rounds ?? (conf ? Number(conf[1]) : fallback)}`;
+  const conf = readFileSafe(MODELS_CONF).match(/^LOOP_REVIEW_ROUNDS_DEFAULT=(\d+)/m);
+  return `${tier} review ×${rounds ?? (conf ? Number(conf[1]) : 2)}`;
 }
 
 /** Title as displayed: 📝 marks a phase with a steering note (emoji = 2 cols = 2 UTF-16 units). */
@@ -1038,8 +1041,8 @@ function stateText(n) {
 /** A started review phase's state: its failed/asked run, else each repository's current
  * sub-stage + overall progress ("fix1 · 3/9"). null when nothing ran yet or the phase is done. */
 function reviewProgress(n) {
-  const stages = n.reviewStages ?? [];
-  if (n.ui === "done" || !stages.some((s) => s.state !== "todo")) return null;
+  const stages = (n.reviewStages ?? []).filter((s) => s.state !== "skipped");
+  if (n.ui === "done" || !stages.some((s) => s.state !== "todo" && s.state !== "planned")) return null;
   const stuck = stages.find((s) => s.state === "failed" || s.state === "blocked" || s.state === "question");
   if (stuck) return `${stuck.stage} ${stuck.state}`;
   const current = [...new Set(chunkBy(stages, (s) => s.repository).map(([, runs]) => runs.find((s) => s.state !== "done")?.stage).filter(Boolean))];

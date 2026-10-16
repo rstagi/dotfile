@@ -88,6 +88,30 @@ A plan may carry several `## Milestone N — …` sections. The graph and `loop-
 
 The daemon is perpetual, so restart the Loop daemon after upgrading to pick up the new status and events (`launchctl kickstart -k` the loop-web LaunchAgent, or rerun `../loop-web.sh --daemon`).
 
+### AR review protocol
+
+New PR-review phases use `[review: standard|max]` (default standard), with `[rounds: N]`
+and `[inner: N]` both defaulting to 2 (1..5). A reviewer R reviews a frozen artifact; critic C
+audits the review from another provider. GPT→Claude, Claude→Grok, and Grok→GPT rotate across
+outer rounds. Standard uses Sol / Opus / Grok; max uses Astra / Fable / Grok. Only the fixer
+edits code between rounds. The first review's `APPROVE` plus C's `AGREE` triggers a third-provider
+confirmation: `AGREE` skips later rounds and proceeds to final; a veto makes that provider the
+critic for the remaining inner exchanges. Disagreement at the inner cap writes `.disputed.md`
+for verification against code. An Opus final reviewer posts the sole GitHub review.
+
+The daemon reads `runs/review-p<N>-<owner--repo>.ledger.tsv`: six columns (`a<k>`, stage,
+role, provider, verdict token, run directory relative to `.loop/`). Roles are
+`review|critic|respond|confirm|disputed|fix|final`. The graph folds these completed runs and
+infers skipped rounds from clean confirmation; no skipped ledger rows are stored. Resume uses
+`loop-review.sh recover`, reconciles the GitHub final marker, then calls `next`. Legacy
+shallow/medium plans still render from the static fixture, but execution and the tier endpoint
+reject those tiers.
+
+After pulling the AR update, restart with
+`launchctl kickstart -k gui/$(id -u)/com.rstagi.loop-web`, check
+`curl -fsS http://localhost:7717/api/health`, and retag active legacy review phases to standard
+or max before execution. See [the protocol](../.claude/skills/loop-execute/references/loop-protocol.md).
+
 ### Jev status and replay
 
 The header shows the latest Jev mode, decision count, and fallback count. Route, question, and
@@ -128,8 +152,13 @@ horizontal lanes as a first-class concept, and our DAGs are tiny, so a determini
   guaranteed clean bands with a synthetic Plan root. New plans render explicit PR-review
   phases inline, including repeated review rounds after late-added work; legacy plans retain
   stacked synthetic repository review terminals. Explicit review nodes carry `reviewStages`:
-  the `loop-review.sh stages` run list (mirrored in `src/model/review-stages.ts`, parity-tested)
-  folded with each `runs/review-p<N>-<owner--repo>-a<k>` dir's live state and engine/model.
+  completed AR runs from `runs/review-p<N>-<owner--repo>.ledger.tsv` (role, provider, verdict),
+  followed by the maximum remaining path as `planned`. A clean third-provider confirmation
+  marks later rounds `skipped`, preserving the actual final attempt number. Ledger rows flow
+  through `parseLoop` and `materialize`; run directories supply live state and engine/model.
+  The drawer shows each run's role, provider, and verdict beside its live model.
+  Historical shallow/medium tiers retain their static shape, checked against
+  `src/model/legacy-stages.tsv`.
 
 Plans declare GitHub `owner/repo` slugs and assign one repository to every work phase;
 explicit review phases cover all repositories. Re-registering edited plan text preserves

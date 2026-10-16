@@ -11,6 +11,19 @@ function node(decisions?: GraphNode["decisions"]): GraphNode {
   };
 }
 
+it("shows AR roles and verdicts, with no attempt number for inferred skipped stages", () => {
+  const reviewNode: GraphNode = { ...node(), kind: "pr-review", reviewStages: [
+    { repository: "acme/api", k: 3, stage: "round1", chain: "review-gpt", role: "respond", provider: "gpt", verdict: "NEEDS_CHANGES", state: "done", engine: "codex", model: "@sol", summary: null },
+    { repository: "acme/api", k: -1, stage: "round2", chain: "review-claude", role: "review", provider: "claude", verdict: null, state: "skipped", engine: null, model: null, summary: null },
+  ] };
+  const html = renderToStaticMarkup(<Drawer node={reviewNode} pr={null} plan={null} runId={null} onClose={() => {}} />);
+  expect(html).toContain("respond");
+  expect(html).toContain("NEEDS_CHANGES");
+  expect(html).toContain("skipped");
+  expect(html).toContain("a3");
+  expect(html).not.toContain("a-1");
+});
+
 describe("Drawer Jev decisions", () => {
   it("shows proposed versus applied action, confidence, fallback, and model", () => {
     const html = renderToStaticMarkup(<Drawer node={node([{
