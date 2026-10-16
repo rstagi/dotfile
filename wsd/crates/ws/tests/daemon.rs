@@ -127,6 +127,60 @@ fn ping_to_a_stale_socket_exits_one() {
     assert!(error.contains(socket.to_str().unwrap()), "{error}");
 }
 
+#[test]
+fn hook_without_a_tmux_pane_reports_the_required_context() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("missing.sock");
+    let output = ws(sandbox.path(), &socket)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("WS_TMUX_SOCKET")
+        .args(["hook", "stop"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("inside a tmux pane")
+    );
+}
+
+#[test]
+fn hook_api_rejects_invalid_records_and_exposes_accepted_events() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
+    for window in ["@", "@-1", "%1", "spike:1"] {
+        let body = serde_json::json!({"event": "stop", "window_id": window}).to_string();
+        let response = request(&socket, "POST", "/v1/hooks", &body);
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    }
+    let response = request(
+        &socket,
+        "POST",
+        "/v1/hooks",
+        r#"{"event":"unknown","window_id":"@7"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 422"), "{response}");
+    assert_eq!(
+        get(&socket, "/v1/hooks").split_once("\r\n\r\n").unwrap().1,
+        "[]"
+    );
+
+    let body = r#"{"event":"stop","window_id":"@7"}"#;
+    let response = request(&socket, "POST", "/v1/hooks", body);
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    let response = get(&socket, "/v1/hooks");
+    let records: serde_json::Value =
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(
+        records,
+        serde_json::json!([{"event":"stop", "window_id":"@7"}])
+    );
+}
+
 fn start_daemon(mut command: Command, socket: &Path) -> Daemon {
     let mut daemon = Daemon(
         command
@@ -171,13 +225,18 @@ fn ws(home: &Path, socket: &Path) -> Command {
 }
 
 fn get(socket: &Path, path: &str) -> String {
+    request(socket, "GET", path, "")
+}
+
+fn request(socket: &Path, method: &str, path: &str, body: &str) -> String {
     let mut stream = UnixStream::connect(socket).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )
     .unwrap();
     let mut response = String::new();
