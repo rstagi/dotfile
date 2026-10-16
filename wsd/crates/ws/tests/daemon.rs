@@ -1,6 +1,9 @@
 use std::{
     io::{Read, Write},
-    os::unix::net::UnixStream,
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
+    },
     path::Path,
     process::{Child, Command, Stdio},
     thread,
@@ -13,7 +16,7 @@ struct Daemon(Child);
 fn daemon_serves_versioned_json_and_ping_shows_version_and_uptime() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
-    let _daemon = start_daemon(sandbox.path(), &socket);
+    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
 
     let response = get(&socket, "/v1/ping");
     let (headers, body) = response.split_once("\r\n\r\n").unwrap();
@@ -55,9 +58,78 @@ fn ping_without_daemon_reports_the_socket_and_exits_one() {
     assert!(error.contains(socket.to_str().unwrap()), "{error}");
 }
 
-fn start_daemon(home: &Path, socket: &Path) -> Daemon {
+#[test]
+fn daemon_creates_the_default_socket_and_removes_it_on_shutdown() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join(".ws/wsd.sock");
+    let mut command = ws(sandbox.path(), &socket);
+    command.env_remove("WS_SOCK");
+    let mut daemon = start_daemon(command, &socket);
+
+    let output = ws(sandbox.path(), &socket)
+        .env_remove("WS_SOCK")
+        .arg("ping")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        socket.metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &daemon.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = daemon.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "The daemon did not stop.");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(status.success(), "{status}");
+    assert!(!socket.exists());
+
+    let _restarted = start_daemon(ws(sandbox.path(), &socket), &socket);
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
+}
+
+#[test]
+fn another_daemon_cannot_replace_a_live_socket_or_an_existing_file() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
+    let output = ws(sandbox.path(), &socket).arg("daemon").output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
+
+    let file = sandbox.path().join("keep.txt");
+    std::fs::write(&file, "Keep this file.").unwrap();
+    let output = ws(sandbox.path(), &file).arg("daemon").output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "Keep this file.");
+}
+
+#[test]
+fn ping_to_a_stale_socket_exits_one() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("stale.sock");
+    drop(UnixListener::bind(&socket).unwrap());
+    let output = ws(sandbox.path(), &socket).arg("ping").output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("Cannot connect to the daemon"), "{error}");
+    assert!(error.contains(socket.to_str().unwrap()), "{error}");
+}
+
+fn start_daemon(mut command: Command, socket: &Path) -> Daemon {
     let mut daemon = Daemon(
-        ws(home, socket)
+        command
             .arg("daemon")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
