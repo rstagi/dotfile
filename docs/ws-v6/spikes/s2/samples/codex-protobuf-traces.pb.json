@@ -1,0 +1,5332 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "s2-spike"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-codex-device"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.159.2"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-codex-project"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-codex-parent"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-codex-session"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "codex_exec"
+          },
+          "spans": [
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "8EvJNL0fvJg=",
+              "parentSpanId": "IiIiIiIiIiI=",
+              "name": "turn/start",
+              "kind": "SPAN_KIND_SERVER",
+              "startTimeUnixNano": "1792185689369474000",
+              "endTimeUnixNano": "1792185689372485000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "app-server/src/app_server_tracing.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_app_server::app_server_tracing"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "100"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "10"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_app_server::app_server_tracing"
+                  }
+                },
+                {
+                  "key": "rpc.system",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "rpc.method",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "rpc.transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "rpc.request_id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.connection_id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.api_version",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.client_name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.client_version",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "544875"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "2466042"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 769
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "s2-spike"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-codex-device"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.159.2"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-codex-project"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-codex-parent"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-codex-session"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "codex_exec"
+          },
+          "spans": [
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "nnWGiSLKTCw=",
+              "parentSpanId": "gXOHFWcUjG4=",
+              "name": "responses_websocket.stream_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185690628789000",
+              "endTimeUnixNano": "1792185691055108000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "codex-api/src/endpoint/responses_websocket.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_api::endpoint::responses_websocket"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "233"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_api::endpoint::responses_websocket"
+                  }
+                },
+                {
+                  "key": "transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "api.path",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "1609792"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "424696667"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185690629640000",
+                  "name": "event otel/src/events/session_telemetry.rs:863",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.websocket_request"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "0"
+                      }
+                    },
+                    {
+                      "key": "success",
+                      "value": {
+                        "stringValue": "true"
+                      }
+                    },
+                    {
+                      "key": "auth.env_openai_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_enabled",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "auth.env_refresh_token_url_override_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.connection_reused",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:30.629Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "863"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "gXOHFWcUjG4=",
+              "parentSpanId": "92XREbg9dXQ=",
+              "name": "model_client.stream_responses_websocket",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185690626907000",
+              "endTimeUnixNano": "1792185690628860000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/client.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::client"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "1822"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::client"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "wire_api",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "turn.has_metadata_header",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "websocket.warmup",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "api.path",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "1442003"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "511163"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "92XREbg9dXQ=",
+              "parentSpanId": "EiTsZiKCTac=",
+              "name": "startup_prewarm",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689363584000",
+              "endTimeUnixNano": "1792185691055482000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/startup_prewarm.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::startup_prewarm"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "275"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::startup_prewarm"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "prewarm.input",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "214712667"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1477136416"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185689365866000",
+                  "name": "event otel/src/events/session_telemetry.rs:340",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.startup_phase"
+                      }
+                    },
+                    {
+                      "key": "startup.phase",
+                      "value": {
+                        "stringValue": "startup_prewarm_create_turn_context"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "1"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:29.365Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1792185689492540000",
+                  "name": "event otel/src/events/session_telemetry.rs:340",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.startup_phase"
+                      }
+                    },
+                    {
+                      "key": "startup.phase",
+                      "value": {
+                        "stringValue": "startup_prewarm_build_tools"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "126"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:29.492Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1792185690626889000",
+                  "name": "event otel/src/events/session_telemetry.rs:340",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.startup_phase"
+                      }
+                    },
+                    {
+                      "key": "startup.phase",
+                      "value": {
+                        "stringValue": "startup_prewarm_build_prompt"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "0"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:30.626Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1792185691055170000",
+                  "name": "event otel/src/events/session_telemetry.rs:340",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.startup_phase"
+                      }
+                    },
+                    {
+                      "key": "startup.phase",
+                      "value": {
+                        "stringValue": "startup_prewarm_websocket_warmup"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "428"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:31.055Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1792185691055468000",
+                  "name": "event otel/src/events/session_telemetry.rs:340",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.startup_phase"
+                      }
+                    },
+                    {
+                      "key": "startup.phase",
+                      "value": {
+                        "stringValue": "startup_prewarm_total"
+                      }
+                    },
+                    {
+                      "key": "startup.status",
+                      "value": {
+                        "stringValue": "ready"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "1691"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:31.055Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "PNGO33QiWz4=",
+              "parentSpanId": "JAW59TWAhyw=",
+              "name": "codex.hooks.command",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691367378000",
+              "endTimeUnixNano": "1792185691414331000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "hooks/src/engine/command_runner.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "199"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "5"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "hook.event_name",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "hook.handler_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook.execution_mode",
+                  "value": {
+                    "stringValue": "sync"
+                  }
+                },
+                {
+                  "key": "hook.scope",
+                  "value": {
+                    "stringValue": "turn"
+                  }
+                },
+                {
+                  "key": "hook.source",
+                  "value": {
+                    "stringValue": "session_flags"
+                  }
+                },
+                {
+                  "key": "hook.display_order",
+                  "value": {
+                    "intValue": "3"
+                  }
+                },
+                {
+                  "key": "hook.timeout_sec",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "hook.command_outcome",
+                  "value": {
+                    "stringValue": "completed"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "510375"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "46441041"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "JAW59TWAhyw=",
+              "parentSpanId": "ke4ZYviWDW4=",
+              "name": "run_hooks_and_record_inputs",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691366632000",
+              "endTimeUnixNano": "1792185691418577000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "845"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "5"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "2273382"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "49670784"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "Iwb595huSN4=",
+              "parentSpanId": "Q2tBKVqJpDM=",
+              "name": "responses_websocket.stream_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691422575000",
+              "endTimeUnixNano": "1792185693330389000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "codex-api/src/endpoint/responses_websocket.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_api::endpoint::responses_websocket"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "233"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_api::endpoint::responses_websocket"
+                  }
+                },
+                {
+                  "key": "transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "api.path",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "2840626"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1904917374"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185691423283000",
+                  "name": "event otel/src/events/session_telemetry.rs:863",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.websocket_request"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "0"
+                      }
+                    },
+                    {
+                      "key": "success",
+                      "value": {
+                        "stringValue": "true"
+                      }
+                    },
+                    {
+                      "key": "auth.env_openai_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_enabled",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "auth.env_refresh_token_url_override_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.connection_reused",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:31.423Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "863"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "Q2tBKVqJpDM=",
+              "parentSpanId": "XqmWK3p6wrc=",
+              "name": "model_client.stream_responses_websocket",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691419212000",
+              "endTimeUnixNano": "1792185691422620000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/client.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::client"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "1822"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::client"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "wire_api",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "turn.has_metadata_header",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "websocket.warmup",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "api.path",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "2657874"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "750293"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "XqmWK3p6wrc=",
+              "parentSpanId": "MHReVcmPP+s=",
+              "name": "stream_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691419193000",
+              "endTimeUnixNano": "1792185691422621000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "2550"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "2689501"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "738915"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "TukpEOQjowTIYiK8XEy3ow==",
+              "spanId": "Czo2cEhbfMg=",
+              "parentSpanId": "0eapc0+NKDY=",
+              "name": "codex.hooks.command",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693346286000",
+              "endTimeUnixNano": "1792185693386810000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "hooks/src/engine/command_runner.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "199"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "hook.event_name",
+                  "value": {
+                    "stringValue": "PreToolUse"
+                  }
+                },
+                {
+                  "key": "hook.handler_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook.execution_mode",
+                  "value": {
+                    "stringValue": "sync"
+                  }
+                },
+                {
+                  "key": "hook.scope",
+                  "value": {
+                    "stringValue": "turn"
+                  }
+                },
+                {
+                  "key": "hook.source",
+                  "value": {
+                    "stringValue": "session_flags"
+                  }
+                },
+                {
+                  "key": "hook.display_order",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "hook.timeout_sec",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "hook.command_outcome",
+                  "value": {
+                    "stringValue": "completed"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "833791"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "39688793"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "s2-spike"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-codex-device"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.159.2"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-codex-project"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-codex-parent"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-codex-session"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "codex_exec"
+          },
+          "spans": [
+            {
+              "traceId": "TukpEOQjowTIYiK8XEy3ow==",
+              "spanId": "T7uuBfjU5QM=",
+              "parentSpanId": "0eapc0+NKDY=",
+              "name": "unified_exec.exec_command",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693393865000",
+              "endTimeUnixNano": "1792185693432281000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/unified_exec/process_manager.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::unified_exec::process_manager"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "490"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::unified_exec::process_manager"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-6"
+                  }
+                },
+                {
+                  "key": "turn_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-7"
+                  }
+                },
+                {
+                  "key": "unified_exec_process_id",
+                  "value": {
+                    "intValue": "10162"
+                  }
+                },
+                {
+                  "key": "mode",
+                  "value": {
+                    "stringValue": "resumable"
+                  }
+                },
+                {
+                  "key": "outcome",
+                  "value": {
+                    "stringValue": "exited"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "1647375"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "36768917"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "TukpEOQjowTIYiK8XEy3ow==",
+              "spanId": "lo7BXFwARSg=",
+              "parentSpanId": "0eapc0+NKDY=",
+              "name": "codex.hooks.command",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693434397000",
+              "endTimeUnixNano": "1792185693471572000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "hooks/src/engine/command_runner.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "199"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "hook.event_name",
+                  "value": {
+                    "stringValue": "PostToolUse"
+                  }
+                },
+                {
+                  "key": "hook.handler_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook.execution_mode",
+                  "value": {
+                    "stringValue": "sync"
+                  }
+                },
+                {
+                  "key": "hook.scope",
+                  "value": {
+                    "stringValue": "turn"
+                  }
+                },
+                {
+                  "key": "hook.source",
+                  "value": {
+                    "stringValue": "session_flags"
+                  }
+                },
+                {
+                  "key": "hook.display_order",
+                  "value": {
+                    "intValue": "2"
+                  }
+                },
+                {
+                  "key": "hook.timeout_sec",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "hook.command_outcome",
+                  "value": {
+                    "stringValue": "completed"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "634542"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "36539458"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "TukpEOQjowTIYiK8XEy3ow==",
+              "spanId": "0eapc0+NKDY=",
+              "parentSpanId": "AaYFGPvif8A=",
+              "name": "dispatch_tool_call_with_state",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693344779000",
+              "endTimeUnixNano": "1792185693471721000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tools/router.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tools::router"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "325"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tools::router"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "12559502"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "114378498"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185693432340000",
+                  "name": "event otel/src/tool_result.rs:54",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.tool_result"
+                      }
+                    },
+                    {
+                      "key": "tool_result_seq",
+                      "value": {
+                        "stringValue": "1"
+                      }
+                    },
+                    {
+                      "key": "tool_name",
+                      "value": {
+                        "stringValue": "exec_command"
+                      }
+                    },
+                    {
+                      "key": "tool_namespace",
+                      "value": {
+                        "stringValue": "functions"
+                      }
+                    },
+                    {
+                      "key": "call_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-7"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "45"
+                      }
+                    },
+                    {
+                      "key": "success",
+                      "value": {
+                        "stringValue": "true"
+                      }
+                    },
+                    {
+                      "key": "output_truncated",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "arguments_length",
+                      "value": {
+                        "intValue": "52"
+                      }
+                    },
+                    {
+                      "key": "output_length",
+                      "value": {
+                        "intValue": "172"
+                      }
+                    },
+                    {
+                      "key": "output_line_count",
+                      "value": {
+                        "intValue": "6"
+                      }
+                    },
+                    {
+                      "key": "tool_origin",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "mcp_tool",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:33.432Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/tool_result.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::tool_result"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "54"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "TukpEOQjowTIYiK8XEy3ow==",
+              "spanId": "AaYFGPvif8A=",
+              "parentSpanId": "+4ArIWFQmJk=",
+              "name": "exec_command",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693344763000",
+              "endTimeUnixNano": "1792185693471724000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tools/parallel.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "186"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "exec_command"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-7"
+                  }
+                },
+                {
+                  "key": "aborted",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "11500493"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "115456465"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "TukpEOQjowTIYiK8XEy3ow==",
+              "spanId": "+4ArIWFQmJk=",
+              "parentSpanId": "6YFb7MCncC8=",
+              "name": "handle_tool_call_with_source",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693344759000",
+              "endTimeUnixNano": "1792185693471745000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tools/parallel.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "124"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "11563459"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "115419374"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185693471731000",
+                  "name": "codex.tool_result_ready",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.tool_result_ready"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "turn_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-5"
+                      }
+                    },
+                    {
+                      "key": "call_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-7"
+                      }
+                    },
+                    {
+                      "key": "tool_name",
+                      "value": {
+                        "stringValue": "exec_command"
+                      }
+                    },
+                    {
+                      "key": "tool_namespace",
+                      "value": {
+                        "stringValue": "functions"
+                      }
+                    },
+                    {
+                      "key": "tool_source",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "core/src/tools/call_trace.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_core::tools::call_trace"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "68"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "TukpEOQjowTIYiK8XEy3ow==",
+              "spanId": "6YFb7MCncC8=",
+              "name": "code_mode.broker.invoke_tool",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693344721000",
+              "endTimeUnixNano": "1792185693471770000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tools/code_mode/delegate.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tools::code_mode::delegate"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "305"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tools::code_mode::delegate"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-6"
+                  }
+                },
+                {
+                  "key": "cell.id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "runtime_tool_call_id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "exec_command"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "58251"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "126988791"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185693344738000",
+                  "name": "codex.tool_call_received",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.tool_call_received"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "call_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-7"
+                      }
+                    },
+                    {
+                      "key": "tool_name",
+                      "value": {
+                        "stringValue": "exec_command"
+                      }
+                    },
+                    {
+                      "key": "tool_namespace",
+                      "value": {
+                        "stringValue": "functions"
+                      }
+                    },
+                    {
+                      "key": "tool_source",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "cell.id",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "runtime_tool_call_id",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "core/src/tools/call_trace.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_core::tools::call_trace"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "45"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1792185693344755000",
+                  "name": "codex.code_mode.nested_tool_dispatched",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.code_mode.nested_tool_dispatched"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "turn_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-5"
+                      }
+                    },
+                    {
+                      "key": "cell.id",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "runtime_tool_call_id",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "call_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-7"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "core/src/tools/code_mode/mod.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_core::tools::code_mode"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "357"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "jb6kPesIg0o=",
+              "parentSpanId": "rH546FajJp0=",
+              "name": "exec",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693297662000",
+              "endTimeUnixNano": "1792185693473297000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tools/parallel.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "186"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "exec"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-8"
+                  }
+                },
+                {
+                  "key": "aborted",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "5687625"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "169942583"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "rH546FajJp0=",
+              "parentSpanId": "RpOAWXX6y1g=",
+              "name": "handle_tool_call_with_source",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693297654000",
+              "endTimeUnixNano": "1792185693473333000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tools/parallel.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "124"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tools::parallel"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "5731625"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "169941959"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185693473300000",
+                  "name": "codex.tool_result_ready",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.tool_result_ready"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "turn_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-5"
+                      }
+                    },
+                    {
+                      "key": "call_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-8"
+                      }
+                    },
+                    {
+                      "key": "tool_name",
+                      "value": {
+                        "stringValue": "exec"
+                      }
+                    },
+                    {
+                      "key": "tool_namespace",
+                      "value": {
+                        "stringValue": "functions"
+                      }
+                    },
+                    {
+                      "key": "tool_source",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "core/src/tools/call_trace.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_core::tools::call_trace"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "68"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "RpOAWXX6y1g=",
+              "parentSpanId": "Av+mcURCh8A=",
+              "name": "handle_output_item_done",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693296299000",
+              "endTimeUnixNano": "1792185693297680000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/stream_events_utils.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::stream_events_utils"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "314"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::stream_events_utils"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "521877"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "859832"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185693296341000",
+                  "name": "codex.tool_call_received",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.tool_call_received"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "turn_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-5"
+                      }
+                    },
+                    {
+                      "key": "call_id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-8"
+                      }
+                    },
+                    {
+                      "key": "tool_name",
+                      "value": {
+                        "stringValue": "exec"
+                      }
+                    },
+                    {
+                      "key": "tool_namespace",
+                      "value": {
+                        "stringValue": "functions"
+                      }
+                    },
+                    {
+                      "key": "tool_source",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "core/src/tools/call_trace.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_core::tools::call_trace"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "45"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "Av+mcURCh8A=",
+              "parentSpanId": "w0xKW7TAz2Q=",
+              "name": "handle_responses",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693279056000",
+              "endTimeUnixNano": "1792185693297681000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "2586"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "codex.request.reasoning_effort",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "from",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "539790"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "18084001"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "w0xKW7TAz2Q=",
+              "parentSpanId": "MHReVcmPP+s=",
+              "name": "receiving_stream",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691422624000",
+              "endTimeUnixNano": "1792185693476748000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "2584"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "0"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "MHReVcmPP+s=",
+              "parentSpanId": "4Dk4k3F+U0M=",
+              "name": "try_run_sampling_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691419175000",
+              "endTimeUnixNano": "1792185693476762000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "2492"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "turn_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "7054255"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "2050473037"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185692673243000",
+                  "name": "event otel/src/events/session_telemetry.rs:356",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.turn_ttft"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "3301"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:32.673Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "356"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "4Dk4k3F+U0M=",
+              "parentSpanId": "ke4ZYviWDW4=",
+              "name": "run_sampling_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185691419119000",
+              "endTimeUnixNano": "1792185693476774000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "1584"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "7"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "turn_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "cwd",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "7226084"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "2050368083"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "mPupSXbuAd0=",
+              "parentSpanId": "LlmDm5DBPGg=",
+              "name": "responses_websocket.stream_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693483713000",
+              "endTimeUnixNano": "1792185695246095000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "codex-api/src/endpoint/responses_websocket.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_api::endpoint::responses_websocket"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "233"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_api::endpoint::responses_websocket"
+                  }
+                },
+                {
+                  "key": "transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "api.path",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "1525418"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1760804999"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185693483935000",
+                  "name": "event otel/src/events/session_telemetry.rs:863",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.websocket_request"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "0"
+                      }
+                    },
+                    {
+                      "key": "success",
+                      "value": {
+                        "stringValue": "true"
+                      }
+                    },
+                    {
+                      "key": "auth.env_openai_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_enabled",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "auth.env_refresh_token_url_override_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.connection_reused",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:33.483Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "863"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "LlmDm5DBPGg=",
+              "parentSpanId": "n0Jlaueoajk=",
+              "name": "model_client.stream_responses_websocket",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693480577000",
+              "endTimeUnixNano": "1792185693483769000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/client.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::client"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "1822"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::client"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "wire_api",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "turn.has_metadata_header",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "websocket.warmup",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "api.path",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "2259832"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "931210"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "n0Jlaueoajk=",
+              "parentSpanId": "Tbd/uIi4cEg=",
+              "name": "stream_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693480568000",
+              "endTimeUnixNano": "1792185693483771000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "2550"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "2294623"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "909043"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "Tbd/uIi4cEg=",
+              "parentSpanId": "sSVUHLZlwRU=",
+              "name": "try_run_sampling_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693480563000",
+              "endTimeUnixNano": "1792185695252781000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "2492"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "turn_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "5248289"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1766917753"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "sSVUHLZlwRU=",
+              "parentSpanId": "ke4ZYviWDW4=",
+              "name": "run_sampling_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185693480535000",
+              "endTimeUnixNano": "1792185695252788000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/turn.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "1584"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::turn"
+                  }
+                },
+                {
+                  "key": "turn_id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "cwd",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "5373753"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1766827288"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "dgSUDFjoPCQ=",
+              "parentSpanId": "uO/XGdKLdDw=",
+              "name": "codex.hooks.command",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185695253505000",
+              "endTimeUnixNano": "1792185695287829000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "hooks/src/engine/command_runner.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "199"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_hooks::engine::command_runner"
+                  }
+                },
+                {
+                  "key": "hook.event_name",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "hook.handler_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook.execution_mode",
+                  "value": {
+                    "stringValue": "sync"
+                  }
+                },
+                {
+                  "key": "hook.scope",
+                  "value": {
+                    "stringValue": "turn"
+                  }
+                },
+                {
+                  "key": "hook.source",
+                  "value": {
+                    "stringValue": "session_flags"
+                  }
+                },
+                {
+                  "key": "hook.display_order",
+                  "value": {
+                    "intValue": "4"
+                  }
+                },
+                {
+                  "key": "hook.timeout_sec",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "hook.command_outcome",
+                  "value": {
+                    "stringValue": "completed"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "685292"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "33637333"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "uO/XGdKLdDw=",
+              "parentSpanId": "ke4ZYviWDW4=",
+              "name": "run_turn_stop_hooks",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185695252810000",
+              "endTimeUnixNano": "1792185695287907000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/hook_runtime.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::hook_runtime"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "391"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::hook_runtime"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "1126376"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "33969791"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "ke4ZYviWDW4=",
+              "parentSpanId": "oz03RVbj5/U=",
+              "name": "run_turn",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689372459000",
+              "endTimeUnixNano": "1792185695287957000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tasks/regular.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tasks::regular"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "47"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tasks::regular"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "65583987"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "5849741305"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "oz03RVbj5/U=",
+              "parentSpanId": "M+GzqcNrL+o=",
+              "name": "session_task.run",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689372454000",
+              "endTimeUnixNano": "1792185695287964000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tasks/mod.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tasks"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "374"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "11"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tasks"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "67458009"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "5847879283"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "M+GzqcNrL+o=",
+              "parentSpanId": "LGKhJgpuIa0=",
+              "name": "session_task.turn",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689372404000",
+              "endTimeUnixNano": "1792185695294264000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tasks/mod.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tasks"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "349"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tasks"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-6.1-sol"
+                  }
+                },
+                {
+                  "key": "codex.turn.reasoning_effort",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.input_tokens",
+                  "value": {
+                    "intValue": "28589"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.cached_input_tokens",
+                  "value": {
+                    "intValue": "26368"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.cache_write_input_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.non_cached_input_tokens",
+                  "value": {
+                    "intValue": "2221"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.output_tokens",
+                  "value": {
+                    "intValue": "63"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.reasoning_output_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.total_tokens",
+                  "value": {
+                    "intValue": "28652"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "70846911"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "5850839881"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "LGKhJgpuIa0=",
+              "parentSpanId": "8EvJNL0fvJg=",
+              "name": "op.dispatch.turn_input",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689370163000",
+              "endTimeUnixNano": "1792185689372438000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/handlers.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::handlers"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "702"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "8"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::handlers"
+                  }
+                },
+                {
+                  "key": "submission.id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "codex.op",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "1800248"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "475585"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185689371364000",
+                  "name": "event otel/src/events/session_telemetry.rs:1156",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.user_prompt"
+                      }
+                    },
+                    {
+                      "key": "prompt_length",
+                      "value": {
+                        "stringValue": "165"
+                      }
+                    },
+                    {
+                      "key": "text_input_count",
+                      "value": {
+                        "intValue": "1"
+                      }
+                    },
+                    {
+                      "key": "image_input_count",
+                      "value": {
+                        "intValue": "0"
+                      }
+                    },
+                    {
+                      "key": "local_image_input_count",
+                      "value": {
+                        "intValue": "0"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:29.371Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "1156"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 769
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "EiTsZiKCTac=",
+              "parentSpanId": "yhJv0oustG0=",
+              "name": "session_init",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689327526000",
+              "endTimeUnixNano": "1792185689363617000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/session.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session::session"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "737"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "9"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session::session"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "34621372"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1468670"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185689328730000",
+                  "name": "event otel/src/events/session_telemetry.rs:661",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.conversation_starts"
+                      }
+                    },
+                    {
+                      "key": "provider_name",
+                      "value": {
+                        "stringValue": "OpenAI"
+                      }
+                    },
+                    {
+                      "key": "auth.env_openai_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "auth.env_codex_api_key_enabled",
+                      "value": {
+                        "boolValue": true
+                      }
+                    },
+                    {
+                      "key": "auth.env_refresh_token_url_override_present",
+                      "value": {
+                        "boolValue": false
+                      }
+                    },
+                    {
+                      "key": "reasoning_effort",
+                      "value": {
+                        "stringValue": "low"
+                      }
+                    },
+                    {
+                      "key": "reasoning_summary",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "approval_policy",
+                      "value": {
+                        "stringValue": "never"
+                      }
+                    },
+                    {
+                      "key": "sandbox_policy",
+                      "value": {
+                        "stringValue": "danger-full-access"
+                      }
+                    },
+                    {
+                      "key": "mcp_server_count",
+                      "value": {
+                        "intValue": "1"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:29.328Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "661"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 257
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "yhJv0oustG0=",
+              "parentSpanId": "3Y7Iuquw/7o=",
+              "name": "thread_spawn",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689325984000",
+              "endTimeUnixNano": "1792185689363629000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/mod.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "526"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "3"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "35811498"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1833085"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 769
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "3Y7Iuquw/7o=",
+              "parentSpanId": "IiIiIiIiIiI=",
+              "name": "thread/start",
+              "kind": "SPAN_KIND_SERVER",
+              "startTimeUnixNano": "1792185689322317000",
+              "endTimeUnixNano": "1792185689369157000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "app-server/src/app_server_tracing.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_app_server::app_server_tracing"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "100"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "9"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_app_server::app_server_tracing"
+                  }
+                },
+                {
+                  "key": "rpc.system",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "rpc.method",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "rpc.transport",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "rpc.request_id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.connection_id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.api_version",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.client_name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "app_server.client_version",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "42279543"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "4559582"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1792185689363684000",
+                  "name": "event otel/src/events/session_telemetry.rs:340",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.startup_phase"
+                      }
+                    },
+                    {
+                      "key": "startup.phase",
+                      "value": {
+                        "stringValue": "thread_start_create_thread"
+                      }
+                    },
+                    {
+                      "key": "startup.status",
+                      "value": {
+                        "stringValue": "ready"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "37"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:29.363Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1792185689369114000",
+                  "name": "event otel/src/events/session_telemetry.rs:340",
+                  "attributes": [
+                    {
+                      "key": "level",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "target",
+                      "value": {
+                        "stringValue": "codex_otel.trace_safe"
+                      }
+                    },
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "codex.startup_phase"
+                      }
+                    },
+                    {
+                      "key": "startup.phase",
+                      "value": {
+                        "stringValue": "thread_start_total"
+                      }
+                    },
+                    {
+                      "key": "startup.status",
+                      "value": {
+                        "stringValue": "ready"
+                      }
+                    },
+                    {
+                      "key": "duration_ms",
+                      "value": {
+                        "stringValue": "46"
+                      }
+                    },
+                    {
+                      "key": "event.timestamp",
+                      "value": {
+                        "stringValue": "2026-10-16T21:21:29.369Z"
+                      }
+                    },
+                    {
+                      "key": "conversation.id",
+                      "value": {
+                        "stringValue": "synthetic-codex-id-6"
+                      }
+                    },
+                    {
+                      "key": "app.version",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    },
+                    {
+                      "key": "auth_mode",
+                      "value": {
+                        "stringValue": "Chatgpt"
+                      }
+                    },
+                    {
+                      "key": "originator",
+                      "value": {
+                        "stringValue": "codex_exec"
+                      }
+                    },
+                    {
+                      "key": "terminal.type",
+                      "value": {
+                        "stringValue": "Ghostty"
+                      }
+                    },
+                    {
+                      "key": "model",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "slug",
+                      "value": {
+                        "stringValue": "gpt-6.1-sol"
+                      }
+                    },
+                    {
+                      "key": "code.file.path",
+                      "value": {
+                        "stringValue": "otel/src/events/session_telemetry.rs"
+                      }
+                    },
+                    {
+                      "key": "code.module.name",
+                      "value": {
+                        "stringValue": "codex_otel::events::session_telemetry"
+                      }
+                    },
+                    {
+                      "key": "code.line.number",
+                      "value": {
+                        "intValue": "340"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "status": {},
+              "flags": 769
+            },
+            {
+              "traceId": "EREREREREREREREREREREQ==",
+              "spanId": "GzggfoOi4+w=",
+              "parentSpanId": "IiIiIiIiIiI=",
+              "name": "codex.exec",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1792185689299645000",
+              "endTimeUnixNano": "1792185695876324000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "exec/src/lib.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "243"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "2"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "codex-main"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "synthetic-codex-id-5"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "4526121"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "6571964420"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 769
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

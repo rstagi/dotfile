@@ -1,0 +1,2872 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "os_version",
+            "value": {
+              "stringValue": "26.6.2"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "s2-spike"
+            }
+          },
+          {
+            "key": "os",
+            "value": {
+              "stringValue": "Mac_OS"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-codex-device"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-codex-session"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.159.2"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-codex-project"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-codex-parent"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "codex"
+          },
+          "metrics": [
+            {
+              "name": "codex.websocket.request",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185690629607000",
+                    "timeUnixNano": "1792185691305565000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "codex.websocket.request.duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185690629622000",
+                    "timeUnixNano": "1792185691305580000",
+                    "count": "1",
+                    "sum": 0.0,
+                    "bucketCounts": [
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      }
+                    ],
+                    "min": 0.0,
+                    "max": 0.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "os_version",
+            "value": {
+              "stringValue": "26.6.2"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "s2-spike"
+            }
+          },
+          {
+            "key": "os",
+            "value": {
+              "stringValue": "Mac_OS"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-codex-device"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-codex-session"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.159.2"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-codex-project"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-codex-parent"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "codex"
+          },
+          "metrics": [
+            {
+              "name": "codex.websocket.request",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185691305565000",
+                    "timeUnixNano": "1792185692311985000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "codex.websocket.request.duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185691305580000",
+                    "timeUnixNano": "1792185692311988000",
+                    "count": "1",
+                    "sum": 0.0,
+                    "bucketCounts": [
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      }
+                    ],
+                    "min": 0.0,
+                    "max": 0.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            },
+            {
+              "name": "codex.hooks.run",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185691414363000",
+                    "timeUnixNano": "1792185692312096000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "codex.hooks.run.duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185691414378000",
+                    "timeUnixNano": "1792185692312100000",
+                    "count": "1",
+                    "sum": 46.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 46.0,
+                    "max": 46.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "os_version",
+            "value": {
+              "stringValue": "26.6.2"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "s2-spike"
+            }
+          },
+          {
+            "key": "os",
+            "value": {
+              "stringValue": "Mac_OS"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-codex-device"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-codex-session"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.159.2"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-codex-project"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-codex-parent"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "codex"
+          },
+          "metrics": [
+            {
+              "name": "codex.websocket.request",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185693315648000",
+                    "timeUnixNano": "1792185694318920000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "codex.websocket.request.duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185693315649000",
+                    "timeUnixNano": "1792185694318921000",
+                    "count": "1",
+                    "sum": 0.0,
+                    "bucketCounts": [
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      }
+                    ],
+                    "min": 0.0,
+                    "max": 0.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            },
+            {
+              "name": "codex.hooks.run",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185693315683000",
+                    "timeUnixNano": "1792185694318939000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1792185693315683000",
+                    "timeUnixNano": "1792185694318939000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "codex.hooks.run.duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185693315684000",
+                    "timeUnixNano": "1792185694318943000",
+                    "count": "1",
+                    "sum": 40.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 40.0,
+                    "max": 40.0
+                  },
+                  {
+                    "startTimeUnixNano": "1792185693315684000",
+                    "timeUnixNano": "1792185694318943000",
+                    "count": "1",
+                    "sum": 37.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 37.0,
+                    "max": 37.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            },
+            {
+              "name": "codex.tool.call",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185693432306000",
+                    "timeUnixNano": "1792185694318954000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "command_category",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "sandbox",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "sandbox_policy",
+                        "value": {
+                          "stringValue": "danger-full-access"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      },
+                      {
+                        "key": "tool",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1792185693432306000",
+                    "timeUnixNano": "1792185694318954000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "sandbox",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "sandbox_policy",
+                        "value": {
+                          "stringValue": "danger-full-access"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      },
+                      {
+                        "key": "tool",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "codex.tool.call.duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185693432319000",
+                    "timeUnixNano": "1792185694318960000",
+                    "count": "1",
+                    "sum": 45.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "command_category",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "sandbox",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "sandbox_policy",
+                        "value": {
+                          "stringValue": "danger-full-access"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      },
+                      {
+                        "key": "tool",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 45.0,
+                    "max": 45.0
+                  },
+                  {
+                    "startTimeUnixNano": "1792185693432319000",
+                    "timeUnixNano": "1792185694318960000",
+                    "count": "1",
+                    "sum": 175.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "sandbox",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "sandbox_policy",
+                        "value": {
+                          "stringValue": "danger-full-access"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "stringValue": "true"
+                        }
+                      },
+                      {
+                        "key": "tool",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 175.0,
+                    "max": 175.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "os_version",
+            "value": {
+              "stringValue": "26.6.2"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "s2-spike"
+            }
+          },
+          {
+            "key": "os",
+            "value": {
+              "stringValue": "Mac_OS"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-codex-device"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-codex-session"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.159.2"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-codex-project"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-codex-parent"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "codex"
+          },
+          "metrics": [
+            {
+              "name": "codex.hooks.run",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185694318939000",
+                    "timeUnixNano": "1792185695320140000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "codex.hooks.run.duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185694318943000",
+                    "timeUnixNano": "1792185695320142000",
+                    "count": "1",
+                    "sum": 34.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "execution_mode",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "handler_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "hook_name",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "source",
+                        "value": {
+                          "stringValue": "session_flags"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 34.0,
+                    "max": 34.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            },
+            {
+              "name": "codex.turn.e2e_duration_ms",
+              "description": "Duration in milliseconds.",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185695289198000",
+                    "timeUnixNano": "1792185695320156000",
+                    "count": "1",
+                    "sum": 5916.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      1250.0,
+                      1500.0,
+                      1750.0,
+                      2000.0,
+                      2250.0,
+                      2500.0,
+                      3000.0,
+                      3500.0,
+                      4000.0,
+                      4500.0,
+                      5000.0,
+                      6000.0,
+                      7000.0,
+                      7500.0,
+                      8000.0,
+                      9000.0,
+                      10000.0,
+                      12000.0,
+                      15000.0,
+                      20000.0,
+                      30000.0,
+                      60000.0,
+                      120000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 5916.0,
+                    "max": 5916.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            },
+            {
+              "name": "codex.turn.token_usage",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185695289287000",
+                    "timeUnixNano": "1792185695320179000",
+                    "count": "1",
+                    "sum": 0.0,
+                    "bucketCounts": [
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      2500.0,
+                      5000.0,
+                      7500.0,
+                      10000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "tmp_mem_enabled",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "token_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 0.0,
+                    "max": 0.0
+                  },
+                  {
+                    "startTimeUnixNano": "1792185695289287000",
+                    "timeUnixNano": "1792185695320179000",
+                    "count": "1",
+                    "sum": 0.0,
+                    "bucketCounts": [
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      2500.0,
+                      5000.0,
+                      7500.0,
+                      10000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "tmp_mem_enabled",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "token_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 0.0,
+                    "max": 0.0
+                  },
+                  {
+                    "startTimeUnixNano": "1792185695289287000",
+                    "timeUnixNano": "1792185695320179000",
+                    "count": "1",
+                    "sum": 28589.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      2500.0,
+                      5000.0,
+                      7500.0,
+                      10000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "tmp_mem_enabled",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "token_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 28589.0,
+                    "max": 28589.0
+                  },
+                  {
+                    "startTimeUnixNano": "1792185695289287000",
+                    "timeUnixNano": "1792185695320179000",
+                    "count": "1",
+                    "sum": 26368.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      2500.0,
+                      5000.0,
+                      7500.0,
+                      10000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "tmp_mem_enabled",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "token_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 26368.0,
+                    "max": 26368.0
+                  },
+                  {
+                    "startTimeUnixNano": "1792185695289287000",
+                    "timeUnixNano": "1792185695320179000",
+                    "count": "1",
+                    "sum": 28652.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      2500.0,
+                      5000.0,
+                      7500.0,
+                      10000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "tmp_mem_enabled",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "token_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 28652.0,
+                    "max": 28652.0
+                  },
+                  {
+                    "startTimeUnixNano": "1792185695289287000",
+                    "timeUnixNano": "1792185695320179000",
+                    "count": "1",
+                    "sum": 63.0,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.0,
+                      5.0,
+                      10.0,
+                      25.0,
+                      50.0,
+                      75.0,
+                      100.0,
+                      250.0,
+                      500.0,
+                      750.0,
+                      1000.0,
+                      2500.0,
+                      5000.0,
+                      7500.0,
+                      10000.0
+                    ],
+                    "attributes": [
+                      {
+                        "key": "app.version",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "auth_mode",
+                        "value": {
+                          "stringValue": "Chatgpt"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gpt-6.1-sol"
+                        }
+                      },
+                      {
+                        "key": "originator",
+                        "value": {
+                          "stringValue": "codex_exec"
+                        }
+                      },
+                      {
+                        "key": "session_source",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "tmp_mem_enabled",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "token_type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      }
+                    ],
+                    "min": 63.0,
+                    "max": 63.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
