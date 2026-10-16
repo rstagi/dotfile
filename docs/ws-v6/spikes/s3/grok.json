@@ -1,0 +1,151 @@
+{
+  "projection": "Billing fields, token counts, and identity field names only. Other fields and signatures are omitted.",
+  "billing_http": {
+    "method": "GET",
+    "path": "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+    "status": 200,
+    "received_at_utc": "2026-10-16T21:31:58.896374Z",
+    "http_date": "Fri, 16 Oct 2026 21:31:58 GMT",
+    "body": {
+      "config": {
+        "currentPeriod": {
+          "type": "USAGE_PERIOD_TYPE_WEEKLY",
+          "start": "2026-10-14T10:09:21.510566+00:00",
+          "end": "2026-10-21T10:09:21.510566+00:00"
+        },
+        "onDemandCap": {
+          "val": 0
+        },
+        "onDemandUsed": {
+          "val": 0
+        },
+        "prepaidBalance": {
+          "val": 0
+        },
+        "isUnifiedBillingUser": true,
+        "billingPeriodStart": "2026-10-14T10:09:21.510566+00:00",
+        "billingPeriodEnd": "2026-10-21T10:09:21.510566+00:00"
+      }
+    }
+  },
+  "acp_requests": [
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "_x.ai/billing",
+      "params": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "_x.ai/billing",
+      "params": {}
+    }
+  ],
+  "acp_responses": [
+    {
+      "received_at_utc": "2026-10-16T21:33:24.245904Z",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "config": {
+            "currentPeriod": {
+              "type": "USAGE_PERIOD_TYPE_WEEKLY",
+              "start": "2026-10-14T10:09:21.510566+00:00",
+              "end": "2026-10-21T10:09:21.510566+00:00"
+            },
+            "onDemandCap": {
+              "val": 0
+            },
+            "onDemandUsed": {
+              "val": 0
+            },
+            "prepaidBalance": {
+              "val": 0
+            },
+            "isUnifiedBillingUser": true,
+            "billingPeriodStart": "2026-10-14T10:09:21.510566+00:00",
+            "billingPeriodEnd": "2026-10-21T10:09:21.510566+00:00"
+          },
+          "subscription_tier": "SuperGrok Heavy"
+        }
+      }
+    },
+    {
+      "received_at_utc": "2026-10-16T21:33:24.413334Z",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "config": {
+            "currentPeriod": {
+              "type": "USAGE_PERIOD_TYPE_WEEKLY",
+              "start": "2026-10-14T10:09:21.510566+00:00",
+              "end": "2026-10-21T10:09:21.510566+00:00"
+            },
+            "onDemandCap": {
+              "val": 0
+            },
+            "onDemandUsed": {
+              "val": 0
+            },
+            "prepaidBalance": {
+              "val": 0
+            },
+            "isUnifiedBillingUser": true,
+            "billingPeriodStart": "2026-10-14T10:09:21.510566+00:00",
+            "billingPeriodEnd": "2026-10-21T10:09:21.510566+00:00"
+          },
+          "subscription_tier": "SuperGrok Heavy"
+        }
+      }
+    }
+  ],
+  "unprefixed_method_error": {
+    "request_method": "x.ai/billing",
+    "error": {
+      "code": -32601,
+      "message": "Method not found"
+    }
+  },
+  "headless_events": [
+    {
+      "type": "usage",
+      "usage": {
+        "input_tokens": 11442,
+        "output_tokens": 44,
+        "cache_read_input_tokens": 1536,
+        "cache_creation_input_tokens": 0,
+        "reasoning_tokens": 37
+      }
+    },
+    {
+      "type": "end",
+      "usage": {
+        "input_tokens": 11442,
+        "cache_read_input_tokens": 1536,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 44,
+        "reasoning_tokens": 37,
+        "total_tokens": 13022
+      },
+      "num_turns": 1,
+      "stopReason": "end_turn"
+    }
+  ],
+  "identity": {
+    "source": "$GROK_HOME/auth.json",
+    "entry_key": "<issuer>::<client>",
+    "entry": {
+      "auth_mode": "oidc",
+      "user_id": "<redacted-user>",
+      "principal_type": "Team",
+      "principal_id": "<redacted-principal>",
+      "team_id": "<redacted-team>",
+      "email": "<redacted-email>"
+    },
+    "request_user_header": "x-userid",
+    "quota_payload_contains_account_id": false
+  }
+}
