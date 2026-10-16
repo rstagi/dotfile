@@ -14,6 +14,8 @@ use tokio::{
 };
 use ws_core::{PingResponse, VERSION};
 
+pub mod tmux;
+
 struct SocketFile {
     path: PathBuf,
     device: u64,
