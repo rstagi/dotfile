@@ -3,15 +3,15 @@
 The [architecture](../architecture.md) defines the spike questions and fallbacks in §15.
 The reports below record the results for milestone 1.
 
-| Spike | Report path | Scope |
-|---|---|---|
-| S1 | [s1-transcript-relocation.md](s1-transcript-relocation.md) | Claude Code and Codex transcript relocation |
-| S2 | [s2-agent-otel.md](s2-agent-otel.md) | Agent OpenTelemetry export and hook boundaries |
-| S3 | [s3-runner-quota.md](s3-runner-quota.md) | Runner quota sources and estimates |
-| S5 | [s5-rust-skeleton.md](s5-rust-skeleton.md) | Rust daemon, tmux driver, and hook round trip |
+| Spike | Report path | Scope | Verdict at the milestone 1 gate |
+|---|---|---|---|
+| S1 | [s1-transcript-relocation.md](s1-transcript-relocation.md) | Claude Code and Codex transcript relocation | go (cross-machine run, macOS to Linux) |
+| S2 | [s2-agent-otel.md](s2-agent-otel.md) | Agent OpenTelemetry export and hook boundaries | partial (wsd synthesizes spans from hooks) |
+| S3 | [s3-runner-quota.md](s3-runner-quota.md) | Runner quota sources and estimates | partial (Codex weekly only, Claude headless event not reliable) |
+| S5 | [s5-rust-skeleton.md](s5-rust-skeleton.md) | Rust daemon, tmux driver, and hook round trip | go |
 
 S4 runs at the start of roadmap phase 6, outside this milestone.
-The links identify planned reports. Each report appears when its spike phase completes.
+The human recorded the verdicts at the milestone 1 merge gate on 2026-10-17.
 
 ## Report template
 

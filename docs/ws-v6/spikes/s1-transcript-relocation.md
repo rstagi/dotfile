@@ -302,7 +302,8 @@ The synthetic resume uses no transferred index.
 
 ## Verdict
 
-**partial** for S1. **go** for the tested local Claude Code and Codex relocation cases.
+**go** for S1, after the cross-machine run at the milestone 1 gate (see "Cross-machine run" below).
+The spike phase itself recorded **partial**. It verified only the local relocation cases.
 Both agents recalled the exact code word after the home and repository paths changed.
 Codex also read the destination marker without a transferred source database.
 Subscription authentication on another host and the physical machine transfer remain unverified for both agents.
@@ -329,3 +330,11 @@ Repeat this test when the transcript format or agent version changes.
 Do not infer sidecar portability from this single-file result.
 
 See architecture §9, §10, and §15 S1.
+
+## Cross-machine run (2026-10-17, laptop → Linux box)
+
+- Remote: Linux, HOME=/home/box, fresh subscription logins (no auth files copied). Transfer by file copy, no ssh.
+- Versions on remote: Claude Code 2.1.302, codex-cli 0.163.0.
+- Claude: session 466b941c-72c6-4f74-8e64-a6225211f490 rewritten to project key `-home-box-s1-test`; `claude -p "<prompt>" --resume <id>` answered PELICAN-42 and read note.txt at /home/box/s1-test ("laptop marker 7"). PASS. Note: the prompt must come before `--allowedTools` (variadic flag swallows it, giving a misleading "No deferred tool marker" error).
+- Codex: rollout 01a14725-16c2-7fc3-a9e6-5ce767e52679 kept the sessions/YYYY/MM/DD layout; `codex exec resume <id>` answered OTTER-17 and ran `cat note.txt` in /home/box/s1-test. PASS.
+- Verdict: **GO** (both pass, across macOS → Linux and different home paths).

@@ -348,3 +348,11 @@ No tested Grok source exposes a five-hour window.
 - **Phase 49:** Keep preflight warnings advisory. Missing quota must not block execution or imply that an account has spare capacity.
 
 These recommendations do not change the shared plan in this phase.
+
+## Gate check (2026-10-17)
+
+The milestone 1 gate compared these findings with local agent records on the laptop. The verdict stays **partial**.
+
+- Codex: the last 400 rollouts under `~/.codex/sessions/` held 14,555 `token_count` readings. Every reading with a window had one 10080-minute window, `secondary: null` and plan type `prolite`. No 300-minute window appeared. The missing five-hour window is a property of this plan, not a gap in the spike.
+- Claude: none of the 9 Claude Code 2.1.302 Loop runner transcripts from 2026-10-16 (`claude -p --output-format stream-json --verbose`) contained a `rate_limit_event`. The headless `unifiedWindows` reading is therefore not reliable. Phase 47 must treat it as optional and keep the status-line input and the token estimate.
+- Grok: the two Grok review transcripts contained no quota fields.
