@@ -3,6 +3,7 @@ use std::{env, error::Error, path::PathBuf, process::ExitCode};
 use clap::{Parser, Subcommand};
 
 mod client;
+mod hook;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -19,6 +20,17 @@ enum Command {
     Daemon,
     /// Show the daemon version and uptime.
     Ping,
+    /// Send a hook event from the current tmux pane.
+    Hook {
+        #[command(subcommand)]
+        event: HookCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookCommand {
+    /// Record the end of an agent turn.
+    Stop,
 }
 
 #[tokio::main]
@@ -48,6 +60,9 @@ async fn run(cli: Cli) -> Result<()> {
                 response.version, response.uptime_secs
             );
         }
+        Command::Hook {
+            event: HookCommand::Stop,
+        } => hook::stop(&socket).await?,
     }
     Ok(())
 }
