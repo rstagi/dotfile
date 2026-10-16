@@ -1,14 +1,17 @@
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::net::UnixStream,
+    os::unix::{fs::PermissionsExt, net::UnixStream},
     path::Path,
     process::{Child, Command, Output, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use ws_daemon::tmux::Tmux;
+
+static NEXT_SERVER: AtomicU64 = AtomicU64::new(0);
 
 struct Sandbox {
     home: tempfile::TempDir,
@@ -103,11 +106,37 @@ os.replace(sys.argv[3] + '.tmp', sys.argv[3])
     );
 }
 
+#[test]
+fn create_window_runs_a_single_executable_path_with_spaces() {
+    let sandbox = Sandbox::new();
+    let tmux = Tmux::named(&sandbox.server);
+    let directory = sandbox.home.path().join("dir with spaces");
+    fs::create_dir(&directory).unwrap();
+    let marker = sandbox.home.path().join("marker");
+    let executable = directory.join("touch marker");
+    fs::write(
+        &executable,
+        format!("#!/bin/sh\n: > '{}'\n", marker.to_str().unwrap()),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let window = tmux
+        .create_window("spike", "spaces", &[executable.to_str().unwrap()])
+        .unwrap();
+    assert!(window.starts_with('@'), "{window}");
+    wait_until(|| marker.exists());
+}
+
 impl Sandbox {
     fn new() -> Self {
         let sandbox = Self {
             home: tempfile::tempdir_in("/tmp").unwrap(),
-            server: format!("ws-rs-test-{}", std::process::id()),
+            server: format!(
+                "ws-rs-test-{}-{}",
+                std::process::id(),
+                NEXT_SERVER.fetch_add(1, Ordering::Relaxed)
+            ),
         };
         sandbox.output(&[
             "-f",

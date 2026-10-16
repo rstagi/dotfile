@@ -3,7 +3,10 @@
 use std::{
     collections::VecDeque,
     fs, io,
-    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    os::unix::{
+        fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
+        net::UnixStream,
+    },
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
@@ -42,7 +45,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
             .mode(0o700)
             .create(parent)?;
     }
-    let listener = UnixListener::bind(socket)?;
+    let listener = bind(socket)?;
     let metadata = fs::symlink_metadata(socket)?;
     let _socket_file = SocketFile {
         path: socket.to_owned(),
@@ -65,6 +68,23 @@ pub async fn run(socket: &Path) -> io::Result<()> {
             }
         })
         .await
+}
+
+/// Binds the socket. Replaces a stale socket file, but never a live socket or another file.
+fn bind(socket: &Path) -> io::Result<UnixListener> {
+    match UnixListener::bind(socket) {
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse && is_stale_socket(socket) => {
+            fs::remove_file(socket)?;
+            UnixListener::bind(socket)
+        }
+        result => result,
+    }
+}
+
+fn is_stale_socket(socket: &Path) -> bool {
+    fs::symlink_metadata(socket).is_ok_and(|metadata| metadata.file_type().is_socket())
+        && UnixStream::connect(socket)
+            .is_err_and(|error| error.kind() == io::ErrorKind::ConnectionRefused)
 }
 
 async fn ping(State(state): State<AppState>) -> Json<PingResponse> {

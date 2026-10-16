@@ -9,6 +9,8 @@ use std::{
 };
 
 static NEXT_BUFFER: AtomicU64 = AtomicU64::new(0);
+/// tmux runs a single command argument as shell text. This prefix keeps it one argv word.
+const EXEC_ARGV: [&str; 4] = ["/bin/sh", "-c", "exec \"$@\"", "sh"];
 
 pub struct Tmux {
     socket: Option<OsString>,
@@ -27,7 +29,9 @@ impl Tmux {
         }
     }
 
+    /// Starts `command` as an argv vector. An empty `command` starts the default shell.
     pub fn create_window(&self, session: &str, name: &str, command: &[&str]) -> io::Result<String> {
+        let wrapper: &[&str] = if command.len() == 1 { &EXEC_ARGV } else { &[] };
         let output = self
             .command()
             .args([
@@ -41,6 +45,7 @@ impl Tmux {
                 "-n",
                 name,
             ])
+            .args(wrapper)
             .args(command)
             .output()?;
         output_text(output)

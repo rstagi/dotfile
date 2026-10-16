@@ -116,6 +116,17 @@ fn another_daemon_cannot_replace_a_live_socket_or_an_existing_file() {
 }
 
 #[test]
+fn daemon_replaces_a_stale_socket() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    drop(UnixListener::bind(&socket).unwrap());
+    assert!(socket.exists());
+
+    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
+}
+
+#[test]
 fn ping_to_a_stale_socket_exits_one() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("stale.sock");
