@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-16",
+  "agent_home_mode": "sandbox",
+  "session_id": "01a14694-c5af-7783-b25f-57a65582a345",
+  "code_word": "TOPAZ-42E40737BC3F",
+  "requested_model": "gpt-6.1-sol",
+  "version": "codex-cli 0.159.2",
+  "authentication": "Copied auth.json to both sandbox homes. Auth mode: chatgpt. No OPENAI_API_KEY.",
+  "source_rollout": "<sandbox>/home-a/.codex/sessions/2026/10/16/rollout-2026-10-16T23-18-37-01a14694-c5af-7783-b25f-57a65582a345.jsonl",
+  "target_rollout": "<sandbox>/home-b/.codex/sessions/2026/10/16/rollout-2026-10-16T23-18-37-01a14694-c5af-7783-b25f-57a65582a345.jsonl",
+  "target_files_before_resume": [
+    "auth.json",
+    "sessions/2026/10/16/rollout-2026-10-16T23-18-37-01a14694-c5af-7783-b25f-57a65582a345.jsonl"
+  ],
+  "source_record_count": 20,
+  "record_types": {
+    "session_meta": 1,
+    "event_msg": 7,
+    "response_item": 8,
+    "world_state": 1,
+    "turn_context": 1,
+    "token_usage_record": 2
+  },
+  "source_sha256": "21c580bea4927f3a6208e3ece932a040655d59b9e46fe2ad80182a63ea33cd81",
+  "relocated_before_resume_sha256": "13e07361707ff9a09a6273e886d821944ce413dbc94834cc3d8bcea4fedb4ec3",
+  "source_unchanged": true,
+  "old_home_occurrences_after_rewrite": 0,
+  "marker_contains_code_word": false,
+  "start_result": "STORED",
+  "resume_result": "TOPAZ-42E40737BC3F",
+  "same_session": true,
+  "recall_pass": true,
+  "agent_calls": 2,
+  "resolved_model": "gpt-6.1-sol",
+  "source_path_fields": {
+    "session_meta.payload.cwd": 1,
+    "session_meta.payload.runtime_workspace_roots[]": 1,
+    "response_item.payload.content[].text": 3,
+    "world_state.payload.state.environments.environments.local.cwd": 1,
+    "world_state.payload.state.environments.filesystem": 1,
+    "world_state.payload.state.host_skills.body": 1,
+    "turn_context.payload.cwd": 1,
+    "turn_context.payload.workspace_roots[]": 1,
+    "event_msg.payload.item.content[].text": 1,
+    "response_item.payload.input": 1,
+    "event_msg.payload.item.command[]": 1,
+    "event_msg.payload.item.cwd": 1,
+    "event_msg.payload.item.parsed_cmd[].cmd": 1,
+    "event_msg.payload.item.parsed_cmd[].path": 1
+  },
+  "target_record_count_after_resume": 36,
+  "start_read": {
+    "command": [
+      "/bin/zsh",
+      "-lc",
+      "cat <sandbox>/home-a/repo/marker.txt"
+    ],
+    "cwd": "file://<sandbox>/home-a/repo",
+    "exit_code": 0,
+    "output": "This file contains synthetic S1 data.\n"
+  },
+  "resume_read": {
+    "command": [
+      "/bin/zsh",
+      "-lc",
+      "cat marker.txt"
+    ],
+    "cwd": "file://<sandbox>/home-b/repo",
+    "exit_code": 0,
+    "output": "This file contains synthetic S1 data.\n"
+  },
+  "resume_prompt_contains_code_word": false,
+  "start_stderr": "Reading additional input from stdin...",
+  "resume_stderr_bytes": 0,
+  "phase_invocations": {
+    "model_calls": 2,
+    "help_or_version_calls": 4,
+    "total_cli_invocations": 6
+  }
+}
