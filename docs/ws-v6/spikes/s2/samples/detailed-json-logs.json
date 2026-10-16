@@ -1,0 +1,4093 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-synthetic-session"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-synthetic-parent"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-synthetic-device"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-synthetic-project"
+            }
+          },
+          {
+            "key": "host.arch",
+            "value": {
+              "stringValue": "arm64"
+            }
+          },
+          {
+            "key": "os.type",
+            "value": {
+              "stringValue": "darwin"
+            }
+          },
+          {
+            "key": "os.version",
+            "value": {
+              "stringValue": "25.6.0"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "claude-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "2.1.302"
+            }
+          }
+        ],
+        "droppedAttributesCount": 0
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "com.anthropic.claude_code.events",
+            "version": "2.1.302"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1792185067314000000",
+              "observedTimeUnixNano": "1792185067314000000",
+              "body": {
+                "stringValue": "claude_code.managed_settings_resolved"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "managed_settings_resolved"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.314Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "managed_settings.trigger",
+                  "value": {
+                    "stringValue": "startup"
+                  }
+                },
+                {
+                  "key": "managed_settings.sources",
+                  "value": {
+                    "arrayValue": {
+                      "values": []
+                    }
+                  }
+                },
+                {
+                  "key": "managed_settings.source_behavior",
+                  "value": {
+                    "stringValue": "first-wins"
+                  }
+                },
+                {
+                  "key": "managed_settings.helper.state",
+                  "value": {
+                    "stringValue": "none"
+                  }
+                },
+                {
+                  "key": "managed_settings.helper.applied",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067327000000",
+              "observedTimeUnixNano": "1792185067327000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_start"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_start"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.327Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "SessionStart"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "SessionStart:startup"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067341000000",
+              "observedTimeUnixNano": "1792185067341000000",
+              "body": {
+                "stringValue": "claude_code.hook_registered"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_registered"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.341Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "SessionStart"
+                  }
+                },
+                {
+                  "key": "hook_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "flagSettings"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067341000000",
+              "observedTimeUnixNano": "1792185067341000000",
+              "body": {
+                "stringValue": "claude_code.hook_registered"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_registered"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.341Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 3
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "hook_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "flagSettings"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067341000000",
+              "observedTimeUnixNano": "1792185067341000000",
+              "body": {
+                "stringValue": "claude_code.hook_registered"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_registered"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.341Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 4
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PreToolUse"
+                  }
+                },
+                {
+                  "key": "hook_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "flagSettings"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067341000000",
+              "observedTimeUnixNano": "1792185067341000000",
+              "body": {
+                "stringValue": "claude_code.hook_registered"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_registered"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.341Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 5
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PostToolUse"
+                  }
+                },
+                {
+                  "key": "hook_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "flagSettings"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067341000000",
+              "observedTimeUnixNano": "1792185067341000000",
+              "body": {
+                "stringValue": "claude_code.hook_registered"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_registered"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.341Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 6
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PostToolUseFailure"
+                  }
+                },
+                {
+                  "key": "hook_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "flagSettings"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067341000000",
+              "observedTimeUnixNano": "1792185067341000000",
+              "body": {
+                "stringValue": "claude_code.hook_registered"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_registered"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.341Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 7
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "hook_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "flagSettings"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067341000000",
+              "observedTimeUnixNano": "1792185067341000000",
+              "body": {
+                "stringValue": "claude_code.hook_registered"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_registered"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.341Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 8
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "SessionEnd"
+                  }
+                },
+                {
+                  "key": "hook_type",
+                  "value": {
+                    "stringValue": "command"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "flagSettings"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067343000000",
+              "observedTimeUnixNano": "1792185067343000000",
+              "body": {
+                "stringValue": "claude_code.plugin_loaded"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "plugin_loaded"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.343Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 9
+                  }
+                },
+                {
+                  "key": "plugin.name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "marketplace.name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "plugin.scope",
+                  "value": {
+                    "stringValue": "default-bundle"
+                  }
+                },
+                {
+                  "key": "enabled_via",
+                  "value": {
+                    "stringValue": "default-enable"
+                  }
+                },
+                {
+                  "key": "plugin_id_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-23"
+                  }
+                },
+                {
+                  "key": "has_hooks",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "has_mcp",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "host_owned_mcp",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "skill_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "command_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "agent_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067343000000",
+              "observedTimeUnixNano": "1792185067343000000",
+              "body": {
+                "stringValue": "claude_code.plugin_loaded"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "plugin_loaded"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.343Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 10
+                  }
+                },
+                {
+                  "key": "plugin.name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "marketplace.name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "plugin.scope",
+                  "value": {
+                    "stringValue": "default-bundle"
+                  }
+                },
+                {
+                  "key": "enabled_via",
+                  "value": {
+                    "stringValue": "default-enable"
+                  }
+                },
+                {
+                  "key": "plugin_id_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-24"
+                  }
+                },
+                {
+                  "key": "has_hooks",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "has_mcp",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "host_owned_mcp",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "skill_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "command_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "agent_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067344000000",
+              "observedTimeUnixNano": "1792185067344000000",
+              "body": {
+                "stringValue": "claude_code.plugin_loaded"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "plugin_loaded"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.344Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 11
+                  }
+                },
+                {
+                  "key": "plugin.name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "marketplace.name",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "plugin.scope",
+                  "value": {
+                    "stringValue": "default-bundle"
+                  }
+                },
+                {
+                  "key": "enabled_via",
+                  "value": {
+                    "stringValue": "default-enable"
+                  }
+                },
+                {
+                  "key": "plugin_id_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-25"
+                  }
+                },
+                {
+                  "key": "has_hooks",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "has_mcp",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "host_owned_mcp",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "skill_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "command_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "agent_path_count",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067397000000",
+              "observedTimeUnixNano": "1792185067397000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_complete"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_complete"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.397Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 12
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "SessionStart"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "SessionStart:startup"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "total_duration_ms",
+                  "value": {
+                    "stringValue": "56"
+                  }
+                },
+                {
+                  "key": "stdout_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "additional_context_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "system_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "initial_user_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_outputs_persisted",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222"
+            },
+            {
+              "timeUnixNano": "1792185067428000000",
+              "observedTimeUnixNano": "1792185067428000000",
+              "body": {
+                "stringValue": "claude_code.user_prompt"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "user_prompt"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.428Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 13
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "prompt_length",
+                  "value": {
+                    "stringValue": "157"
+                  }
+                },
+                {
+                  "key": "prompt",
+                  "value": {
+                    "stringValue": "Run exactly one Bash tool call. Execute this synthetic command: printf \"s2-tool-ok\\n\"; printenv TRACEPARENT. Then reply with S2_DONE. Do not use other tools."
+                  }
+                },
+                {
+                  "key": "prompt_text",
+                  "value": {
+                    "stringValue": "Run exactly one Bash tool call. Execute this synthetic command: printf \"s2-tool-ok\\n\"; printenv TRACEPARENT. Then reply with S2_DONE. Do not use other tools."
+                  }
+                },
+                {
+                  "key": "message.uuid",
+                  "value": {
+                    "stringValue": "synthetic-id-27"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185067430000000",
+              "observedTimeUnixNano": "1792185067430000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_start"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_start"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.430Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 14
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185067462000000",
+              "observedTimeUnixNano": "1792185067462000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_complete"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_complete"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.462Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 15
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "total_duration_ms",
+                  "value": {
+                    "stringValue": "31"
+                  }
+                },
+                {
+                  "key": "stdout_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "additional_context_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "system_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "initial_user_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_outputs_persisted",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185067573000000",
+              "observedTimeUnixNano": "1792185067573000000",
+              "body": {
+                "stringValue": "claude_code.system_prompt"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "system_prompt"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.573Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 16
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "system_prompt_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-28"
+                  }
+                },
+                {
+                  "key": "system_prompt",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "system_prompt_length",
+                  "value": {
+                    "stringValue": "9208"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185067574000000",
+              "observedTimeUnixNano": "1792185067574000000",
+              "body": {
+                "stringValue": "claude_code.tool"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.574Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 17
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "DeferredToolPlaceholder"
+                  }
+                },
+                {
+                  "key": "tool_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-29"
+                  }
+                },
+                {
+                  "key": "tool",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185067574000000",
+              "observedTimeUnixNano": "1792185067574000000",
+              "body": {
+                "stringValue": "claude_code.tool"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.574Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 18
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "tool_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-30"
+                  }
+                },
+                {
+                  "key": "tool",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185067574000000",
+              "observedTimeUnixNano": "1792185067574000000",
+              "body": {
+                "stringValue": "claude_code.tool"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:07.574Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 19
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "advisor"
+                  }
+                },
+                {
+                  "key": "tool_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-31"
+                  }
+                },
+                {
+                  "key": "tool",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185068599000000",
+              "observedTimeUnixNano": "1792185068599000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_start"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_start"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.599Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 20
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PreToolUse"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "PreToolUse:Bash"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185068602000000",
+              "observedTimeUnixNano": "1792185068602000000",
+              "body": {
+                "stringValue": "claude_code.api_request"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.602Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 21
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "claude-haiku-5-5"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": 108
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": 5056
+                  }
+                },
+                {
+                  "key": "cache_creation_tokens",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "cache_creation_5m_tokens",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "cache_creation_1h_tokens",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "cost_usd",
+                  "value": {
+                    "doubleValue": 0.00010475999999999999
+                  }
+                },
+                {
+                  "key": "cost_usd_micros",
+                  "value": {
+                    "intValue": 105
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 1024
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": 733
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-32"
+                  }
+                },
+                {
+                  "key": "client_request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-33"
+                  }
+                },
+                {
+                  "key": "speed",
+                  "value": {
+                    "stringValue": "normal"
+                  }
+                },
+                {
+                  "key": "query_source",
+                  "value": {
+                    "stringValue": "sdk"
+                  }
+                },
+                {
+                  "key": "effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185068635000000",
+              "observedTimeUnixNano": "1792185068635000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_complete"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_complete"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.635Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 22
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PreToolUse"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "PreToolUse:Bash"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "total_duration_ms",
+                  "value": {
+                    "stringValue": "36"
+                  }
+                },
+                {
+                  "key": "stdout_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "additional_context_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "system_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "initial_user_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_outputs_persisted",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185068643000000",
+              "observedTimeUnixNano": "1792185068643000000",
+              "body": {
+                "stringValue": "claude_code.tool_decision"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool_decision"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.643Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 23
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "accept"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "config"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "synthetic-id-34"
+                  }
+                },
+                {
+                  "key": "tool_source",
+                  "value": {
+                    "stringValue": "builtin"
+                  }
+                },
+                {
+                  "key": "tool_parameters",
+                  "value": {
+                    "stringValue": "{\"bash_command\":\"printf\",\"full_command\":\"printf \\\"s2-tool-ok\\\\n\\\"; printenv TRACEPARENT\",\"description\":\"Print test marker and TRACEPARENT env var\"}"
+                  }
+                },
+                {
+                  "key": "permission_mode",
+                  "value": {
+                    "stringValue": "bypassPermissions"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "fb4d5c20edd5256a"
+            },
+            {
+              "timeUnixNano": "1792185068694000000",
+              "observedTimeUnixNano": "1792185068694000000",
+              "body": {
+                "stringValue": "claude_code.tool_result"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool_result"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.694Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 24
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "synthetic-id-34"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "stringValue": "true"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "50"
+                  }
+                },
+                {
+                  "key": "tool_parameters",
+                  "value": {
+                    "stringValue": "{\"bash_command\":\"printf\",\"full_command\":\"printf \\\"s2-tool-ok\\\\n\\\"; printenv TRACEPARENT\",\"description\":\"Print test marker and TRACEPARENT env var\"}"
+                  }
+                },
+                {
+                  "key": "tool_input",
+                  "value": {
+                    "stringValue": "{\"command\":\"printf \\\"s2-tool-ok\\\\n\\\"; printenv TRACEPARENT\",\"description\":\"Print test marker and TRACEPARENT env var\"}"
+                  }
+                },
+                {
+                  "key": "tool_input_size_bytes",
+                  "value": {
+                    "stringValue": "118"
+                  }
+                },
+                {
+                  "key": "tool_result_size_bytes",
+                  "value": {
+                    "stringValue": "66"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185068695000000",
+              "observedTimeUnixNano": "1792185068695000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_start"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_start"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.695Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 25
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PostToolUse"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "PostToolUse:Bash"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "3"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185068727000000",
+              "observedTimeUnixNano": "1792185068727000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_complete"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_complete"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.727Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 26
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PostToolUse"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "PostToolUse:Bash"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "3"
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "stringValue": "3"
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "total_duration_ms",
+                  "value": {
+                    "stringValue": "31"
+                  }
+                },
+                {
+                  "key": "stdout_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "additional_context_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "system_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "initial_user_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_outputs_persisted",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185068738000000",
+              "observedTimeUnixNano": "1792185068738000000",
+              "body": {
+                "stringValue": "claude_code.system_prompt"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "system_prompt"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:08.738Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 27
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "system_prompt_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-35"
+                  }
+                },
+                {
+                  "key": "system_prompt",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "system_prompt_length",
+                  "value": {
+                    "stringValue": "9250"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185069884000000",
+              "observedTimeUnixNano": "1792185069884000000",
+              "body": {
+                "stringValue": "claude_code.api_request"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:09.884Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 28
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "claude-haiku-5-5"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": 8
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": 5056
+                  }
+                },
+                {
+                  "key": "cache_creation_tokens",
+                  "value": {
+                    "intValue": 171
+                  }
+                },
+                {
+                  "key": "cache_creation_5m_tokens",
+                  "value": {
+                    "intValue": 171
+                  }
+                },
+                {
+                  "key": "cache_creation_1h_tokens",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "cost_usd",
+                  "value": {
+                    "doubleValue": 7.6135e-05
+                  }
+                },
+                {
+                  "key": "cost_usd_micros",
+                  "value": {
+                    "intValue": 76
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 1144
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": 1129
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-36"
+                  }
+                },
+                {
+                  "key": "client_request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-37"
+                  }
+                },
+                {
+                  "key": "speed",
+                  "value": {
+                    "stringValue": "normal"
+                  }
+                },
+                {
+                  "key": "query_source",
+                  "value": {
+                    "stringValue": "sdk"
+                  }
+                },
+                {
+                  "key": "effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185069884000000",
+              "observedTimeUnixNano": "1792185069884000000",
+              "body": {
+                "stringValue": "claude_code.assistant_response"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "assistant_response"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:09.884Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 29
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "response_length",
+                  "value": {
+                    "intValue": 7
+                  }
+                },
+                {
+                  "key": "response",
+                  "value": {
+                    "stringValue": "S2_DONE"
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-36"
+                  }
+                },
+                {
+                  "key": "message.uuid",
+                  "value": {
+                    "stringValue": "synthetic-id-38"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "claude-haiku-5-5"
+                  }
+                },
+                {
+                  "key": "query_source",
+                  "value": {
+                    "stringValue": "sdk"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185069888000000",
+              "observedTimeUnixNano": "1792185069888000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_start"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_start"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:09.888Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 30
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            },
+            {
+              "timeUnixNano": "1792185069935000000",
+              "observedTimeUnixNano": "1792185069935000000",
+              "body": {
+                "stringValue": "claude_code.hook_execution_complete"
+              },
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "hook_execution_complete"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-10-16T21:11:09.935Z"
+                  }
+                },
+                {
+                  "key": "event.sequence",
+                  "value": {
+                    "intValue": 31
+                  }
+                },
+                {
+                  "key": "prompt.id",
+                  "value": {
+                    "stringValue": "synthetic-id-26"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "total_duration_ms",
+                  "value": {
+                    "stringValue": "46"
+                  }
+                },
+                {
+                  "key": "stdout_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "additional_context_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "system_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "initial_user_message_chars",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "num_outputs_persisted",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "managed_only",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_source",
+                  "value": {
+                    "stringValue": "merged"
+                  }
+                },
+                {
+                  "key": "safe_mode",
+                  "value": {
+                    "stringValue": "false"
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 1,
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
