@@ -1,0 +1,549 @@
+{
+  "agent": "Claude Code",
+  "version": "2.1.302",
+  "date": "2026-10-16",
+  "home_mode": "sandbox HOME and CLAUDE_CONFIG_DIR, inherited API key, copied minimal onboarding/auth metadata",
+  "cli_calls": {
+    "introspection": 2,
+    "inference": 8,
+    "total": 10
+  },
+  "runs": [
+    {
+      "label": "baseline",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {
+        "/v1/metrics": 3,
+        "/v1/logs": 2
+      },
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {
+        "/v1/metrics": {
+          "application/json": 3
+        },
+        "/v1/logs": {
+          "application/json": 2
+        }
+      },
+      "log_event_counts": {
+        "claude_code.managed_settings_resolved": 1,
+        "claude_code.hook_execution_start": 5,
+        "claude_code.hook_registered": 7,
+        "claude_code.plugin_loaded": 3,
+        "claude_code.hook_execution_complete": 5,
+        "claude_code.user_prompt": 1,
+        "claude_code.api_request": 2,
+        "claude_code.tool_decision": 1,
+        "claude_code.tool_result": 1,
+        "claude_code.assistant_response": 1
+      },
+      "span_counts": {}
+    },
+    {
+      "label": "beta-json",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_LOG_USER_PROMPTS": "1",
+        "OTEL_LOG_TOOL_DETAILS": "1",
+        "OTEL_LOG_TOOL_CONTENT": "1",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {
+        "/v1/metrics": 3,
+        "/v1/logs": 2,
+        "/v1/traces": 1
+      },
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {
+        "/v1/metrics": {
+          "application/json": 3
+        },
+        "/v1/logs": {
+          "application/json": 2
+        },
+        "/v1/traces": {
+          "application/json": 1
+        }
+      },
+      "log_event_counts": {
+        "claude_code.managed_settings_resolved": 1,
+        "claude_code.hook_execution_start": 5,
+        "claude_code.hook_registered": 7,
+        "claude_code.plugin_loaded": 3,
+        "claude_code.hook_execution_complete": 5,
+        "claude_code.user_prompt": 1,
+        "claude_code.api_request": 2,
+        "claude_code.tool_decision": 1,
+        "claude_code.tool_result": 1,
+        "claude_code.assistant_response": 1
+      },
+      "span_counts": {
+        "claude_code.llm_request": 2,
+        "claude_code.tool.blocked_on_user": 1,
+        "claude_code.tool.execution": 1,
+        "claude_code.tool": 1
+      }
+    },
+    {
+      "label": "beta-protobuf",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_LOG_USER_PROMPTS": "1",
+        "OTEL_LOG_TOOL_DETAILS": "1",
+        "OTEL_LOG_TOOL_CONTENT": "1",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {
+        "/v1/metrics": 2,
+        "/v1/logs": 2,
+        "/v1/traces": 1
+      },
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {
+        "/v1/logs": {
+          "application/x-protobuf": 2
+        },
+        "/v1/traces": {
+          "application/x-protobuf": 1
+        },
+        "/v1/metrics": {
+          "application/x-protobuf": 2
+        }
+      },
+      "log_event_counts": {
+        "claude_code.tool_result": 1,
+        "claude_code.hook_execution_start": 5,
+        "claude_code.hook_execution_complete": 5,
+        "claude_code.api_request": 2,
+        "claude_code.assistant_response": 1,
+        "claude_code.managed_settings_resolved": 1,
+        "claude_code.hook_registered": 7,
+        "claude_code.plugin_loaded": 3,
+        "claude_code.user_prompt": 1,
+        "claude_code.tool_decision": 1
+      },
+      "span_counts": {
+        "claude_code.tool.blocked_on_user": 1,
+        "claude_code.tool.execution": 1,
+        "claude_code.tool": 1,
+        "claude_code.llm_request": 1
+      }
+    },
+    {
+      "label": "detailed-json",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_LOG_USER_PROMPTS": "1",
+        "OTEL_LOG_TOOL_DETAILS": "1",
+        "OTEL_LOG_TOOL_CONTENT": "1",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>",
+        "ENABLE_BETA_TRACING_DETAILED": "1",
+        "BETA_TRACING_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {
+        "/v1/metrics": 3,
+        "/v1/traces": 1,
+        "/v1/logs": 1
+      },
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {
+        "/v1/traces": {
+          "application/json": 1
+        },
+        "/v1/metrics": {
+          "application/json": 3
+        },
+        "/v1/logs": {
+          "application/json": 1
+        }
+      },
+      "log_event_counts": {
+        "claude_code.managed_settings_resolved": 1,
+        "claude_code.hook_execution_start": 5,
+        "claude_code.hook_registered": 7,
+        "claude_code.plugin_loaded": 3,
+        "claude_code.hook_execution_complete": 5,
+        "claude_code.user_prompt": 1,
+        "claude_code.system_prompt": 2,
+        "claude_code.tool": 3,
+        "claude_code.api_request": 2,
+        "claude_code.tool_decision": 1,
+        "claude_code.tool_result": 1,
+        "claude_code.assistant_response": 1
+      },
+      "span_counts": {
+        "claude_code.hook": 4,
+        "claude_code.llm_request": 2,
+        "claude_code.tool.blocked_on_user": 1,
+        "claude_code.tool.execution": 1,
+        "claude_code.tool": 1,
+        "claude_code.interaction": 1
+      }
+    },
+    {
+      "label": "telemetry-off",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {},
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {},
+      "log_event_counts": {},
+      "span_counts": {}
+    },
+    {
+      "label": "logs-only",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "none",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "none",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {
+        "/v1/logs": 2
+      },
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {
+        "/v1/logs": {
+          "application/json": 2
+        }
+      },
+      "log_event_counts": {
+        "claude_code.managed_settings_resolved": 1,
+        "claude_code.hook_execution_start": 5,
+        "claude_code.hook_registered": 7,
+        "claude_code.plugin_loaded": 3,
+        "claude_code.hook_execution_complete": 5,
+        "claude_code.user_prompt": 1,
+        "claude_code.api_request": 2,
+        "claude_code.tool_decision": 1,
+        "claude_code.tool_result": 1,
+        "claude_code.assistant_response": 1
+      },
+      "span_counts": {}
+    },
+    {
+      "label": "metrics-only",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "none",
+        "OTEL_TRACES_EXPORTER": "none",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {
+        "/v1/metrics": 2
+      },
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {
+        "/v1/metrics": {
+          "application/json": 2
+        }
+      },
+      "log_event_counts": {},
+      "span_counts": {}
+    },
+    {
+      "label": "detailed-protobuf",
+      "settings": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_METRIC_EXPORT_INTERVAL": "1000",
+        "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+        "OTEL_TRACES_EXPORT_INTERVAL": "1000",
+        "OTEL_RESOURCE_ATTRIBUTES": "ws.session.id=s2-synthetic-session,ws.parent_session.id=s2-synthetic-parent,ws.device.id=s2-synthetic-device,ws.project=s2-synthetic-project",
+        "TRACEPARENT": "00-11111111111111111111111111111111-2222222222222222-01",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_LOG_USER_PROMPTS": "1",
+        "OTEL_LOG_TOOL_DETAILS": "1",
+        "OTEL_LOG_TOOL_CONTENT": "1",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:<port>",
+        "ENABLE_BETA_TRACING_DETAILED": "1",
+        "BETA_TRACING_ENDPOINT": "http://127.0.0.1:<port>"
+      },
+      "request_counts": {
+        "/v1/metrics": 3,
+        "/v1/logs": 1,
+        "/v1/traces": 1
+      },
+      "model_names": [
+        "claude-haiku-5-5"
+      ],
+      "is_error": false,
+      "assistant_turns": 2,
+      "hook_counts": {
+        "SessionStart": 1,
+        "UserPromptSubmit": 1,
+        "PreToolUse": 1,
+        "PostToolUse": 1,
+        "Stop": 1,
+        "SessionEnd": 1
+      },
+      "content_types_by_path": {
+        "/v1/metrics": {
+          "application/x-protobuf": 3
+        },
+        "/v1/logs": {
+          "application/json": 1
+        },
+        "/v1/traces": {
+          "application/json": 1
+        }
+      },
+      "log_event_counts": {
+        "claude_code.managed_settings_resolved": 1,
+        "claude_code.hook_execution_start": 5,
+        "claude_code.hook_registered": 7,
+        "claude_code.plugin_loaded": 3,
+        "claude_code.hook_execution_complete": 5,
+        "claude_code.user_prompt": 1,
+        "claude_code.system_prompt": 2,
+        "claude_code.tool": 3,
+        "claude_code.api_request": 2,
+        "claude_code.tool_decision": 1,
+        "claude_code.tool_result": 1,
+        "claude_code.assistant_response": 1
+      },
+      "span_counts": {
+        "claude_code.hook": 4,
+        "claude_code.llm_request": 2,
+        "claude_code.tool.blocked_on_user": 1,
+        "claude_code.tool.execution": 1,
+        "claude_code.tool": 1,
+        "claude_code.interaction": 1
+      }
+    }
+  ],
+  "samples": [
+    {
+      "run": "baseline",
+      "path": "/v1/logs",
+      "content_type": "application/json",
+      "original_body_bytes": 19099,
+      "original_sha256": "e0cb6b02c7abbb70a5acdeeaff1b43e7915ef0556e12e4b6f4bf1190393ab35d",
+      "json_sample": "baseline-logs.json"
+    },
+    {
+      "run": "baseline",
+      "path": "/v1/metrics",
+      "content_type": "application/json",
+      "original_body_bytes": 6168,
+      "original_sha256": "30040695031cfd99a6e68721a87df88acaa3a12a11283bb4221923bd115543f2",
+      "json_sample": "baseline-metrics.json"
+    },
+    {
+      "run": "beta-json",
+      "path": "/v1/traces",
+      "content_type": "application/json",
+      "original_body_bytes": 11053,
+      "original_sha256": "14e73d714024c80712aa2ebd076688dd8fd836027a7450ce920901cbb53a9e85",
+      "json_sample": "beta-json-traces.json"
+    },
+    {
+      "run": "beta-protobuf",
+      "path": "/v1/logs",
+      "content_type": "application/x-protobuf",
+      "original_body_bytes": 6580,
+      "original_sha256": "410b68d47ce2dcb14a82f28f8f2cab2e6e504efe01d452c79e856b5db1f07f63",
+      "json_sample": "beta-protobuf-logs.pb.json",
+      "protobuf_sample": "beta-protobuf-logs.pb",
+      "redacted_protobuf_sha256": "0a1b32cf69bb7870d4d8709d03c60ece1271c2b83544b664c8ec923ed860335f"
+    },
+    {
+      "run": "beta-protobuf",
+      "path": "/v1/metrics",
+      "content_type": "application/x-protobuf",
+      "original_body_bytes": 3137,
+      "original_sha256": "e4ce0a5dc673b51ef324cdf5d83db5bc1cbb8ec9061fcb98933ee99060916e57",
+      "json_sample": "beta-protobuf-metrics.pb.json",
+      "protobuf_sample": "beta-protobuf-metrics.pb",
+      "redacted_protobuf_sha256": "a04a920e67b363d94e76edacef3bff223739e49c65fc6e7c50183d612c3901bf"
+    },
+    {
+      "run": "beta-protobuf",
+      "path": "/v1/traces",
+      "content_type": "application/x-protobuf",
+      "original_body_bytes": 4110,
+      "original_sha256": "98252e01617c22fb47e6f575d1340119265dc222d774972e2efd1a9f92864878",
+      "json_sample": "beta-protobuf-traces.pb.json",
+      "protobuf_sample": "beta-protobuf-traces.pb",
+      "redacted_protobuf_sha256": "1995f0955ad3fda2262a04f6b335c904ed279e89dc2d343a6a212c3d91ba127f"
+    },
+    {
+      "run": "detailed-json",
+      "path": "/v1/logs",
+      "content_type": "application/json",
+      "original_body_bytes": 73669,
+      "original_sha256": "5afdd0e25da201c743954c5d18be905c9d4b6eeccaa64afefe082a0d1db4da80",
+      "json_sample": "detailed-json-logs.json"
+    },
+    {
+      "run": "detailed-json",
+      "path": "/v1/metrics",
+      "content_type": "application/json",
+      "original_body_bytes": 6157,
+      "original_sha256": "596d4b1343e6cc2f127205a65e54a218fda9268ce0caeeab25c0af5886c69e16",
+      "json_sample": "detailed-json-metrics.json"
+    },
+    {
+      "run": "detailed-json",
+      "path": "/v1/traces",
+      "content_type": "application/json",
+      "original_body_bytes": 25014,
+      "original_sha256": "5949fecfb35a6ba0dac8cfca841d5d6b5a12d1e99ae1bc1b076227bee0859b6b",
+      "json_sample": "detailed-json-traces.json"
+    }
+  ]
+}
