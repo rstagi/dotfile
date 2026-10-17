@@ -21,10 +21,22 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Read a registered session.
+    Get {
+        target: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Create a daemon-owned process.
     Create {
-        #[arg(long, required = true)]
+        #[arg(long)]
         headless: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        workspace_id: Option<String>,
         #[command(flatten)]
         arguments: HeadlessArgs,
     },
@@ -59,7 +71,7 @@ pub struct HeadlessArgs {
     stdout: Option<PathBuf>,
     #[arg(long)]
     stderr: Option<PathBuf>,
-    #[arg(last = true, required = true)]
+    #[arg(last = true)]
     command: Vec<String>,
 }
 
@@ -83,12 +95,44 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 .await?;
             println!("{value}");
         }
+        Command::Get { target, .. } => {
+            super::mcp::print(socket, "session_get", serde_json::json!({"target":target})).await?;
+        }
         Command::Create {
             headless,
             arguments,
+            json,
+            name,
+            workspace_id,
         } => {
-            let session = create(socket, arguments, headless).await?;
-            println!("{}", session.id);
+            if headless {
+                let session = create(socket, arguments, headless).await?;
+                if json {
+                    println!("{}", serde_json::to_value(session)?);
+                } else {
+                    println!("{}", session.id);
+                }
+            } else {
+                if !arguments.command.is_empty() {
+                    return Err("Use --headless to create a process.".into());
+                }
+                let value = crate::mcp::Control::from_env(socket)?
+                    .call(
+                        "session_create",
+                        serde_json::json!({"name":name, "workspace_id":workspace_id}),
+                    )
+                    .await?;
+                if json {
+                    println!("{value}");
+                } else {
+                    println!(
+                        "{}",
+                        value["id"]
+                            .as_str()
+                            .ok_or("The daemon did not return a session id.")?
+                    );
+                }
+            }
         }
         Command::Run { arguments, .. } => {
             // Register before creation so a pending signal cannot orphan a new session.

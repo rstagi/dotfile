@@ -14,6 +14,11 @@ use ws_core::ids::SessionId;
 
 use crate::{Result, client};
 
+mod params;
+
+use params::{Create, Empty, Target};
+use rmcp::schemars::{self, JsonSchema};
+
 #[derive(Clone)]
 pub struct Control {
     socket: PathBuf,
@@ -33,15 +38,50 @@ impl Control {
     }
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {
-        if name != "session_list" {
-            return Err(format!("Unknown tool: {name}.").into());
+        match name {
+            "session_list" => {
+                let _: Empty = serde_json::from_value(arguments)?;
+                self.request(Method::GET, "/v1/sessions", None).await
+            }
+            "session_get" => {
+                let request: Target = serde_json::from_value(arguments)?;
+                self.request(Method::GET, &self.session_path(&request.target)?, None)
+                    .await
+            }
+            "session_create" => {
+                let request: Create = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::POST,
+                    "/v1/sessions",
+                    Some(serde_json::to_value(request)?),
+                )
+                .await
+            }
+            _ => Err(format!("Unknown tool: {name}.").into()),
         }
-        if arguments != json!({}) {
-            return Err("The session_list tool accepts no arguments.".into());
-        }
-        let path = self.query("/v1/sessions");
-        let body = client::request(&self.socket, Method::GET, &path, Vec::new()).await?;
+    }
+
+    async fn request(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        let (path, body) = if method == Method::GET {
+            (self.query(path), Vec::new())
+        } else {
+            let mut body = body.unwrap_or(json!({}));
+            body["parent_session_id"] = json!(self.caller);
+            (path.into(), serde_json::to_vec(&body)?)
+        };
+        let body = client::request(&self.socket, method, &path, body).await?;
         Ok(serde_json::from_slice(&body)?)
+    }
+
+    fn session_path(&self, target: &str) -> Result<String> {
+        let target = if target == "me" {
+            self.caller
+                .ok_or("Set WS_SESSION_ID to use me.")?
+                .to_string()
+        } else {
+            target.to_owned()
+        };
+        Ok(format!("/v1/sessions/{}", client::encode(&target)))
     }
 
     fn query(&self, path: &str) -> String {
@@ -102,12 +142,21 @@ impl ServerHandler for Control {
 }
 
 fn tools() -> Vec<Tool> {
-    vec![Tool::new(
-        "session_list",
-        "List the registered sessions.",
-        json!({"type":"object", "properties":{}, "additionalProperties":false})
+    vec![
+        tool::<Empty>("session_list", "List the registered sessions."),
+        tool::<Target>("session_get", "Read one registered session."),
+        tool::<Create>("session_create", "Create a registered session."),
+    ]
+}
+
+fn tool<T: JsonSchema>(name: &'static str, description: &'static str) -> Tool {
+    let schema = schemars::schema_for!(T);
+    Tool::new(
+        name,
+        description,
+        schema
             .as_object()
-            .unwrap()
+            .expect("Tool parameters must have an object schema.")
             .clone(),
-    )]
+    )
 }

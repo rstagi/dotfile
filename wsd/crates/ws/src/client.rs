@@ -121,7 +121,7 @@ async fn send_request(socket: &Path, method: Method, path: &str, body: Vec<u8>) 
     Ok(body)
 }
 
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     value
         .bytes()
         .map(|byte| {

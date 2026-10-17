@@ -9,3 +9,9 @@ pub async fn run(socket: &Path) -> Result<()> {
     service.waiting().await?;
     Ok(())
 }
+
+pub async fn print(socket: &Path, name: &str, arguments: serde_json::Value) -> Result<()> {
+    let value = Control::from_env(socket)?.call(name, arguments).await?;
+    println!("{value}");
+    Ok(())
+}
