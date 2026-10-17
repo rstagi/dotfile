@@ -4,8 +4,8 @@ use hyper::Method;
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams,
-        ServerCapabilities, ServerConfig, Tool,
+        CallToolRequestParams, CallToolResult, Implementation, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
     },
     service::RequestContext,
 };
@@ -16,7 +16,7 @@ use crate::{Result, client};
 
 mod params;
 
-use params::{Create, Dependency, Empty, Send, Target, Wait};
+use params::{Create, Dependency, Empty, Send, Spawn, Stream, Tail, Target, Wait};
 use rmcp::schemars::{self, JsonSchema};
 
 #[derive(Clone)]
@@ -58,6 +58,32 @@ impl Control {
                 )
                 .await
             }
+            "phase_spawn" => {
+                self.caller.ok_or("Set WS_SESSION_ID to spawn a phase.")?;
+                let mut request: Spawn = serde_json::from_value(arguments)?;
+                request.repo = std::env::current_dir()?.join(request.repo);
+                self.request(
+                    Method::POST,
+                    "/v1/phases/spawn",
+                    Some(serde_json::to_value(request)?),
+                )
+                .await
+            }
+            "session_tail" => {
+                let request: Tail = serde_json::from_value(arguments)?;
+                let stream = match request.stream.unwrap_or(Stream::Stdout) {
+                    Stream::Stdout => "stdout",
+                    Stream::Stderr => "stderr",
+                };
+                let max_bytes = request
+                    .max_bytes
+                    .unwrap_or(ws_daemon::tail::DEFAULT_MAX_BYTES);
+                let path = format!(
+                    "{}/tail?stream={stream}&max_bytes={max_bytes}",
+                    self.session_path(&request.target)?
+                );
+                self.request(Method::GET, &path, None).await
+            }
             "wait" => {
                 let request: Wait = serde_json::from_value(arguments)?;
                 self.request(
@@ -87,12 +113,36 @@ impl Control {
             }
             "session_create" => {
                 let request: Create = serde_json::from_value(arguments)?;
-                self.request(
-                    Method::POST,
-                    "/v1/sessions",
-                    Some(serde_json::to_value(request)?),
-                )
-                .await
+                let body = if request.headless {
+                    if request.name.is_some() || request.workspace_id.is_some() {
+                        return Err(
+                            "Headless creation does not accept name or workspace_id.".into()
+                        );
+                    }
+                    let directory = std::env::current_dir()?;
+                    serde_json::to_value(ws_daemon::supervisor::CreateHeadless {
+                        headless: true,
+                        command: request.command,
+                        cwd: directory.join(request.cwd.unwrap_or_else(|| directory.clone())),
+                        parent_session_id: self.caller,
+                        env: request.env,
+                        stdin: request.stdin.map(|path| directory.join(path)),
+                        stdout: request.stdout.map(|path| directory.join(path)),
+                        stderr: request.stderr.map(|path| directory.join(path)),
+                    })?
+                } else {
+                    if !request.command.is_empty()
+                        || request.cwd.is_some()
+                        || !request.env.is_empty()
+                        || request.stdin.is_some()
+                        || request.stdout.is_some()
+                        || request.stderr.is_some()
+                    {
+                        return Err("Set headless to true to create a process.".into());
+                    }
+                    json!({"name":request.name,"workspace_id":request.workspace_id})
+                };
+                self.request(Method::POST, "/v1/sessions", Some(body)).await
             }
             _ => Err(format!("Unknown tool: {name}.").into()),
         }
@@ -123,7 +173,10 @@ impl Control {
 
     fn query(&self, path: &str) -> String {
         match self.caller {
-            Some(caller) => format!("{path}?parent_session_id={caller}"),
+            Some(caller) => format!(
+                "{path}{}parent_session_id={caller}",
+                if path.contains('?') { "&" } else { "?" }
+            ),
             None => path.into(),
         }
     }
@@ -131,11 +184,9 @@ impl Control {
 
 impl ServerHandler for Control {
     fn get_info(&self) -> ServerConfig {
-        {
-            let mut info = ServerConfig::default();
-            info.capabilities = ServerCapabilities::builder().enable_tools().build();
-            info
-        }
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("ws", env!("CARGO_PKG_VERSION")))
+            .with_instructions("Tools use the local daemon. WS_SESSION_ID identifies the caller. Tool arguments cannot replace this identity.")
     }
 
     async fn list_tools(
@@ -143,11 +194,10 @@ impl ServerHandler for Control {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, ErrorData> {
-        {
-            let mut result = ListToolsResult::default();
-            result.tools = tools();
-            Ok(result)
-        }
+        Ok(ListToolsResult {
+            tools: tools(),
+            ..Default::default()
+        })
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -170,9 +220,7 @@ impl ServerHandler for Control {
             .await;
         Ok(match result {
             Ok(value) => CallToolResult::structured(value),
-            Err(error) => {
-                CallToolResult::structured_error(json!({"error": {"message": error.to_string()}}))
-            }
+            Err(error) => CallToolResult::structured_error(client::error_json(error.as_ref())),
         }
         .into())
     }
@@ -186,9 +234,20 @@ fn tools() -> Vec<Tool> {
             "session_stop",
             "Stop a session and wait for its process group to exit.",
         ),
-        tool::<Create>("session_create", "Create a registered session."),
+        tool::<Create>(
+            "session_create",
+            "Create a registered session or a headless process.",
+        ),
         tool::<Send>("session_send", "Queue a message for a session."),
         tool::<Wait>("wait", "Wait for a session state or event."),
+        tool::<Spawn>(
+            "phase_spawn",
+            "Start a local phase with a maximum runtime. WS_SESSION_ID identifies its parent.",
+        ),
+        tool::<Tail>(
+            "session_tail",
+            "Read the last output bytes from a session. The maximum is 65536 bytes.",
+        ),
         tool::<Dependency>(
             "session_depends_on",
             "Add a dependency between two sessions.",

@@ -27,7 +27,32 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
     .unwrap()
     .unwrap();
     let tools = client.list_all_tools().await.unwrap();
-    assert!(tools.iter().any(|tool| tool.name == "session_list"));
+    let mut names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "phase_spawn",
+            "session_block_on",
+            "session_create",
+            "session_depends_on",
+            "session_get",
+            "session_list",
+            "session_send",
+            "session_stop",
+            "session_tail",
+            "wait"
+        ]
+    );
+    for tool in &tools {
+        assert_eq!(tool.input_schema["additionalProperties"], false);
+        assert!(
+            tool.input_schema
+                .get("properties")
+                .and_then(|properties| properties.get("parent_session_id"))
+                .is_none()
+        );
+    }
     let result = client
         .call_tool(
             CallToolRequestParams::new("session_list")
@@ -86,11 +111,10 @@ async fn session_create_and_get_match_the_json_cli() {
             .call("session_get", json!({"target":cli["id"]}))
             .await
     );
-    let mut mcp_keys: Vec<_> = created.as_object().unwrap().keys().collect();
-    let mut cli_keys: Vec<_> = cli.as_object().unwrap().keys().collect();
-    mcp_keys.sort();
-    cli_keys.sort();
-    assert_eq!(mcp_keys, cli_keys);
+    let mut expected = canonical_session(created);
+    expected["name"] = json!("cli-child");
+    expected["body"]["name"] = json!("cli-child");
+    assert_eq!(canonical_session(cli), expected);
     server.finish().await;
 }
 
@@ -181,10 +205,7 @@ async fn session_stop_matches_the_json_cli_and_records_the_caller() {
     );
     let cli = server.cli(&["session", "stop", second["id"].as_str().unwrap(), "--json"]);
     assert_eq!(cli["state"], stopped["state"]);
-    assert_eq!(
-        cli.as_object().unwrap().keys().collect::<Vec<_>>(),
-        stopped.as_object().unwrap().keys().collect::<Vec<_>>()
-    );
+    assert_eq!(canonical_session(cli), canonical_session(stopped));
     server.assert_audit("session.stop");
     server.finish().await;
 }
@@ -229,6 +250,9 @@ async fn session_send_matches_the_json_cli_and_records_the_caller() {
         .unwrap();
     assert_eq!(output.status.code(), Some(75), "{output:?}");
     let mut cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sent["pair_seq"], 1);
+    assert_eq!(cli["pair_seq"], 2);
+    assert_ne!(sent["event_id"], cli["event_id"]);
     let mut expected = sent.clone();
     for value in [&mut cli, &mut expected] {
         value.as_object_mut().unwrap().remove("event_id");
@@ -298,5 +322,240 @@ async fn wait_matches_the_json_cli_and_records_the_caller() {
     ]);
     assert_eq!(cli, result);
     server.assert_audit("session.wait");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn session_create_launches_a_headless_process_with_cli_json_parity() {
+    let server = TestServer::start().await;
+    let child = server.call("session_create", json!({"headless":true, "command":["/bin/sh","-c","printf mcp-output"], "cwd":server.home.path()})).await;
+    assert_eq!(child["parent_session_id"], server.parent);
+    let id = child["id"].as_str().unwrap();
+    let finished = server
+        .call("wait", json!({"target":id,"condition":"exit","timeout":30}))
+        .await;
+    assert_eq!(finished["session"]["exit_code"], 0);
+    let cli = server.cli(&[
+        "session",
+        "create",
+        "--headless",
+        "--json",
+        "--cwd",
+        server.home.path().to_str().unwrap(),
+        "--",
+        "/bin/sh",
+        "-c",
+        "printf mcp-output",
+    ]);
+    assert_eq!(cli["parent_session_id"], server.parent);
+    assert_eq!(cli["body"]["kind"], "headless");
+    assert_eq!(
+        canonical_session(cli.clone()),
+        canonical_session(child.clone())
+    );
+    server
+        .call(
+            "wait",
+            json!({"target":cli["id"],"condition":"exit","timeout":30}),
+        )
+        .await;
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn session_tail_is_bounded_and_matches_the_json_cli() {
+    let server = TestServer::start().await;
+    let child = server.call("session_create", json!({"headless":true,"command":["/bin/sh","-c","printf 0123456789abcdef; printf error-text >&2"],"cwd":server.home.path()})).await;
+    let id = child["id"].as_str().unwrap();
+    server
+        .call("wait", json!({"target":id,"condition":"exit","timeout":30}))
+        .await;
+    let tail = server
+        .call("session_tail", json!({"target":id,"max_bytes":8}))
+        .await;
+    assert_eq!(tail["output"], "89abcdef");
+    assert_eq!(tail["truncated"], true);
+    assert_eq!(
+        tail,
+        server.cli(&["session", "tail", id, "--json", "--max-bytes", "8"])
+    );
+    let stderr = server
+        .call("session_tail", json!({"target":id,"stream":"stderr"}))
+        .await;
+    assert_eq!(stderr["output"], "error-text");
+    assert_eq!(stderr["truncated"], false);
+    assert_eq!(
+        stderr,
+        server.cli(&["session", "tail", id, "--json", "--stream", "stderr"])
+    );
+    server.assert_audit("session.tail");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn phase_spawn_matches_the_json_cli_and_records_the_caller() {
+    let server = TestServer::start().await;
+    let child = server.call("phase_spawn", json!({"phase":{"command":["/bin/sh","-c","true"]},"repo":server.home.path(),"base":"main","caps_required":[],"max_runtime":30})).await;
+    assert_eq!(child["parent_session_id"], server.parent);
+    assert_eq!(child["body"]["base"], "main");
+    let cli = server.cli(&[
+        "phase",
+        "spawn",
+        "--repo",
+        server.home.path().to_str().unwrap(),
+        "--base",
+        "main",
+        "--max-runtime",
+        "30",
+        "--json",
+        "--",
+        "/bin/sh",
+        "-c",
+        "true",
+    ]);
+    assert_eq!(cli["parent_session_id"], server.parent);
+    assert_eq!(cli["body"]["phase"], child["body"]["phase"]);
+    assert_eq!(cli["body"]["caps_required"], child["body"]["caps_required"]);
+    assert_eq!(
+        canonical_session(cli.clone()),
+        canonical_session(child.clone())
+    );
+    for id in [&child["id"], &cli["id"]] {
+        let finished = server
+            .call("wait", json!({"target":id,"condition":"exit","timeout":30}))
+            .await;
+        assert_eq!(finished["session"]["exit_code"], 0);
+    }
+    server.assert_audit("phase.spawn");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn daemon_errors_remain_structured_and_do_not_stop_the_mcp_server() {
+    let server = TestServer::start().await;
+    let response = server
+        .client
+        .call_tool(
+            CallToolRequestParams::new("session_get")
+                .with_arguments(json!({"target":"missing"}).as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.is_error, Some(true));
+    let error = response.structured_content.unwrap();
+    assert_eq!(error["error"]["code"], "session_not_found");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty())
+    );
+    let invalid = server
+        .client
+        .call_tool(
+            CallToolRequestParams::new("session_create").with_arguments(
+                json!({"parent_session_id":server.parent})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.is_error, Some(true));
+    let listed = server.call("session_list", json!({})).await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn a_pending_wait_allows_other_mcp_tools_to_run() {
+    let server = TestServer::start().await;
+    let child = server.cli(&["session", "create", "--json"]);
+    let id = child["id"].as_str().unwrap();
+    let wait = server.call("wait", json!({"target":id,"condition":"state=finished"}));
+    let complete = async {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let entries = ws_core::log::SessionLog::new(
+                &server.home.path().join("state"),
+                server.parent.parse().unwrap(),
+                ws_core::ids::Ulid::nil(),
+            )
+            .read()
+            .unwrap()
+            .entries;
+            if entries
+                .iter()
+                .any(|entry| entry.body["operation"] == "session.wait")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "The daemon did not register the wait."
+            );
+            tokio::task::yield_now().await;
+        }
+        let sessions = server.call("session_list", json!({})).await;
+        assert_eq!(sessions.as_array().unwrap().len(), 2);
+        server.call("session_stop", json!({"target":id})).await
+    };
+    let (waited, stopped) = tokio::join!(wait, complete);
+    assert_eq!(waited["session"]["id"], stopped["id"]);
+    assert_eq!(waited["session"]["state"], "finished");
+    server.finish().await;
+}
+
+fn canonical_session(mut session: Value) -> Value {
+    let id = session["id"].as_str().unwrap().to_owned();
+    session["id"] = json!("<session>");
+    session["alias"] = json!(0);
+    session["created_at_ms"] = json!(0);
+    session["updated_at_ms"] = json!(0);
+    session["body"]["alias"] = json!(0);
+    for stream in ["stdout", "stderr"] {
+        if let Some(path) = session["body"][stream].as_str() {
+            session["body"][stream] = json!(path.replace(&id, "<session>"));
+        }
+    }
+    session
+}
+
+#[tokio::test]
+async fn session_tail_enforces_default_and_hard_limits_after_utf8_decoding() {
+    let server = TestServer::start().await;
+    let child = server.call("session_create", json!({"headless":true,"command":["/bin/sh","-c","i=0; while [ \"$i\" -lt 7000 ]; do printf abcdefghij; i=$((i+1)); done; printf '\\377\\376\\377'"],"cwd":server.home.path()})).await;
+    let id = child["id"].as_str().unwrap();
+    server
+        .call("wait", json!({"target":id,"condition":"exit","timeout":30}))
+        .await;
+    for (arguments, limit) in [
+        (json!({"target":id}), 8192),
+        (json!({"target":id,"max_bytes":65536}), 65536),
+        (json!({"target":id,"max_bytes":2}), 2),
+    ] {
+        let result = server.call("session_tail", arguments).await;
+        assert!(result["output"].as_str().unwrap().len() <= limit);
+        assert_eq!(result["truncated"], true);
+    }
+    for limit in [0, 65537] {
+        let result = server
+            .client
+            .call_tool(
+                CallToolRequestParams::new("session_tail").with_arguments(
+                    json!({"target":id,"max_bytes":limit})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content.unwrap()["error"]["code"],
+            "invalid_request"
+        );
+    }
     server.finish().await;
 }

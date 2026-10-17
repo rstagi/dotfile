@@ -65,6 +65,7 @@ pub(crate) fn router_with_store(store: Store) -> Router {
         .merge(crate::workspaces::router())
         .merge(crate::agents::router())
         .merge(crate::phases::router())
+        .merge(crate::tail::router())
         .route("/v1/sessions", get(list).post(create))
         .route("/v1/sessions/{id}", get(fetch))
         .route("/v1/sessions/{id}/stop", axum::routing::post(stop))

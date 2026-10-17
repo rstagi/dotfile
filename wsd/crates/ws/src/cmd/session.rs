@@ -70,6 +70,10 @@ pub enum Command {
     /// Read the session output.
     Tail {
         id: String,
+        #[arg(long, conflicts_with = "follow")]
+        json: bool,
+        #[arg(long, requires = "json")]
+        max_bytes: Option<u32>,
         #[arg(long)]
         follow: bool,
         #[arg(long, value_enum, default_value = "stdout")]
@@ -149,11 +153,19 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
             workspace_id,
         } => {
             if headless {
+                if name.is_some() || workspace_id.is_some() {
+                    return Err("Headless creation does not accept name or workspace_id.".into());
+                }
                 let session = create(socket, arguments, headless).await?;
                 if json {
-                    println!("{}", serde_json::to_value(session)?);
+                    println!("{session}");
                 } else {
-                    println!("{}", session.id);
+                    println!(
+                        "{}",
+                        session["id"]
+                            .as_str()
+                            .ok_or("The daemon did not return a session id.")?
+                    );
                 }
             } else {
                 if !arguments.command.is_empty() {
@@ -185,9 +197,35 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 hangup: signal(SignalKind::hangup())?,
             };
             let session = create(socket, arguments, true).await?;
-            return wait(socket, session.id, &mut signals).await;
+            return wait(
+                socket,
+                serde_json::from_value(session["id"].clone())?,
+                &mut signals,
+            )
+            .await;
         }
-        Command::Tail { id, follow, stream } => tail(socket, &id, follow, stream).await?,
+        Command::Tail {
+            id,
+            follow,
+            stream,
+            json,
+            max_bytes,
+        } => {
+            if json {
+                let stream = match stream {
+                    Stream::Stdout => "stdout",
+                    Stream::Stderr => "stderr",
+                };
+                super::mcp::print(
+                    socket,
+                    "session_tail",
+                    serde_json::json!({"target":id,"stream":stream,"max_bytes":max_bytes}),
+                )
+                .await?;
+            } else {
+                tail(socket, &id, follow, stream).await?;
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -196,12 +234,15 @@ async fn create(
     socket: &Path,
     arguments: HeadlessArgs,
     headless: bool,
-) -> Result<ws_core::registry::Session> {
+) -> Result<serde_json::Value> {
     let directory = std::env::current_dir()?;
     let absolute = |path: PathBuf| directory.join(path);
     let parent_session_id = match arguments.parent {
         Some(parent) => Some(client::session(socket, &parent).await?.id),
-        None => None,
+        None => std::env::var("WS_SESSION_ID")
+            .ok()
+            .map(|id| id.parse())
+            .transpose()?,
     };
     let mut env = BTreeMap::new();
     for assignment in arguments.environment {

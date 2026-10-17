@@ -18,6 +18,7 @@ pub mod name;
 pub mod new;
 pub mod on;
 pub mod open;
+pub mod phase;
 pub mod pin;
 pub mod rm;
 pub mod send;

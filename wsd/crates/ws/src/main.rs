@@ -18,6 +18,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start a local phase.
+    Phase {
+        #[command(subcommand)]
+        command: cmd::phase::Command,
+    },
     /// Serve MCP tools through standard input and output.
     Mcp,
     /// Import the legacy zsh session state.
@@ -219,6 +224,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Phase { command } => return cmd::phase::run(&socket_path()?, command).await,
         Command::Mcp => cmd::mcp::run(&socket_path()?).await?,
         Command::Migrate { dry_run, .. } => cmd::migrate::run(dry_run)?,
         Command::On { arguments } => cmd::on::run(&socket_path()?, arguments).await?,
