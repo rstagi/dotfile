@@ -456,7 +456,7 @@ descendants() { # print pids of the full process tree under $1 (depth-first)
 }
 
 run_leg() { # runs current engine with watchdogs; returns engine exit code (200 = timeout, 201 = paused, 202 = note changed)
-  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims" "$RUN_DIR/.paused" "$RUN_DIR/.note-changed" "$RUN_DIR/.ctl-victims" "$RUN_DIR/ws-session"
+  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims" "$RUN_DIR/.paused" "$RUN_DIR/.note-changed" "$RUN_DIR/.ctl-victims" "$RUN_DIR/.done-early" "$RUN_DIR/ws-session"
   local leg_timeout="$TIMEOUT"
   if (( CHECKPOINT_MODE )); then
     leg_timeout=$(( ATTEMPT_DEADLINE - $(date +%s) ))
@@ -502,8 +502,30 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
     done
   ) &
   local watcher=$!
+  # ws session run returns at the process exit, not at ws done. A done event stops the group.
+  local done_watcher=""
+  if [[ -n "$WS_BIN" ]]; then
+    ( local waiter="" sid=""
+      trap 'if [[ -n "$waiter" ]]; then kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null; fi; exit 0' TERM INT HUP
+      sid="$(leg_session "$child")"
+      [[ -n "$sid" ]] || exit 0
+      WS_SESSION_ID="${WS_SESSION_ID:-$sid}" "$WS_BIN" wait "$sid" --for done >/dev/null 2>&1 & waiter=$!
+      wait "$waiter" || exit 0
+      waiter=""
+      kill -0 "$child" 2>/dev/null || exit 0
+      touch "$RUN_DIR/.done-early"
+      stop_leg "$child" "$RUN_DIR/.victims"
+    ) &
+    done_watcher=$!
+  fi
   wait "$child"; local rc=$?
   local stop_failed=0
+  if [[ -n "$done_watcher" && -f "$RUN_DIR/.done-early" ]]; then
+    # rc is the stop status. The attempt does not count as a clean engine exit.
+    wait "$done_watcher" || stop_failed=1
+  elif [[ -n "$done_watcher" ]]; then
+    kill "$done_watcher" 2>/dev/null; wait "$done_watcher" 2>/dev/null
+  fi
   if [[ -n "$WS_BIN" && -f "$RUN_DIR/.timeout" ]]; then
     wait "$watchdog" || stop_failed=1
   else
@@ -560,13 +582,7 @@ stop_leg() { # Stop the current engine and confirm its exit before another leg c
     xargs kill -TERM 2>/dev/null < "$victims"
     return 0
   fi
-  # A cancellation can arrive before the session wrapper publishes its id.
-  while kill -0 "$child" 2>/dev/null; do
-    sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
-    [[ -n "$sid" ]] && break
-    sleep 0.05
-  done
-  [[ -n "$sid" ]] || sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+  sid="$(leg_session "$child")"
   [[ -n "$sid" ]] || return 0
   if "$WS_BIN" session stop "$sid" >> "$RUN_DIR/ws-stop.log" 2>&1 &&
       WS_SESSION_ID="${WS_SESSION_ID:-$sid}" "$WS_BIN" wait "$sid" --for exit >> "$RUN_DIR/ws-stop.log" 2>&1; then
@@ -575,6 +591,18 @@ stop_leg() { # Stop the current engine and confirm its exit before another leg c
   # Release the foreground wait after an API failure. Never start another engine.
   kill -TERM "$child" 2>/dev/null
   return 1
+}
+
+leg_session() { # Print the ws session id of the current leg. Empty if the leg exits first.
+  local child="$1" sid=""
+  # A cancellation can arrive before the session wrapper publishes its id.
+  while kill -0 "$child" 2>/dev/null; do
+    sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+    [[ -n "$sid" ]] && break
+    sleep 0.05
+  done
+  [[ -n "$sid" ]] || sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+  print -r -- "$sid"
 }
 
 apply_note_change() { # resume the interrupted session with the new note (same attempt, no retry used)
