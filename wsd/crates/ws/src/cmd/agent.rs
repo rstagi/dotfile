@@ -164,3 +164,84 @@ pub async fn execute(socket: &Path, id: &str, user_tab: bool) -> Result<ExitCode
     }
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }
+
+/// Runs the agent command of a zsh launch wrapper started before the Rust cutover.
+/// It consumes the zsh one-shot prompt like `ws_bus_run_agent` and reports the exit.
+pub async fn execute_legacy(socket: &Path, id: &str, command: &str) -> Result<ExitCode> {
+    let alias = legacy_alias(id)?;
+    let pane = env::var("TMUX_PANE").map_err(|_| "Run the agent inside a tmux pane.")?;
+    let shell = env::var("WS_AGENT_SHELL").unwrap_or_else(|_| "zsh -ic".into());
+    let shell = shell_words::split(&shell)?;
+    let (program, shell_args) = shell
+        .split_first()
+        .ok_or("WS_AGENT_SHELL must contain a shell command.")?;
+    let mut command = command.to_owned();
+    let mut args = Vec::new();
+    let prompt = legacy_home()?.join("sessions").join(&alias).join("prompt");
+    match std::fs::read_to_string(&prompt) {
+        Ok(text) => {
+            std::fs::remove_file(&prompt)?;
+            command.push_str(" -- \"$1\"");
+            args = vec!["ws".to_owned(), text];
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let (program, shell_args) = (program.clone(), shell_args.to_vec());
+    let status = tokio::task::spawn_blocking(move || {
+        ProcessCommand::new(program)
+            .args(shell_args)
+            .arg(command)
+            .args(args)
+            .status()
+    })
+    .await?;
+    let code = status.as_ref().map_or(1, |status| {
+        status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
+    });
+    report_exit(socket, &format!("#{alias}"), &pane, code).await?;
+    status?;
+    Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+}
+
+/// Records a clean exit for a zsh launch wrapper and frees its slot row.
+pub async fn end_legacy(
+    socket: &Path,
+    wt: &Path,
+    slot: &str,
+    id: &str,
+    pane: &str,
+) -> Result<ExitCode> {
+    let alias = legacy_alias(id)?;
+    report_exit(socket, &format!("#{alias}"), pane, 0).await?;
+    agents::slots::remove_legacy(wt, slot, &alias)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn legacy_alias(id: &str) -> Result<String> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Legacy agent wrappers use a numeric session alias.".into());
+    }
+    Ok(id.to_owned())
+}
+
+fn legacy_home() -> Result<PathBuf> {
+    if let Some(home) = env::var_os("WS_HOME") {
+        return Ok(home.into());
+    }
+    let home = env::var_os("HOME").ok_or("Set HOME to locate the ws directory.")?;
+    Ok(PathBuf::from(home).join(".ws"))
+}
+
+async fn report_exit(socket: &Path, id: &str, pane: &str, code: i32) -> Result<()> {
+    client::request(
+        socket,
+        Method::POST,
+        "/v1/agents/exit",
+        serde_json::to_vec(&json!({"id": id, "pane": pane, "code": code, "user_tab": false}))?,
+    )
+    .await?;
+    Ok(())
+}

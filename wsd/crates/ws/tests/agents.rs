@@ -627,6 +627,196 @@ fn named_agent_commands_run_in_the_current_tab_and_preserve_failed_slots() {
 }
 
 #[test]
+fn legacy_agent_and_end_wrappers_run_an_imported_zsh_session() {
+    let mut pane = String::new();
+    let sandbox = Sandbox::with_setup("", |home, server| {
+        let repo = home.join("api");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        let wt = home.join("worktrees/api/feature");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let ids = Command::new("tmux")
+            .args([
+                "-L",
+                server,
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "legacy",
+            ])
+            .args(["-P", "-F", "#{window_id}\t#{pane_id}", "/bin/cat"])
+            .output()
+            .unwrap();
+        assert!(ids.status.success(), "{ids:?}");
+        let ids = String::from_utf8(ids.stdout).unwrap();
+        let (window, legacy_pane) = ids.trim_end().split_once('\t').unwrap();
+        pane = legacy_pane.into();
+        for (key, value) in [("@ws_session", "7"), ("@ws_pane", legacy_pane)] {
+            let status = Command::new("tmux")
+                .args(["-L", server, "set-option", "-w", "-t", window, key, value])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let legacy = home.join(".ws/sessions/7");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(home.join(".ws/sessions/counter"), "7").unwrap();
+        fs::write(
+            legacy.join("meta"),
+            json!({"agent": "claude", "workspace": "api/feature", "window": window}).to_string(),
+        )
+        .unwrap();
+        fs::write(legacy.join("prompt"), "hello legacy").unwrap();
+        let git_dir = git(&wt, &["rev-parse", "--absolute-git-dir"]);
+        fs::write(
+            Path::new(&git_dir).join("ws-sessions"),
+            "1\tclaude\t\t7\n2\tcodex\t\t8\n",
+        )
+        .unwrap();
+    });
+    let id = sandbox.json(&["show", "#7", "--json"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let out = sandbox.home.path().join("prompt-out");
+    let script = sandbox.home.path().join("legacy-agent.sh");
+    fs::write(&script, format!("printf %s \"$2\" > '{}'\n", out.display())).unwrap();
+    let launched = sandbox
+        .command()
+        .env("TMUX_PANE", &pane)
+        .env("WS_AGENT_SHELL", "/bin/sh -c")
+        .args(["_agent", "7", &format!("/bin/sh '{}'", script.display())])
+        .output()
+        .unwrap();
+    assert!(launched.status.success(), "{launched:?}");
+    assert_eq!(fs::read_to_string(&out).unwrap(), "hello legacy");
+    assert!(!sandbox.home.path().join(".ws/sessions/7/prompt").exists());
+    assert_eq!(sandbox.events(&id, "exit").len(), 1);
+    let wt = sandbox.worktree();
+    let ended = sandbox
+        .command()
+        .args(["_end", wt.to_str().unwrap(), "1", "7", &pane])
+        .output()
+        .unwrap();
+    assert!(ended.status.success(), "{ended:?}");
+    assert_eq!(sandbox.events(&id, "exit").len(), 1);
+    assert_eq!(
+        fs::read_to_string(sandbox.slots()).unwrap(),
+        "2\tcodex\t\t8\n"
+    );
+}
+
+#[test]
+fn legacy_end_records_the_exit_of_a_zsh_launched_agent() {
+    let mut pane = String::new();
+    let sandbox = Sandbox::with_setup("", |home, server| {
+        let repo = home.join("api");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        let wt = home.join("worktrees/api/feature");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let ids = Command::new("tmux")
+            .args([
+                "-L",
+                server,
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "legacy",
+            ])
+            .args(["-P", "-F", "#{window_id}\t#{pane_id}", "/bin/cat"])
+            .output()
+            .unwrap();
+        assert!(ids.status.success(), "{ids:?}");
+        let ids = String::from_utf8(ids.stdout).unwrap();
+        let (window, legacy_pane) = ids.trim_end().split_once('\t').unwrap();
+        pane = legacy_pane.into();
+        for (key, value) in [("@ws_session", "7"), ("@ws_pane", legacy_pane)] {
+            let status = Command::new("tmux")
+                .args(["-L", server, "set-option", "-w", "-t", window, key, value])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let legacy = home.join(".ws/sessions/7");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(home.join(".ws/sessions/counter"), "7").unwrap();
+        fs::write(
+            legacy.join("meta"),
+            json!({"agent": "claude", "workspace": "api/feature", "window": window}).to_string(),
+        )
+        .unwrap();
+        let git_dir = git(&wt, &["rev-parse", "--absolute-git-dir"]);
+        fs::write(Path::new(&git_dir).join("ws-sessions"), "1\tclaude\t\t7\n").unwrap();
+    });
+    let id = sandbox.json(&["show", "#7", "--json"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let wt = sandbox.worktree();
+    let ended = sandbox
+        .command()
+        .args(["_end", wt.to_str().unwrap(), "1", "7", &pane])
+        .output()
+        .unwrap();
+    assert!(ended.status.success(), "{ended:?}");
+    assert_eq!(sandbox.events(&id, "exit").len(), 1);
+    assert_eq!(fs::read_to_string(sandbox.slots()).unwrap(), "");
+}
+
+#[test]
 fn a_clean_exit_releases_its_slot_and_reopening_does_not_steal_another_slot() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo();
@@ -838,6 +1028,10 @@ impl Sandbox {
         Self::with_config("")
     }
     fn with_config(config: &str) -> Self {
+        Self::with_setup(config, |_, _| {})
+    }
+    /// Runs `setup(home, tmux server)` before the daemon starts and imports legacy state.
+    fn with_setup(config: &str, setup: impl FnOnce(&Path, &str)) -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         fs::create_dir(home.path().join("state")).unwrap();
         fs::write(home.path().join("state/config.toml"), config).unwrap();
@@ -847,6 +1041,7 @@ impl Sandbox {
             std::process::id(),
             home.path().file_name().unwrap().to_str().unwrap()
         );
+        setup(home.path(), &server);
         let mut command = common::ws(home.path(), &socket);
         let listener = UnixListener::bind(home.path().join("agent.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();

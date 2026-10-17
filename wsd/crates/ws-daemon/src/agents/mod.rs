@@ -11,7 +11,7 @@ use std::{
 use ws_core::ids::Ulid;
 
 pub mod launch;
-pub(crate) mod slots;
+pub mod slots;
 pub(crate) use launch::router;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

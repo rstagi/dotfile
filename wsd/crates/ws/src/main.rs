@@ -137,7 +137,20 @@ enum Command {
         command: cmd::agent::Command,
     },
     #[command(name = "_agent", hide = true)]
-    AgentLaunch { id: String },
+    AgentLaunch {
+        id: String,
+        /// Legacy zsh launch wrappers pass the agent command after the alias.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Legacy zsh launch wrappers call this after a clean agent exit.
+    #[command(name = "_end", hide = true)]
+    AgentEnd {
+        wt: std::path::PathBuf,
+        slot: String,
+        id: String,
+        pane: String,
+    },
     /// Merge the current workspace PR.
     Merge,
     #[command(name = "_merge_popup", hide = true)]
@@ -325,8 +338,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Codex { arguments } => return cmd::codex::run(&socket_path()?, arguments).await,
         Command::Grok { arguments } => return cmd::grok::run(&socket_path()?, arguments).await,
         Command::Agent { command } => cmd::agent::prepare(command)?,
-        Command::AgentLaunch { id } => {
+        Command::AgentLaunch { id, command } if !command.is_empty() => {
+            return cmd::agent::execute_legacy(&socket_path()?, &id, &command.join(" ")).await;
+        }
+        Command::AgentLaunch { id, .. } => {
             return cmd::agent::execute(&socket_path()?, &id, false).await;
+        }
+        Command::AgentEnd { wt, slot, id, pane } => {
+            return cmd::agent::end_legacy(&socket_path()?, &wt, &slot, &id, &pane).await;
         }
         Command::Merge => cmd::merge::run(&socket_path()?).await?,
         Command::MergePopup => return cmd::merge::popup(&socket_path()?).await,

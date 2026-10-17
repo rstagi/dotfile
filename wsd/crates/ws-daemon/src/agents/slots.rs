@@ -46,6 +46,18 @@ pub fn remove(wt: &Path, id: &str) -> io::Result<()> {
     })
 }
 
+/// Frees a zsh slot row unless the slot now belongs to another session.
+pub fn remove_legacy(wt: &Path, slot: &str, id: &str) -> io::Result<()> {
+    rewrite(wt, |rows| {
+        rows.retain(|row| {
+            let mut fields = row.split('\t');
+            fields.next() != Some(slot)
+                || !matches!(fields.nth(2), Some(owner) if owner == id || owner.is_empty())
+        });
+        Ok(())
+    })
+}
+
 fn read(wt: &Path) -> io::Result<String> {
     match fs::read_to_string(path(wt)?) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),

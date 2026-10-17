@@ -337,7 +337,12 @@ impl Sessions {
         let tmux = Tmux::from_env();
         let window = tmux.window_for_pane(pane)?;
         let id = session.id.to_string();
-        if tmux.window_option(&window, "@ws_session")?.as_deref() != Some(&id)
+        // zsh-launched windows keep the imported session's numeric alias as their tag.
+        let alias = session.body["alias"]
+            .as_i64()
+            .map(|alias| alias.to_string());
+        let tag = tmux.window_option(&window, "@ws_session")?;
+        if !(tag.as_deref() == Some(&id) || tag.is_some() && tag == alias)
             || tmux.window_option(&window, "@ws_pane")?.as_deref() != Some(pane)
         {
             return Ok(false);
