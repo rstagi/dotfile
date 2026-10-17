@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ws_core::ids::{EventId, SessionId};
 
+#[path = "delivery.rs"]
+pub mod delivery;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
     pub event_id: EventId,
@@ -53,6 +56,7 @@ struct AckRequest {
 
 pub(crate) fn router() -> Router<Store> {
     Router::new()
+        .merge(delivery::router())
         .route("/v1/messages", post(send))
         .route("/v1/inbox", get(inbox))
         .route("/v1/ack", post(ack))

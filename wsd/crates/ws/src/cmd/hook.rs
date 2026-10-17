@@ -2,12 +2,15 @@ use crate::{Result, client};
 use serde_json::{Value, json};
 use std::{
     env,
-    io::{self, IsTerminal, Read},
+    io::{self, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
 use ws_core::ids::Ulid;
-use ws_daemon::hooks::{self, Callback};
+use ws_daemon::{
+    bus::delivery::{self, Receipt},
+    hooks::{self, Callback},
+};
 
 const TRANSPORT_DEADLINE: Duration = Duration::from_millis(250);
 
@@ -28,21 +31,34 @@ pub async fn run(socket: &Path, state: &str) {
         ("idle", "StopCancelled" | "stop_cancelled" | "Interrupt") => "cancel",
         _ => state,
     };
-    let reply = deliver(socket, state, payload, observed_at_us)
+    let (reply, receipt) = deliver(socket, state, payload, observed_at_us)
         .await
-        .unwrap_or_else(|_| json!({}));
+        .unwrap_or_else(|_| (json!({}), None));
     if state == "stop" {
-        println!("{reply}");
+        let written = {
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "{reply}")
+                .and_then(|()| stdout.flush())
+                .is_ok()
+        };
+        if let Some(receipt) = receipt.filter(|_| written) {
+            let _ = confirm(socket, &receipt).await;
+        }
     }
 }
 
-async fn deliver(socket: &Path, state: &str, payload: Value, observed_at_us: u64) -> Result<Value> {
+async fn deliver(
+    socket: &Path,
+    state: &str,
+    payload: Value,
+    observed_at_us: u64,
+) -> Result<(Value, Option<Receipt>)> {
     let session = env::var("WS_SESSION_ID")
         .ok()
         .filter(|id| !id.is_empty())
         .or_else(|| env::var("WS_SESSION").ok().filter(|id| !id.is_empty()));
     let Some(session) = session.and_then(|id| id.parse().ok()) else {
-        return Ok(json!({}));
+        return Ok((json!({}), None));
     };
     if ![
         "working",
@@ -55,7 +71,7 @@ async fn deliver(socket: &Path, state: &str, payload: Value, observed_at_us: u64
     ]
     .contains(&state)
     {
-        return Ok(json!({}));
+        return Ok((json!({}), None));
     }
     let callback = Callback {
         callback_id: Ulid::new(),
@@ -87,12 +103,41 @@ async fn deliver(socket: &Path, state: &str, payload: Value, observed_at_us: u64
     )
     .await
     {
-        return Ok(serde_json::from_slice(&reply).unwrap_or_else(|_| json!({})));
+        let reply: Value = serde_json::from_slice(&reply).unwrap_or_else(|_| json!({}));
+        let receipt = (state == "stop" && reply["decision"] == "block").then_some(Receipt {
+            session_id: session,
+            callback_id: callback.callback_id,
+        });
+        return Ok((reply, receipt));
     }
-    let state_path = env::var_os("WS_STATE")
+    hooks::spool(&state_path()?, &callback)?;
+    Ok((json!({}), None))
+}
+
+async fn confirm(socket: &Path, receipt: &Receipt) -> Result<()> {
+    // Write the receipt before transport so a daemon restart can restore delivery.
+    let pending = delivery::spool(&state_path()?, receipt)?;
+    if matches!(
+        tokio::time::timeout(
+            TRANSPORT_DEADLINE,
+            client::request(
+                socket,
+                hyper::Method::POST,
+                "/v1/hooks/delivered",
+                serde_json::to_vec(receipt)?,
+            )
+        )
+        .await,
+        Ok(Ok(_))
+    ) {
+        std::fs::remove_file(pending)?;
+    }
+    Ok(())
+}
+
+fn state_path() -> Result<PathBuf> {
+    env::var_os("WS_STATE")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".ws/state")))
-        .ok_or("Set HOME or WS_STATE to locate the hook spool.")?;
-    hooks::spool(&state_path, &callback)?;
-    Ok(json!({}))
+        .ok_or_else(|| "Set HOME or WS_STATE to locate the hook spool.".into())
 }

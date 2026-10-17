@@ -392,3 +392,59 @@ fn stdin_preserves_newlines_and_invalid_sends_match_zsh_errors() {
     assert_eq!(invalid.status.code(), Some(1), "{invalid:?}");
     assert_eq!(sandbox.inbox(to), inbox);
 }
+
+#[test]
+fn hook_stdout_commits_delivery_and_the_next_stop_reads_the_batch() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let sandbox = Sandbox::new();
+    let recipient = sandbox.create("recipient");
+    let id = recipient["id"].as_str().unwrap();
+    let output = sandbox
+        .ws()
+        .args(["send", id, "continue with this task"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(75), "{output:?}");
+    for expected in [
+        json!({"decision":"block", "reason":"[ws #2]\ncontinue with this task"}),
+        json!({}),
+    ] {
+        let mut child = sandbox
+            .ws()
+            .env("WS_SESSION_ID", id)
+            .args(["hook", "stop"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"{\"hook_event_name\":\"Stop\",\"stop_hook_active\":true}")
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_ok(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            expected
+        );
+        assert_eq!(
+            sandbox
+                .log(id)
+                .iter()
+                .filter(|entry| entry.event_type == "message.delivered")
+                .count(),
+            1
+        );
+    }
+    let reads: Vec<_> = sandbox
+        .log(id)
+        .into_iter()
+        .filter(|entry| entry.event_type == "message.read")
+        .collect();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].body["implicit"], true);
+}
