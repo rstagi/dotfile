@@ -1,4 +1,10 @@
-//! Shared types for the WS daemon and CLI.
+//! Shared types and state storage for the WS daemon and CLI.
+
+pub mod device;
+pub mod ids;
+pub mod log;
+
+use std::{fs, io, os::unix::fs::DirBuilderExt, path::Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,4 +26,25 @@ pub enum HookEvent {
 pub struct HookRecord {
     pub event: HookEvent,
     pub window_id: String,
+}
+
+/// Creates private state directories and persists their parent entries.
+pub(crate) fn create_state_directory(path: &Path) -> io::Result<()> {
+    let missing: Vec<_> = path
+        .ancestors()
+        .take_while(|directory| !directory.is_dir())
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .collect();
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    for directory in missing {
+        let parent = directory
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
 }

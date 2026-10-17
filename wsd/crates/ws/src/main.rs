@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 mod client;
 mod hook;
+mod init;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -16,6 +17,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Initialize the local device identity.
+    Init,
     /// Serve the local API on the Unix socket.
     Daemon,
     /// Show the daemon version and uptime.
@@ -45,16 +48,19 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let socket = socket_path()?;
     match cli.command {
-        Command::Daemon => ws_daemon::run(&socket).await.map_err(|error| {
-            format!(
-                "Cannot serve the daemon socket at {}: {error}",
-                socket.display()
-            )
-        })?,
+        Command::Init => init::run()?,
+        Command::Daemon => {
+            let socket = socket_path()?;
+            ws_daemon::run(&socket).await.map_err(|error| {
+                format!(
+                    "Cannot serve the daemon socket at {}: {error}",
+                    socket.display()
+                )
+            })?;
+        }
         Command::Ping => {
-            let response = client::ping(&socket).await?;
+            let response = client::ping(&socket_path()?).await?;
             println!(
                 "wsd {} (uptime: {}s)",
                 response.version, response.uptime_secs
@@ -62,7 +68,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Hook {
             event: HookCommand::Stop,
-        } => hook::stop(&socket).await?,
+        } => hook::stop(&socket_path()?).await?,
     }
     Ok(())
 }
