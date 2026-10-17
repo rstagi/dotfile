@@ -202,6 +202,25 @@ fn bare_ws_creates_its_first_workspace_and_interactive_rm_accepts_cancel_or_bran
 }
 
 #[test]
+fn new_installs_picker_bindings_without_a_prior_picker() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "keys",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let binding = sandbox.tmux(&["list-keys", "-T", "prefix", "w"]);
+    assert!(binding.contains(env!("CARGO_BIN_EXE_ws")), "{binding}");
+    assert!(binding.contains("pick"), "{binding}");
+    assert!(binding.contains("choose-tree -Zw"), "{binding}");
+}
+
+#[test]
 fn bare_ws_picks_registered_workspaces_with_pins_first_and_accepts_cancellation() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::new();
@@ -239,7 +258,7 @@ fn bare_ws_picks_registered_workspaces_with_pins_first_and_accepts_cancellation(
     );
     let mut command = sandbox.focus_command();
     let fzf = sandbox.home.path().join("bin/fzf");
-    std::fs::write(&fzf, "#!/bin/sh\ncat > \"$WS_TEST_ROWS\"\n[ -z \"$WS_TEST_CANCEL\" ] || exit 130\nhead -1 \"$WS_TEST_ROWS\"\n").unwrap();
+    std::fs::write(&fzf, "#!/bin/sh\ncat > \"$WS_TEST_ROWS\"\n[ -z \"$WS_TEST_CANCEL\" ] || exit 130\nprintf '\\n'\nhead -1 \"$WS_TEST_ROWS\"\n").unwrap();
     std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o700)).unwrap();
     let rows = sandbox.home.path().join("rows");
     let output = command.env("WS_TEST_ROWS", &rows).output().unwrap();
@@ -247,7 +266,16 @@ fn bare_ws_picks_registered_workspaces_with_pins_first_and_accepts_cancellation(
     assert!(output.stdout.is_empty());
     let rows = std::fs::read_to_string(rows).unwrap();
     assert_eq!(rows.lines().count(), 2);
-    assert!(rows.lines().next().unwrap().contains("api/zeta"), "{rows}");
+    assert!(
+        rows.lines()
+            .next()
+            .unwrap()
+            .split('\t')
+            .nth(1)
+            .unwrap()
+            .ends_with("api/zeta"),
+        "{rows}"
+    );
     assert!(!rows.contains("orphan"));
     let root = sandbox
         .home

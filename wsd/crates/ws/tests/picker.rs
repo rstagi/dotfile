@@ -16,6 +16,158 @@ struct Sandbox {
 }
 
 #[test]
+fn pick_preserves_fzf_controls_and_uses_registry_rows() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::seeded_live(&[("api/alpha", false), ("api/orphan", true)]);
+    let fzf = sandbox.home.path().join("fake-agents/fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ncat > \"$HOME/pick-rows\"\nprintf '%s\\n' \"$@\" > \"$HOME/pick-args\"\nexit 130\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let expected = sandbox.command().arg("_rows").output().unwrap().stdout;
+    for action in [Some("pick"), None] {
+        let mut command = sandbox.command();
+        if let Some(action) = action {
+            command.arg(action);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            std::fs::read(sandbox.home.path().join("pick-rows")).unwrap(),
+            expected
+        );
+        let args = std::fs::read_to_string(sandbox.home.path().join("pick-args")).unwrap();
+        for control in [
+            "--ansi",
+            "--with-nth\n1",
+            "--no-sort",
+            "--layout\nreverse",
+            "--sync",
+            "ctrl-n,ctrl-o,ctrl-r,ctrl-a,ctrl-t,ctrl-v",
+            "_summary",
+            "_preview {2} {3}",
+            "pin {2}",
+            "_toggle_sessions",
+            "_unread {3}",
+            "rm --interactive {2}",
+            "_rows",
+        ] {
+            assert!(args.contains(control), "Missing {control}: {args}");
+        }
+        assert!(args.contains(env!("CARGO_BIN_EXE_ws")), "{args}");
+    }
+}
+
+#[test]
+fn pick_installs_rust_tmux_bindings_and_preserves_user_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::seeded_live(&[("api/alpha", false)]);
+    sandbox.server.tmux(
+        sandbox.home.path(),
+        &[
+            "set-hook",
+            "-g",
+            "session-window-changed[0]",
+            "display-message user-hook",
+        ],
+    );
+    let fzf = sandbox.home.path().join("fake-agents/fzf");
+    std::fs::write(&fzf, "#!/bin/sh\ncat >/dev/null\nexit 130\n").unwrap();
+    std::fs::set_permissions(fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = sandbox.command().arg("pick").output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    for (key, action) in [
+        ("w", "pick"),
+        ("N", "new"),
+        ("M", "_merge_popup"),
+        ("a", "add"),
+        ("A", "codex"),
+        ("G", "grok"),
+    ] {
+        let binding = sandbox
+            .server
+            .tmux(sandbox.home.path(), &["list-keys", "-T", "prefix", key]);
+        assert!(binding.contains(env!("CARGO_BIN_EXE_ws")), "{binding}");
+        assert!(binding.contains(action), "{binding}");
+        for value in [
+            "WS_HOME=",
+            "WS_STATE=",
+            "WS_SOCK=",
+            "WS_TMUX_SOCKET=",
+            sandbox.socket.to_str().unwrap(),
+        ] {
+            assert!(binding.contains(value), "Missing {value}: {binding}");
+        }
+        if key == "w" {
+            assert!(binding.contains("choose-tree -Zw"), "{binding}");
+        }
+    }
+    let hooks = sandbox
+        .server
+        .tmux(sandbox.home.path(), &["show-hooks", "-g"]);
+    for hook in [
+        "session-window-changed[0] display-message user-hook",
+        "session-window-changed[77]",
+        "client-session-changed[77]",
+        "session-window-changed[78]",
+        "client-session-changed[78]",
+        "_dismiss",
+    ] {
+        assert!(hooks.contains(hook), "{hooks}");
+    }
+    assert!(
+        sandbox
+            .command()
+            .arg("pick")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(
+        sandbox
+            .server
+            .tmux(sandbox.home.path(), &["show-hooks", "-g"]),
+        hooks
+    );
+}
+
+#[test]
+fn zsh_picker_checks_run_against_rust_data_commands() {
+    let sandbox = Sandbox::new();
+    let binary = sandbox.home.path().join("CLI's bin/ws tool");
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_ws"), &binary).unwrap();
+    let environment = sandbox.command();
+    let mut command = Command::new("zsh");
+    for (key, value) in environment.get_envs() {
+        if let Some(value) = value {
+            command.env(key, value);
+        } else {
+            command.env_remove(key);
+        }
+    }
+    let output = command
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../ws/tests/picker-rust.test.sh"
+        ))
+        .env("WS_RUST_BIN", &binary)
+        .current_dir(sandbox.home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("Rust picker shell checks passed.")
+    );
+}
+
+#[test]
 fn empty_picker_matches_zsh() {
     let sandbox = Sandbox::new();
     sandbox.parity(&["_rows"]);
