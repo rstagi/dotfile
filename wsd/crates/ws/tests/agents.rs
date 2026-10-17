@@ -22,6 +22,260 @@ struct Sandbox {
 }
 
 #[test]
+fn an_exit_self_trigger_reopens_after_the_old_launch_retires() {
+    for code in [0, 7] {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.repo();
+        assert!(
+            sandbox
+                .output(&[
+                    "new",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--branch",
+                    "feature",
+                    "--detach"
+                ])
+                .status
+                .success()
+        );
+        let (owner, mut old_agent) = sandbox.capture();
+        let id = owner["id"].as_str().unwrap();
+        let old_window = sandbox.window(id);
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .args(["on", id, "exit", "--send-to", "me", "continue after exit"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let end_hook = common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &json!({
+                "session_id":id, "callback_id":ws_core::ids::Ulid::new(),
+                "observed_at_us":ws_daemon::hooks::receipt_time_us().unwrap(), "state":"exit",
+                "pane":owner["pane"], "tmux_socket":sandbox.server,
+                "payload":{"hook_event_name":"SessionEnd", "exit_code":0}
+            })
+            .to_string(),
+        );
+        assert!(end_hook.starts_with("HTTP/1.1 201"), "{end_hook}");
+        assert!(sandbox.events(id, "message.sent").is_empty());
+        old_agent
+            .write_all(if code == 0 { b"0" } else { b"7" })
+            .unwrap();
+        assert!(
+            sandbox
+                .output(&["wait", id, "--for", "event=message.sent", "--timeout", "30"])
+                .status
+                .success()
+        );
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert_ne!(sandbox.window(id), old_window);
+        let (reopened, _running) = sandbox.capture();
+        assert_eq!(reopened["id"], id);
+        assert_eq!(sandbox.events(id, "message.sent").len(), 1);
+    }
+}
+
+#[test]
+fn failed_trigger_launch_releases_its_slot_and_keeps_diagnostics() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feature",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    let (owner, _running) = sandbox.capture();
+    let owner_id = owner["id"].as_str().unwrap();
+    let response = common::request(&sandbox.socket, "POST", "/v1/sessions", "{}");
+    let source: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let source_id = source["id"].as_str().unwrap();
+    let output = sandbox
+        .command()
+        .env("WS_SESSION_ID", owner_id)
+        .args(["on", source_id, "done", "--spawn", "claude", "continue"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let tid = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("tmux"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let wrapper = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(&wrapper, format!("#!/bin/sh\ncase \" $* \" in *' new-window '*|*' new-session '*) echo 'synthetic launch failure' >&2; exit 1;; esac\nexec {} \"$@\"\n", shell_words::quote(&real_tmux.to_string_lossy()))).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let done = format!("/v1/sessions/{source_id}/done");
+    for _ in 0..2 {
+        assert!(common::request(&sandbox.socket, "POST", &done, "{}").starts_with("HTTP/1.1 200"));
+    }
+    assert_eq!(sandbox.json(&["triggers", "--json"]), json!([]));
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let children: Vec<_> = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|session| session["body"]["trigger_id"] == tid)
+        .collect();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0]["state"], "failed");
+    assert!(
+        !fs::read_to_string(sandbox.slots())
+            .unwrap()
+            .contains(children[0]["id"].as_str().unwrap())
+    );
+    let failures = sandbox.events(owner_id, "edge.action_failed");
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures[0].body["error"]
+            .as_str()
+            .unwrap()
+            .contains("synthetic launch failure")
+    );
+}
+
+#[test]
+fn trigger_spawn_preserves_a_literal_prompt_and_closes_the_child_on_done() {
+    // Golden scenarios: ws/tests/triggers-actions.test.sh.
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feature",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    let (owner, _running) = sandbox.capture();
+    let owner_id = owner["id"].as_str().unwrap();
+    let response = common::request(&sandbox.socket, "POST", "/v1/sessions", "{}");
+    let source: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let source_id = source["id"].as_str().unwrap();
+    assert!(
+        common::request(
+            &sandbox.socket,
+            "POST",
+            &format!("/v1/sessions/{source_id}/done"),
+            r#"{"output":"literal {id} $value\n"}"#
+        )
+        .starts_with("HTTP/1.1 200")
+    );
+    for (agent, legacy) in [
+        ("claude", false),
+        ("codex", true),
+        ("grok", false),
+        ("claude", true),
+    ] {
+        let suffix = if agent == "grok" {
+            " large".repeat(6000)
+        } else {
+            String::new()
+        };
+        let prompt = format!(
+            "Follow \"quoted\" $literal\nsource {{id}}: {{output}}; $(touch never-execute-ws-prompt){suffix}"
+        );
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", owner_id)
+            .args(if legacy && agent == "claude" {
+                vec!["on", source_id, "done", "--spawn", &prompt]
+            } else if legacy {
+                vec![
+                    "on", source_id, "done", "--spawn", &prompt, "--agent", agent,
+                ]
+            } else {
+                vec!["on", source_id, "done", "--spawn", agent, &prompt]
+            })
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let tid = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+        let (child, _connection) = sandbox.capture();
+        let id = child["id"].as_str().unwrap();
+        assert_ne!(id, owner_id);
+        assert_eq!(child["agent"], agent);
+        let argv = child["argv"].as_array().unwrap();
+        let expected = format!(
+            "Follow \"quoted\" $literal\nsource {source_id}: literal {{id}} $value\n; $(touch never-execute-ws-prompt){suffix}"
+        );
+        assert!(
+            argv.iter().any(|argument| argument == &expected),
+            "{argv:?}"
+        );
+        let session = sandbox.json(&["show", id, "--json"]);
+        assert_eq!(session["body"]["spawned"], true);
+        assert_eq!(session["body"]["trigger_id"], tid);
+        assert_eq!(session["body"]["parent_session_id"], owner_id);
+        let window = sandbox.window(id);
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .arg("done")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            !sandbox
+                .tmux(&["list-windows", "-a", "-F", "#{window_id}"])
+                .lines()
+                .any(|line| line == window)
+        );
+        assert!(!fs::read_to_string(sandbox.slots()).unwrap().contains(id));
+    }
+    let output = sandbox
+        .command()
+        .current_dir(sandbox.worktree())
+        .args(["on", source_id, "done", "--spawn", "codex"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let (child, _running) = sandbox.capture();
+    let child_id = child["id"].as_str().unwrap();
+    let session = sandbox.json(&["show", child_id, "--json"]);
+    let parent = sandbox.json(&[
+        "show",
+        session["body"]["parent_session_id"].as_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(parent["body"]["human_device_id"], parent["device_id"]);
+    assert_eq!(session["workspace_id"], "api/feature");
+    assert!(child["argv"].as_array().unwrap().iter().any(|argument| {
+        argument
+            .as_str()
+            .is_some_and(|text| text.contains(source_id) && text.contains("literal {id} $value"))
+    }));
+    assert!(
+        sandbox
+            .command()
+            .env("WS_SESSION_ID", child_id)
+            .arg("done")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!sandbox.worktree().join("never-execute-ws-prompt").exists());
+}
+
+#[test]
 fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo();

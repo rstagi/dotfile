@@ -220,8 +220,16 @@ impl Sessions {
             grok_home: env::var_os("GROK_HOME").map(PathBuf::from),
             ws_home,
             ws_bin: env::current_exe()?,
-            spawned: false,
-            prompt: None,
+            spawned: session.body["spawned"].as_bool().unwrap_or(false),
+            prompt: if self
+                .registry
+                .latest_event(session.id, "agent.prompt_consumed")?
+                .is_none()
+            {
+                session.body["prompt"].as_str().map(str::to_owned)
+            } else {
+                None
+            },
             arguments,
         };
         let resume = self.agent_resume_id(&directory, &session)?;
@@ -240,6 +248,9 @@ impl Sessions {
             context.ws_bin.to_string_lossy().into_owned(),
         );
         prepared.write_files()?;
+        if context.prompt.is_some() {
+            self.append(session.id, "agent.prompt_consumed", json!({}))?;
+        }
         Ok(Launch {
             prepared,
             directory,

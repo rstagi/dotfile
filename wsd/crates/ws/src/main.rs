@@ -17,6 +17,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Register or remove a session trigger.
+    On {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<String>,
+    },
+    /// List pending session triggers.
+    Triggers {
+        #[arg(long)]
+        json: bool,
+    },
     /// Publish completion output for the current session.
     Done {
         #[arg(long, conflicts_with = "stdin")]
@@ -195,6 +205,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::On { arguments } => cmd::on::run(&socket_path()?, arguments).await?,
+        Command::Triggers { json } => cmd::triggers::run(&socket_path()?, json).await?,
         Command::Done { output, stdin } => {
             cmd::done::run(&socket_path()?, output.as_deref().or(stdin.as_deref())).await?
         }

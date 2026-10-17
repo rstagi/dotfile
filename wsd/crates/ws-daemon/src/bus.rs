@@ -110,6 +110,26 @@ impl Sessions {
         from: Option<SessionId>,
         body: &str,
     ) -> Result<Message> {
+        self.send_message_inner(target, from, body, None)
+    }
+
+    pub(crate) fn send_trigger_message(
+        &mut self,
+        target: &str,
+        owner: SessionId,
+        body: &str,
+        trigger: EventId,
+    ) -> Result<Message> {
+        self.send_message_inner(target, Some(owner), body, Some(trigger))
+    }
+
+    fn send_message_inner(
+        &mut self,
+        target: &str,
+        from: Option<SessionId>,
+        body: &str,
+        trigger: Option<EventId>,
+    ) -> Result<Message> {
         self.record_call(from, "message.send", Some(target))?;
         let to = self.get_record(target)?;
         if body.is_empty() {
@@ -131,11 +151,11 @@ impl Sessions {
             pair_seq,
             body: body.into(),
         };
-        let entry = self.append_entry(
-            from.id,
-            "message.sent",
-            serde_json::to_value(&content).map_err(Error::Json)?,
-        )?;
+        let mut payload = serde_json::to_value(&content).map_err(Error::Json)?;
+        if let Some(id) = trigger {
+            payload["trigger_id"] = json!(id);
+        }
+        let entry = self.append_entry(from.id, "message.sent", payload)?;
         if to.device_id == self.device_id
             && matches!(to.state.as_str(), "finished" | "failed")
             && let Err(error) = self.reopen_for_message(&to, Some(from.id))
@@ -235,7 +255,7 @@ impl Sessions {
         Ok(pending.len())
     }
 
-    fn message_session(
+    pub(crate) fn message_session(
         &mut self,
         session: Option<SessionId>,
     ) -> Result<ws_core::registry::Session> {

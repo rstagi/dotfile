@@ -26,6 +26,7 @@ pub mod phases;
 pub mod sessions;
 pub mod supervisor;
 pub mod tmux;
+pub mod triggers;
 pub mod wait;
 pub mod workspaces;
 
@@ -74,6 +75,9 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .await
         .map_err(|error| io::Error::other(error.0))?;
     hooks::replay(store.clone(), &state).await?;
+    api::call(store.clone(), |sessions| sessions.evaluate_triggers())
+        .await
+        .map_err(|error| io::Error::other(error.0))?;
     let delivery = bus::delivery::start(store.clone());
     let app = Router::new()
         .route("/v1/ping", get(ping))

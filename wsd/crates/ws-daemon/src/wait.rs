@@ -206,6 +206,9 @@ impl Sessions {
             "done",
             json!({"output":path, "parent_session_id":caller}),
         )?;
+        if session.body["spawned"] == true {
+            self.finish_spawned_session(&session)?;
+        }
         self.get_record(input)
     }
     fn wait_match(&self, id: SessionId, condition: &Condition) -> Result<Option<WaitResult>> {
