@@ -25,6 +25,7 @@ pub struct Sessions {
     pub(crate) registry: Registry,
     needs_rebuild: bool,
     writers: HashMap<SessionId, LogWriter>,
+    pub(crate) headless_hooks: HashMap<SessionId, crate::hooks::HookState>,
     _writer_lock: File,
 }
 
@@ -73,6 +74,7 @@ impl Sessions {
             registry,
             needs_rebuild: false,
             writers: HashMap::new(),
+            headless_hooks: HashMap::new(),
             _writer_lock: writer_lock,
         })
     }

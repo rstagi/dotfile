@@ -48,7 +48,7 @@ pub enum StopDecision {
 }
 
 #[derive(Default)]
-struct Window {
+pub(crate) struct HookState {
     owned: bool,
     id: String,
     seq: u64,
@@ -103,7 +103,7 @@ pub async fn ingest(
         let callback = callback.clone();
         window = Some(
             api::call(store.clone(), move |sessions| {
-                sessions.headless_hook_window(&callback)
+                sessions.headless_hook_state(&callback)
             })
             .await
             .map_err(|error| error.0)?,
@@ -138,13 +138,24 @@ pub async fn ingest(
                 .map(|window| &window.id)
         );
         event["stop_reply"] = stop_reply(&decision);
-        api::call(store, move |sessions| {
+        api::call(store.clone(), move |sessions| {
             sessions.append_callback(&callback, event_type, event)
         })
         .await
         .map_err(|error| error.0)?;
     }
-    if let Some(window) = window.filter(|window| !window.id.is_empty()) {
+    if callback.pane.is_none() {
+        let id = callback.session_id;
+        if let Some(mut state) = window {
+            apply_headless(&mut state, &reduction.changes);
+            api::call(store, move |sessions| {
+                sessions.headless_hooks.insert(id, state);
+                Ok(())
+            })
+            .await
+            .map_err(|error| error.0)?;
+        }
+    } else if let Some(window) = window {
         apply(&callback, &window.id, &reduction.changes).await?;
         if reduction.accepted {
             crate::notify::transition(
@@ -247,65 +258,6 @@ fn stop_reply(decision: &StopDecision) -> Value {
 }
 
 impl Sessions {
-    fn headless_hook_window(&self, callback: &Callback) -> crate::sessions::Result<Window> {
-        let session = self.get_record(&callback.session_id.to_string())?;
-        let mut window = Window {
-            owned: true,
-            session: session.id.to_string(),
-            focused: true,
-            state: "idle".into(),
-            main: "idle".into(),
-            ..Window::default()
-        };
-        // Rebuild from durable receipts so restart and spool replay retain the same ordering.
-        // The current receipt is already durable but has not yet passed through reduction.
-        let entries = SessionLog::new(&self.state, session.id, session.device_id)
-            .read()?
-            .entries;
-        for entry in entries
-            .into_iter()
-            .filter(|entry| entry.event_type == "hook.received")
-        {
-            if entry.body["callback_id"] == callback.callback_id.to_string()
-                || !entry.body["pane"].is_null()
-            {
-                continue;
-            }
-            let decision = if entry.body["stop_reply"]["decision"] == "block" {
-                StopDecision::Block(
-                    entry.body["stop_reply"]["reason"]
-                        .as_str()
-                        .unwrap_or("")
-                        .into(),
-                )
-            } else {
-                StopDecision::Accept
-            };
-            let mut body = entry.body;
-            body["session_id"] = json!(session.id);
-            let previous: Callback = serde_json::from_value(body).map_err(Error::Json)?;
-            let reduction = reduce(&previous, Some(&window), &decision);
-            for (key, value) in reduction.changes {
-                let value = value.unwrap_or_default();
-                match key.as_str() {
-                    "@ws_seq" => window.seq = value.parse().unwrap_or(0),
-                    "@ws_state" => window.state = value,
-                    "@ws_main" => window.main = value,
-                    "@ws_turn" => window.turn = value,
-                    _ if key.starts_with("@ws_sub_") => {
-                        if value.is_empty() {
-                            window.subagents.remove(&key);
-                        } else {
-                            window.subagents.insert(key);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(window)
-    }
-
     fn append_callback(
         &mut self,
         callback: &Callback,
@@ -340,9 +292,76 @@ impl Sessions {
         self.append(callback.session_id, event_type, body.clone())?;
         Ok(body)
     }
+
+    fn headless_hook_state(&mut self, callback: &Callback) -> crate::sessions::Result<HookState> {
+        // Move the cached state out until reduction succeeds. A failed ingest rebuilds from receipts.
+        if let Some(state) = self.headless_hooks.remove(&callback.session_id) {
+            return Ok(state);
+        }
+        let session = self.get_record(&callback.session_id.to_string())?;
+        let mut window = HookState {
+            owned: true,
+            session: session.id.to_string(),
+            focused: true,
+            state: "idle".into(),
+            main: "idle".into(),
+            ..HookState::default()
+        };
+        // Rebuild from durable receipts so restart and spool replay retain the same ordering.
+        // The current receipt is already durable but has not yet passed through reduction.
+        let entries = SessionLog::new(&self.state, session.id, session.device_id)
+            .read()?
+            .entries;
+        for entry in entries
+            .into_iter()
+            .filter(|entry| entry.event_type == "hook.received")
+        {
+            if entry.body["callback_id"] == callback.callback_id.to_string()
+                || !entry.body["pane"].is_null()
+            {
+                continue;
+            }
+            let decision = if entry.body["stop_reply"]["decision"] == "block" {
+                StopDecision::Block(
+                    entry.body["stop_reply"]["reason"]
+                        .as_str()
+                        .unwrap_or("")
+                        .into(),
+                )
+            } else {
+                StopDecision::Accept
+            };
+            let mut body = entry.body;
+            body["session_id"] = json!(session.id);
+            let previous: Callback = serde_json::from_value(body).map_err(Error::Json)?;
+            let reduction = reduce(&previous, Some(&window), &decision);
+            apply_headless(&mut window, &reduction.changes);
+        }
+        Ok(window)
+    }
 }
 
-async fn window(callback: &Callback) -> io::Result<Option<Window>> {
+fn apply_headless(state: &mut HookState, changes: &[(String, Option<String>)]) {
+    for (key, value) in changes {
+        let value = value.clone().unwrap_or_default();
+        match key.as_str() {
+            "@ws_seq" => state.seq = value.parse().unwrap_or(0),
+            "@ws_state" => state.state = value,
+            "@ws_main" => state.main = value,
+            "@ws_turn" => state.turn = value,
+            _ if key.starts_with("@ws_sub_") => {
+                if value.is_empty() {
+                    state.subagents.remove(key);
+                } else {
+                    state.subagents.insert(key.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn window(callback: &Callback) -> io::Result<Option<HookState>> {
     let Some(pane) = &callback.pane else {
         return Ok(None);
     };
@@ -361,7 +380,7 @@ async fn window(callback: &Callback) -> io::Result<Option<Window>> {
             "The hook window response is invalid.",
         ));
     }
-    Ok(Some(Window {
+    Ok(Some(HookState {
         owned: true,
         id: fields[0].into(),
         seq: fields[1].parse().unwrap_or(0),
@@ -385,7 +404,7 @@ async fn window(callback: &Callback) -> io::Result<Option<Window>> {
     }))
 }
 
-fn reduce(callback: &Callback, window: Option<&Window>, decision: &StopDecision) -> Reduction {
+fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecision) -> Reduction {
     let mut result = Reduction {
         changes: vec![],
         accepted: false,

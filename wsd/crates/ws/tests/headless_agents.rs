@@ -206,7 +206,18 @@ print(json.dumps({'argv': args, 'id': os.environ['WS_SESSION_ID']}))
             assert!(result.status.success(), "{result:?}");
             let captured: Value = serde_json::from_slice(&result.stdout).unwrap();
             assert_eq!(captured["id"], id);
-            let events = session_events(home.path(), id);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let events = loop {
+                let events = session_events(home.path(), id);
+                if events.len() == 4 {
+                    break events;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "The agent hooks did not reach the session log: {events:?}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
             assert_eq!(
                 events
                     .iter()
@@ -233,19 +244,6 @@ print(json.dumps({'argv': args, 'id': os.environ['WS_SESSION_ID']}))
             assert_eq!(events[3]["body"]["window_state"], "idle");
         }
     }
-}
-
-fn session_events(home: &std::path::Path, id: &str) -> Vec<Value> {
-    fs::read_to_string(home.join("state/sessions").join(id).join("log.jsonl"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .filter(|entry| {
-            entry["type"]
-                .as_str()
-                .is_some_and(|kind| kind.starts_with("turn.") || kind.starts_with("tool."))
-        })
-        .collect()
 }
 
 #[test]
@@ -338,4 +336,84 @@ fn headless_sequence_and_turn_guards_survive_restart_and_spool_replay_per_sessio
             .count(),
         0
     );
+}
+
+#[tokio::test]
+async fn a_headless_blocked_stop_keeps_its_turn_and_decision_after_restart() {
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+    use ws_core::ids::Ulid;
+    use ws_daemon::{
+        hooks::{self, Callback, StopDecision},
+        sessions::{CreateSession, Sessions},
+    };
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let state = home.path().join("state");
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let id = sessions.create(CreateSession::default()).unwrap().id;
+    let store = Arc::new(Mutex::new(sessions));
+    let callback = |event: &str, state: &str, seq| Callback {
+        callback_id: Ulid::new(),
+        session_id: id,
+        observed_at_us: seq,
+        state: state.into(),
+        pane: None,
+        tmux_socket: None,
+        tmux_path: None,
+        payload: json!({"hook_event_name":event, "turn_id":"same-turn"}),
+        notify: None,
+    };
+    hooks::ingest(
+        store.clone(),
+        callback("UserPromptSubmit", "working", 10),
+        StopDecision::Accept,
+    )
+    .await
+    .unwrap();
+    let blocked = callback("Stop", "stop", 20);
+    let reply = hooks::ingest(
+        store.clone(),
+        blocked.clone(),
+        StopDecision::Block("Continue queued work.".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["decision"], "block");
+    drop(store);
+    let store = Arc::new(Mutex::new(Sessions::open(&state, 1).unwrap()));
+    let reply = hooks::ingest(store.clone(), blocked, StopDecision::Accept)
+        .await
+        .unwrap();
+    assert_eq!(reply["decision"], "block");
+    hooks::ingest(
+        store,
+        callback("Interrupt", "cancel", 30),
+        StopDecision::Accept,
+    )
+    .await
+    .unwrap();
+    let events = session_events(home.path(), &id.to_string());
+    assert_eq!(
+        events
+            .iter()
+            .map(|entry| entry["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["turn.started", "turn.continued", "turn.cancelled"]
+    );
+    assert_eq!(events[1]["body"]["window_state"], "working");
+    assert_eq!(events[2]["body"]["state_accepted"], true);
+    assert_eq!(events[2]["body"]["window_state"], "idle");
+}
+
+fn session_events(home: &std::path::Path, id: &str) -> Vec<Value> {
+    fs::read_to_string(home.join("state/sessions").join(id).join("log.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|entry| {
+            entry["type"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("turn.") || kind.starts_with("tool."))
+        })
+        .collect()
 }
