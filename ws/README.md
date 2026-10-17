@@ -249,6 +249,26 @@ It replaces invalid UTF-8 bytes and enforces the limit after decoding. JSON tail
 Phase spawn requires `$WS_SESSION_ID`. Repeat `--caps-required <capability>` to record required capabilities.
 Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox daemon.
 
+The daemon reads spawn limits from `$WS_STATE/config.toml` when it starts:
+
+```toml
+[limits]
+max_children = 8
+max_depth = 3
+```
+
+Missing fields use these defaults. Zero prevents child creation. Restart the daemon after a configuration change.
+The child count includes finished and failed children. The count survives daemon restarts.
+
+Each root has depth zero. A child adds one to its parent's depth.
+The daemon checks limits before it creates an interactive session, a headless session, or a phase.
+A resume keeps the existing session and does not consume another child slot.
+
+A violation returns HTTP 429 with `error.code`, `error.message`, `error.parent_session_id`, and `error.limit`.
+The codes are `max_children_exceeded` and `max_depth_exceeded`.
+The CLI exits with code 1 and writes this JSON error to standard error.
+MCP returns the same error as structured content with `isError: true`.
+
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 
 ```json

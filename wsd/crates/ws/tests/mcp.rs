@@ -130,7 +130,13 @@ struct TestServer {
 
 impl TestServer {
     async fn start() -> Self {
+        Self::with_config("").await
+    }
+
+    async fn with_config(config: &str) -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
+        std::fs::create_dir(home.path().join("state")).unwrap();
+        std::fs::write(home.path().join("state/config.toml"), config).unwrap();
         let socket = home.path().join("ws.sock");
         let daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
         let response = common::request(&socket, "POST", "/v1/sessions", "{}");
@@ -612,4 +618,78 @@ async fn record_creation_rejects_process_options_without_headless() {
         1
     );
     server.finish().await;
+}
+
+#[tokio::test]
+async fn spawn_limit_errors_match_in_the_cli_and_mcp_without_starting_children() {
+    for (setting, code) in [
+        ("max_children", "max_children_exceeded"),
+        ("max_depth", "max_depth_exceeded"),
+    ] {
+        let server = TestServer::with_config(&format!("[limits]\n{setting} = 0\n")).await;
+        let output = common::ws(server.home.path(), &server.socket)
+            .env("WS_SESSION_ID", &server.parent)
+            .args(["session", "create", "--json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let cli_error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(cli_error["error"]["code"], code);
+        assert_eq!(cli_error["error"]["parent_session_id"], server.parent);
+        assert_eq!(cli_error["error"]["limit"], 0);
+        for (tool, arguments) in [
+            ("session_create", json!({})),
+            (
+                "session_create",
+                json!({"headless":true,"command":["/usr/bin/true"],"cwd":server.home.path()}),
+            ),
+            (
+                "phase_spawn",
+                json!({"repo":server.home.path(),"base":"main","max_runtime":30,"phase":{"command":["/usr/bin/true"]}}),
+            ),
+        ] {
+            let response = server
+                .client
+                .call_tool(
+                    CallToolRequestParams::new(tool)
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.is_error, Some(true));
+            assert_eq!(response.structured_content.unwrap(), cli_error);
+        }
+        let output = common::ws(server.home.path(), &server.socket)
+            .env("WS_SESSION_ID", &server.parent)
+            .args([
+                "phase",
+                "spawn",
+                "--repo",
+                server.home.path().to_str().unwrap(),
+                "--base",
+                "main",
+                "--max-runtime",
+                "30",
+                "--json",
+                "--",
+                "/usr/bin/true",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stderr).unwrap(),
+            cli_error
+        );
+        assert_eq!(
+            server
+                .call("session_list", json!({}))
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        server.finish().await;
+    }
 }

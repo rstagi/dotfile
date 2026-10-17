@@ -776,9 +776,71 @@ fn split_panes_cannot_prepare_or_finish_the_windows_agent() {
     assert!(fs::read_to_string(sandbox.slots()).unwrap().contains(id));
 }
 
+#[test]
+fn interactive_spawn_limits_preserve_slots_and_allow_existing_sessions_to_resume() {
+    for (setting, message) in [
+        ("max_children", "child limit"),
+        ("max_depth", "depth limit"),
+    ] {
+        let sandbox = Sandbox::with_config(&format!("[limits]\n{setting} = 0\n"));
+        let repo = sandbox.repo();
+        assert!(
+            sandbox
+                .output(&[
+                    "new",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--branch",
+                    "feature",
+                    "--detach"
+                ])
+                .status
+                .success()
+        );
+        let (owner, _running) = sandbox.capture();
+        let id = owner["id"].as_str().unwrap();
+        let slots = fs::read_to_string(sandbox.slots()).unwrap();
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .args(["add", "api/feature", "--detach"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(message),
+            "{output:?}"
+        );
+        assert_eq!(fs::read_to_string(sandbox.slots()).unwrap(), slots);
+        assert_eq!(
+            sandbox
+                .json(&["sessions", "--json"])
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        sandbox.tmux(&["kill-window", "-t", &sandbox.window(id)]);
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .args(["open", id, "--detach"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let (resumed, _running) = sandbox.capture();
+        assert_eq!(resumed["id"], id);
+    }
+}
+
 impl Sandbox {
     fn new() -> Self {
+        Self::with_config("")
+    }
+    fn with_config(config: &str) -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
+        fs::create_dir(home.path().join("state")).unwrap();
+        fs::write(home.path().join("state/config.toml"), config).unwrap();
         let socket = home.path().join("wsd.sock");
         let server = format!(
             "ws-agents-{}-{}",

@@ -20,6 +20,7 @@ use ws_core::{
 };
 
 pub struct Sessions {
+    pub(crate) config: ws_core::config::Config,
     pub(crate) trigger_events_pending: bool,
     pub(crate) triggers: std::collections::BTreeMap<Ulid, crate::triggers::Trigger>,
     pub(crate) state: PathBuf,
@@ -49,6 +50,7 @@ pub enum Error {
     Transition(TransitionError),
     NameTaken(String),
     DependencyCycle(Vec<SessionId>),
+    SpawnLimit(crate::limits::SpawnLimit),
     PendingMessages,
     WaitTimeout,
     ShuttingDown,
@@ -60,6 +62,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl Sessions {
     /// Opens the local index and restores it from the session logs.
     pub fn open(state: &Path, alias_floor: i64) -> Result<Self> {
+        let config = ws_core::config::Config::load(state)?;
         let alias_floor = alias_floor.max(crate::import::alias_floor(state)?);
         let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".into());
         let device = Device::init(state, &hostname)?;
@@ -78,6 +81,7 @@ impl Sessions {
         let mut registry = Registry::open(&state.join("registry.sqlite"), alias_floor)?;
         registry.rebuild(state)?;
         let mut sessions = Self {
+            config,
             triggers: Default::default(),
             trigger_events_pending: false,
             state: state.into(),
@@ -115,6 +119,7 @@ impl Sessions {
         {
             return Err(Error::InvalidRequest("The workspace id is empty."));
         }
+        self.check_spawn_limits(request.parent_session_id)?;
         let alias = self.registry.next_alias()?;
         let body = json!({"alias": alias, "name": request.name, "workspace_id": request.workspace_id,
             "parent_session_id": request.parent_session_id});
@@ -288,6 +293,7 @@ impl fmt::Display for Error {
                     .collect::<Vec<_>>()
                     .join(" -> ")
             ),
+            Self::SpawnLimit(error) => error.fmt(formatter),
             Self::Io(error) => error.fmt(formatter),
             Self::Registry(error) => error.fmt(formatter),
             Self::InvalidRequest(message) => formatter.write_str(message),

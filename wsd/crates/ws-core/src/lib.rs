@@ -1,5 +1,6 @@
 //! Shared types and state storage for the WS daemon and CLI.
 
+pub mod config;
 pub mod device;
 pub mod ids;
 pub mod lockfile;

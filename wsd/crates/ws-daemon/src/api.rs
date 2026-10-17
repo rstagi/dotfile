@@ -199,6 +199,12 @@ impl IntoResponse for ApiError {
             }
             Error::ShuttingDown => (StatusCode::SERVICE_UNAVAILABLE, "daemon_stopping"),
             Error::WaitTimeout => (StatusCode::REQUEST_TIMEOUT, "wait_timeout"),
+            Error::SpawnLimit(crate::limits::SpawnLimit::Children { .. }) => {
+                (StatusCode::TOO_MANY_REQUESTS, "max_children_exceeded")
+            }
+            Error::SpawnLimit(crate::limits::SpawnLimit::Depth { .. }) => {
+                (StatusCode::TOO_MANY_REQUESTS, "max_depth_exceeded")
+            }
             Error::PendingMessages => (StatusCode::CONFLICT, "pending_messages"),
             Error::DependencyCycle(_) => (StatusCode::CONFLICT, "dependency_cycle"),
             Error::NameTaken(_) => (StatusCode::CONFLICT, "name_taken"),
@@ -206,6 +212,14 @@ impl IntoResponse for ApiError {
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         };
         let mut error = json!({"code": code, "message": self.0.to_string()});
+        if let Error::SpawnLimit(
+            crate::limits::SpawnLimit::Children { parent, limit }
+            | crate::limits::SpawnLimit::Depth { parent, limit },
+        ) = &self.0
+        {
+            error["parent_session_id"] = json!(parent);
+            error["limit"] = json!(limit);
+        }
         if let Error::Transition(transition) = self.0 {
             error["from"] = json!(transition.from);
             error["to"] = json!(transition.to);

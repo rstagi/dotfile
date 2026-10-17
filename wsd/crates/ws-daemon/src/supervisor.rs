@@ -496,6 +496,7 @@ impl Sessions {
             },
             Some(&id.to_string()),
         )?;
+        self.check_spawn_limits(request.parent_session_id)?;
         let directory = self
             .state
             .canonicalize()?
