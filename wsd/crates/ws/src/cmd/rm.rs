@@ -16,19 +16,7 @@ pub async fn run(
 ) -> Result<()> {
     let parent_session_id = super::caller(socket).await?;
     if interactive {
-        let body = client::request(socket, Method::GET, "/v1/workspaces", Vec::new()).await?;
-        let workspaces: Vec<ws_core::registry::Workspace> = serde_json::from_slice(&body)?;
-        let workspace = workspaces
-            .iter()
-            .find(|workspace| {
-                workspace.id == target
-                    || workspace.body["path"].as_str().is_some_and(|path| {
-                        Path::new(target).is_absolute()
-                            && Path::new(path).canonicalize().ok()
-                                == Path::new(target).canonicalize().ok()
-                    })
-            })
-            .ok_or_else(|| format!("no such workspace: {target}"))?;
+        let (name, _) = ws_daemon::workspaces::workspace_path(target)?;
         let mut tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -36,7 +24,7 @@ pub async fn run(
         write!(
             tty,
             "remove {} and all its sessions? [y/N/b=also delete branch] ",
-            workspace.id
+            name
         )?;
         tty.flush()?;
         let mut answer = String::new();
@@ -51,6 +39,9 @@ pub async fn run(
         "target": target, "force": force, "delete_branch": delete_branch, "force_delete_branch": force_delete_branch, "parent_session_id": parent_session_id
     }))?).await?;
     let response: serde_json::Value = serde_json::from_slice(&body)?;
+    if let Some(stderr) = response["git_stderr"].as_str() {
+        eprint!("{stderr}");
+    }
     if let Some(warning) = response["warning"].as_str() {
         eprintln!("ws: {warning}");
     }

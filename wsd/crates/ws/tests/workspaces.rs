@@ -14,6 +14,153 @@ struct Sandbox {
 }
 
 #[test]
+fn explicit_open_and_remove_accept_worktrees_that_have_no_registry_row() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    for branch in ["opened", "removed", "dirty"] {
+        let wt = sandbox.home.path().join("worktrees/api").join(branch);
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(
+            &repo,
+            &["worktree", "add", "-qb", branch, wt.to_str().unwrap()],
+        );
+    }
+    let output = sandbox.output(&["open", "api/opened", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let dirty = sandbox.home.path().join("worktrees/api/dirty");
+    std::fs::write(dirty.join("change"), "dirty\n").unwrap();
+    let output = sandbox.output(&["rm", "api/dirty"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("workspace has uncommitted changes:")
+    );
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", "api/removed", "--interactive"],
+        "[y/N/b=also delete branch] ",
+        "b",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(!sandbox.home.path().join("worktrees/api/removed").exists());
+    assert_eq!(git(&repo, &["branch", "--list", "removed"]), "");
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn pin_registers_an_explicit_worktree_without_opening_a_tab_or_allocating_a_session() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let wt = sandbox.home.path().join("worktrees/api/orphan");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    git(
+        &repo,
+        &["worktree", "add", "-qb", "orphan", wt.to_str().unwrap()],
+    );
+    let output = sandbox.output(&["pin", "api/orphan"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-orphan-pinned.txt")
+    );
+    assert_eq!(sandbox.json(&["sessions", "--json"]), serde_json::json!([]));
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-orphan-pinned.txt")
+    );
+}
+
+#[test]
+fn rm_preserves_unmerged_branches_unless_force_delete_branch_is_explicit() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    for branch in ["keep", "delete"] {
+        assert!(
+            sandbox
+                .output(&[
+                    "new",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--branch",
+                    branch,
+                    "--detach"
+                ])
+                .status
+                .success()
+        );
+        let wt = sandbox.home.path().join("worktrees/api").join(branch);
+        std::fs::write(wt.join("new-file"), "change\n").unwrap();
+        git(&wt, &["add", "."]);
+        git(&wt, &["commit", "-qm", "unmerged"]);
+    }
+    let output = sandbox.output(&["rm", "api/keep", "--delete-branch"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-unmerged.txt")
+    );
+    assert!(!git(&repo, &["branch", "--list", "keep"]).is_empty());
+    sandbox.tmux(&["kill-session", "-t", "=api/delete"]);
+    let output = sandbox.output(&["rm", "api/delete", "--force-delete-branch"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(git(&repo, &["branch", "--list", "delete"]), "");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+}
+
+#[test]
+fn a_removed_workspace_can_be_created_again_without_its_old_pin() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let create = [
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "again",
+        "--detach",
+    ];
+    assert!(sandbox.output(&create).status.success());
+    let owner = sandbox.json(&["list", "--json"])[0]["owner_session_id"].clone();
+    assert!(sandbox.output(&["pin", "api/again"]).status.success());
+    assert!(sandbox.output(&["rm", "api/again"]).status.success());
+    let output = sandbox.output(&create);
+    assert!(output.status.success(), "{output:?}");
+    let rows = sandbox.json(&["list", "--json"]);
+    assert_eq!(rows[0]["owner_session_id"], owner);
+    assert_ne!(rows[0]["body"]["pinned"], true);
+    assert_eq!(rows[0]["body"]["windows"].as_array().unwrap().len(), 1);
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["list", "--json"]), rows);
+}
+
+#[test]
 fn bare_ws_creates_its_first_workspace_and_interactive_rm_accepts_cancel_or_branch_deletion() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::new();
@@ -174,6 +321,7 @@ fn open_selects_the_target_tab_clears_unread_and_attaches_or_switches_its_sessio
     let output = sandbox
         .focus_command()
         .args(["open", "#2"])
+        .env("TMUX", "")
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");

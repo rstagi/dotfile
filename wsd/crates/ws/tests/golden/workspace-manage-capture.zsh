@@ -23,3 +23,11 @@ cmp "$TMP/error" "$DEST/workspace-missing.txt"
 for branch in alpha zeta; do "$WS" new --repo "$repo" --branch "$branch" --detach; done
 "$WS" pin api/zeta
 "$WS" _rows | cut -f2 | sed "s|$WS_ROOT|<ROOT>|g" > "$DEST/workspace-pick-order.txt"
+git -C "$repo" worktree add -qb orphan "$WS_ROOT/api/orphan"
+"$WS" pin api/orphan
+"$WS" list | grep $'\tapi/orphan\t' | sed "s|$WS_ROOT|<ROOT>|g" > "$DEST/workspace-orphan-pinned.txt"
+"$WS" new --repo "$repo" --branch keep --detach
+print change > "$WS_ROOT/api/keep/new-file"
+git -C "$WS_ROOT/api/keep" add .
+git -C "$WS_ROOT/api/keep" commit -qm unmerged
+"$WS" rm api/keep --delete-branch > /dev/null 2> "$DEST/workspace-unmerged.txt"

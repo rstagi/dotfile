@@ -81,37 +81,28 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/workspaces/open", axum::routing::post(open))
 }
 
-async fn open(
-    State(store): State<Store>,
-    Json(request): Json<WorkspaceTarget>,
-) -> std::result::Result<Json<Value>, ApiError> {
-    Ok(Json(
-        api::call(store, move |sessions| sessions.open_workspace(request)).await?,
-    ))
-}
-
-async fn remove(
-    State(store): State<Store>,
-    Json(request): Json<RemoveWorkspace>,
-) -> std::result::Result<Json<Value>, ApiError> {
-    Ok(Json(
-        api::call(store, move |sessions| sessions.remove_workspace(request)).await?,
-    ))
-}
-
-async fn pin(
-    State(store): State<Store>,
-    Json(request): Json<WorkspaceTarget>,
-) -> std::result::Result<Json<Value>, ApiError> {
-    Ok(Json(api::call(store, move |sessions| {
-        sessions.record_call(request.parent_session_id, "workspace.pin", Some(&request.target))?;
-        let workspace = sessions.workspace(&request.target)?;
-        let pinned = !workspace.body["pinned"].as_bool().unwrap_or(false);
-        sessions.append(workspace.owner_session_id, "workspace.updated", json!({
-            "workspace_id": workspace.id, "pinned": pinned, "parent_session_id": request.parent_session_id
-        }))?;
-        Ok(json!({"pinned": pinned}))
-    }).await?))
+/// Resolves an explicit worktree under WS_ROOT without registering it.
+pub fn workspace_path(target: &str) -> Result<(String, PathBuf)> {
+    let root = workspace_root()?;
+    let path = if Path::new(target).is_absolute() {
+        PathBuf::from(target)
+    } else {
+        root.join(target)
+    };
+    let missing = || failure(format!("no such workspace: {target}"));
+    let wt = path.canonicalize().map_err(|_| missing())?;
+    let root = root.canonicalize().map_err(|_| missing())?;
+    let relative = wt.strip_prefix(&root).map_err(|_| missing())?;
+    if relative.components().count() != 2
+        || git(&wt, &["rev-parse", "--show-toplevel"]).ok().as_deref() != wt.to_str()
+    {
+        return Err(missing());
+    }
+    let name = relative
+        .to_str()
+        .ok_or(Error::InvalidRequest("The workspace path is not UTF-8."))?
+        .to_owned();
+    Ok((name, wt))
 }
 
 async fn list(
@@ -145,6 +136,51 @@ async fn add(
     ))
 }
 
+async fn pin(
+    State(store): State<Store>,
+    Json(request): Json<WorkspaceTarget>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    let response = api::call(store, move |sessions| {
+        sessions.record_call(
+            request.parent_session_id,
+            "workspace.pin",
+            Some(&request.target),
+        )?;
+        let workspace = sessions.register_workspace(&request.target, request.parent_session_id)?;
+        let pinned = !workspace.body["pinned"].as_bool().unwrap_or(false);
+        sessions.append(
+            workspace.owner_session_id,
+            "workspace.updated",
+            json!({
+                "workspace_id": workspace.id,
+                "pinned": pinned,
+                "parent_session_id": request.parent_session_id
+            }),
+        )?;
+        Ok(json!({"pinned": pinned}))
+    })
+    .await?;
+    Ok(Json(response))
+}
+
+async fn remove(
+    State(store): State<Store>,
+    Json(request): Json<RemoveWorkspace>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| sessions.remove_workspace(request)).await?,
+    ))
+}
+
+async fn open(
+    State(store): State<Store>,
+    Json(request): Json<WorkspaceTarget>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| sessions.open_workspace(request)).await?,
+    ))
+}
+
 impl Sessions {
     fn open_workspace(&mut self, request: WorkspaceTarget) -> Result<Value> {
         self.record_call(
@@ -169,7 +205,7 @@ impl Sessions {
                     ))
                 })?
         } else {
-            self.workspace(&request.target)?
+            self.register_workspace(&request.target, request.parent_session_id)?
         };
         let mut windows = live_windows(&workspace);
         if let Some(session) = &session {
@@ -235,12 +271,9 @@ impl Sessions {
             "workspace.remove",
             Some(&request.target),
         )?;
-        let workspace = self.workspace(&request.target)?;
-        let wt = Path::new(
-            workspace.body["path"]
-                .as_str()
-                .ok_or(Error::InvalidRequest("The workspace has no path."))?,
-        );
+        let workspace = self.find_workspace(&request.target)?;
+        let (name, wt) = workspace_path(&request.target)?;
+        let wt = wt.as_path();
         let repo = main_checkout(wt)?;
         let branch = git(wt, &["branch", "--show-current"])?;
         if !request.force && !git(wt, &["status", "--porcelain"])?.is_empty() {
@@ -276,30 +309,39 @@ impl Sessions {
             .map_err(|_| failure(format!("git worktree remove failed: {}", wt.display())))?;
         let _ = fs::remove_dir(wt.parent().unwrap());
         let mut warning = None;
+        let mut git_stderr = String::new();
         if !branch.is_empty() && (request.delete_branch || request.force_delete_branch) {
             let flag = if request.force_delete_branch {
                 "-D"
             } else {
                 "-d"
             };
-            if git(&repo, &["branch", flag, &branch]).is_err() {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["branch", flag, &branch])
+                .output()?;
+            git_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            if !output.status.success() && !request.force_delete_branch {
                 warning = Some(format!(
                     "kept unmerged branch {branch} (git branch -D to force)"
                 ));
             }
         }
-        self.append(
-            workspace.owner_session_id,
-            "workspace.removed",
-            json!({
-                "workspace_id": workspace.id, "parent_session_id": request.parent_session_id
-            }),
-        )?;
+        if let Some(workspace) = workspace {
+            self.append(
+                workspace.owner_session_id,
+                "workspace.removed",
+                json!({
+                    "workspace_id": workspace.id, "parent_session_id": request.parent_session_id
+                }),
+            )?;
+        }
         for session in self
             .registry
             .sessions()?
             .into_iter()
-            .filter(|session| session.workspace_id.as_deref() == Some(&workspace.id))
+            .filter(|session| session.workspace_id.as_deref() == Some(&name))
         {
             if !["finished", "failed"].contains(&session.state.as_str()) {
                 self.transition(
@@ -315,29 +357,49 @@ impl Sessions {
         for id in session_ids {
             let _ = tmux.execute(&["kill-session", "-t", &id]);
         }
-        Ok(json!({"warning": warning}))
+        Ok(json!({"warning": warning, "git_stderr": git_stderr}))
     }
 
     fn workspace(&self, target: &str) -> Result<Workspace> {
+        self.find_workspace(target)?
+            .ok_or_else(|| failure(format!("no such workspace: {target}")))
+    }
+
+    fn find_workspace(&self, target: &str) -> Result<Option<Workspace>> {
         let path = if Path::new(target).is_absolute() {
             PathBuf::from(target)
         } else {
             workspace_root()?.join(target)
         };
         let path = path.canonicalize().ok();
-        self.registry
-            .workspaces()?
-            .into_iter()
-            .find(|workspace| {
-                path.as_ref().is_some_and(|path| {
-                    workspace.body["path"]
-                        .as_str()
-                        .and_then(|stored| Path::new(stored).canonicalize().ok())
-                        .as_ref()
-                        == Some(path)
-                })
+        Ok(self.registry.workspaces()?.into_iter().find(|workspace| {
+            path.as_ref().is_some_and(|path| {
+                workspace.body["path"]
+                    .as_str()
+                    .and_then(|stored| Path::new(stored).canonicalize().ok())
+                    .as_ref()
+                    == Some(path)
             })
-            .ok_or_else(|| failure(format!("no such workspace: {target}")))
+        }))
+    }
+
+    fn register_workspace(
+        &mut self,
+        target: &str,
+        parent_session_id: Option<SessionId>,
+    ) -> Result<Workspace> {
+        if let Some(workspace) = self.find_workspace(target)? {
+            return Ok(workspace);
+        }
+        let (name, wt) = workspace_path(target)?;
+        let owner = self
+            .registry
+            .workspace_owner(&name)?
+            .unwrap_or_else(Ulid::new);
+        self.append(owner, "workspace.created", json!({
+            "workspace_id": name, "path": wt, "windows": [], "parent_session_id": parent_session_id
+        }))?;
+        self.workspace(target)
     }
 
     fn create_workspace(&mut self, request: CreateWorkspace) -> Result<Value> {
@@ -408,29 +470,8 @@ impl Sessions {
     fn add_workspace(&mut self, request: AddWorkspace) -> Result<Value> {
         self.record_call(request.parent_session_id, "workspace.add", None)?;
         check_agent(&request.agent)?;
-        let root = workspace_root()?;
-        let target = Path::new(&request.target);
-        let wt = if target.is_absolute() {
-            target.to_owned()
-        } else {
-            root.join(target)
-        };
-        let wt = wt
-            .canonicalize()
-            .map_err(|_| failure(format!("no such workspace: {}", request.target)))?;
-        let root = root.canonicalize()?;
-        let relative = wt
-            .strip_prefix(&root)
-            .map_err(|_| failure(format!("no such workspace: {}", request.target)))?;
-        if relative.components().count() != 2
-            || git(&wt, &["rev-parse", "--show-toplevel"])? != wt.to_str().unwrap()
-        {
-            return Err(failure(format!("no such workspace: {}", request.target)));
-        }
-        let name = relative
-            .to_str()
-            .ok_or(Error::InvalidRequest("The workspace path is not UTF-8."))?;
-        self.start_workspace(name, &wt, &request.agent, request.parent_session_id)
+        let (name, wt) = workspace_path(&request.target)?;
+        self.start_workspace(&name, &wt, &request.agent, request.parent_session_id)
     }
 
     fn start_workspace(
@@ -585,9 +626,7 @@ impl Sessions {
             windows.retain(|window| window["session_id"].as_str() != Some(&id.to_string()));
             windows
                 .push(json!({"window_id": window, "session_id": id, "agent": agent, "slot": slot}));
-            let owner = existing
-                .as_ref()
-                .map_or(id, |workspace| workspace.owner_session_id);
+            let owner = self.registry.workspace_owner(name)?.unwrap_or(id);
             let event = if existing.is_some() {
                 "workspace.updated"
             } else {

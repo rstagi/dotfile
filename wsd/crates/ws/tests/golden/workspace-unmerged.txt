@@ -1,0 +1,4 @@
+error: the branch 'keep' is not fully merged
+hint: If you are sure you want to delete it, run 'git branch -D keep'
+hint: Disable this message with "git config set advice.forceDeleteBranch false"
+ws: kept unmerged branch keep (git branch -D to force)

@@ -62,7 +62,7 @@ pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
         let session = tmux.execute(&["display-message", "-p", "-t", window, "#{session_id}"])?;
         tmux.execute(&["select-window", "-t", window])?;
         tmux.unset_window_option(window, "@ws_unread")?;
-        if std::env::var_os("TMUX").is_some() {
+        if std::env::var_os("TMUX").is_some_and(|tmux| !tmux.is_empty()) {
             tmux.execute(&["switch-client", "-t", &session])?;
         } else {
             let mut command = std::process::Command::new("tmux");

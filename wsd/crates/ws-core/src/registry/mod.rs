@@ -354,6 +354,16 @@ impl Registry {
         })
         .collect()
     }
+
+    /// Returns the log owner, including when the workspace is removed.
+    pub fn workspace_owner(&self, id: &str) -> Result<Option<SessionId>> {
+        select_session(
+            &self.connection,
+            "SELECT owner_session_id FROM workspaces WHERE id = ?1",
+            id,
+            id,
+        )
+    }
 }
 
 fn select_session(
