@@ -18,6 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(name = "_rows", hide = true)]
+    PickerRows,
+    #[command(name = "_summary", hide = true)]
+    PickerSummary,
     /// Show the current session's Loop dashboard.
     Top {
         #[arg(long)]
@@ -246,6 +250,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::PickerRows => cmd::picker::rows(&socket_path()?).await?,
+        Command::PickerSummary => cmd::picker::summary(&socket_path()?).await?,
         Command::Top {
             once,
             worktrees,

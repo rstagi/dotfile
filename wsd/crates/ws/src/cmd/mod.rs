@@ -21,6 +21,7 @@ pub mod on;
 pub mod open;
 pub mod phase;
 pub mod pin;
+pub mod picker;
 pub mod rm;
 pub mod send;
 pub mod session;
