@@ -17,6 +17,7 @@ use tokio::{
 };
 use ws_core::{HookRecord, PingResponse, VERSION};
 
+pub mod agents;
 pub mod api;
 pub mod sessions;
 pub mod tmux;
