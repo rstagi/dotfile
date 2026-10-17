@@ -397,9 +397,10 @@ async fn blocked_stop_preserves_the_turn_and_its_decision_across_replay() {
         sessions::Sessions,
     };
     let mut sandbox = HookSandbox::new();
-    sandbox.hook(
+    sandbox.post(
         "working",
         json!({"hook_event_name":"UserPromptSubmit", "prompt_id":"same-turn"}),
+        hooks::receipt_time_us().unwrap(),
     );
     sandbox.daemon.take();
     let state = sandbox.home.path().join("state");
@@ -598,4 +599,45 @@ fn a_reused_callback_id_cannot_change_its_payload_or_receipt_time() {
     assert!(second.starts_with("HTTP/1.1 400"), "{second}");
     assert!(sandbox.options().starts_with("working|working|original|"));
     assert_eq!(sandbox.log().len(), 3);
+}
+
+#[test]
+fn a_cached_delivery_reply_does_not_reach_a_reused_pane() {
+    let sandbox = HookSandbox::new();
+    let sent = request(
+        &sandbox.socket,
+        "POST",
+        "/v1/messages",
+        &json!({
+            "target":sandbox.id, "body":"retain for the owner",
+        })
+        .to_string(),
+    );
+    assert!(sent.starts_with("HTTP/1.1 200"), "{sent}");
+    let callback = sandbox.callback("stop", json!({"hook_event_name":"Stop"}), 100);
+    let post = || {
+        let response = request(
+            &sandbox.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &serde_json::to_string(&callback).unwrap(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        serde_json::from_str::<Value>(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    assert_eq!(post()["decision"], "block");
+    ws_daemon::tmux::Tmux::named(&sandbox.server)
+        .set_window_option(
+            &sandbox.window,
+            "@ws_session",
+            &ws_core::ids::Ulid::new().to_string(),
+        )
+        .unwrap();
+    assert_eq!(post(), json!({}));
+    assert!(
+        sandbox
+            .log()
+            .iter()
+            .all(|entry| entry["type"] != "message.delivered")
+    );
 }

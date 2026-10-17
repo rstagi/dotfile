@@ -75,20 +75,41 @@ pub async fn ingest(
     callback: Callback,
     decision: StopDecision,
 ) -> crate::sessions::Result<Value> {
+    ingest_callback(store, callback, decision, true).await
+}
+
+async fn ingest_callback(
+    store: Store,
+    callback: Callback,
+    decision: StopDecision,
+    live: bool,
+) -> crate::sessions::Result<Value> {
     let _guard = INGEST_LOCK.lock().await;
     validate(&callback)?;
     // Persist the original callback before reading or changing any window state.
     let raw = callback.clone();
     let initial_reply = stop_reply(&decision);
     let captured = api::call(store.clone(), move |sessions| {
+        crate::bus::delivery::replay(sessions)?;
+        sessions.record_call(None, "hook", None)?;
+        if sessions.get_record(&raw.session_id.to_string())?.device_id != sessions.device_id {
+            return Ok(None);
+        }
         let mut record = body(&raw);
         record["stop_reply"] = initial_reply;
-        sessions.append_callback(&raw, "hook.received", record)
+        let mut captured = sessions.append_callback(&raw, "hook.received", record)?;
+        if let Some(decision) = sessions.delivery_decision(raw.session_id, raw.callback_id)? {
+            captured["stop_reply"] = stop_reply(&decision);
+        }
+        Ok(Some(captured))
     })
     .await
     .map_err(|error| error.0)?;
+    let Some(captured) = captured else {
+        return Ok(json!({}));
+    };
     // A transport retry must retain a Stop decision that the daemon already recorded.
-    let decision = if captured["stop_reply"]["decision"] == "block" {
+    let mut decision = if captured["stop_reply"]["decision"] == "block" {
         StopDecision::Block(
             captured["stop_reply"]["reason"]
                 .as_str()
@@ -124,7 +145,26 @@ pub async fn ingest(
         .await
         .map_err(|error| error.0)?;
     }
-    let reduction = reduce(&callback, window.as_ref(), &decision);
+    if !window
+        .as_ref()
+        .is_some_and(|window| owns_window(&callback, window))
+    {
+        decision = StopDecision::Accept;
+    }
+    let mut reduction = reduce(&callback, window.as_ref(), &decision);
+    if reduction.accepted
+        && matches!(reduction.event_type, Some("turn.ended" | "turn.cancelled"))
+        && matches!(decision, StopDecision::Accept)
+    {
+        let raw = callback.clone();
+        let inject = live && reduction.event_type == Some("turn.ended");
+        decision = api::call(store.clone(), move |sessions| {
+            sessions.stop_delivery(&raw, inject)
+        })
+        .await
+        .map_err(|error| error.0)?;
+        reduction = reduce(&callback, window.as_ref(), &decision);
+    }
     if let Some(event_type) = reduction.event_type {
         let callback = callback.clone();
         let mut event = body(&callback);
@@ -148,7 +188,7 @@ pub async fn ingest(
         let id = callback.session_id;
         if let Some(mut state) = window {
             apply_headless(&mut state, &reduction.changes);
-            api::call(store, move |sessions| {
+            api::call(store.clone(), move |sessions| {
                 sessions.headless_hooks.insert(id, state);
                 Ok(())
             })
@@ -167,7 +207,12 @@ pub async fn ingest(
             .await;
         }
     }
-    Ok(stop_reply(&decision))
+    let reply = stop_reply(&decision);
+    api::call(store, move |sessions| {
+        sessions.delivery_reply(callback.session_id, callback.callback_id, reply)
+    })
+    .await
+    .map_err(|error| error.0)
 }
 
 pub(crate) fn router() -> Router<Store> {
@@ -208,6 +253,9 @@ pub fn spool(state: &Path, callback: &Callback) -> io::Result<PathBuf> {
 }
 
 pub(crate) async fn replay(store: Store, state: &Path) -> io::Result<()> {
+    api::call(store.clone(), crate::bus::delivery::replay)
+        .await
+        .map_err(|error| io::Error::other(error.0))?;
     let directory = state.join("spool");
     let mut paths = match fs::read_dir(&directory) {
         Ok(entries) => entries
@@ -225,7 +273,7 @@ pub(crate) async fn replay(store: Store, state: &Path) -> io::Result<()> {
         // Preserve a malformed or failed record. It must not prevent other sessions from replaying.
         let result = async {
             let callback = serde_json::from_slice(&fs::read(&path)?)?;
-            ingest(store.clone(), callback, StopDecision::Accept)
+            ingest_callback(store.clone(), callback, StopDecision::Accept, false)
                 .await
                 .map_err(io::Error::other)?;
             fs::remove_file(&path)
@@ -321,7 +369,16 @@ impl Sessions {
             {
                 continue;
             }
-            let decision = if entry.body["stop_reply"]["decision"] == "block" {
+            let decision = if let Some(decision) = self.delivery_decision(
+                session.id,
+                entry.body["callback_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .parse()
+                    .map_err(|_| Error::InvalidRequest("The callback id is invalid."))?,
+            )? {
+                decision
+            } else if entry.body["stop_reply"]["decision"] == "block" {
                 StopDecision::Block(
                     entry.body["stop_reply"]["reason"]
                         .as_str()
@@ -432,10 +489,7 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         return result;
     };
     result.state = window.state.clone();
-    if !window.owned
-        || (!window.session.is_empty() && window.session != callback.session_id.to_string())
-        || (!window.pane.is_empty() && Some(window.pane.as_str()) != callback.pane.as_deref())
-    {
+    if !owns_window(callback, window) {
         result.event_type = None;
         return result;
     }
@@ -537,6 +591,12 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
     result.accepted = true;
     result.state = state.into();
     result
+}
+
+fn owns_window(callback: &Callback, window: &HookState) -> bool {
+    window.owned
+        && (window.session.is_empty() || window.session == callback.session_id.to_string())
+        && (window.pane.is_empty() || Some(window.pane.as_str()) == callback.pane.as_deref())
 }
 
 async fn apply(
