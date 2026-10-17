@@ -1,6 +1,7 @@
 use std::{
     os::unix::fs::PermissionsExt,
     process::Command,
+    sync::Barrier,
     thread,
     time::{Duration, Instant},
 };
@@ -147,6 +148,67 @@ fn daemon_replaces_a_stale_socket() {
     assert!(socket.exists());
 
     let _daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
+}
+
+#[test]
+fn simultaneous_daemons_on_a_stale_socket_leave_exactly_one_server() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    create_stale_socket(&socket);
+    let barrier = Barrier::new(2);
+    let [mut first, mut second] = thread::scope(|scope| {
+        let starts = [0, 1].map(|_| {
+            scope.spawn(|| {
+                barrier.wait();
+                Daemon::spawn(ws(sandbox.path(), &socket))
+            })
+        });
+        starts.map(|start| start.join().unwrap())
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (winner, loser, status) = loop {
+        match (
+            first.child.try_wait().unwrap(),
+            second.child.try_wait().unwrap(),
+        ) {
+            (None, Some(status)) => break (&mut first, &second, status),
+            (Some(status), None) => break (&mut second, &first, status),
+            (Some(_), Some(_)) => panic!("Both daemons exited."),
+            (None, None) => {}
+        }
+        assert!(Instant::now() < deadline, "Both daemons remained alive.");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(1), "{}", loser.stderr());
+    assert!(
+        loser
+            .stderr()
+            .contains("Another daemon holds the socket lock"),
+        "{}",
+        loser.stderr()
+    );
+    winner.wait_ready(&socket);
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
+    assert!(winner.child.try_wait().unwrap().is_none());
+}
+
+#[test]
+fn daemon_releases_its_lock_after_an_abrupt_exit() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    let lock = std::fs::File::open(socket.with_extension("sock.lock")).unwrap();
+    assert!(matches!(
+        lock.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+
+    daemon.child.kill().unwrap();
+    daemon.child.wait().unwrap();
+    assert!(socket.exists());
+    let _restarted = Daemon::start(ws(sandbox.path(), &socket), &socket);
     assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
 }
 
