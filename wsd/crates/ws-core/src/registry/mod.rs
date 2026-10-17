@@ -10,7 +10,8 @@
 //!   Removed workspace ids retain that log owner.
 //! - `edge.added`: `target` (ULID), `kind` (`depends_on`, `block_on`, or `parent`).
 //!   The event id identifies the edge. `edge.removed` contains `edge_id`.
-//! - `message.sent`: `recipient` (ULID). The event id identifies the message.
+//! - `message.sent`: `from_session` (the log owner), `to_session`, positive `pair_seq`, and `body`.
+//!   The envelope event id identifies the message. Legacy events can use `recipient`.
 //!   `message.delivered|read` contains `message_id` in the recipient's log.
 //!
 //! Apply entries in sequence within each session. Independent logs can arrive in any order.

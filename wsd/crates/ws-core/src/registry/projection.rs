@@ -203,7 +203,17 @@ fn project_edge(connection: &Connection, entry: &LogEntry) -> Result<()> {
 fn project_message(connection: &Connection, entry: &LogEntry) -> Result<()> {
     match entry.event_type.as_str() {
         "message.sent" => {
-            let recipient = parse_id(required_str(entry, "recipient")?)?;
+            let recipient = parse_id(required_str(
+                entry,
+                if entry.body.get("to_session").is_some() {
+                    "to_session"
+                } else {
+                    "recipient"
+                },
+            )?)?;
+            if entry.body.get("to_session").is_some() {
+                validate_message(connection, entry, recipient)?;
+            }
             check_recipient(connection, entry.event_id, recipient)?;
             connection.execute(
                 "INSERT INTO messages (id, sender, recipient, body, sent_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -224,6 +234,41 @@ fn project_message(connection: &Connection, entry: &LogEntry) -> Result<()> {
                 params![id.to_string(), entry.session_id.to_string(), sql_number(entry.ts_ms)?])?;
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn validate_message(connection: &Connection, entry: &LogEntry, recipient: SessionId) -> Result<()> {
+    if parse_id(required_str(entry, "from_session")?)? != entry.session_id {
+        return Err(Error::InvalidEvent(
+            "The message sender does not match the log owner.".into(),
+        ));
+    }
+    if entry.body.get("recipient").is_some()
+        && parse_id(required_str(entry, "recipient")?)? != recipient
+    {
+        return Err(Error::InvalidEvent(
+            "The message has conflicting recipients.".into(),
+        ));
+    }
+    let pair_seq = entry
+        .body
+        .get("pair_seq")
+        .and_then(Value::as_u64)
+        .filter(|seq| *seq > 0 && *seq < (1 << 53))
+        .ok_or_else(|| {
+            Error::InvalidEvent("The message pair sequence must be a positive safe integer.".into())
+        })?;
+    required_str(entry, "body")?;
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE sender = ?1 AND recipient = ?2 AND json_extract(body, '$.pair_seq') = ?3)",
+        params![entry.session_id.to_string(), recipient.to_string(), sql_number(pair_seq)?],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Err(Error::InvalidEvent(
+            "The message pair sequence belongs to another event.".into(),
+        ));
     }
     Ok(())
 }

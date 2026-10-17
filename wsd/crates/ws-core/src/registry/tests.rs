@@ -629,3 +629,45 @@ fn finds_a_callback_event_by_its_original_identifier_after_rebuild() {
             .is_none()
     );
 }
+
+#[test]
+fn v6_messages_deduplicate_event_ids_and_validate_sender_and_pair_sequence() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let sender = Ulid::new();
+    let recipient = Ulid::new();
+    let log = SessionLog::new(sandbox.path(), sender, Ulid::new());
+    let sent = log.append(0, "message.sent", json!({"from_session":sender,"to_session":recipient,"pair_seq":1,"body":"ready","from_alias":1})).unwrap();
+    registry.apply(&sent).unwrap();
+    registry.apply(&sent).unwrap();
+    let messages = registry.messages().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, sent.event_id);
+    assert_eq!(messages[0].sender, Some(sender));
+    assert_eq!(messages[0].recipient, recipient);
+    assert_eq!(messages[0].body.as_ref().unwrap()["body"], "ready");
+    for patch in [
+        json!({"from_session":recipient}),
+        json!({"pair_seq":0}),
+        json!({"pair_seq":-1}),
+        json!({"pair_seq":"2"}),
+        json!({"pair_seq":null}),
+        json!({"body":null}),
+        json!({"recipient":sender}),
+    ] {
+        let mut invalid = sent.clone();
+        invalid.event_id = Ulid::new();
+        invalid.seq = 2;
+        invalid.body["pair_seq"] = json!(2);
+        invalid
+            .body
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        assert!(registry.apply(&invalid).is_err(), "Accepted {patch}");
+        assert_eq!(registry.messages().unwrap(), messages);
+    }
+    let duplicate_pair = log.append(0, "message.sent", sent.body.clone()).unwrap();
+    assert!(registry.apply(&duplicate_pair).is_err());
+    assert_eq!(registry.messages().unwrap(), messages);
+}

@@ -18,6 +18,7 @@ use ws_core::{PingResponse, VERSION};
 
 pub mod agents;
 pub mod api;
+pub mod bus;
 pub mod hooks;
 pub mod notify;
 pub mod phases;

@@ -136,6 +136,20 @@ printf '%s' "$prompt" | "$WS_AGENT_PROGRAM" "$@" --allowedTools Read Bash
 Hooks without a pane use `WS_SESSION_ID` and retain each session's sequence and turn guards across daemon restarts.
 They record the same turn and tool events without accessing tmux.
 
+`ws send <ULID|name|#N> <message|->` records `message.sent` in the sender's session log.
+`-` reads stdin and preserves trailing newlines. Calls outside a session use one persistent `human` session per device.
+The envelope `event_id` identifies the message. Its body contains `from_session`, `to_session`, `pair_seq`, and `body`. The inbox resolves the sender alias from the log owner's identity.
+Pair numbers start at 1 for each sender and recipient. A gap holds later messages from that sender.
+`ws inbox [--json]` shows unread messages for the current session, or the device's human session.
+Reading the inbox does not acknowledge messages. The text header uses event metadata, and body lines cannot forge a header.
+`ws ack [<event_id>...]` writes `message.read` events in the recipient log. With no ids, it acknowledges all visible unread messages.
+Repeated acknowledgements do not add read events. Unknown ids, foreign messages and messages behind a gap are rejected.
+These commands use `POST /v1/messages`, `GET /v1/inbox?session_id=<ULID>`, and `POST /v1/ack`.
+Omit `session_id` to use the human session. The send caller uses `parent_session_id`.
+The current Rust bus records messages and returns exit 75 with a queue warning. Agent injection follows in the delivery phase.
+Run `cd wsd && cargo test -p ws --test messages` to check persistence, ordering, acknowledgements and stdin.
+Run `zsh wsd/crates/ws/tests/golden/message-capture.zsh` to regenerate the zsh error fixtures.
+
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 
 ```json
