@@ -82,6 +82,13 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 
 ## Rust commands
 
+`./install.sh ws` installs Homebrew `rustup` and selects the stable Rust toolchain.
+It builds `wsd/` with `cargo build --release` and copies the binary to `$WS_HOME/bin/ws-rs` (default `~/.ws/bin/ws-rs`).
+Both `$WS_HOME/bin/ws` and `~/.local/bin/ws` point to the shell dispatcher.
+The installer registers `~/Library/LaunchAgents/com.rstagi.wsd.plist` with `RunAtLoad` and `KeepAlive`.
+The agent runs `$WS_HOME/bin/ws-rs daemon`. It retains the installer's `HOME`, `PATH`, `WS_HOME`, `WS_STATE` and `WS_SOCK`.
+Its output goes to `$WS_HOME/daemon.log`. Run `./install.sh --dry-run ws` to preview each step without changes.
+
 The Rust `ws pick` command and bare `ws` use the fzf UI in `ws/lib/picker.sh`.
 Rows, summaries, previews, pins, session expansion and unread changes use Rust commands.
 The binary embeds the shell UI. It does not need the source checkout at runtime.
