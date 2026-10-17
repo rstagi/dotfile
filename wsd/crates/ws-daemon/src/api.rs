@@ -25,6 +25,13 @@ struct SessionResponse {
     parent_session_id: Option<SessionId>,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CreateRequest {
+    Headless(crate::supervisor::CreateHeadless),
+    Session(CreateSession),
+}
+
 pub(crate) struct ApiError(pub(crate) Error);
 
 #[derive(Default, Deserialize)]
@@ -62,9 +69,14 @@ pub(crate) fn router_with_store(store: Store) -> Router {
 
 async fn create(
     State(store): State<Store>,
-    Json(request): Json<CreateSession>,
+    Json(request): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
-    let session = call(store, move |sessions| sessions.create(request)).await?;
+    let session = match request {
+        CreateRequest::Headless(request) => crate::supervisor::create(store, request).await?,
+        CreateRequest::Session(request) => {
+            call(store, move |sessions| sessions.create(request)).await?
+        }
+    };
     Ok((StatusCode::CREATED, Json(session.into())))
 }
 

@@ -44,6 +44,8 @@ pub struct Session {
     pub alias: i64,
     pub name: Option<String>,
     pub state: String,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
     pub workspace_id: Option<String>,
     pub device_id: DeviceId,
     pub created_at_ms: i64,
@@ -254,7 +256,9 @@ impl Registry {
 
     pub fn sessions(&self) -> Result<Vec<Session>> {
         let mut statement = self.connection.prepare(
-            "SELECT s.id, a.alias, s.name, s.state, s.workspace_id, s.device_id, s.created_at_ms, s.updated_at_ms, s.body
+            "SELECT s.id, a.alias, s.name, s.state, s.workspace_id, s.device_id, s.created_at_ms, s.updated_at_ms, s.body,
+             (SELECT json_extract(entry, '$.body.code') FROM applied_events
+              WHERE session_id = s.id AND json_extract(entry, '$.type') = 'exit' ORDER BY seq DESC LIMIT 1)
              FROM sessions s JOIN aliases a ON a.session_id = s.id ORDER BY a.alias")?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -267,6 +271,7 @@ impl Registry {
                 row.get(6)?,
                 row.get(7)?,
                 row.get::<_, String>(8)?,
+                row.get::<_, Option<i32>>(9)?,
             ))
         })?;
         rows.map(|row| {
@@ -280,12 +285,14 @@ impl Registry {
                 created_at_ms,
                 updated_at_ms,
                 body,
+                exit_code,
             ) = row?;
             Ok(Session {
                 id: parse_id(&id)?,
                 alias,
                 name,
                 state,
+                exit_code,
                 workspace_id,
                 device_id: parse_id(&device_id)?,
                 created_at_ms,

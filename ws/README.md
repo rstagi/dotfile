@@ -93,6 +93,20 @@ JSON returns the registry session fields, including the ULID `id`, numeric `alia
 Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
 The TSV state column reports the live tmux state or `stopped` when no tagged window exists.
 
+`ws session create --headless [--parent <id>] [--cwd <dir>] [--env K=V]... [--stdin <file>] [--stdout <file>] [--stderr <file>] -- <cmd>`
+starts a process under the daemon and prints its session ULID. The process leads its own process group.
+The working directory defaults to the CLI's current directory. Relative I/O paths use that same CLI directory, independent of `--cwd`.
+Environment overrides extend the daemon environment. Repeated keys use the last value.
+The process receives its session ULID in `WS_SESSION_ID` and `WS_SESSION`.
+Claude, Codex and Grok use the shared agent preparation contract in headless mode.
+Stdin defaults to EOF. Stdout and stderr default to `$WS_STATE/sessions/<id>/stdout.log` and `stderr.log`.
+Explicit output files replace their previous contents. I/O files must refer to separate files, including through links.
+`ws session tail <id> [--follow] [--stream stdout|stderr]` reads stdout by default.
+With `--follow`, it streams new bytes until the process exits, then reads the final bytes.
+The daemon records an `exit` event and `session.finished` for code 0, or `session.failed` for another code.
+Signal exits use code `128 + signal`. `GET /v1/sessions/{id}` returns `exit_code`, which is null before exit.
+Run `cd wsd && cargo test -p ws --test headless` to check the I/O contract with sandbox processes.
+
 The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,
 `add [repo/branch|path] [--agent <agent>] [--detach]`, and `list|ls [--json]`.
 `new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.

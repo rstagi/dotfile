@@ -20,7 +20,7 @@ use ws_core::{
 };
 
 pub struct Sessions {
-    state: PathBuf,
+    pub(crate) state: PathBuf,
     device_id: DeviceId,
     pub(crate) registry: Registry,
     needs_rebuild: bool,

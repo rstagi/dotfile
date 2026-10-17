@@ -14,6 +14,7 @@ pub mod new;
 pub mod open;
 pub mod pin;
 pub mod rm;
+pub mod session;
 pub mod sessions;
 pub mod show;
 pub mod whoami;
