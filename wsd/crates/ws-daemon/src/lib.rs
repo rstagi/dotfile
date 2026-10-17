@@ -17,6 +17,8 @@ use tokio::{
 };
 use ws_core::{HookRecord, PingResponse, VERSION};
 
+pub mod api;
+pub mod sessions;
 pub mod tmux;
 
 const HOOK_CAPACITY: usize = 256;
@@ -52,13 +54,25 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         inode: metadata.ino(),
     };
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+    let state = match std::env::var_os("WS_STATE") {
+        Some(path) => PathBuf::from(path),
+        None => PathBuf::from(std::env::var_os("HOME").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Set HOME or WS_STATE to locate the session state.",
+            )
+        })?)
+        .join(".ws/state"),
+    };
+    let sessions = sessions::Sessions::open(&state, 1).map_err(io::Error::other)?;
     let app = Router::new()
         .route("/v1/ping", get(ping))
         .route("/v1/hooks", get(hooks).post(record_hook))
         .with_state(AppState {
             started: Instant::now(),
             hooks: Arc::new(Mutex::new(VecDeque::new())),
-        });
+        })
+        .merge(api::router(sessions));
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
