@@ -151,6 +151,18 @@ async fn ingest_callback(
     {
         decision = StopDecision::Accept;
     }
+    if window
+        .as_ref()
+        .is_some_and(|window| owns_window(&callback, window))
+    {
+        let raw = callback.clone();
+        let id = window.as_ref().unwrap().id.clone();
+        api::call(store.clone(), move |sessions| {
+            sessions.acknowledge_paste(&raw, &id)
+        })
+        .await
+        .map_err(|error| error.0)?;
+    }
     let mut reduction = reduce(&callback, window.as_ref(), &decision);
     if reduction.accepted
         && matches!(reduction.event_type, Some("turn.ended" | "turn.cancelled"))
