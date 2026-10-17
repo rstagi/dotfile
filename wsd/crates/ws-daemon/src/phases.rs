@@ -1,6 +1,11 @@
-//! Local phase launches through the headless session supervisor.
+//! Local phase launches and session-owned review worktrees.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
@@ -8,7 +13,7 @@ use ws_core::ids::SessionId;
 
 use crate::{
     api::{ApiError, SessionResponse, Store},
-    sessions::Error,
+    sessions::{Error, Result, Sessions},
     supervisor::{self, CreateHeadless},
 };
 
@@ -30,14 +35,25 @@ pub struct Phase {
     pub command: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseWorktree {
+    pub session: String,
+    pub repo: PathBuf,
+    pub reference: String,
+    pub parent_session_id: Option<SessionId>,
+}
+
 pub(crate) fn router() -> Router<Store> {
-    Router::new().route("/v1/phases/spawn", post(spawn))
+    Router::new()
+        .route("/v1/phases/spawn", post(spawn))
+        .route("/v1/phases/worktree", post(worktree))
 }
 
 async fn spawn(
     State(store): State<Store>,
     Json(request): Json<SpawnPhase>,
-) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
+) -> std::result::Result<(StatusCode, Json<SessionResponse>), ApiError> {
     if request.base.trim().is_empty() || request.max_runtime == 0 {
         return Err(ApiError(Error::InvalidRequest(
             "Specify a base and a positive maximum runtime.",
@@ -60,6 +76,132 @@ async fn spawn(
     )
     .await?;
     Ok((StatusCode::CREATED, Json(session.into())))
+}
+
+async fn worktree(
+    State(store): State<Store>,
+    Json(request): Json<PhaseWorktree>,
+) -> std::result::Result<(StatusCode, Json<PathBuf>), ApiError> {
+    let path = crate::api::call(store, move |sessions| sessions.phase_worktree(request)).await?;
+    Ok((StatusCode::CREATED, Json(path)))
+}
+
+impl Sessions {
+    pub fn phase_worktree(&mut self, request: PhaseWorktree) -> Result<PathBuf> {
+        self.record_call(
+            request.parent_session_id,
+            "phase.worktree",
+            Some(&request.session),
+        )?;
+        let session = self.get_record(&request.session)?;
+        if ["finished", "failed"].contains(&session.state.as_str()) {
+            return Err(Error::InvalidRequest("The session has finished or failed."));
+        }
+        if request.reference.trim().is_empty() {
+            return Err(Error::InvalidRequest("Specify a git reference."));
+        }
+        let repo = request.repo.canonicalize()?;
+        git(&repo, &["rev-parse", "--git-dir"])?;
+        let root = self
+            .state
+            .canonicalize()?
+            .parent()
+            .ok_or(Error::InvalidRequest("The state directory has no parent."))?
+            .join("phases");
+        fs::create_dir_all(&root)?;
+        let path = root.join(session.id.to_string());
+        if path.try_exists()? {
+            return Err(Error::InvalidRequest(
+                "The session already has a phase worktree.",
+            ));
+        }
+        // Retire an interrupted checkout before its path can belong to another repository.
+        self.cleanup_phase_worktree(session.id)?;
+        // Record the intent first so a restart can collect an interrupted creation.
+        self.append(
+            session.id,
+            "phase.worktree",
+            serde_json::json!({
+                "repo": repo, "path": path, "reference": request.reference,
+            }),
+        )?;
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--",
+                path_text(&path)?,
+                &request.reference,
+            ],
+        )?;
+        Ok(path)
+    }
+
+    pub(crate) fn cleanup_phase_worktree(&mut self, id: SessionId) -> Result<()> {
+        let Some(entry) = self.registry.latest_event(id, "phase.worktree")? else {
+            return Ok(());
+        };
+        if self
+            .registry
+            .latest_event(id, "phase.worktree.removed")?
+            .is_some_and(|removed| removed.seq > entry.seq)
+        {
+            return Ok(());
+        }
+        let repo = PathBuf::from(entry.body["repo"].as_str().ok_or(Error::InvalidRequest(
+            "The phase worktree repository is missing.",
+        ))?);
+        let path = PathBuf::from(
+            entry.body["path"]
+                .as_str()
+                .ok_or(Error::InvalidRequest("The phase worktree path is missing."))?,
+        );
+        if path.try_exists()? {
+            git(
+                &repo,
+                &["worktree", "remove", "--force", "--", path_text(&path)?],
+            )?;
+        }
+        git(&repo, &["worktree", "prune"])?;
+        self.append(id, "phase.worktree.removed", entry.body)
+    }
+
+    pub(crate) fn recover_phase_worktrees(&mut self) -> Result<()> {
+        for session in self.registry.sessions()? {
+            if ["finished", "failed"].contains(&session.state.as_str())
+                && let Err(error) = self.cleanup_phase_worktree(session.id)
+            {
+                eprintln!(
+                    "Cannot remove the phase worktree for {}: {error}",
+                    session.id
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn path_text(path: &Path) -> Result<&str> {
+    path.to_str()
+        .ok_or(Error::InvalidRequest("The git path is not UTF-8."))
+}
+
+fn git(repo: &Path, arguments: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(arguments)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "Git failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

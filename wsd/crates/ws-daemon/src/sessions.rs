@@ -95,6 +95,7 @@ impl Sessions {
             _writer_lock: writer_lock,
         };
         sessions.restore_triggers()?;
+        sessions.recover_phase_worktrees()?;
         Ok(sessions)
     }
 
@@ -249,6 +250,12 @@ impl Sessions {
         self.registry.apply(&entry)?;
         self.needs_rebuild = false;
         self.apply_trigger_entry(&entry);
+        if ["session.finished", "session.failed"].contains(&event_type)
+            && let Err(error) = self.cleanup_phase_worktree(id)
+        {
+            // Preserve the terminal event. A restart retries the cleanup.
+            eprintln!("Cannot remove the phase worktree for {id}: {error}");
+        }
         self.changes.send_replace(());
         self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
         Ok(entry)

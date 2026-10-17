@@ -6,10 +6,17 @@ use std::{
 use clap::Subcommand;
 use serde_json::json;
 
-use crate::{Result, mcp::Control};
+use crate::{Result, client, mcp::Control};
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Create a detached review worktree owned by a session.
+    Worktree {
+        #[arg(long)]
+        session: Option<String>,
+        repo: PathBuf,
+        reference: String,
+    },
     /// Start a local phase through the session supervisor.
     Spawn {
         #[arg(long)]
@@ -29,6 +36,23 @@ pub enum Command {
 
 pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
     match command {
+        Command::Worktree {
+            session,
+            repo,
+            reference,
+        } => {
+            let target = match session {
+                Some(target) => target,
+                None => super::whoami::current(socket).await?.id.to_string(),
+            };
+            let caller = super::caller(socket).await?;
+            let repo = std::env::current_dir()?.join(repo);
+            let bytes = client::request(socket, hyper::Method::POST, "/v1/phases/worktree",
+                serde_json::to_vec(&json!({"session": target, "repo": repo, "reference": reference, "parent_session_id": caller}))?
+            ).await?;
+            let path: PathBuf = serde_json::from_slice(&bytes)?;
+            println!("{}", path.display());
+        }
         Command::Spawn {
             repo,
             base,

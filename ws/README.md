@@ -304,7 +304,16 @@ The daemon records `phase.spawned` in the parent log and returns the child sessi
 At that deadline, the daemon sends SIGTERM to the process group, then SIGKILL after two seconds.
 A runtime limit produces a failure even if the command handles SIGTERM and exits with code 0.
 An adopted child keeps its original deadline after a daemon restart.
-Run `cd wsd && cargo test -p ws --test phases` to check phase launches and restart recovery.
+
+`ws phase worktree [--session <id>] <repo> <ref>` creates a detached review worktree and prints its absolute path.
+`repo` is a local repository path. The default session is the current ws session.
+
+The worktree lives at `~/.ws/phases/<session>/`, or under the parent of a custom `$WS_STATE`.
+The session log records ownership. The worktree never appears in `ws list`.
+The daemon force-removes the worktree and prunes its Git registration when the session finishes or fails.
+A daemon restart retries interrupted cleanup. Cleanup errors do not prevent daemon startup.
+
+Run `cd wsd && cargo test -p ws --test phases` to check phase launches, review worktrees, and restart recovery.
 
 The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,
 `add [repo/branch|path] [--agent <agent>] [--detach]`, and `list|ls [--json]`.
