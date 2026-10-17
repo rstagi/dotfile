@@ -1,0 +1,84 @@
+{
+  "mode": "plan",
+  "meta": {
+    "title": "Shared visual explainer",
+    "subtitle": "Replace the per-run Remotion video with one shared skill that renders a fixed HTML page from props.",
+    "date": "2026-10-18",
+    "planId": "loop-visual-explainer-2026-10-18-0900",
+    "milestone": 1
+  },
+  "goal": "Every plan, milestone gate and PR review gets the same animated HTML explainer. The agent writes only a props JSON file. A zero-dependency script validates it and renders one self-contained page.",
+  "architecture": {
+    "summary": "Three skills call one renderer. The renderer owns the page. The caller owns the facts.",
+    "layers": [
+      {
+        "name": "Callers",
+        "components": [
+          { "name": "multiphase-plan", "role": "Runs `plan` mode after it registers a plan, except for `light` plans.", "status": "changed" },
+          { "name": "loop-execute", "role": "Runs `ship` at the merge gate and `plan` at milestone resume. A detached runner writes the props.", "status": "changed" },
+          { "name": "pr-review", "role": "Runs `ship` in Step 4 instead of a Remotion video.", "status": "changed" }
+        ]
+      },
+      {
+        "name": "visual-explainer skill",
+        "components": [
+          { "name": "SKILL.md", "role": "How to author props, check every hand-test command against code, and publish.", "status": "new" },
+          { "name": "Schemas", "role": "`plan.schema.json` and `ship.schema.json`. A hand-test step needs a `path:line` reference.", "status": "new" }
+        ]
+      },
+      {
+        "name": "Renderer",
+        "components": [
+          { "name": "render.mjs", "role": "Validates props with field paths, then writes `index.html`.", "status": "new" },
+          { "name": "page.html", "role": "Template with tokens, dark mode, reduced motion and fixed scene styles.", "status": "new" }
+        ]
+      }
+    ],
+    "flows": [
+      { "from": "loop-execute", "to": "render.mjs", "label": "props from a detached runner" },
+      { "from": "render.mjs", "to": "page.html", "label": "escaped scene markup into fixed slots" }
+    ]
+  },
+  "milestones": [
+    {
+      "number": 1,
+      "title": "One explainer for plans, gates and reviews",
+      "outcome": "All three callers use the shared renderer. No Remotion, MP4 or browser render step remains.",
+      "phases": [
+        { "number": 1, "title": "Add the renderer, schemas and template test-first", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "estimate": "20-25 min", "doneWhen": "`node --test tests/visual-explainer.test.mjs` covers field-path errors, escaping, both modes and the hand-test reference rule." },
+        { "number": 2, "title": "Write the skill text and the example props", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [1], "estimate": "15-20 min", "doneWhen": "The STE linter reports no hard violations. The examples render." },
+        { "number": 3, "title": "Connect pr-review, multiphase-plan and loop-execute", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [2], "estimate": "20-25 min", "doneWhen": "Each caller runs the right mode. A failed explainer never blocks a park or a resume." },
+        { "number": 4, "title": "Review milestone 1", "kind": "pr-review", "dependsOn": [3] }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Animate with SVG and CSS inside the page.",
+      "why": "The page opens anywhere, needs no render step, and respects reduced motion.",
+      "rejected": [
+        { "option": "Remotion video", "reason": "Each run built a new project in `/tmp`. It was slow, each output looked different, and it broke easily." },
+        { "option": "MP4 render", "reason": "It needs ffmpeg or a browser on the machine." }
+      ]
+    },
+    {
+      "decision": "The agent writes only props JSON.",
+      "why": "Fixed scenes give the same look every run. One escaping function protects every field.",
+      "rejected": [
+        { "option": "The agent writes HTML each run", "reason": "Each page differs, and props text could inject markup or script." }
+      ]
+    },
+    {
+      "decision": "A `ship` hand-test step must carry a `path:line` reference.",
+      "why": "The milestone 2 checklist had the install before the dry run. The reference forces a read of the code.",
+      "rejected": [
+        { "option": "Free-text checklist", "reason": "Nothing forces the author to check the order against the code." }
+      ]
+    }
+  ],
+  "risks": [
+    { "risk": "A long plan makes a long page.", "impact": "low", "likelihood": "medium", "mitigation": "Sticky section navigation and a Play tour." },
+    { "risk": "An explainer failure blocks a milestone park or resume.", "impact": "high", "likelihood": "low", "mitigation": "The explainer runs best-effort. The notification states the failure." },
+    { "risk": "A wrong code reference looks like proof.", "impact": "medium", "likelihood": "medium", "mitigation": "The skill tells the author to open each referenced line before writing the command." }
+  ]
+}

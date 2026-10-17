@@ -1,0 +1,201 @@
+{
+  "mode": "ship",
+  "meta": {
+    "title": "WS v6 milestone 2",
+    "subtitle": "The Rust daemon `wsd` replaces the zsh `ws` on one machine. Loop run `loop-ws-v6-local-2026-10-16-210924`, merge gate of milestone 2.",
+    "date": "2026-10-18",
+    "planId": "loop-ws-v6-local-2026-10-16-210924",
+    "milestone": 2,
+    "links": [
+      { "label": "PR #15", "url": "https://github.com/rstagi/dotfile/pull/15" },
+      { "label": "Final review", "url": "https://github.com/rstagi/dotfile/pull/15#pullrequestreview-5559931758" }
+    ]
+  },
+  "summary": "`ws` runs on a Rust daemon (`wsd`) instead of zsh scripts and lock files. The daemon owns sessions, logs, messages, dependency edges, triggers and a local MCP server. It runs Loop runners as ws sessions. Command names, flags, output and exit codes stay the same. `ws backend zsh` is the way back. 35 work phases and 1 review phase. 186 files, +33858/-749. The ws shell suite: 1013 tests passed.",
+  "changes": [
+    { "area": "One binary", "how": "One `ws` binary: CLI, `ws daemon`, `ws mcp`. Cargo workspace `wsd/`, 3 crates.", "why": "One process owns all state. No shell lock files. Later milestones (telemetry, hub, sync) extend it." },
+    { "area": "Storage", "how": "Append-only, hash-chained log per session. The SQLite registry is a projection that can be rebuilt from the logs.", "why": "The log is the source of truth: replay, audit, later sync between machines. The registry is a disposable index." },
+    { "area": "IDs", "how": "ULID per session plus the `#N` alias.", "why": "ULIDs are unique across devices (v6 sync). Aliases keep the user commands." },
+    { "area": "Sessions", "how": "Typed lifecycle state machine, tmux driver, headless supervisor with process groups. A daemon restart re-adopts running children.", "why": "Sessions survive a closed terminal and a daemon restart. A stop waits for the real exit." },
+    { "area": "Agent launch", "how": "One `prepare` function builds argv, environment and hook files for every Claude, Codex or Grok launch. Loop runners use it through `ws agent prepare`.", "why": "Hooks, MCP and milestone 3 telemetry come from one place." },
+    { "area": "Messages", "how": "Log events: sent, delivered, read. Delivery at the agent Stop hook, or by paste when idle, with retries and acknowledgement. A message to a finished session reopens it.", "why": "Confirmed delivery. The order survives a crash. Replaces the file inbox." },
+    { "area": "Coordination", "how": "Dependency edges, `ws done`, `ws wait`, `ws on … done --spawn/--send-to` triggers as edge actions in the log.", "why": "Event-driven waits. No lock files." },
+    { "area": "MCP", "how": "Local stdio server, 12 tools (`session_*`, `wait`, `loop_*`, `phase_spawn`). Added to each agent launch through flags. Caller identity from `WS_SESSION_ID`. Spawn limits (children, depth).", "why": "Agents drive ws directly. No edits to Claude or Codex config files. The caller cannot be faked." },
+    { "area": "Loop", "how": "Runners run as ws headless sessions when wsd answers. Otherwise they launch directly. `ws top`, `ws loop start/stop`. Review worktrees belong to a session and are removed after it.", "why": "Loop runs are visible and controllable in ws. The picker shows no review worktrees." },
+    { "area": "Picker", "how": "The fzf picker and tmux bindings read data from Rust commands.", "why": "The picker matches the registry." },
+    { "area": "Install", "how": "`./install.sh ws` builds `~/.ws/bin/ws-rs` and installs LaunchAgent `com.rstagi.wsd` with KeepAlive.", "why": "The daemon always runs. launchd restarts it after a crash." },
+    { "area": "Cutover", "how": "Backend file `~/.ws/backend` (rust or zsh). Both backends share the alias lock. Import of zsh state. `ws backend zsh` returns to zsh.", "why": "Live state migrates with a safe rollback. Phase 54 removes the zsh code in milestone 3." },
+    { "area": "Parity", "how": "Golden tests from the zsh suite, written before each port.", "why": "Habits, scripts and the ws-sessions skill keep working." },
+    { "area": "Process", "how": "One lane, TDD, sandboxed tests (temporary HOME, private tmux sockets), max-tier review.", "why": "Parallel lanes conflict on `Cargo.lock`. Sandboxes protect live state." }
+  ],
+  "delivered": [
+    { "phase": 69, "criterion": "Stale-socket tests are not flaky, two daemons cannot both replace the socket, and CLAUDE.md names the Rust and spike checks (milestone 1 findings F1, F2, F4).", "result": "Socket flock and a shared daemon fixture, a stale-socket helper child, CLAUDE.md Rust and spike commands.", "status": "met" },
+    { "phase": 10, "criterion": "Log entries carry the v6 §3 fields in a hash chain with fsync, no `seq` gaps, tamper detection and a reported truncated last line. `ws init` writes the device identity.", "result": "Append-only hash-chained session log, device identity, `ws init`.", "status": "met" },
+    { "phase": 11, "criterion": "A SQLite projection of the logs that `rebuild` regenerates, `#N` aliases from a floor, and a resolver for alias, name or ULID prefix.", "result": "SQLite registry projection, rebuild from logs, aliases and resolver.", "status": "met" },
+    { "phase": 12, "criterion": "Typed session states with errors for illegal transitions, a lifecycle API, a `session.<state>` event per transition and the caller recorded per call.", "result": "Typed lifecycle transitions and a session lifecycle API with caller audit.", "status": "met" },
+    { "phase": 13, "criterion": "A tmux driver for sessions, windows, panes, `@ws_*` options, bracketed paste, capture and pane death, tested on a sandbox server.", "result": "tmux driver and O_CLOFORK lock files (an L3 fix for inherited flock descriptors).", "status": "met" },
+    { "phase": 14, "criterion": "`ws whoami`, `ws name`, `ws sessions` and `ws show` match the zsh output (ids as `#N`) and accept `--json`.", "result": "Ported with `--json` and zsh golden fixtures, plus a rename API.", "status": "met" },
+    { "phase": 15, "criterion": "`ws new`, `ws add` and `ws list` work from the registry and never scan `$WS_ROOT/*/*`.", "result": "`ws new/add/list` on the registry with no `WS_ROOT` scan, repo setup, conductor includes and the tmux session.", "status": "met" },
+    { "phase": 16, "criterion": "`ws rm`, `ws open`, `ws pin` and bare `ws` match zsh. `ws rm` refuses a dirty worktree. Pins persist.", "result": "`ws rm/open/pin/attach` on the registry, dirty-worktree refusal, persisted pins, golden tests.", "status": "met" },
+    { "phase": 17, "criterion": "`ws merge` and its popup match zsh, and the `merge.test.sh` scenarios pass as Rust tests.", "result": "Ported, with the merge scenarios as Rust integration tests (fake gh, bare origin).", "status": "met" },
+    { "phase": 18, "criterion": "One preparation contract builds every agent launch, and `ws claude|codex|grok` start agents in tmux windows with hook settings.", "result": "Shared `prepare()` contract, tracked launches with hook settings, slots and resume.", "status": "met" },
+    { "phase": 19, "criterion": "`ws hook` keeps the seq/turn order, appends turn, tool and agent events, spools when the daemon is down, and keeps p95 under 50 ms on the full ingest path.", "result": "Ordered seq/turn, turn, tool and agent events in the session log, spool and replay, bounded tmux lookup, p95 under 50 ms.", "status": "met" },
+    { "phase": 20, "criterion": "terminal-notifier, osascript and boringnotch fire on the same hook states with the same text. `WS_NOTIFY=0` turns them off.", "result": "Notification adapters on hook states, `WS_NOTIFY=0`, `_dismiss`, `_build-notifier`.", "status": "met" },
+    { "phase": 21, "criterion": "`ws session create --headless` runs a command in its own process group with the given cwd, environment and I/O files.", "result": "Headless session supervisor and I/O contract. Notification tests wait for events. The p95 assertion became opt-in (20/20 Verify).", "status": "met" },
+    { "phase": 67, "criterion": "`phase.spawn` creates a headless child, stops it at `max_runtime`, and the daemon re-adopts a running child after a restart.", "result": "`phase.spawn` API, durable pid and process group, restart adoption, `max_runtime` TERM then KILL.", "status": "met" },
+    { "phase": 57, "criterion": "A stop sends SIGTERM to the process group, SIGKILL after a grace period, and returns only when the group is gone. `ws session run` waits in the foreground.", "result": "Headless stop waits for the process-group exit (TERM, 10 s grace, KILL). `ws session run` runs in the foreground.", "status": "met" },
+    { "phase": 58, "criterion": "`ws agent prepare --mode headless` prints the contract output, and `ws hook` accepts events with no tmux pane.", "result": "`ws agent prepare --mode headless` (json or sh), pane-less hooks keyed by `WS_SESSION_ID` with a durable seq/turn order.", "status": "met" },
+    { "phase": 22, "criterion": "`ws send` appends `message.sent`, the inbox is a projection, and `ws inbox` and `ws ack` work.", "result": "`message.sent` and `message.read` log events, a human session, an ordered inbox projection, `ws send/inbox/ack`.", "status": "met" },
+    { "phase": 23, "criterion": "The Stop hook reply blocks with the undelivered batch, and each delivery and implicit read is a log event.", "result": "Stop-hook batch delivery, `message.delivered` after the stdout confirm, implicit read, spool replay dedup, local-device-only injection.", "status": "met" },
+    { "phase": 24, "criterion": "Idle windows get a bracketed paste, acknowledged by the next prompt, with a requeue on timeout from an in-daemon retry worker.", "result": "Idle paste delivery, `UserPromptSubmit` receipt, retry worker with an acknowledgement timeout, crash-durable batches.", "status": "met" },
+    { "phase": 25, "criterion": "A message to a finished session reopens the agent in a new window, then delivers.", "result": "The agent reopens (`claude --resume` / `codex resume`) before delivery. The legacy `--force` is accepted.", "status": "met" },
+    { "phase": 26, "criterion": "Dependency edges as log events with cycle rejection, `ws done --output`, exit events and an event-driven `ws wait`.", "result": "Edge events with cycle rejection, `ws done --output`, exit events, event-driven `ws wait` API.", "status": "met" },
+    { "phase": 27, "criterion": "`ws on … done|exit --send-to/--spawn` stores one-shot edge actions in the owner log, with no lock files.", "result": "One-shot trigger actions in the owner log, `ws triggers`, `ws on --rm`, no lock files.", "status": "met" },
+    { "phase": 28, "criterion": "`ws migrate --from-zsh [--dry-run]` snapshots `$WS_HOME` under the zsh locks and imports sessions, logs and messages.", "result": "zsh importer with a snapshot under the zsh fcntl locks, a resumable journal, an alias floor and requeued pending messages.", "status": "met" },
+    { "phase": 56, "criterion": "Active triggers, branch workspaces and pins import, with trigger offsets translated to the new log.", "result": "Pending triggers with translated event offsets, listed branch workspaces and pins.", "status": "met" },
+    { "phase": 29, "criterion": "`ws mcp` serves the session tools over stdio, records the caller, and matches the `--json` output of each command.", "result": "Local stdio MCP server (10 tools in this phase), caller audit through `WS_SESSION_ID`, JSON parity with the CLI.", "status": "met" },
+    { "phase": 30, "criterion": "Every agent launch gets the `ws` MCP server through flags only, and the daemon enforces child and depth limits.", "result": "MCP in Claude and Codex launches with no config edits, configurable spawn limits (429 on `max_children` or `max_depth`).", "status": "met" },
+    { "phase": 31, "criterion": "`loop-runner.sh` runs each runner through `ws session run` when the Rust daemon answers, and launches directly otherwise.", "result": "Loop engines and the orchestrator run as ws headless sessions when wsd answers ping. Direct launch otherwise.", "status": "met" },
+    { "phase": 59, "criterion": "Timeout, pause and note watchdogs stop the runner through `ws session stop` and wait for its exit before a retry.", "result": "Watchdogs stop ws runner groups through wsd and wait for the exit before a retry. The direct path is unchanged.", "status": "met" },
+    { "phase": 32, "criterion": "`ws top` opens `loop-top.mjs` for the session's loop, and `loop.start` / `loop.stop` exist as API, CLI and MCP calls.", "result": "`ws top`, `loop.start` and `loop.stop` (API, CLI, MCP). The spool p95 assertion is opt-in through `WS_ASSERT_LATENCY`.", "status": "met" },
+    { "phase": 33, "criterion": "`ws phase worktree` creates a session-owned detached worktree that the daemon removes when the session ends. `pr-review` uses it.", "result": "Session-owned review worktrees with cleanup on finish or failure and restart recovery. `pr-review` uses them, with a tmp fallback.", "status": "met" },
+    { "phase": 34, "criterion": "The picker data commands print the zsh formats from the registry only.", "result": "Registry-backed `_rows`, `_summary`, `_preview`, `_toggle_sessions` and `_unread` with zsh golden parity tests.", "status": "met" },
+    { "phase": 35, "criterion": "`ws pick` keeps fzf and the tmux bindings, and every data command it calls is Rust.", "result": "The fzf picker and tmux bindings call the Rust data commands. The zsh data functions moved to `picker-legacy.sh`.", "status": "met" },
+    { "phase": 36, "criterion": "`install.sh ws` builds the release binary, copies it to `~/.ws/bin/ws-rs` and installs `com.rstagi.wsd` with KeepAlive.", "result": "`rust` package as a `ws` dependency, release build to `ws-rs`, KeepAlive LaunchAgent, CLI autostart when launchd does not own the socket.", "status": "met" },
+    { "phase": 64, "criterion": "The backend file `~/.ws/backend` selects zsh or rust, `ws backend` switches it under a lock, and Rust does not inject messages under zsh.", "result": "Durable backend selector, switch under a lock, shared alias counter lock, delivery suppressed in zsh mode, incremental import on return.", "status": "met" },
+    { "phase": 37, "criterion": "With no backend file the dispatcher selects rust, the daemon imports the zsh state once at first start, and the docs describe the Rust commands and the way back.", "result": "Rust is the default backend, one-time import at startup, README, CLAUDE.md and the ws-sessions skill updated.", "status": "met" },
+    { "phase": 38, "criterion": "Every participating PR has a non-blocking review verdict, and the human checks the v6 phase 1 checkpoint by hand before the merge.", "result": "The final review is COMMENT (non-blocking). The hand checks are the hand-test list on this page.", "status": "partial" }
+  ],
+  "deviations": [
+    {
+      "planned": "Phase 38: install first (`./install.sh ws`), then `ws migrate --from-zsh --dry-run`, then the real import.",
+      "actual": "The dry run comes before the install. There is no separate import step.",
+      "reason": "`./install.sh ws` starts the daemon (`install.sh:483`), and the daemon imports the zsh state at its first start (`wsd/crates/ws-daemon/src/lib.rs:76`). After that, a dry run only returns the stored plan (`import/mod.rs:84`)."
+    },
+    {
+      "planned": "Phase 19: a test keeps the hook-ingest p95 under 50 ms in every Verify run.",
+      "actual": "The p95 assertions run only with `WS_ASSERT_LATENCY` (Phases 21 and 32).",
+      "reason": "The repository Verify failed at random under load (Phase 21 HIL). The final review found the gates still inconsistent (F6, F7)."
+    },
+    {
+      "planned": "The review rounds fix every major finding before the merge gate.",
+      "actual": "F4 stays open. Phase 71 in milestone 3 fixes it.",
+      "reason": "`ws new --agent` can fail under load with `can't find window: @N`. A retry works, so the fix waits for milestone 3."
+    }
+  ],
+  "reviews": [
+    {
+      "repository": "rstagi/dotfile",
+      "pr": "https://github.com/rstagi/dotfile/pull/15",
+      "head": "13929c873f7cc7d67f04d1b32011a5ccca25f6b0",
+      "verdict": "COMMENT",
+      "url": "https://github.com/rstagi/dotfile/pull/15#pullrequestreview-5559931758",
+      "summary": "Max-tier Adversarial Review, 2 outer rounds, inner cap 2. The final Opus review posted COMMENT: 1 major and 6 minor findings stay unresolved. None blocks the merge.",
+      "validation": [
+        { "command": "{ [ ! -f wsd/Cargo.toml ] || (cd wsd && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo build && cargo test); } && zsh tests/run.sh", "result": "pass", "note": "Repository Verify at 13929c8." },
+        { "command": "zsh ws/tests/run.sh", "result": "pass", "note": "1013 ws shell tests passed." }
+      ],
+      "findings": [
+        { "id": "F4", "severity": "major", "title": "`ws new --agent` and `ws add --agent` can fail with `can't find window: @N` under load.", "fix": "Run the command again. Phase 71 (milestone 3) fixes it.", "status": "deferred" },
+        { "id": "F1", "severity": "minor", "title": "An interrupted test run does not clean up.", "status": "open" },
+        { "id": "F2", "severity": "minor", "title": "tmux socket files pile up.", "status": "open" },
+        { "id": "F3", "severity": "minor", "title": "A leftover test daemon can reach the default tmux server.", "status": "open" },
+        { "id": "F5", "severity": "minor", "title": "`tests/run.sh` does not name the failed suites.", "status": "open" },
+        { "id": "F6", "severity": "minor", "title": "The latency-assertion gates are not consistent.", "status": "open" },
+        { "id": "F7", "severity": "minor", "title": "The latency-assertion gates are not consistent.", "status": "open" }
+      ]
+    }
+  ],
+  "handTest": [
+    {
+      "title": "Check out the PR head",
+      "command": "git -C ~/dotfile fetch origin && git -C ~/dotfile switch --detach origin/feat/wsd-local-daemon",
+      "ref": "install.sh:431",
+      "why": "The installer builds from `~/dotfile/wsd`, so the PR code must be in `~/dotfile`."
+    },
+    {
+      "title": "Back up the zsh state (optional)",
+      "command": "tar -czf ~/ws-zsh-$(date +%F).tgz -C ~/.ws sessions triggers pins",
+      "ref": "ws/lib/bus.sh:4",
+      "why": "The zsh `ws` keeps sessions, triggers and pins under `~/.ws` (`ws/lib/triggers.sh:3`, `ws/ws.sh:90`). The importer reads the same three paths."
+    },
+    {
+      "title": "Preview the import before the install",
+      "command": "cd ~/dotfile/wsd && cargo build --release && ./target/release/ws migrate --from-zsh --dry-run | jq '{sessions:(.sessions|length), triggers:(.triggers|length), workspaces:(.workspaces|length), alias_floor}'",
+      "ref": "wsd/crates/ws-daemon/src/import/mod.rs:92",
+      "why": "A dry run returns before the state store opens, so it writes nothing. Run it before step 4: after the first import, a dry run only returns the stored plan (`import/mod.rs:84`).",
+      "expect": "The counts match your zsh sessions, triggers and workspaces."
+    },
+    {
+      "title": "Install, which starts the daemon and imports",
+      "command": "cd ~/dotfile\n./install.sh --dry-run ws\n./install.sh ws",
+      "ref": "install.sh:483",
+      "why": "The install kickstarts the LaunchAgent. At its first start the daemon imports the zsh state (`wsd/crates/ws-daemon/src/lib.rs:76`, `import/mod.rs:59`). `install.sh` is at the repository root, so leave `wsd/` first.",
+      "expect": "The dry run lists the `ws` package and its `rust` dependency (`install.sh:19`)."
+    },
+    {
+      "title": "Check the daemon and the import",
+      "command": "launchctl print gui/$(id -u)/com.rstagi.wsd | grep state\njq .complete ~/.ws/state/import-zsh.json\nws sessions",
+      "ref": "wsd/crates/ws-daemon/src/import/mod.rs:216",
+      "why": "The import sets `complete` in `import-zsh.json` (`import/mod.rs:30`) after the last session. Each imported session keeps its `#N` alias (`import/mod.rs:261`).",
+      "expect": "`state = running`, then `true`, then the same sessions with the same `#N`. The daemon log is `~/.ws/daemon.log`."
+    },
+    {
+      "title": "Send a message and read the inbox",
+      "command": "ws send '#N' \"hi\"\n# in the tab of #N:\nws inbox\nws ack",
+      "ref": "wsd/crates/ws-daemon/src/bus.rs:162",
+      "why": "An idle agent gets a paste (`delivery.rs:216`). A busy one gets the batch at its Stop hook (`delivery.rs:564`). A finished one reopens first (`bus.rs:162`). `ws inbox` and `ws ack` act on the current session (`cmd/inbox.rs:7`).",
+      "expect": "`ws send` exits 75 (queued), also on success (`cmd/send.rs:28`). The `ws` picker opens and lists the sessions."
+    },
+    {
+      "title": "Drive ws from an agent through MCP",
+      "command": "ws claude\n# ask: use session_list, session_create (headless echo hi), wait, session_tail, session_send\n# then repeat with: ws codex",
+      "ref": "wsd/crates/ws-daemon/src/agents/mod.rs:100",
+      "why": "Each launch adds the `ws` MCP server through `--mcp-config` (`agents/mod.rs:93`). The tools are in `wsd/crates/ws/src/mcp/mod.rs:250-267`. In Claude they show as `mcp__ws__session_list` and so on."
+    },
+    {
+      "title": "Run a handoff with no lock files",
+      "command": "find ~/.ws -name '*.lock' | sort > /tmp/ws-locks.before\nws on <A> done --spawn claude \"<prompt>\"\n# in session A:\nws done\nws triggers\nfind ~/.ws -name '*.lock' | sort | diff /tmp/ws-locks.before -",
+      "ref": "wsd/crates/ws-daemon/src/triggers.rs:272",
+      "why": "A trigger fires once, then the daemon removes it (`triggers.rs:263`). The daemon creates its own lock files at start, so take the baseline here and not before step 4.",
+      "expect": "The child starts. `ws triggers` is empty. The diff is empty."
+    },
+    {
+      "title": "Restart the daemon under a headless session",
+      "command": "ws session create --headless -- sleep 600\nlaunchctl kickstart -k gui/$(id -u)/com.rstagi.wsd\nws session get <ULID> | jq -r .state",
+      "ref": "wsd/crates/ws-daemon/src/lib.rs:78",
+      "why": "At start the daemon adopts children that still run. `ws sessions` never shows `running` for a headless session (`cmd/sessions.rs:27`), so read the state with `ws session get`. The `--` is required (`cmd/session.rs:98`).",
+      "expect": "`running`"
+    },
+    {
+      "title": "Merge PR #15, then update ~/dotfile",
+      "command": "git -C ~/dotfile switch main && git -C ~/dotfile pull --ff-only\n# only when main differs from 13929c8:\ncd ~/dotfile && ./install.sh ws",
+      "ref": "install.sh:434",
+      "why": "`ws-rs` is a copy of the build output, so a pull alone does not update it."
+    },
+    {
+      "title": "Resume the Loop and watch it",
+      "command": "/loop-execute resume\nws top",
+      "ref": "wsd/crates/ws/src/main.rs:46",
+      "why": "`ws top` runs `loop-top.mjs` for the loop of the current session (`cmd/top.rs:27`). Close the terminal, then reattach: the sessions survive.",
+      "expect": "`ws top` shows the loop live. The picker shows no Loop or review worktrees."
+    }
+  ],
+  "rollback": [
+    {
+      "step": "Switch back to zsh while the daemon runs. `ws backend` posts to the daemon, so run it before you stop the daemon.",
+      "command": "ws backend zsh",
+      "ref": "wsd/crates/ws/src/cmd/backend.rs:23"
+    },
+    {
+      "step": "Stop the daemon. It starts again at the next login, because the plist keeps `RunAtLoad`.",
+      "command": "launchctl bootout gui/$(id -u)/com.rstagi.wsd",
+      "ref": "wsd/launchd/com.rstagi.wsd.plist:8"
+    },
+    {
+      "step": "To return to Rust, install again first, then select rust. The switch imports what zsh created in the meantime.",
+      "command": "cd ~/dotfile && ./install.sh ws\nws backend rust",
+      "ref": "wsd/crates/ws-daemon/src/import/backend.rs:55"
+    }
+  ]
+}
