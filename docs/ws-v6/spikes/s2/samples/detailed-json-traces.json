@@ -1,0 +1,1745 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-synthetic-session"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-synthetic-parent"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-synthetic-device"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-synthetic-project"
+            }
+          },
+          {
+            "key": "host.arch",
+            "value": {
+              "stringValue": "arm64"
+            }
+          },
+          {
+            "key": "os.type",
+            "value": {
+              "stringValue": "darwin"
+            }
+          },
+          {
+            "key": "os.version",
+            "value": {
+              "stringValue": "25.6.0"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "claude-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "2.1.302"
+            }
+          }
+        ],
+        "droppedAttributesCount": 0
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "com.anthropic.claude_code.tracing",
+            "version": "1.0.0"
+          },
+          "spans": [
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "8a221e5dbc133932",
+              "parentSpanId": "d1c1ddbb1393d301",
+              "name": "claude_code.hook",
+              "kind": 1,
+              "startTimeUnixNano": "1792185067430000000",
+              "endTimeUnixNano": "1792185067461628542",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "hook"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "UserPromptSubmit"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 32
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "intValue": 0
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "6f38939fb8fe75b3",
+              "parentSpanId": "d1c1ddbb1393d301",
+              "name": "claude_code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1792185067573000000",
+              "endTimeUnixNano": "1792185068602097875",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "llm_request"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "claude-haiku-5-5"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "claude-haiku-5-5"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "speed",
+                  "value": {
+                    "stringValue": "normal"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "query_source",
+                  "value": {
+                    "stringValue": "sdk"
+                  }
+                },
+                {
+                  "key": "query_source_safe",
+                  "value": {
+                    "stringValue": "sdk"
+                  }
+                },
+                {
+                  "key": "system_prompt_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-28"
+                  }
+                },
+                {
+                  "key": "system_prompt_preview",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "system_prompt_length",
+                  "value": {
+                    "intValue": 9208
+                  }
+                },
+                {
+                  "key": "tools",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "tools_count",
+                  "value": {
+                    "intValue": 3
+                  }
+                },
+                {
+                  "key": "new_context_message_count",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "system_reminders_count",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "new_context",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "system_reminders",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 1028
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": 108
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": 5056
+                  }
+                },
+                {
+                  "key": "cache_creation_tokens",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "response.has_tool_call",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-32"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "synthetic-id-32"
+                  }
+                },
+                {
+                  "key": "client_request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-33"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": 733
+                  }
+                },
+                {
+                  "key": "first_content_ms",
+                  "value": {
+                    "intValue": 734
+                  }
+                },
+                {
+                  "key": "effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "stop_reason",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "tool_use"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [
+                {
+                  "attributes": [
+                    {
+                      "key": "attempt",
+                      "value": {
+                        "intValue": 1
+                      }
+                    },
+                    {
+                      "key": "client_request_id",
+                      "value": {
+                        "stringValue": "synthetic-id-33"
+                      }
+                    }
+                  ],
+                  "name": "gen_ai.request.attempt",
+                  "timeUnixNano": "1792185067578546417",
+                  "droppedAttributesCount": 0
+                }
+              ],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [
+                {
+                  "attributes": [
+                    {
+                      "key": "link.type",
+                      "value": {
+                        "stringValue": "parent_of"
+                      }
+                    }
+                  ],
+                  "spanId": "ec2e172886c255da",
+                  "traceId": "6ad292eb00000000d9166c432c5a72a0",
+                  "droppedAttributesCount": 0,
+                  "flags": 769
+                }
+              ],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "94a7df8fa49b6240",
+              "parentSpanId": "d1c1ddbb1393d301",
+              "name": "claude_code.hook",
+              "kind": 1,
+              "startTimeUnixNano": "1792185068599000000",
+              "endTimeUnixNano": "1792185068635099708",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "hook"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PreToolUse"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "PreToolUse:Bash"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 36
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "intValue": 0
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "fb4d5c20edd5256a",
+              "parentSpanId": "c15722a0ada9aec0",
+              "name": "claude_code.tool.blocked_on_user",
+              "kind": 1,
+              "startTimeUnixNano": "1792185068637000000",
+              "endTimeUnixNano": "1792185068644026208",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.blocked_on_user"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 7
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "accept"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "config"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "e39318e940e5305e",
+              "parentSpanId": "c15722a0ada9aec0",
+              "name": "claude_code.tool.execution",
+              "kind": 1,
+              "startTimeUnixNano": "1792185068644000000",
+              "endTimeUnixNano": "1792185068694046500",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.execution"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "synthetic-id-34"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "synthetic-id-34"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 50
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "c15722a0ada9aec0",
+              "parentSpanId": "d1c1ddbb1393d301",
+              "name": "claude_code.tool",
+              "kind": 1,
+              "startTimeUnixNano": "1792185068637000000",
+              "endTimeUnixNano": "1792185068694379333",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "tool_name_safe",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "full_command",
+                  "value": {
+                    "stringValue": "printf \"s2-tool-ok\\n\"; printenv TRACEPARENT"
+                  }
+                },
+                {
+                  "key": "bash_command_class",
+                  "value": {
+                    "stringValue": "shell_builtin"
+                  }
+                },
+                {
+                  "key": "bash_argv0",
+                  "value": {
+                    "stringValue": "printf"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "synthetic-id-34"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "synthetic-id-34"
+                  }
+                },
+                {
+                  "key": "tool_input",
+                  "value": {
+                    "stringValue": "[TOOL INPUT: Bash]\n{\"command\":\"printf \\\"s2-tool-ok\\\\n\\\"; printenv TRACEPARENT\",\"description\":\"Print test marker and TRACEPARENT env var\"}"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 57
+                  }
+                },
+                {
+                  "key": "new_context",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [
+                {
+                  "attributes": [
+                    {
+                      "key": "bash_command",
+                      "value": {
+                        "stringValue": "printf \"s2-tool-ok\\n\"; printenv TRACEPARENT"
+                      }
+                    },
+                    {
+                      "key": "output",
+                      "value": {
+                        "stringValue": "[REDACTED_CONTENT]"
+                      }
+                    }
+                  ],
+                  "name": "tool.output",
+                  "timeUnixNano": "1792185068694284000",
+                  "droppedAttributesCount": 0
+                }
+              ],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "cef31900caccab1f",
+              "parentSpanId": "d1c1ddbb1393d301",
+              "name": "claude_code.hook",
+              "kind": 1,
+              "startTimeUnixNano": "1792185068695000000",
+              "endTimeUnixNano": "1792185068727043542",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "hook"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PostToolUse"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "PostToolUse:Bash"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "intValue": 3
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 32
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "intValue": 3
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "intValue": 0
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "242db52f697b7aa7",
+              "parentSpanId": "d1c1ddbb1393d301",
+              "name": "claude_code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1792185068738000000",
+              "endTimeUnixNano": "1792185069884384417",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "llm_request"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "claude-haiku-5-5"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "claude-haiku-5-5"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "speed",
+                  "value": {
+                    "stringValue": "normal"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "query_source",
+                  "value": {
+                    "stringValue": "sdk"
+                  }
+                },
+                {
+                  "key": "query_source_safe",
+                  "value": {
+                    "stringValue": "sdk"
+                  }
+                },
+                {
+                  "key": "system_prompt_hash",
+                  "value": {
+                    "stringValue": "synthetic-id-35"
+                  }
+                },
+                {
+                  "key": "system_prompt_preview",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "system_prompt_length",
+                  "value": {
+                    "intValue": 9250
+                  }
+                },
+                {
+                  "key": "tools",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "tools_count",
+                  "value": {
+                    "intValue": 3
+                  }
+                },
+                {
+                  "key": "new_context_message_count",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "system_reminders_count",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "new_context",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "system_reminders",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 1146
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": 8
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": 5056
+                  }
+                },
+                {
+                  "key": "cache_creation_tokens",
+                  "value": {
+                    "intValue": 171
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "response.has_tool_call",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-36"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "synthetic-id-36"
+                  }
+                },
+                {
+                  "key": "client_request_id",
+                  "value": {
+                    "stringValue": "synthetic-id-37"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": 1129
+                  }
+                },
+                {
+                  "key": "first_content_ms",
+                  "value": {
+                    "intValue": 1129
+                  }
+                },
+                {
+                  "key": "effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "response.model_output",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "stop_reason",
+                  "value": {
+                    "stringValue": "end_turn"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "end_turn"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [
+                {
+                  "attributes": [
+                    {
+                      "key": "attempt",
+                      "value": {
+                        "intValue": 1
+                      }
+                    },
+                    {
+                      "key": "client_request_id",
+                      "value": {
+                        "stringValue": "synthetic-id-37"
+                      }
+                    }
+                  ],
+                  "name": "gen_ai.request.attempt",
+                  "timeUnixNano": "1792185068740264125",
+                  "droppedAttributesCount": 0
+                }
+              ],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [
+                {
+                  "attributes": [
+                    {
+                      "key": "link.type",
+                      "value": {
+                        "stringValue": "parent_of"
+                      }
+                    }
+                  ],
+                  "spanId": "97ce70bd6fae519a",
+                  "traceId": "6ad292ec00000000f066f89af6d7c33b",
+                  "droppedAttributesCount": 0,
+                  "flags": 769
+                }
+              ],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "19aa61a2639cf745",
+              "parentSpanId": "d1c1ddbb1393d301",
+              "name": "claude_code.hook",
+              "kind": 1,
+              "startTimeUnixNano": "1792185069888000000",
+              "endTimeUnixNano": "1792185069935041625",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "hook"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "hook_name",
+                  "value": {
+                    "stringValue": "Stop"
+                  }
+                },
+                {
+                  "key": "num_hooks",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "hook_definitions",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": 47
+                  }
+                },
+                {
+                  "key": "num_success",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "num_blocking",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_non_blocking_error",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "num_cancelled",
+                  "value": {
+                    "intValue": 0
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 257
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "d1c1ddbb1393d301",
+              "parentSpanId": "2222222222222222",
+              "name": "claude_code.interaction",
+              "kind": 1,
+              "startTimeUnixNano": "1792185067412000000",
+              "endTimeUnixNano": "1792185069938672500",
+              "attributes": [
+                {
+                  "key": "ws.session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-session"
+                  }
+                },
+                {
+                  "key": "ws.parent_session.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-parent"
+                  }
+                },
+                {
+                  "key": "ws.device.id",
+                  "value": {
+                    "stringValue": "s2-synthetic-device"
+                  }
+                },
+                {
+                  "key": "ws.project",
+                  "value": {
+                    "stringValue": "s2-synthetic-project"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "synthetic-id-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "invoke_agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "synthetic-id-22"
+                  }
+                },
+                {
+                  "key": "user_prompt",
+                  "value": {
+                    "stringValue": "Run exactly one Bash tool call. Execute this synthetic command: printf \"s2-tool-ok\\n\"; printenv TRACEPARENT. Then reply with S2_DONE. Do not use other tools."
+                  }
+                },
+                {
+                  "key": "user_prompt_length",
+                  "value": {
+                    "intValue": 157
+                  }
+                },
+                {
+                  "key": "interaction.sequence",
+                  "value": {
+                    "intValue": 1
+                  }
+                },
+                {
+                  "key": "parent.source",
+                  "value": {
+                    "stringValue": "env"
+                  }
+                },
+                {
+                  "key": "queued_sends",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "new_context",
+                  "value": {
+                    "stringValue": "[REDACTED_CONTENT]"
+                  }
+                },
+                {
+                  "key": "interaction.duration_ms",
+                  "value": {
+                    "intValue": 2527
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "status": {
+                "code": 0
+              },
+              "links": [],
+              "droppedLinksCount": 0,
+              "flags": 769
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

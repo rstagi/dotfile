@@ -1,0 +1,520 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "ws.session.id",
+            "value": {
+              "stringValue": "s2-synthetic-session"
+            }
+          },
+          {
+            "key": "ws.parent_session.id",
+            "value": {
+              "stringValue": "s2-synthetic-parent"
+            }
+          },
+          {
+            "key": "ws.device.id",
+            "value": {
+              "stringValue": "s2-synthetic-device"
+            }
+          },
+          {
+            "key": "ws.project",
+            "value": {
+              "stringValue": "s2-synthetic-project"
+            }
+          },
+          {
+            "key": "host.arch",
+            "value": {
+              "stringValue": "arm64"
+            }
+          },
+          {
+            "key": "os.type",
+            "value": {
+              "stringValue": "darwin"
+            }
+          },
+          {
+            "key": "os.version",
+            "value": {
+              "stringValue": "25.6.0"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "claude-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "2.1.302"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "com.anthropic.claude_code",
+            "version": "2.1.302"
+          },
+          "metrics": [
+            {
+              "name": "claude_code.session.count",
+              "description": "Count of CLI sessions started",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185059666000000",
+                    "timeUnixNano": "1792185060665000000",
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "ws.session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-session"
+                        }
+                      },
+                      {
+                        "key": "ws.parent_session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-parent"
+                        }
+                      },
+                      {
+                        "key": "ws.device.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-device"
+                        }
+                      },
+                      {
+                        "key": "ws.project",
+                        "value": {
+                          "stringValue": "s2-synthetic-project"
+                        }
+                      },
+                      {
+                        "key": "user.id",
+                        "value": {
+                          "stringValue": "synthetic-id-1"
+                        }
+                      },
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "synthetic-id-16"
+                        }
+                      },
+                      {
+                        "key": "terminal.type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "start_type",
+                        "value": {
+                          "stringValue": "fresh"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "claude_code.cost.usage",
+              "description": "Cost of the Claude Code session",
+              "unit": "USD",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185060540000000",
+                    "timeUnixNano": "1792185060665000000",
+                    "asDouble": 0.00010475999999999999,
+                    "attributes": [
+                      {
+                        "key": "ws.session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-session"
+                        }
+                      },
+                      {
+                        "key": "ws.parent_session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-parent"
+                        }
+                      },
+                      {
+                        "key": "ws.device.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-device"
+                        }
+                      },
+                      {
+                        "key": "ws.project",
+                        "value": {
+                          "stringValue": "s2-synthetic-project"
+                        }
+                      },
+                      {
+                        "key": "user.id",
+                        "value": {
+                          "stringValue": "synthetic-id-1"
+                        }
+                      },
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "synthetic-id-16"
+                        }
+                      },
+                      {
+                        "key": "terminal.type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "claude-haiku-5-5"
+                        }
+                      },
+                      {
+                        "key": "query_source",
+                        "value": {
+                          "stringValue": "main"
+                        }
+                      },
+                      {
+                        "key": "effort",
+                        "value": {
+                          "stringValue": "medium"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "claude_code.token.usage",
+              "description": "Number of tokens used",
+              "unit": "tokens",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1792185060540000000",
+                    "timeUnixNano": "1792185060665000000",
+                    "asDouble": 2.0,
+                    "attributes": [
+                      {
+                        "key": "ws.session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-session"
+                        }
+                      },
+                      {
+                        "key": "ws.parent_session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-parent"
+                        }
+                      },
+                      {
+                        "key": "ws.device.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-device"
+                        }
+                      },
+                      {
+                        "key": "ws.project",
+                        "value": {
+                          "stringValue": "s2-synthetic-project"
+                        }
+                      },
+                      {
+                        "key": "user.id",
+                        "value": {
+                          "stringValue": "synthetic-id-1"
+                        }
+                      },
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "synthetic-id-16"
+                        }
+                      },
+                      {
+                        "key": "terminal.type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "claude-haiku-5-5"
+                        }
+                      },
+                      {
+                        "key": "query_source",
+                        "value": {
+                          "stringValue": "main"
+                        }
+                      },
+                      {
+                        "key": "effort",
+                        "value": {
+                          "stringValue": "medium"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1792185060540000000",
+                    "timeUnixNano": "1792185060665000000",
+                    "asDouble": 108.0,
+                    "attributes": [
+                      {
+                        "key": "ws.session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-session"
+                        }
+                      },
+                      {
+                        "key": "ws.parent_session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-parent"
+                        }
+                      },
+                      {
+                        "key": "ws.device.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-device"
+                        }
+                      },
+                      {
+                        "key": "ws.project",
+                        "value": {
+                          "stringValue": "s2-synthetic-project"
+                        }
+                      },
+                      {
+                        "key": "user.id",
+                        "value": {
+                          "stringValue": "synthetic-id-1"
+                        }
+                      },
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "synthetic-id-16"
+                        }
+                      },
+                      {
+                        "key": "terminal.type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "claude-haiku-5-5"
+                        }
+                      },
+                      {
+                        "key": "query_source",
+                        "value": {
+                          "stringValue": "main"
+                        }
+                      },
+                      {
+                        "key": "effort",
+                        "value": {
+                          "stringValue": "medium"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1792185060540000000",
+                    "timeUnixNano": "1792185060665000000",
+                    "asDouble": 5056.0,
+                    "attributes": [
+                      {
+                        "key": "ws.session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-session"
+                        }
+                      },
+                      {
+                        "key": "ws.parent_session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-parent"
+                        }
+                      },
+                      {
+                        "key": "ws.device.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-device"
+                        }
+                      },
+                      {
+                        "key": "ws.project",
+                        "value": {
+                          "stringValue": "s2-synthetic-project"
+                        }
+                      },
+                      {
+                        "key": "user.id",
+                        "value": {
+                          "stringValue": "synthetic-id-1"
+                        }
+                      },
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "synthetic-id-16"
+                        }
+                      },
+                      {
+                        "key": "terminal.type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "claude-haiku-5-5"
+                        }
+                      },
+                      {
+                        "key": "query_source",
+                        "value": {
+                          "stringValue": "main"
+                        }
+                      },
+                      {
+                        "key": "effort",
+                        "value": {
+                          "stringValue": "medium"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "cacheRead"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1792185060540000000",
+                    "timeUnixNano": "1792185060665000000",
+                    "asDouble": 0.0,
+                    "attributes": [
+                      {
+                        "key": "ws.session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-session"
+                        }
+                      },
+                      {
+                        "key": "ws.parent_session.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-parent"
+                        }
+                      },
+                      {
+                        "key": "ws.device.id",
+                        "value": {
+                          "stringValue": "s2-synthetic-device"
+                        }
+                      },
+                      {
+                        "key": "ws.project",
+                        "value": {
+                          "stringValue": "s2-synthetic-project"
+                        }
+                      },
+                      {
+                        "key": "user.id",
+                        "value": {
+                          "stringValue": "synthetic-id-1"
+                        }
+                      },
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "synthetic-id-16"
+                        }
+                      },
+                      {
+                        "key": "terminal.type",
+                        "value": {
+                          "stringValue": "[REDACTED_CONTENT]"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "claude-haiku-5-5"
+                        }
+                      },
+                      {
+                        "key": "query_source",
+                        "value": {
+                          "stringValue": "main"
+                        }
+                      },
+                      {
+                        "key": "effort",
+                        "value": {
+                          "stringValue": "medium"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "cacheCreation"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

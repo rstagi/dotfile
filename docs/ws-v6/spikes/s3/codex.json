@@ -1,0 +1,192 @@
+{
+  "projection": "Quota responses and token-count events only. Other fields are omitted.",
+  "requests": [
+    {
+      "id": 2,
+      "method": "account/read",
+      "params": {
+        "refreshToken": false
+      }
+    },
+    {
+      "id": 3,
+      "method": "account/rateLimits/read"
+    },
+    {
+      "id": 4,
+      "method": "account/rateLimits/read"
+    }
+  ],
+  "app_server_responses": [
+    {
+      "received_at_utc": "2026-10-16T21:31:57.281830Z",
+      "response": {
+        "id": 2,
+        "result": {
+          "account": {
+            "type": "chatgpt",
+            "email": "<redacted-email>",
+            "planType": "prolite"
+          },
+          "requiresOpenaiAuth": true
+        }
+      }
+    },
+    {
+      "received_at_utc": "2026-10-16T21:31:57.783605Z",
+      "response": {
+        "id": 3,
+        "result": {
+          "accountId": "<redacted-account>",
+          "rateLimits": {
+            "limitId": "codex",
+            "limitName": null,
+            "normalModelSlug": null,
+            "primary": {
+              "usedPercent": 45,
+              "windowDurationMins": 10080,
+              "resetsAt": 1792653579
+            },
+            "secondary": null,
+            "credits": {
+              "hasCredits": false,
+              "unlimited": false,
+              "balance": "0"
+            },
+            "individualLimit": null,
+            "spendControlReached": false,
+            "planType": "prolite",
+            "rateLimitReachedType": null
+          },
+          "rateLimitsByLimitId": {
+            "codex": {
+              "limitId": "codex",
+              "limitName": null,
+              "normalModelSlug": null,
+              "primary": {
+                "usedPercent": 45,
+                "windowDurationMins": 10080,
+                "resetsAt": 1792653579
+              },
+              "secondary": null,
+              "credits": {
+                "hasCredits": false,
+                "unlimited": false,
+                "balance": "0"
+              },
+              "individualLimit": null,
+              "spendControlReached": false,
+              "planType": "prolite",
+              "rateLimitReachedType": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "received_at_utc": "2026-10-16T21:31:58.290556Z",
+      "response": {
+        "id": 4,
+        "result": {
+          "accountId": "<redacted-account>",
+          "rateLimits": {
+            "limitId": "codex",
+            "limitName": null,
+            "normalModelSlug": null,
+            "primary": {
+              "usedPercent": 45,
+              "windowDurationMins": 10080,
+              "resetsAt": 1792653579
+            },
+            "secondary": null,
+            "credits": {
+              "hasCredits": false,
+              "unlimited": false,
+              "balance": "0"
+            },
+            "individualLimit": null,
+            "spendControlReached": false,
+            "planType": "prolite",
+            "rateLimitReachedType": null
+          },
+          "rateLimitsByLimitId": {
+            "codex": {
+              "limitId": "codex",
+              "limitName": null,
+              "normalModelSlug": null,
+              "primary": {
+                "usedPercent": 45,
+                "windowDurationMins": 10080,
+                "resetsAt": 1792653579
+              },
+              "secondary": null,
+              "credits": {
+                "hasCredits": false,
+                "unlimited": false,
+                "balance": "0"
+              },
+              "individualLimit": null,
+              "spendControlReached": false,
+              "planType": "prolite",
+              "rateLimitReachedType": null
+            }
+          }
+        }
+      }
+    }
+  ],
+  "rollout_events": [
+    {
+      "timestamp": "2026-10-16T21:32:33.638Z",
+      "ordinal": 13,
+      "type": "event_msg",
+      "payload": {
+        "type": "token_count",
+        "info": {
+          "total_token_usage": {
+            "input_tokens": 14223,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 9,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 14232
+          },
+          "last_token_usage": {
+            "input_tokens": 14223,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 9,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 14232
+          },
+          "model_context_window": 475000
+        },
+        "rate_limits": {
+          "limit_id": "codex",
+          "limit_name": null,
+          "primary": {
+            "used_percent": 45.0,
+            "window_minutes": 10080,
+            "resets_at": 1792653579
+          },
+          "secondary": null,
+          "credits": {
+            "has_credits": false,
+            "unlimited": false,
+            "balance": "0"
+          },
+          "individual_limit": null,
+          "spend_control_reached": null,
+          "plan_type": "prolite",
+          "rate_limit_reached_type": null
+        }
+      }
+    }
+  ],
+  "identity": {
+    "launch_auth_field": "tokens.account_id",
+    "launch_auth_value": "<redacted-account>",
+    "quota_response_field": "result.accountId",
+    "quota_response_matches_launch_auth": true
+  }
+}
