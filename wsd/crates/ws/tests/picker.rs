@@ -84,14 +84,23 @@ fn pick_installs_rust_tmux_bindings_and_preserves_user_hooks() {
         ("N", "new"),
         ("M", "_merge_popup"),
         ("a", "add"),
-        ("A", "--agent codex"),
-        ("G", "--agent grok"),
+        ("A", "codex"),
+        ("G", "grok"),
     ] {
         let binding = sandbox
             .server
             .tmux(sandbox.home.path(), &["list-keys", "-T", "prefix", key]);
         assert!(binding.contains(env!("CARGO_BIN_EXE_ws")), "{binding}");
         assert!(binding.contains(action), "{binding}");
+        for value in [
+            "WS_HOME=",
+            "WS_STATE=",
+            "WS_SOCK=",
+            "WS_TMUX_SOCKET=",
+            sandbox.socket.to_str().unwrap(),
+        ] {
+            assert!(binding.contains(value), "Missing {value}: {binding}");
+        }
         if key == "w" {
             assert!(binding.contains("choose-tree -Zw"), "{binding}");
         }
@@ -123,6 +132,38 @@ fn pick_installs_rust_tmux_bindings_and_preserves_user_hooks() {
             .server
             .tmux(sandbox.home.path(), &["show-hooks", "-g"]),
         hooks
+    );
+}
+
+#[test]
+fn zsh_picker_checks_run_against_rust_data_commands() {
+    let sandbox = Sandbox::new();
+    let binary = sandbox.home.path().join("CLI's bin/ws tool");
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_ws"), &binary).unwrap();
+    let environment = sandbox.command();
+    let mut command = Command::new("zsh");
+    for (key, value) in environment.get_envs() {
+        if let Some(value) = value {
+            command.env(key, value);
+        } else {
+            command.env_remove(key);
+        }
+    }
+    let output = command
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../ws/tests/picker-rust.test.sh"
+        ))
+        .env("WS_RUST_BIN", &binary)
+        .current_dir(sandbox.home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("Rust picker shell checks passed.")
     );
 }
 

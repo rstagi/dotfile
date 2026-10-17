@@ -86,6 +86,7 @@ The Rust `ws pick` command and bare `ws` use the fzf UI in `ws/lib/picker.sh`.
 Rows, summaries, previews, pins, session expansion and unread changes use Rust commands.
 The binary embeds the shell UI. It does not need the source checkout at runtime.
 The tmux keys keep the picker, new workspace, agent tab and merge actions.
+Bindings retain the configured state paths and tmux socket. They preserve user hooks at index 0.
 The zsh backend keeps its data functions in `ws/lib/picker-legacy.sh` until its removal.
 
 `ws migrate --from-zsh [--dry-run]` imports `$WS_HOME/sessions` into `$WS_STATE` (default `~/.ws/state`).

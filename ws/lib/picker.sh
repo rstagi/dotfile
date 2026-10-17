@@ -41,27 +41,38 @@ cmd_pick() {
   esac
 }
 
-# prefix+w → ws picker, prefix+N → new workspace, prefix+a / prefix+A / prefix+G → claude /
-# codex / grok tab in the current worktree, prefix+M → ws merge. Only inside ws sessions (they carry the @ws_path session option);
-# other sessions keep tmux's default choose-tree on prefix+w. Landing on a tab, however you
-# get there, marks it read (hooks at a high index, so user hooks at [0] are kept).
+# Configure ws keys. Other tmux sessions keep the default workspace selector.
 configure_bindings() {
-  tmux_ has-session 2>/dev/null || return 0 # no server yet: bound when the first session is created
-  local in_ws="#{!=:#{@ws_path},}"
+  tmux_ has-session 2>/dev/null || return 0
+  local in_ws="#{!=:#{@ws_path},}" ws_command="${(q)WS_BIN}" key value
+  if [[ "${WS_PICKER_RUST:-}" == 1 ]]; then
+    for key in WS_HOME WS_STATE WS_SOCK WS_TMUX_SOCKET WS_ROOT WS_NOTIFY; do
+      if (( ${+parameters[$key]} )); then
+        value="${(P)key}"
+        ws_command="$key=${(q)value} $ws_command"
+      fi
+    done
+    ws_command="env $ws_command"
+  fi
+  local pick_cmd="$ws_command pick" new_cmd="$ws_command new" merge_cmd="$ws_command _merge_popup"
+  local add_cmd="$ws_command add #{q:@ws_path}"
   tmux_ set-hook -g 'session-window-changed[77]' 'set -wu @ws_unread'
   tmux_ set-hook -g 'client-session-changed[77]' 'set -wu @ws_unread'
   tmux_ bind-key w if-shell -F "$in_ws" \
-    "display-popup -E -w 90% -h 85% -d '#{pane_current_path}' '$WS_BIN pick'" "choose-tree -Zw"
+    "display-popup -E -w 90% -h 85% -d #{qa:pane_current_path} ${(q)pick_cmd}" "choose-tree -Zw"
   tmux_ bind-key N if-shell -F "$in_ws" \
-    "display-popup -E -w 60% -h 50% -d '#{pane_current_path}' '$WS_BIN new'"
+    "display-popup -E -w 60% -h 50% -d #{qa:pane_current_path} ${(q)new_cmd}"
   tmux_ bind-key M if-shell -F "$in_ws" \
-    "display-popup -E -w 70% -h 50% -d '#{pane_current_path}' '$WS_BIN _merge_popup'"
-  tmux_ bind-key a if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}'\""
-  tmux_ bind-key A if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}' --agent codex\""
-  tmux_ bind-key G if-shell -F "$in_ws" "run-shell \"'$WS_BIN' add '#{@ws_path}' --agent grok\""
-  # Selecting a tab (in any session, or by switching session) dismisses its open notification.
-  # Fixed array index (77 = unread): re-running stays idempotent and leaves the user's own hooks alone.
-  local dismiss="if-shell -F '#{==:#{@ws_notify_open},1}' \"run-shell -b \\\"'$WS_BIN' _dismiss '#{window_id}'\\\"\""
+    "display-popup -E -w 70% -h 50% -d #{qa:pane_current_path} ${(q)merge_cmd}"
+  tmux_ bind-key a if-shell -F "$in_ws" "run-shell ${(q)add_cmd}"
+  add_cmd="$ws_command add #{q:@ws_path} --agent codex"
+  tmux_ bind-key A if-shell -F "$in_ws" "run-shell ${(q)add_cmd}"
+  add_cmd="$ws_command add #{q:@ws_path} --agent grok"
+  tmux_ bind-key G if-shell -F "$in_ws" "run-shell ${(q)add_cmd}"
+  # Array indices 77 and 78 preserve user hooks at index 0.
+  local dismiss_cmd="$ws_command _dismiss '#{window_id}'"
+  local run_cmd="run-shell -b ${(q)dismiss_cmd}"
+  local dismiss="if-shell -F '#{==:#{@ws_notify_open},1}' ${(q)run_cmd}"
   tmux_ set-hook -g 'session-window-changed[78]' "$dismiss"
   tmux_ set-hook -g 'client-session-changed[78]' "$dismiss"
 }
