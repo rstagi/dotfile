@@ -105,6 +105,10 @@ Explicit output files replace their previous contents. I/O files must refer to s
 With `--follow`, it streams new bytes until the process exits, then reads the final bytes.
 The daemon records an `exit` event and `session.finished` for code 0, or `session.failed` for another code.
 Signal exits use code `128 + signal`. `GET /v1/sessions/{id}` returns `exit_code`, which is null before exit.
+The daemon persists the process id, process group and process start identity in `session.running`.
+After a restart, it adopts each matching live headless process and polls its liveness.
+A missing process or a changed identity produces `session.failed` with a reason.
+An adopted process has no waitable exit status. Its eventual exit produces a failure with a null `exit_code` and a reason.
 Run `cd wsd && cargo test -p ws --test headless` to check the I/O contract with sandbox processes.
 
 The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,

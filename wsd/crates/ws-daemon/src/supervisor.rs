@@ -10,6 +10,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::Stdio,
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ use serde_json::json;
 use tokio::process::Command;
 use ws_core::{
     ids::{SessionId, Ulid},
+    log::SessionLog,
     registry::Session,
     state::SessionState,
 };
@@ -41,6 +43,19 @@ pub struct CreateHeadless {
     pub stderr: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Process {
+    pid: u32,
+    pgid: u32,
+    start: Option<String>,
+}
+
+struct Snapshot {
+    pgid: u32,
+    start: String,
+    alive: bool,
+}
+
 pub(crate) async fn create(
     store: Store,
     request: CreateHeadless,
@@ -63,7 +78,7 @@ pub(crate) async fn launch(
         if session.body.get("phase").is_some()
             && let Some(parent) = parent
         {
-            sessions.append(
+            let result = sessions.append(
                 parent,
                 "phase.spawned",
                 json!({
@@ -71,7 +86,11 @@ pub(crate) async fn launch(
                     "phase": session.body["phase"], "repo": session.body["repo"],
                     "base": session.body["base"],
                 }),
-            )?;
+            );
+            if let Err(error) = result {
+                let _ = signal_group(child.id().unwrap(), libc::SIGKILL);
+                return Err(error);
+            }
         }
         tokio::spawn(async move {
             let status = child.wait().await;
@@ -80,20 +99,7 @@ pub(crate) async fn launch(
                 let code = status
                     .code()
                     .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
-                sessions.append(
-                    id,
-                    "exit",
-                    json!({"code": code, "signal": status.signal(), "parent_session_id": parent}),
-                )?;
-                sessions.transition(
-                    &id.to_string(),
-                    if code == 0 {
-                        SessionState::Finished
-                    } else {
-                        SessionState::Failed
-                    },
-                    parent,
-                )?;
+                finish(sessions, id, parent, Some(code), status.signal(), None)?;
                 Ok(())
             })
             .await;
@@ -104,6 +110,142 @@ pub(crate) async fn launch(
         Ok(session)
     })
     .await
+}
+
+/// Restores supervision before the daemon accepts requests. Adopted processes use liveness polls.
+pub(crate) async fn adopt(store: Store) -> std::result::Result<(), ApiError> {
+    let monitor_store = store.clone();
+    api::call(store, move |sessions| {
+        for session in sessions.registry.sessions()? {
+            if session.body["kind"] != "headless"
+                || ["finished", "failed"].contains(&session.state.as_str())
+            {
+                continue;
+            }
+            let parent = session.body["parent_session_id"]
+                .as_str()
+                .and_then(|id| id.parse().ok());
+            let entries = SessionLog::new(&sessions.state, session.id, session.device_id)
+                .read()?
+                .entries;
+            let process = entries
+                .iter()
+                .rev()
+                .find(|entry| entry.event_type == "session.running")
+                .and_then(|entry| {
+                    serde_json::from_value::<Process>(entry.body["process"].clone()).ok()
+                });
+            let Some(process) = process else {
+                finish(
+                    sessions,
+                    session.id,
+                    parent,
+                    None,
+                    None,
+                    Some("No process record exists after the daemon restart."),
+                )?;
+                continue;
+            };
+            if !process.is_alive()? {
+                finish(
+                    sessions,
+                    session.id,
+                    parent,
+                    None,
+                    None,
+                    Some("The process is absent or its identity changed after the daemon restart."),
+                )?;
+                continue;
+            }
+            sessions.append(
+                session.id,
+                "process.adopted",
+                json!({
+                    "parent_session_id": parent, "process": process,
+                }),
+            )?;
+            monitor_adopted(monitor_store.clone(), session.id, parent, process);
+        }
+        Ok(())
+    })
+    .await
+}
+
+fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, process: Process) {
+    tokio::spawn(async move {
+        loop {
+            let process = process.clone();
+            let result = api::call(store.clone(), move |sessions| {
+                if process.is_alive()? {
+                    return Ok(true);
+                }
+                finish(
+                    sessions,
+                    id,
+                    parent,
+                    None,
+                    None,
+                    Some("The adopted process exited. Its exit status is unavailable."),
+                )?;
+                Ok(false)
+            })
+            .await;
+            match result {
+                Ok(true) => tokio::time::sleep(Duration::from_millis(200)).await,
+                Ok(false) => return,
+                Err(error) => {
+                    eprintln!("Cannot monitor session {id}: {}", error.0);
+                    return;
+                }
+            }
+        }
+    });
+}
+
+fn finish(
+    sessions: &mut Sessions,
+    id: SessionId,
+    parent: Option<SessionId>,
+    code: Option<i32>,
+    signal: Option<i32>,
+    reason: Option<&str>,
+) -> Result<()> {
+    let session = sessions.get_record(&id.to_string())?;
+    if ["finished", "failed"].contains(&session.state.as_str()) {
+        return Ok(());
+    }
+    let state = if code == Some(0) && reason.is_none() {
+        SessionState::Finished
+    } else {
+        SessionState::Failed
+    };
+    sessions.append(
+        id,
+        "exit",
+        json!({
+            "code": code, "signal": signal, "reason": reason, "parent_session_id": parent,
+        }),
+    )?;
+    sessions.append(
+        id,
+        state.event_type(),
+        json!({
+            "parent_session_id": parent, "reason": reason,
+        }),
+    )
+}
+
+impl Process {
+    fn is_alive(&self) -> io::Result<bool> {
+        if self.pid <= 1 || self.pgid != self.pid || self.pid > i32::MAX as u32 {
+            return Ok(false);
+        }
+        Ok(snapshot(self.pid)?.is_some_and(|current| {
+            current.alive
+                && current.pgid == self.pgid
+                && self.start.as_ref() == Some(&current.start)
+        }))
+    }
 }
 
 impl Sessions {
@@ -191,7 +333,7 @@ impl Sessions {
             .stdout(output)
             .stderr(errors)
             .process_group(0)
-            .kill_on_drop(true);
+            .kill_on_drop(false);
         let child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -204,15 +346,28 @@ impl Sessions {
             }
         };
         let pid = child.id().expect("A newly spawned child has a pid.");
-        self.append(
-            id,
-            "session.running",
-            json!({
-                "parent_session_id": request.parent_session_id,
-                "process": {"pid": pid, "pgid": pid},
-            }),
-        )?;
-        Ok((self.get_record(&id.to_string())?, child))
+        let persisted = (|| {
+            let process = Process {
+                pid,
+                pgid: pid,
+                start: snapshot(pid)?.map(|snapshot| snapshot.start),
+            };
+            self.append(
+                id,
+                "session.running",
+                json!({
+                    "parent_session_id": request.parent_session_id, "process": process,
+                }),
+            )?;
+            self.get_record(&id.to_string())
+        })();
+        match persisted {
+            Ok(session) => Ok((session, child)),
+            Err(error) => {
+                let _ = signal_group(pid, libc::SIGKILL);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -276,4 +431,80 @@ fn same_file(left: &File, right: &File) -> io::Result<bool> {
     let left = left.metadata()?;
     let right = right.metadata()?;
     Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+fn signal_group(pgid: u32, signal: i32) -> io::Result<()> {
+    if pgid <= 1 || pgid > i32::MAX as u32 {
+        return Err(io::Error::other("The process group id is invalid."));
+    }
+    // SAFETY: A negative, validated pid addresses only this child's process group.
+    if unsafe { libc::kill(-(pgid as i32), signal) } == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn snapshot(pid: u32) -> io::Result<Option<Snapshot>> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    // SAFETY: The buffer has the size and alignment required by PROC_PIDTBSDINFO.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if read == size {
+        // SAFETY: proc_pidinfo initialized the complete buffer.
+        let info = unsafe { info.assume_init() };
+        return Ok(Some(Snapshot {
+            pgid: info.pbi_pgid,
+            start: format!("{}:{}", info.pbi_start_tvsec, info.pbi_start_tvusec),
+            alive: info.pbi_status != libc::SZOMB,
+        }));
+    }
+    let error = io::Error::last_os_error();
+    if [Some(libc::ESRCH), Some(libc::ENOENT)].contains(&error.raw_os_error()) {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn snapshot(pid: u32) -> io::Result<Option<Snapshot>> {
+    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // The command name can contain spaces and parentheses. Field 3 follows the last ')'.
+    let fields: Vec<_> = stat
+        .rsplit_once(')')
+        .ok_or_else(|| io::Error::other("The process record is invalid."))?
+        .1
+        .split_whitespace()
+        .collect();
+    let pgid = fields
+        .get(2)
+        .and_then(|field| field.parse().ok())
+        .ok_or_else(|| io::Error::other("The process group is absent."))?;
+    let start = fields
+        .get(19)
+        .ok_or_else(|| io::Error::other("The process start time is absent."))?;
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    Ok(Some(Snapshot {
+        pgid,
+        start: format!("{}:{start}", boot.trim()),
+        alive: fields.first() != Some(&"Z"),
+    }))
 }
