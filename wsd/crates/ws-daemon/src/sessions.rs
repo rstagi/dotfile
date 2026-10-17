@@ -2,9 +2,8 @@
 
 use std::{
     fmt,
-    fs::{File, OpenOptions, TryLockError},
+    fs::{File, TryLockError},
     io,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -13,6 +12,7 @@ use serde_json::json;
 use ws_core::{
     device::Device,
     ids::{DeviceId, SessionId, Ulid},
+    lockfile,
     log::SessionLog,
     registry::{self, Registry, Session},
     state::{SessionState, TransitionError},
@@ -50,12 +50,7 @@ impl Sessions {
     pub fn open(state: &Path, alias_floor: i64) -> Result<Self> {
         let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".into());
         let device = Device::init(state, &hostname)?;
-        let writer_lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .mode(0o600)
-            .open(state.join("sessions.lock"))?;
+        let writer_lock = lockfile::open_lock_file(&state.join("sessions.lock"))?;
         match writer_lock.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {

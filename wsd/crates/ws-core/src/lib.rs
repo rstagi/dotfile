@@ -2,6 +2,7 @@
 
 pub mod device;
 pub mod ids;
+pub mod lockfile;
 pub mod log;
 pub mod registry;
 pub mod state;

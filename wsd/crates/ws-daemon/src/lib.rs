@@ -2,9 +2,9 @@
 
 use std::{
     collections::VecDeque,
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, TryLockError},
     io,
-    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
@@ -87,12 +87,7 @@ fn lock_socket(socket: &Path) -> io::Result<File> {
     let mut path = socket.as_os_str().to_owned();
     path.push(".lock");
     // Keep this file after shutdown so every contender locks the same inode.
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
+    let lock = ws_core::lockfile::open_lock_file(Path::new(&path))?;
     match lock.try_lock() {
         Ok(()) => Ok(lock),
         Err(TryLockError::WouldBlock) => Err(io::Error::new(
