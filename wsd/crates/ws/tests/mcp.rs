@@ -115,6 +115,8 @@ async fn session_create_and_get_match_the_json_cli() {
     expected["name"] = json!("cli-child");
     expected["body"]["name"] = json!("cli-child");
     assert_eq!(canonical_session(cli), expected);
+    server.assert_audit("session.create");
+    server.assert_audit("session.get");
     server.finish().await;
 }
 
@@ -557,5 +559,57 @@ async fn session_tail_enforces_default_and_hard_limits_after_utf8_decoding() {
             "invalid_request"
         );
     }
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn json_send_uses_ws_session_id_without_resolving_a_legacy_session() {
+    let server = TestServer::start().await;
+    let recipient = server.cli(&["session", "create", "--json"]);
+    let output = common::ws(server.home.path(), &server.socket)
+        .args([
+            "send",
+            recipient["id"].as_str().unwrap(),
+            "from a terminal",
+            "--json",
+        ])
+        .env_remove("WS_SESSION_ID")
+        .env("WS_SESSION", "unrelated-legacy-session")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(75), "{output:?}");
+    let sent: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sent["to_session"], recipient["id"]);
+    assert_eq!(sent["body"], "from a terminal");
+    assert_ne!(sent["from_session"], server.parent);
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn record_creation_rejects_process_options_without_headless() {
+    let server = TestServer::start().await;
+    for option in [
+        "--cwd", "--parent", "--stdin", "--stdout", "--stderr", "--env",
+    ] {
+        let output = common::ws(server.home.path(), &server.socket)
+            .args(["session", "create", "--json", option, "unused"])
+            .env("WS_SESSION_ID", &server.parent)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "The command ignored {option}: {output:?}"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--headless"));
+    }
+    assert_eq!(
+        server
+            .call("session_list", json!({}))
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     server.finish().await;
 }

@@ -168,8 +168,15 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                     );
                 }
             } else {
-                if !arguments.command.is_empty() {
-                    return Err("Use --headless to create a process.".into());
+                if !arguments.command.is_empty()
+                    || arguments.parent.is_some()
+                    || arguments.cwd.is_some()
+                    || !arguments.environment.is_empty()
+                    || arguments.stdin.is_some()
+                    || arguments.stdout.is_some()
+                    || arguments.stderr.is_some()
+                {
+                    return Err("Use --headless to set process options.".into());
                 }
                 let value = crate::mcp::Control::from_env(socket)?
                     .call(
