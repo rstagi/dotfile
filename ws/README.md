@@ -93,9 +93,13 @@ JSON returns the registry session fields, including the ULID `id`, numeric `alia
 Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
 The TSV state column reports the live tmux state or `stopped` when no tagged window exists.
 
-The Rust CLI also supports `new --repo <path> --branch <branch> [--agent <agent>] [--detach]`,
+The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,
 `add [repo/branch|path] [--agent <agent>] [--detach]`, and `list|ls [--json]`.
 `new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.
+Without `--repo`, `new` offers the current repository, the read-only Loop mappings, and repositories under `$WS_REPO_ROOTS` through fzf.
+Without `--branch`, it reads the branch from the terminal.
+It copies ignored files that match `.conductor/settings.toml` `file_include_globs`, with `.env*` as the default.
+It runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux window.
 `add` registers an existing worktree or adds a tab to a registered workspace.
 `list` selects workspaces from the registry. A worktree directory without a registry entry does not appear.
 Workspace tabs start a shell. The agent launch contract comes in a later port phase.

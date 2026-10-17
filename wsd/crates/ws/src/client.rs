@@ -79,18 +79,15 @@ pub(crate) async fn request(
     path: &str,
     body: Vec<u8>,
 ) -> Result<Bytes> {
+    let seconds = if path.starts_with("/v1/workspaces") { 120 } else { 2 };
     timeout(
-        Duration::from_secs(if path.starts_with("/v1/workspaces") {
-            120
-        } else {
-            2
-        }),
+        Duration::from_secs(seconds),
         send_request(socket, method, path, body),
     )
     .await
     .map_err(|_| {
         format!(
-            "The daemon at {} did not answer within 2 seconds.",
+            "The daemon at {} did not answer within {seconds} seconds.",
             socket.display()
         )
     })?

@@ -27,9 +27,9 @@ enum Command {
     /// Create a workspace and its first session.
     New {
         #[arg(long)]
-        repo: String,
+        repo: Option<String>,
         #[arg(long)]
-        branch: String,
+        branch: Option<String>,
         #[arg(long, default_value = "claude")]
         agent: String,
         #[arg(long)]

@@ -111,6 +111,127 @@ fn add_registers_an_existing_worktree_and_allocates_another_tab() {
     );
 }
 
+#[test]
+fn new_honors_conductor_includes_and_runs_setup_in_the_worktree() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("shop");
+    std::fs::create_dir_all(repo.join(".conductor")).unwrap();
+    std::fs::create_dir_all(repo.join("apps/ui")).unwrap();
+    std::fs::write(repo.join(".gitignore"), ".env*\n.flags.local.json\n").unwrap();
+    std::fs::write(repo.join("apps/ui/.env.local"), "X=1\n").unwrap();
+    std::fs::write(repo.join(".flags.local.json"), "{}\n").unwrap();
+    std::fs::write(
+        repo.join(".conductor/settings.toml"),
+        r#"
+file_include_globs = """
+.env*
+.flags.local.json
+"""
+[scripts]
+setup = "touch SETUP-RAN"
+"#,
+    )
+    .unwrap();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "configured",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let wt = sandbox.home.path().join("worktrees/shop/configured");
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".flags.local.json")).unwrap(),
+        "{}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt.join("apps/ui/.env.local")).unwrap(),
+        "X=1\n"
+    );
+    wait_until(|| wt.join("SETUP-RAN").is_file());
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "configured",
+        "--detach",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("workspace exists:")
+    );
+}
+
+#[test]
+fn new_reads_repo_candidates_without_writing_the_loop_mapping() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("mapped");
+    let mapping = sandbox.home.path().join(".loop/repos.json");
+    std::fs::create_dir_all(mapping.parent().unwrap()).unwrap();
+    let contents = serde_json::to_vec(&serde_json::json!({"org/mapped": repo})).unwrap();
+    std::fs::write(&mapping, &contents).unwrap();
+    std::fs::set_permissions(&mapping, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let bin = sandbox.home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let fzf = bin.join("fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ncat > \"$WS_TEST_CANDIDATES\"\nprintf '%s\\n' \"$WS_TEST_PICK\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let candidates = sandbox.home.path().join("candidates");
+    let output = sandbox
+        .command()
+        .args(["new", "--branch", "chosen", "--detach"])
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("WS_REPO_ROOTS", sandbox.home.path().join("missing"))
+        .env("WS_TEST_CANDIDATES", &candidates)
+        .env("WS_TEST_PICK", &repo)
+        .current_dir(sandbox.home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        std::fs::read_to_string(candidates)
+            .unwrap()
+            .lines()
+            .any(|line| line == repo.to_str().unwrap())
+    );
+    assert_eq!(std::fs::read(&mapping).unwrap(), contents);
+    assert_eq!(
+        std::fs::metadata(&mapping).unwrap().permissions().mode() & 0o777,
+        0o400
+    );
+    assert_eq!(
+        git(
+            &sandbox.home.path().join("worktrees/mapped/chosen"),
+            &["branch", "--show-current"]
+        ),
+        "chosen"
+    );
+}
+
+fn wait_until(mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "The workspace operation timed out."
+        );
+        std::thread::yield_now();
+    }
+}
+
 impl Sandbox {
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
@@ -124,6 +245,7 @@ impl Sandbox {
         command
             .env("WS_ROOT", home.path().join("worktrees"))
             .env("WS_TMUX_SOCKET", &server)
+            .env("WS_AGENT_SHELL", "zsh -fc")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
         let daemon = common::Daemon::start(command, &socket);

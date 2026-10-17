@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     env, fs, io,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -28,6 +29,18 @@ pub struct CreateWorkspace {
 pub struct AddWorkspace {
     pub target: String,
     pub agent: String,
+}
+
+#[derive(Default, Deserialize)]
+struct RepoSettings {
+    file_include_globs: Option<String>,
+    #[serde(default)]
+    scripts: RepoScripts,
+}
+
+#[derive(Default, Deserialize)]
+struct RepoScripts {
+    setup: Option<String>,
 }
 
 pub(crate) fn router() -> Router<Store> {
@@ -78,6 +91,7 @@ impl Sessions {
         {
             return Err(failure(format!("invalid branch: {branch}")));
         }
+        let settings = repo_settings(&repo)?;
         let root = workspace_root()?;
         let repo_name = repo
             .file_name()
@@ -100,10 +114,23 @@ impl Sessions {
         fs::create_dir_all(wt.parent().unwrap())?;
         add_worktree(&repo, branch, &wt)?;
         let result = (|| {
-            copy_env_files(&repo, &wt)?;
-            self.start_workspace(&name, &wt, &request.agent)
+            copy_included_files(&repo, &wt, &settings)?;
+            let response = self.start_workspace(&name, &wt, &request.agent)?;
+            run_setup(
+                &repo,
+                &wt,
+                &settings,
+                response["window_id"].as_str().unwrap(),
+            )?;
+            Ok(response)
         })();
-        if result.is_err() {
+        if result.is_err()
+            && !self
+                .registry
+                .workspaces()?
+                .iter()
+                .any(|workspace| workspace.id == name)
+        {
             let _ = git(
                 &repo,
                 &["worktree", "remove", "--force", wt.to_str().unwrap()],
@@ -342,7 +369,21 @@ fn add_worktree(repo: &Path, branch: &str, wt: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_env_files(repo: &Path, wt: &Path) -> Result<()> {
+fn copy_included_files(repo: &Path, wt: &Path, settings: &RepoSettings) -> Result<()> {
+    let patterns = settings
+        .file_include_globs
+        .as_deref()
+        .unwrap_or(".env*")
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(glob::Pattern::new)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::InvalidRequest("The include pattern is invalid."))?;
+    let patterns = if patterns.is_empty() {
+        vec![glob::Pattern::new(".env*").unwrap()]
+    } else {
+        patterns
+    };
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -365,15 +406,71 @@ fn copy_env_files(repo: &Path, wt: &Path) -> Result<()> {
         let file = std::str::from_utf8(file)
             .map_err(|_| Error::InvalidRequest("The included path is not UTF-8."))?;
         let path = Path::new(file);
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(".env"))
-        {
+        if patterns.iter().any(|pattern| {
+            let candidate = if pattern.as_str().contains('/') {
+                file
+            } else {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("")
+            };
+            pattern.matches(candidate)
+        }) {
             fs::create_dir_all(wt.join(path).parent().unwrap())?;
             fs::copy(repo.join(path), wt.join(path))?;
         }
     }
+    Ok(())
+}
+
+fn repo_settings(repo: &Path) -> Result<RepoSettings> {
+    let path = repo.join(".conductor/settings.toml");
+    match fs::read_to_string(path) {
+        Ok(text) => toml::from_str(&text)
+            .map_err(|error| failure(format!("Cannot read the repository settings: {error}"))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(RepoSettings::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn run_setup(repo: &Path, wt: &Path, settings: &RepoSettings, window: &str) -> Result<()> {
+    let script = repo.join(".ws-setup");
+    let setup = settings
+        .scripts
+        .setup
+        .as_deref()
+        .filter(|setup| !setup.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            fs::metadata(&script)
+                .ok()
+                .filter(|metadata| metadata.permissions().mode() & 0o111 != 0)
+                .map(|_| shell_words::quote(script.to_str().unwrap()).into_owned())
+        });
+    let Some(setup) = setup else {
+        return Ok(());
+    };
+    let shell = env::var("WS_AGENT_SHELL").unwrap_or_else(|_| "zsh -ic".into());
+    let mut command = shell_words::split(&shell)
+        .map_err(|_| Error::InvalidRequest("The agent shell command is invalid."))?;
+    if command.is_empty() {
+        return Err(Error::InvalidRequest("The agent shell command is empty."));
+    }
+    command.push(format!("{setup} || {{ printf 'setup failed (%s) — enter to close\\n' \"$?\"; read ws_setup_reply; }}"));
+    let tmux = Tmux::from_env();
+    let session = tmux.execute(&["display-message", "-p", "-t", window, "#{session_id}"])?;
+    let mut args = vec![
+        "new-window",
+        "-d",
+        "-t",
+        &session,
+        "-n",
+        "setup",
+        "-c",
+        wt.to_str().unwrap(),
+    ];
+    args.extend(command.iter().map(String::as_str));
+    tmux.execute(&args)?;
     Ok(())
 }
 
