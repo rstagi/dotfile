@@ -123,6 +123,80 @@ fn incremental_import_keeps_ids_and_imports_replaced_inboxes_and_new_triggers() 
     assert_eq!(sessions.triggers.len(), 2);
 }
 
+#[test]
+fn incremental_import_keeps_output_published_by_rust() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    capture_mode(&source, root.path(), "done");
+    let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    let id = sessions.get("#1", None).unwrap().id;
+    let output = state
+        .join("sessions")
+        .join(id.to_string())
+        .join("output.md");
+    assert_eq!(
+        fs::read_to_string(&output).unwrap(),
+        "completed {id} and {output}\n"
+    );
+    fs::write(&output, "rust output\n").unwrap();
+    sessions
+        .append_entry(id, "done", json!({"output":output}))
+        .unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(fs::read_to_string(&output).unwrap(), "rust output\n");
+    // New zsh output after a backend change is imported once.
+    fs::write(source.join("sessions/1/output.md"), "zsh again\n").unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(fs::read_to_string(&output).unwrap(), "zsh again\n");
+    fs::write(&output, "rust again\n").unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(fs::read_to_string(&output).unwrap(), "rust again\n");
+}
+
+#[test]
+fn incremental_import_cancels_triggers_removed_in_zsh() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    capture(&source, root.path());
+    let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(sessions.triggers.len(), 1);
+    fs::remove_file(source.join("triggers/1.json")).unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert!(sessions.triggers.is_empty());
+    assert_eq!(trigger_events(&state, "edge.action_removed"), 1);
+    drop(sessions);
+    let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
+    sessions.restore_triggers().unwrap();
+    assert!(sessions.triggers.is_empty());
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(trigger_events(&state, "edge.action_removed"), 1);
+}
+
+#[test]
+fn incremental_import_completes_triggers_fired_in_zsh() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    capture(&source, root.path());
+    let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(sessions.triggers.len(), 1);
+    let mut record: Value =
+        serde_json::from_slice(&fs::read(source.join("triggers/1.json")).unwrap()).unwrap();
+    record["status"] = json!("fired");
+    fs::create_dir(source.join("triggers/archive")).unwrap();
+    fs::write(source.join("triggers/archive/1.json"), record.to_string()).unwrap();
+    fs::remove_file(source.join("triggers/1.json")).unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert!(sessions.triggers.is_empty());
+    assert_eq!(trigger_events(&state, "edge.action_fired"), 1);
+    assert_eq!(trigger_events(&state, "edge.action_removed"), 0);
+}
+
 #[tokio::test]
 async fn imported_exit_trigger_ignores_exits_before_registration() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
@@ -465,6 +539,15 @@ async fn request(app: &Router, method: &str, path: &str, body: Value) -> Value {
         "{status}: {value}"
     );
     value
+}
+
+fn trigger_events(state: &Path, kind: &str) -> usize {
+    session_logs(state)
+        .iter()
+        .flat_map(|log| log.split(|byte| *byte == b'\n'))
+        .filter(|line| !line.is_empty())
+        .filter(|line| serde_json::from_slice::<Value>(line).unwrap()["type"] == kind)
+        .count()
 }
 
 fn session_logs(state: &Path) -> Vec<Vec<u8>> {

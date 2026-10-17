@@ -184,3 +184,49 @@ pub(super) fn import(
     }
     Ok(())
 }
+
+/// Records the end of an imported trigger that left the zsh pending set.
+/// A zsh `fired` record completes it. Any other outcome cancels it.
+pub(super) fn retire(
+    sessions: &mut Sessions,
+    source: &Path,
+    legacy: &LegacyTrigger,
+) -> io::Result<()> {
+    let Some(owner) = sessions
+        .triggers
+        .get(&legacy.id)
+        .map(|trigger| trigger.owner)
+    else {
+        return Ok(());
+    };
+    let directory = source.join("triggers");
+    let mut status = Value::Null;
+    for path in [
+        directory.join(format!("{}.json", legacy.legacy_id)),
+        directory.join(format!("archive/{}.json", legacy.legacy_id)),
+    ] {
+        match fs::read(&path) {
+            Ok(bytes) => {
+                status = serde_json::from_slice::<Value>(&bytes)
+                    .map(|record| record["status"].clone())
+                    .unwrap_or(Value::Null);
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let kind = if status == "fired" {
+        "edge.action_fired"
+    } else {
+        "edge.action_removed"
+    };
+    append_once(
+        sessions,
+        owner,
+        &format!("trigger-retired:{}:{}", legacy.legacy_id, legacy.id),
+        kind,
+        json!({"trigger_id":legacy.id, "zsh_status":status}),
+    )?;
+    Ok(())
+}

@@ -40,6 +40,10 @@ pub struct Plan {
     pub workspaces: Vec<LegacyWorkspace>,
     #[serde(default)]
     pub complete: bool,
+    /// Artifacts (`<alias>:<file>`) whose zsh bytes changed since the previous import.
+    /// `None` writes every artifact. Other artifacts are written only when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_writes: Option<Vec<String>>,
 }
 
 /// Opens the daemon state and completes its first legacy import before serving requests.
@@ -118,7 +122,7 @@ pub fn from_zsh_with_root(
         save(state, &plan)?;
     }
     for session in &mut plan.sessions {
-        import_session(&mut sessions, session)?;
+        import_session(&mut sessions, session, None)?;
     }
     workspaces::import(&mut sessions, &plan.workspaces)?;
     triggers::import(
@@ -146,7 +150,19 @@ pub fn incremental(sessions: &mut Sessions, source: &Path, root: &Path) -> io::R
         serde_json::from_slice(&serde_json::to_vec(previous)?)?
     } else {
         let mut next = snapshot(&source, root, false)?;
+        let mut writes = Vec::new();
         for session in &mut next.sessions {
+            let old = previous
+                .as_ref()
+                .and_then(|p| p.sessions.iter().find(|s| s.alias == session.alias));
+            for (name, bytes, old_bytes) in [
+                ("output.md", &session.output, old.map(|old| &old.output)),
+                ("prompt", &session.prompt, old.map(|old| &old.prompt)),
+            ] {
+                if bytes.is_some() && old_bytes != Some(bytes) {
+                    writes.push(format!("{}:{name}", session.alias));
+                }
+            }
             if let Some(old) = previous
                 .as_ref()
                 .and_then(|p| p.sessions.iter().find(|s| s.alias == session.alias))
@@ -182,11 +198,18 @@ pub fn incremental(sessions: &mut Sessions, source: &Path, root: &Path) -> io::R
                 trigger.id = old.id;
             }
         }
+        // Retire imported triggers that zsh removed or fired before the new journal hides them.
+        for old in previous.iter().flat_map(|p| &p.triggers) {
+            if !next.triggers.iter().any(|t| t.legacy_id == old.legacy_id) {
+                triggers::retire(sessions, &source, old)?;
+            }
+        }
+        next.artifact_writes = Some(writes);
         next
     };
     save(&sessions.state, &plan)?;
     for session in &mut plan.sessions {
-        import_session(sessions, session)?;
+        import_session(sessions, session, plan.artifact_writes.as_deref())?;
     }
     workspaces::import(sessions, &plan.workspaces)?;
     triggers::import(sessions, &plan.sessions, &plan.triggers, &plan.workspaces)?;
@@ -228,7 +251,12 @@ fn load(state: &Path) -> io::Result<Option<Plan>> {
     }
 }
 
-fn import_session(sessions: &mut Sessions, session: &mut LegacySession) -> io::Result<()> {
+/// Imports one session. `writes` limits artifact rewrites so newer Rust output survives.
+fn import_session(
+    sessions: &mut Sessions,
+    session: &mut LegacySession,
+    writes: Option<&[String]>,
+) -> io::Result<()> {
     let mut body = session.meta.clone();
     body["alias"] = json!(session.alias);
     body["name"] = session.meta["name"]
@@ -246,8 +274,12 @@ fn import_session(sessions: &mut Sessions, session: &mut LegacySession) -> io::R
     append_once(sessions, session.id, "meta", "session.created", body)?;
     let directory = sessions.state.join("sessions").join(session.id.to_string());
     for (name, bytes) in [("output.md", &session.output), ("prompt", &session.prompt)] {
-        if let Some(bytes) = bytes {
-            atomic_write(&directory.join(name), bytes)?;
+        let Some(bytes) = bytes else { continue };
+        let path = directory.join(name);
+        let changed =
+            writes.is_none_or(|writes| writes.contains(&format!("{}:{name}", session.alias)));
+        if changed || !path.try_exists()? {
+            atomic_write(&path, bytes)?;
         }
     }
     session.event_map.clear();

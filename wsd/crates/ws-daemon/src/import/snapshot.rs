@@ -139,6 +139,7 @@ pub(super) fn snapshot(source: &Path, root: &Path, dry_run: bool) -> io::Result<
         triggers,
         workspaces,
         complete: false,
+        artifact_writes: None,
     })
 }
 
