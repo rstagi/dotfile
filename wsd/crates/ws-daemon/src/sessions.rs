@@ -20,6 +20,7 @@ use ws_core::{
 };
 
 pub struct Sessions {
+    pub(crate) trigger_events_pending: bool,
     pub(crate) triggers: std::collections::BTreeMap<Ulid, crate::triggers::Trigger>,
     pub(crate) state: PathBuf,
     pub(crate) device_id: DeviceId,
@@ -77,6 +78,7 @@ impl Sessions {
         registry.rebuild(state)?;
         let mut sessions = Self {
             triggers: Default::default(),
+            trigger_events_pending: false,
             state: state.into(),
             device_id: device.device_id,
             registry,
@@ -242,11 +244,7 @@ impl Sessions {
         self.needs_rebuild = false;
         self.apply_trigger_entry(&entry);
         self.changes.send_replace(());
-        if ["done", "exit"].contains(&event_type)
-            && let Err(error) = self.evaluate_triggers()
-        {
-            eprintln!("Cannot evaluate triggers: {error}");
-        }
+        self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
         Ok(entry)
     }
 

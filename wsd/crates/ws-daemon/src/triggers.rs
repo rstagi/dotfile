@@ -288,7 +288,15 @@ impl Sessions {
 
     fn evaluate_trigger(&mut self, trigger: &Trigger) -> Result<()> {
         for source in &trigger.sources {
-            let event = self.registry.latest_event(*source, &trigger.event)?;
+            // A self-send must wait for the launch wrapper, not its pre-exit hook.
+            let process_exit = trigger.event == "exit"
+                && trigger.target == Some(*source)
+                && self.get_record(&source.to_string())?.body["agent"].is_string();
+            let event = if process_exit {
+                self.registry.latest_process_exit(*source)?
+            } else {
+                self.registry.latest_event(*source, &trigger.event)?
+            };
             if event.is_none_or(|entry| {
                 trigger.event == "exit"
                     && entry.seq <= trigger.event_offsets.get(source).copied().unwrap_or(0)
@@ -371,6 +379,21 @@ impl Sessions {
             ));
         }
         if let Some(target) = trigger.target {
+            let recipient = self.get_record(&target.to_string())?;
+            if trigger.event == "exit"
+                && trigger.sources.contains(&target)
+                && recipient.body["agent"].is_string()
+                && !["finished", "failed"].contains(&recipient.state.as_str())
+                && let Some(exit) = self.registry.latest_process_exit(target)?
+            {
+                // Failed interactive launches retain slots until an explicit continuation.
+                let state = if exit.body["code"] == 0 {
+                    ws_core::state::SessionState::Finished
+                } else {
+                    ws_core::state::SessionState::Failed
+                };
+                self.transition(&target.to_string(), state, Some(trigger.owner))?;
+            }
             self.send_trigger_message(&target.to_string(), trigger.owner, &message, trigger.id)?;
         } else {
             let workspace = trigger

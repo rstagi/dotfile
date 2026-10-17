@@ -153,7 +153,14 @@ pub(crate) async fn call<T: Send + 'static>(
         let mut sessions = store
             .lock()
             .map_err(|_| Error::Io(std::io::Error::other("Cannot lock the session store.")))?;
-        operation(&mut sessions)
+        let result = operation(&mut sessions);
+        // Exit producers retire the old launch before actions can reopen its session.
+        if std::mem::take(&mut sessions.trigger_events_pending)
+            && let Err(error) = sessions.evaluate_triggers()
+        {
+            eprintln!("Cannot evaluate triggers: {error}");
+        }
+        result
     })
     .await
     .map_err(|_| {

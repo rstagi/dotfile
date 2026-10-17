@@ -113,6 +113,7 @@ The legacy forms `--send-to <id> <text>` and `--spawn <prompt> [--agent <agent>]
 Omitted text uses a completion message with `{id}` and `{output}`. Expansion preserves literal text and source order.
 Templates must contain text or `{id}` in addition to `{output}`.
 Done triggers accept earlier completion events. Exit triggers require a new exit after registration.
+A self-send waits for the launch wrapper to retire before it reopens the session.
 All sources must satisfy the condition. Repeated events and daemon restarts do not repeat a completed action.
 The owner log stores `edge.action_registered` with the sources, offsets, dependency edges, and action.
 A terminal caller uses the local human session as the owner. A send records `message.sent` in that owner's log.
