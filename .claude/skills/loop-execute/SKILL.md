@@ -45,7 +45,8 @@ its safe ceiling. So `loop-execute` runs in one of three shapes (contract:
   **THIN**. It does preflight / init / lock / the confirm gate, spawns ONE detached
   `loop-orchestrator.sh`, then only: polls **compact local** state for a 2-3 line progress read,
   answers HIL from on-disk briefs, and handles `sub/REVIEW_READY` barriers. It spawns **only** the
-  orchestrator and ledger-driven AR review/remediation runners (§8) — the heavy scheduling/merge/escalation runs in
+  orchestrator, ledger-driven AR review/remediation runners (§8) and milestone explainer
+  runners (§8, §9) — the heavy scheduling/merge/escalation runs in
   disposable **`sub`** instances that self-recycle, so this chat never fills up.
 - **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
   spawned by `loop-orchestrator.sh`, entered via `loop-execute resume` (signalled by env
@@ -466,9 +467,20 @@ final milestone is an ordinary terminal review (finish below):
 3. `loop-state.sh log milestone.awaiting-merge "" "M<n> <slug>=<url> ..."` — the daemon's typed
    `milestone.awaiting-merge` event. `log` only carries phase/repository/detail, so the milestone
    and gate PRs go in `detail` as one compact string (e.g. `M1 owner/api=<url> owner/web=<url>`).
-4. Notify once (`loop-notify.sh --level info --event milestone.awaiting-merge`): PR URLs + the
+4. **Ship explainer (best-effort).** Explain the milestone in `visual-explainer` `ship` mode
+   (protocol § Milestone explainers). The output directory is `.loop/explainers/m<n>-ship/`.
+   - Supervise does not write the props. Reuse a `props.json` that passes the skill's
+     `--check`. Otherwise spawn one detached explainer runner and wait for its `meta.json`.
+     Exit 12 gets one relaunch with the `verify.log` tail.
+   - Then supervise renders, publishes and writes `link.txt`, as the skill tells it.
+   - When the link is an artifact URL, add or replace one line in each gate PR body:
+     `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
+   - On any failure, write the reason to `error.txt` in the output directory and go on
+     with the park. A failed explainer never blocks the park.
+5. Notify once (`loop-notify.sh --level info --event milestone.awaiting-merge`): PR URLs, the
+   explainer link (`--url`) or the explainer failure, and the
    instruction to merge them and run `/loop-execute resume`.
-5. **keep** `sub/REVIEW_READY` (it is what stops the step-3b backstop), unlock, stop — never `finish`, never respawn. A SUB or backstop that sees `awaitingMerge` does nothing.
+6. **keep** `sub/REVIEW_READY` (it is what stops the step-3b backstop), unlock, stop — never `finish`, never respawn. A SUB or backstop that sees `awaitingMerge` does nothing.
 
 Resume is human-only (`LOOP_SUB` unset) and starts the next milestone — step 9. Otherwise, if later
 document phases exist, set plan Status back to `in progress`, clear `REVIEW_READY`, and respawn
@@ -519,8 +531,8 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    `done` with every participant's gate PR recorded (crash between aggregation and step 8.1),
    rebuild `awaitingMerge {milestone, prs{slug:url}}` from `state.repositories[slug].prUrl`,
    persist it with `loop-state.sh set '.awaitingMerge = …'` (`check` reads it from disk), then
-   re-run step-8 park items 2-4 (idempotent): plan Status `awaiting merge` push, the
-   `milestone.awaiting-merge` event, the notification. Continue to check; never re-run the gate
+   re-run step-8 park items 2-5 (idempotent): plan Status `awaiting merge` push, the
+   `milestone.awaiting-merge` event, the ship explainer, the notification. Continue to check. Never re-run the gate
    review. **Crash after apply:** `state.resumePending` equals `state.milestone` → the patch is
    already applied but the restart never finished: run resume step 5 only. (Recorded milestone
    history or a present `sub/REVIEW_READY` alone prove nothing — both persist through every later
@@ -547,6 +559,16 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); respawn the
    orchestrator for the new milestone (the SUB then schedules only its phases); last,
    `loop-state.sh set '.resumePending = null'` (every restart item above is idempotent).
+6. **Plan explainer (best-effort).** Explain the new milestone in `visual-explainer` `plan`
+   mode (protocol § Milestone explainers). The output directory is
+   `.loop/explainers/m<N>-plan/`, where N is the new milestone.
+   - Skip this step when `link.txt` already exists there.
+   - Spawn one detached explainer runner after the respawn. Do not wait for it here.
+   - At each step-3b poll, look for its `meta.json`. Then render, publish and write
+     `link.txt`, as the skill tells you.
+   - Notify once (`loop-notify.sh --level info --title "M<N> plan explainer"`) with the link
+     (`--url`) or the failure.
+   - A failed explainer never stops the resume or the orchestrator.
 
 ### Sub recycle *(mode: `sub` only)*
 
@@ -614,6 +636,7 @@ derives NOTE visibility from both file presence and unfinished lifecycle.
   `loop-orchestrator.sh` — a SUB never spawns its own successor (that would overlap two
   orchestrators on one run id, which the reentrant lock does not prevent). Recycle only at a
   persisted checkpoint; never hard-kill a live phase runner to hit the token ceiling.
-- Supervise stays THIN: spawn only the orchestrator + staged review/remediation runners, and
-  read only compact local state. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
+- Supervise stays THIN: spawn only the orchestrator + staged review/remediation runners +
+  milestone explainer runners, and read only compact local state. A runner writes explainer
+  props. Supervise only renders, publishes and links the page. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
   the main chat defeats the two-tier design — that work is the `sub`'s.
