@@ -20,7 +20,7 @@ use std::{
 };
 use ws_core::{
     ids::{SessionId, Ulid},
-    registry::Workspace,
+    registry::{Session, Workspace},
 };
 
 #[derive(Deserialize, Serialize)]
@@ -78,6 +78,16 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/workspaces/add", axum::routing::post(add))
         .route("/v1/workspaces/pin", axum::routing::post(pin))
         .route("/v1/workspaces/remove", axum::routing::post(remove))
+        .route("/v1/workspaces/open", axum::routing::post(open))
+}
+
+async fn open(
+    State(store): State<Store>,
+    Json(request): Json<WorkspaceTarget>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| sessions.open_workspace(request)).await?,
+    ))
 }
 
 async fn remove(
@@ -136,6 +146,89 @@ async fn add(
 }
 
 impl Sessions {
+    fn open_workspace(&mut self, request: WorkspaceTarget) -> Result<Value> {
+        self.record_call(
+            request.parent_session_id,
+            "workspace.open",
+            Some(&request.target),
+        )?;
+        let session = match self.registry.resolve(&request.target) {
+            Ok(id) => Some(self.get(&id.to_string(), None)?),
+            Err(ws_core::registry::Error::NotFound(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let workspace = if let Some(session) = &session {
+            self.registry
+                .workspaces()?
+                .into_iter()
+                .find(|workspace| Some(workspace.id.as_str()) == session.workspace_id.as_deref())
+                .ok_or_else(|| {
+                    failure(format!(
+                        "session workspace no longer exists: {}",
+                        session.id
+                    ))
+                })?
+        } else {
+            self.workspace(&request.target)?
+        };
+        let mut windows = live_windows(&workspace);
+        if let Some(session) = &session {
+            windows.retain(|window| window["session_id"].as_str() == Some(&session.id.to_string()));
+        }
+        windows.sort_by_key(|window| !window["active"].as_bool().unwrap_or(false));
+        if let Some(window) = windows.first() {
+            return Ok(window.clone());
+        }
+        let wt = Path::new(
+            workspace.body["path"]
+                .as_str()
+                .ok_or(Error::InvalidRequest("The workspace has no path."))?,
+        );
+        if !wt.is_dir() {
+            return Err(failure(format!(
+                "session workspace no longer exists: {}",
+                session
+                    .as_ref()
+                    .map_or_else(|| workspace.id.clone(), |session| session.id.to_string())
+            )));
+        }
+        if let Some(session) = session {
+            let agent = session.body["agent"].as_str().unwrap_or("claude");
+            return self.start_workspace_session(
+                &workspace.id,
+                wt,
+                agent,
+                request.parent_session_id,
+                Some(&session),
+            );
+        }
+        let retained = workspace.body["windows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|window| window["session_id"].as_str())
+            .map(|id| self.get(id, None))
+            .collect::<Result<Vec<_>>>()?;
+        for session in retained
+            .into_iter()
+            .filter(|session| !["finished", "failed"].contains(&session.state.as_str()))
+        {
+            let agent = session.body["agent"].as_str().unwrap_or("claude");
+            self.start_workspace_session(
+                &workspace.id,
+                wt,
+                agent,
+                request.parent_session_id,
+                Some(&session),
+            )?;
+        }
+        let workspace = self.workspace(&workspace.id)?;
+        match live_windows(&workspace).first() {
+            Some(window) => Ok(window.clone()),
+            None => self.start_workspace(&workspace.id, wt, "claude", request.parent_session_id),
+        }
+    }
+
     fn remove_workspace(&mut self, request: RemoveWorkspace) -> Result<Value> {
         self.record_call(
             request.parent_session_id,
@@ -347,24 +440,42 @@ impl Sessions {
         agent: &str,
         parent_session_id: Option<SessionId>,
     ) -> Result<Value> {
+        self.start_workspace_session(name, wt, agent, parent_session_id, None)
+    }
+
+    fn start_workspace_session(
+        &mut self,
+        name: &str,
+        wt: &Path,
+        agent: &str,
+        parent_session_id: Option<SessionId>,
+        resume: Option<&Session>,
+    ) -> Result<Value> {
         let existing = self
             .registry
             .workspaces()?
             .into_iter()
             .find(|workspace| workspace.id == name);
-        let id = Ulid::new();
-        let alias = self.registry.next_alias()?;
+        let id = resume.map_or_else(Ulid::new, |session| session.id);
         let mut windows = existing
             .as_ref()
             .and_then(|workspace| workspace.body["windows"].as_array())
             .cloned()
             .unwrap_or_default();
-        let slot = windows
+        let next_slot = windows
             .iter()
             .filter_map(|window| window["slot"].as_u64())
             .max()
             .unwrap_or(0)
             + 1;
+        let slot = resume
+            .and_then(|session| {
+                windows
+                    .iter()
+                    .find(|window| window["session_id"].as_str() == Some(&session.id.to_string()))
+            })
+            .and_then(|window| window["slot"].as_u64())
+            .unwrap_or(next_slot);
         let tmux = Tmux::from_env();
         let session_name = name.replace(['.', ':'], "_");
         let live_session = if tmux
@@ -383,11 +494,18 @@ impl Sessions {
                 "The tmux session {session_name} belongs to another workspace."
             )));
         }
-        self.append(
-            id,
-            "session.created",
-            json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id}),
-        )?;
+        if let Some(session) = resume {
+            if ["finished", "failed"].contains(&session.state.as_str()) {
+                self.transition(
+                    &id.to_string(),
+                    ws_core::state::SessionState::Reopened,
+                    parent_session_id,
+                )?;
+            }
+        } else {
+            let alias = self.registry.next_alias()?;
+            self.append(id, "session.created", json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id}))?;
+        }
         let tab = if slot > 1 {
             format!("{agent}#{slot}")
         } else {
@@ -464,6 +582,7 @@ impl Sessions {
                 "@ws_path",
                 wt.to_str().unwrap(),
             ])?;
+            windows.retain(|window| window["session_id"].as_str() != Some(&id.to_string()));
             windows
                 .push(json!({"window_id": window, "session_id": id, "agent": agent, "slot": slot}));
             let owner = existing
@@ -475,11 +594,13 @@ impl Sessions {
                 "workspace.created"
             };
             self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
-            self.transition(
-                &id.to_string(),
-                ws_core::state::SessionState::Running,
-                parent_session_id,
-            )?;
+            if resume.is_none_or(|session| session.state != "running") {
+                self.transition(
+                    &id.to_string(),
+                    ws_core::state::SessionState::Running,
+                    parent_session_id,
+                )?;
+            }
             Ok(json!({"window_id": window}))
         })();
         if result.is_err() {
@@ -502,6 +623,35 @@ fn workspace_root() -> Result<PathBuf> {
         "Set HOME or WS_ROOT to locate workspaces.",
     ))?;
     Ok(PathBuf::from(home).join(".ws/worktrees"))
+}
+
+fn live_windows(workspace: &Workspace) -> Vec<Value> {
+    let rows = Tmux::from_env()
+        .execute(&[
+            "list-windows",
+            "-a",
+            "-F",
+            "#{window_id}\t#{@ws_session}\t#{window_active}",
+        ])
+        .unwrap_or_default();
+    workspace.body["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|window| {
+            let fields = rows
+                .lines()
+                .map(|line| line.split('\t').collect::<Vec<_>>())
+                .find(|fields| {
+                    fields.len() == 3
+                        && Some(fields[0]) == window["window_id"].as_str()
+                        && Some(fields[1]) == window["session_id"].as_str()
+                })?;
+            let mut window = window.clone();
+            window["active"] = json!(fields[2] == "1");
+            Some(window)
+        })
+        .collect()
 }
 
 fn check_agent(agent: &str) -> Result<()> {

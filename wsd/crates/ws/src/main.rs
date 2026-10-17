@@ -18,6 +18,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Focus or resume a workspace or session.
+    Open {
+        #[arg(default_value = "")]
+        target: String,
+        #[arg(long)]
+        detach: bool,
+    },
     /// Remove a workspace and all its tabs.
     Rm {
         #[arg(default_value = "")]
@@ -116,6 +123,9 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Open { target, detach } => {
+            cmd::open::run(&socket_path()?, &target, detach).await?
+        }
         Command::Rm {
             target,
             force,

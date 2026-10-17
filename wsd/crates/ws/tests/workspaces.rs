@@ -14,6 +14,225 @@ struct Sandbox {
 }
 
 #[test]
+fn open_selects_the_target_tab_clears_unread_and_attaches_or_switches_its_session() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&["add", "api/feat-login", "--agent", "codex", "--detach"])
+            .status
+            .success()
+    );
+    let workspaces = sandbox.json(&["list", "--json"]);
+    let windows = workspaces[0]["body"]["windows"].as_array().unwrap();
+    let first = windows[0]["window_id"].as_str().unwrap();
+    let second = windows[1]["window_id"].as_str().unwrap();
+    let session = sandbox.tmux(&["display-message", "-p", "-t", first, "#{session_id}"]);
+    sandbox.tmux(&["set-option", "-w", "-t", second, "@ws_unread", "1"]);
+    let output = sandbox
+        .focus_command()
+        .args(["open", "#2"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.tmux(&["display-message", "-p", "-t", second, "#{window_active}"]),
+        "1"
+    );
+    assert_eq!(
+        sandbox.tmux(&["show-options", "-wqv", "-t", second, "@ws_unread"]),
+        ""
+    );
+    let focus = std::fs::read_to_string(sandbox.home.path().join("focus")).unwrap();
+    assert!(
+        focus.ends_with(&format!("attach-session\n-t\n{session}\n")),
+        "{focus}"
+    );
+    let output = sandbox
+        .focus_command()
+        .args(["open", "api/feat-login"])
+        .env("TMUX", "fake")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.tmux(&["display-message", "-p", "-t", second, "#{window_active}"]),
+        "1"
+    );
+    let focus = std::fs::read_to_string(sandbox.home.path().join("focus")).unwrap();
+    assert!(
+        focus.ends_with(&format!("switch-client\n-t\n{session}\n")),
+        "{focus}"
+    );
+}
+
+#[test]
+fn open_restores_stopped_tabs_once_and_preserves_each_session_identity() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&["add", "api/feat-login", "--agent", "codex", "--detach"])
+            .status
+            .success()
+    );
+    let before = sandbox.json(&["sessions", "--json"]);
+    sandbox.tmux(&["kill-session", "-t", "=api/feat-login"]);
+    let children = (0..8)
+        .map(|_| {
+            sandbox
+                .command()
+                .args(["open", "api/feat-login", "--detach"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+    }
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-added.txt")
+    );
+    let after = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(
+        before
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| &s["id"])
+            .collect::<Vec<_>>(),
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| &s["id"])
+            .collect::<Vec<_>>()
+    );
+    let id = before[0]["id"].as_str().unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{id}/stop"),
+        "{}",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let workspaces = sandbox.json(&["list", "--json"]);
+    let window = workspaces[0]["body"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["session_id"] == id)
+        .unwrap()["window_id"]
+        .as_str()
+        .unwrap();
+    sandbox.tmux(&["kill-window", "-t", window]);
+    let output = sandbox.output(&["open", id, "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.json(&["sessions", "--json", id])[0]["state"],
+        "running"
+    );
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn open_reuses_live_sessions_by_workspace_path_alias_name_and_ulid() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let id = sessions[0]["id"].as_str().unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{id}/name"),
+        r#"{"name":"reviewer"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let path = sandbox.home.path().join("worktrees/api/feat-login");
+    for target in [
+        "api/feat-login",
+        path.to_str().unwrap(),
+        "#1",
+        "reviewer",
+        id,
+    ] {
+        let output = sandbox.output(&["open", target, "--detach"]);
+        assert!(output.status.success(), "{target}: {output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-live.txt")
+    );
+    let output = sandbox.output(&["open", "missing", "--detach"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-missing.txt")
+    );
+}
+
+#[test]
 fn rm_refuses_dirty_worktrees_then_removes_all_tabs_the_worktree_and_the_registry_row() {
     let mut sandbox = Sandbox::new();
     let repo = sandbox.repo("api");
@@ -517,6 +736,29 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
 }
 
 impl Sandbox {
+    fn focus_command(&self) -> Command {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = self.home.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let real_tmux = Command::new("zsh")
+            .args(["-fc", "command -v tmux"])
+            .output()
+            .unwrap();
+        assert!(real_tmux.status.success());
+        let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
+        let script = bin.join("tmux");
+        std::fs::write(&script, format!("#!/bin/sh\ncase \"$3\" in attach-session|switch-client) printf '%s\\n' \"$@\" > \"$WS_TEST_FOCUS\"; exit 0 ;; esac\nexec {} \"$@\"\n", shell_words::quote(real_tmux.trim()))).unwrap();
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = self.command();
+        command
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("WS_TEST_FOCUS", self.home.path().join("focus"));
+        command
+    }
+
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         let socket = home.path().join("wsd.sock");
