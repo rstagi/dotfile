@@ -12,6 +12,10 @@ use std::{
 mod common;
 use common::{Daemon, request, ws};
 
+/// Every wait returns on the adapter's completion signal. This bound only turns a hung
+/// delivery into a failure; it is not a latency budget.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 struct Sandbox {
     home: tempfile::TempDir,
     server: String,
@@ -124,7 +128,7 @@ impl Sandbox {
 
     fn output(&self, adapter: &str) -> String {
         let path = self.home.path().join(format!("{adapter}.out"));
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + HANG_GUARD;
         loop {
             if let Ok(text) = fs::read_to_string(&path) {
                 return text;
@@ -330,7 +334,7 @@ fn custom_adapter_receives_the_zsh_events_and_dismisses_once() {
 
 impl Sandbox {
     fn events(&self, count: usize) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + HANG_GUARD;
         loop {
             let events: Vec<Value> = fs::read_to_string(self.home.path().join("events.jsonl"))
                 .unwrap_or_default()
@@ -342,7 +346,8 @@ impl Sandbox {
             }
             assert!(
                 Instant::now() < deadline,
-                "Expected {count} notification events, got {events:?}"
+                "Expected {count} notification events, got {events:?}. Daemon: {}",
+                self.daemon.as_ref().unwrap().stderr()
             );
             self.signals.wait(deadline);
         }

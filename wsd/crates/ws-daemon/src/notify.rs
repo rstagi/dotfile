@@ -7,7 +7,10 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, env, io, path::PathBuf, process::Stdio, time::Duration};
 use tokio::io::AsyncWriteExt;
 
-const ADAPTER_DEADLINE: Duration = Duration::from_secs(2);
+/// Guards delivery against a hung adapter. Delivery runs on its own task, so this bound
+/// delays no hook reply. It must stay above the process start latency that ordinary
+/// scheduling load causes, because a timeout drops the notification.
+const ADAPTER_DEADLINE: Duration = Duration::from_secs(10);
 type WindowKey = (Option<String>, Option<String>, String);
 static DELIVERY_LOCK: tokio::sync::Mutex<BTreeMap<WindowKey, u64>> =
     tokio::sync::Mutex::const_new(BTreeMap::new());
@@ -62,7 +65,7 @@ pub(crate) async fn transition(callback: &Callback, window: &Target, previous: &
         tmux_socket: callback.tmux_socket.clone(),
         tmux_path: callback.tmux_path.clone(),
     };
-    let _ = emit(
+    if let Err(error) = emit(
         &context,
         window,
         previous,
@@ -71,7 +74,13 @@ pub(crate) async fn transition(callback: &Callback, window: &Target, previous: &
         callback.observed_at_us,
         &callback.payload,
     )
-    .await;
+    .await
+    {
+        eprintln!(
+            "Cannot queue the {state} notification for {}: {error}",
+            window.window
+        );
+    }
 }
 
 pub(crate) fn router() -> Router<crate::api::Store> {
@@ -262,7 +271,12 @@ async fn emit(
             return;
         }
         delivered.insert(key, seq);
-        let _ = deliver(&context, &window, &event, &config).await;
+        if let Err(error) = deliver(&context, &window, &event, &config).await {
+            eprintln!(
+                "Cannot deliver the {} notification for {window}: {error}",
+                event["state"]
+            );
+        }
     });
     Ok(())
 }
