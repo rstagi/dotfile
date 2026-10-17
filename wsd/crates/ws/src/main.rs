@@ -17,6 +17,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Mark selected messages, or all unread messages, as read.
+    Ack {
+        event_ids: Vec<ws_core::ids::EventId>,
+    },
+    /// Queue a message for a session.
+    Send { target: String, message: String },
+    /// Show unread messages for the current session.
+    Inbox {
+        #[arg(long)]
+        json: bool,
+    },
     /// Run Claude in the current workspace tab.
     Claude {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -163,6 +174,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Ack { event_ids } => cmd::ack::run(&socket_path()?, event_ids).await?,
+        Command::Send { target, message } => {
+            return cmd::send::run(&socket_path()?, &target, &message).await;
+        }
+        Command::Inbox { json } => cmd::inbox::run(&socket_path()?, json).await?,
         Command::Claude { arguments } => {
             return cmd::claude::run(&socket_path()?, arguments).await;
         }

@@ -21,7 +21,7 @@ use ws_core::{
 
 pub struct Sessions {
     pub(crate) state: PathBuf,
-    device_id: DeviceId,
+    pub(crate) device_id: DeviceId,
     pub(crate) registry: Registry,
     needs_rebuild: bool,
     writers: HashMap<SessionId, LogWriter>,
@@ -210,6 +210,15 @@ impl Sessions {
         event_type: &str,
         body: serde_json::Value,
     ) -> Result<()> {
+        self.append_entry(id, event_type, body).map(|_| ())
+    }
+
+    pub(crate) fn append_entry(
+        &mut self,
+        id: SessionId,
+        event_type: &str,
+        body: serde_json::Value,
+    ) -> Result<ws_core::log::LogEntry> {
         let writer = self
             .writers
             .entry(id)
@@ -218,7 +227,7 @@ impl Sessions {
         let entry = writer.append_current(event_type, body)?;
         self.registry.apply(&entry)?;
         self.needs_rebuild = false;
-        Ok(())
+        Ok(entry)
     }
 
     fn change_state(
