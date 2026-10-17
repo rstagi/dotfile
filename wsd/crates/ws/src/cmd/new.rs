@@ -59,8 +59,11 @@ pub async fn run(
 pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
     if !detach {
         let tmux = ws_daemon::tmux::Tmux::from_env();
-        if std::env::var_os("TMUX").is_some() {
-            tmux.execute(&["switch-client", "-t", window])?;
+        let session = tmux.execute(&["display-message", "-p", "-t", window, "#{session_id}"])?;
+        tmux.execute(&["select-window", "-t", window])?;
+        tmux.unset_window_option(window, "@ws_unread")?;
+        if std::env::var_os("TMUX").is_some_and(|tmux| !tmux.is_empty()) {
+            tmux.execute(&["switch-client", "-t", &session])?;
         } else {
             let mut command = std::process::Command::new("tmux");
             if let Some(socket) =
@@ -69,7 +72,7 @@ pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
                 command.arg("-L").arg(socket);
             }
             if !command
-                .args(["attach-session", "-t", window])
+                .args(["attach-session", "-t", &session])
                 .status()?
                 .success()
             {

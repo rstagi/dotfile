@@ -14,6 +14,625 @@ struct Sandbox {
 }
 
 #[test]
+fn explicit_open_and_remove_accept_worktrees_that_have_no_registry_row() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    for branch in ["opened", "removed", "dirty"] {
+        let wt = sandbox.home.path().join("worktrees/api").join(branch);
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(
+            &repo,
+            &["worktree", "add", "-qb", branch, wt.to_str().unwrap()],
+        );
+    }
+    let output = sandbox.output(&["open", "api/opened", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let dirty = sandbox.home.path().join("worktrees/api/dirty");
+    std::fs::write(dirty.join("change"), "dirty\n").unwrap();
+    let output = sandbox.output(&["rm", "api/dirty"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("workspace has uncommitted changes:")
+    );
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", "api/removed", "--interactive"],
+        "[y/N/b=also delete branch] ",
+        "b",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(!sandbox.home.path().join("worktrees/api/removed").exists());
+    assert_eq!(git(&repo, &["branch", "--list", "removed"]), "");
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn pin_registers_an_explicit_worktree_without_opening_a_tab_or_allocating_a_session() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let wt = sandbox.home.path().join("worktrees/api/orphan");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    git(
+        &repo,
+        &["worktree", "add", "-qb", "orphan", wt.to_str().unwrap()],
+    );
+    let output = sandbox.output(&["pin", "api/orphan"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-orphan-pinned.txt")
+    );
+    assert_eq!(sandbox.json(&["sessions", "--json"]), serde_json::json!([]));
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-orphan-pinned.txt")
+    );
+}
+
+#[test]
+fn rm_preserves_unmerged_branches_unless_force_delete_branch_is_explicit() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    for branch in ["keep", "delete"] {
+        assert!(
+            sandbox
+                .output(&[
+                    "new",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--branch",
+                    branch,
+                    "--detach"
+                ])
+                .status
+                .success()
+        );
+        let wt = sandbox.home.path().join("worktrees/api").join(branch);
+        std::fs::write(wt.join("new-file"), "change\n").unwrap();
+        git(&wt, &["add", "."]);
+        git(&wt, &["commit", "-qm", "unmerged"]);
+    }
+    let output = sandbox.output(&["rm", "api/keep", "--delete-branch"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-unmerged.txt")
+    );
+    assert!(!git(&repo, &["branch", "--list", "keep"]).is_empty());
+    sandbox.tmux(&["kill-session", "-t", "=api/delete"]);
+    let output = sandbox.output(&["rm", "api/delete", "--force-delete-branch"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(git(&repo, &["branch", "--list", "delete"]), "");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+}
+
+#[test]
+fn a_removed_workspace_can_be_created_again_without_its_old_pin() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let create = [
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "again",
+        "--detach",
+    ];
+    assert!(sandbox.output(&create).status.success());
+    let owner = sandbox.json(&["list", "--json"])[0]["owner_session_id"].clone();
+    assert!(sandbox.output(&["pin", "api/again"]).status.success());
+    assert!(sandbox.output(&["rm", "api/again"]).status.success());
+    let output = sandbox.output(&create);
+    assert!(output.status.success(), "{output:?}");
+    let rows = sandbox.json(&["list", "--json"]);
+    assert_eq!(rows[0]["owner_session_id"], owner);
+    assert_ne!(rows[0]["body"]["pinned"], true);
+    assert_eq!(rows[0]["body"]["windows"].as_array().unwrap().len(), 1);
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["list", "--json"]), rows);
+}
+
+#[test]
+fn bare_ws_creates_its_first_workspace_and_interactive_rm_accepts_cancel_or_branch_deletion() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let command = sandbox.focus_command();
+    let fzf = sandbox.home.path().join("bin/fzf");
+    std::fs::write(
+        &fzf,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' {}\n",
+            shell_words::quote(repo.to_str().unwrap())
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(fzf, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = sandbox.tty_output(command, &[], "branch (api): ", "first");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(sandbox.json(&["list", "--json"])[0]["id"], "api/first");
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", "--interactive", "api/first"],
+        "[y/N/b=also delete branch] ",
+        "n",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", "--interactive", "api/first"],
+        "[y/N/b=also delete branch] ",
+        "b",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    assert_eq!(git(&repo, &["branch", "--list", "first"]), "");
+}
+
+#[test]
+fn bare_ws_picks_registered_workspaces_with_pins_first_and_accepts_cancellation() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    for branch in ["alpha", "zeta"] {
+        assert!(
+            sandbox
+                .output(&[
+                    "new",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--branch",
+                    branch,
+                    "--detach"
+                ])
+                .status
+                .success()
+        );
+    }
+    assert!(sandbox.output(&["pin", "api/zeta"]).status.success());
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-qb",
+            "orphan",
+            sandbox
+                .home
+                .path()
+                .join("worktrees/api/orphan")
+                .to_str()
+                .unwrap(),
+        ],
+    );
+    let mut command = sandbox.focus_command();
+    let fzf = sandbox.home.path().join("bin/fzf");
+    std::fs::write(&fzf, "#!/bin/sh\ncat > \"$WS_TEST_ROWS\"\n[ -z \"$WS_TEST_CANCEL\" ] || exit 130\nhead -1 \"$WS_TEST_ROWS\"\n").unwrap();
+    std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let rows = sandbox.home.path().join("rows");
+    let output = command.env("WS_TEST_ROWS", &rows).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let rows = std::fs::read_to_string(rows).unwrap();
+    assert_eq!(rows.lines().count(), 2);
+    assert!(rows.lines().next().unwrap().contains("api/zeta"), "{rows}");
+    assert!(!rows.contains("orphan"));
+    let root = sandbox
+        .home
+        .path()
+        .join("worktrees")
+        .canonicalize()
+        .unwrap();
+    let order = rows
+        .lines()
+        .map(|row| {
+            row.split('\t')
+                .nth(1)
+                .unwrap()
+                .replace(root.to_str().unwrap(), "<ROOT>")
+                .replace(
+                    sandbox.home.path().join("worktrees").to_str().unwrap(),
+                    "<ROOT>",
+                )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(order, include_str!("golden/workspace-pick-order.txt"));
+    let expected = sandbox.tmux(&["display-message", "-p", "-t", "=api/zeta:", "#{session_id}"]);
+    let focus = std::fs::read_to_string(sandbox.home.path().join("focus")).unwrap();
+    assert!(
+        focus.ends_with(&format!("attach-session\n-t\n{expected}\n")),
+        "Expected {expected}: {focus}"
+    );
+    std::fs::remove_file(sandbox.home.path().join("focus")).unwrap();
+    let output = sandbox
+        .focus_command()
+        .env("WS_TEST_ROWS", sandbox.home.path().join("rows"))
+        .env("WS_TEST_CANCEL", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(!sandbox.home.path().join("focus").exists());
+}
+
+#[test]
+fn open_selects_the_target_tab_clears_unread_and_attaches_or_switches_its_session() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&["add", "api/feat-login", "--agent", "codex", "--detach"])
+            .status
+            .success()
+    );
+    let workspaces = sandbox.json(&["list", "--json"]);
+    let windows = workspaces[0]["body"]["windows"].as_array().unwrap();
+    let first = windows[0]["window_id"].as_str().unwrap();
+    let second = windows[1]["window_id"].as_str().unwrap();
+    let session = sandbox.tmux(&["display-message", "-p", "-t", first, "#{session_id}"]);
+    sandbox.tmux(&["set-option", "-w", "-t", second, "@ws_unread", "1"]);
+    let output = sandbox
+        .focus_command()
+        .args(["open", "#2"])
+        .env("TMUX", "")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.tmux(&["display-message", "-p", "-t", second, "#{window_active}"]),
+        "1"
+    );
+    assert_eq!(
+        sandbox.tmux(&["show-options", "-wqv", "-t", second, "@ws_unread"]),
+        ""
+    );
+    let focus = std::fs::read_to_string(sandbox.home.path().join("focus")).unwrap();
+    assert!(
+        focus.ends_with(&format!("attach-session\n-t\n{session}\n")),
+        "{focus}"
+    );
+    let output = sandbox
+        .focus_command()
+        .args(["open", "api/feat-login"])
+        .env("TMUX", "fake")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.tmux(&["display-message", "-p", "-t", second, "#{window_active}"]),
+        "1"
+    );
+    let focus = std::fs::read_to_string(sandbox.home.path().join("focus")).unwrap();
+    assert!(
+        focus.ends_with(&format!("switch-client\n-t\n{session}\n")),
+        "{focus}"
+    );
+}
+
+#[test]
+fn open_restores_stopped_tabs_once_and_preserves_each_session_identity() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&["add", "api/feat-login", "--agent", "codex", "--detach"])
+            .status
+            .success()
+    );
+    let before = sandbox.json(&["sessions", "--json"]);
+    sandbox.tmux(&["kill-session", "-t", "=api/feat-login"]);
+    let children = (0..8)
+        .map(|_| {
+            sandbox
+                .command()
+                .args(["open", "api/feat-login", "--detach"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+    }
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-reopened.txt")
+    );
+    let after = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(
+        before
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| &s["id"])
+            .collect::<Vec<_>>(),
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| &s["id"])
+            .collect::<Vec<_>>()
+    );
+    let id = before[0]["id"].as_str().unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{id}/stop"),
+        "{}",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let workspaces = sandbox.json(&["list", "--json"]);
+    let window = workspaces[0]["body"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["session_id"] == id)
+        .unwrap()["window_id"]
+        .as_str()
+        .unwrap();
+    sandbox.tmux(&["kill-window", "-t", window]);
+    let output = sandbox.output(&["open", id, "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.json(&["sessions", "--json", id])[0]["state"],
+        "running"
+    );
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn open_reuses_live_sessions_by_workspace_path_alias_name_and_ulid() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let id = sessions[0]["id"].as_str().unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{id}/name"),
+        r#"{"name":"reviewer"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let path = sandbox.home.path().join("worktrees/api/feat-login");
+    for target in [
+        "api/feat-login",
+        path.to_str().unwrap(),
+        "#1",
+        "reviewer",
+        id,
+    ] {
+        let output = sandbox.output(&["open", target, "--detach"]);
+        assert!(output.status.success(), "{target}: {output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-live.txt")
+    );
+    let output = sandbox.output(&["open", "missing", "--detach"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-missing.txt")
+    );
+}
+
+#[test]
+fn rm_refuses_dirty_worktrees_then_removes_all_tabs_the_worktree_and_the_registry_row() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&["add", "api/feat-login", "--agent", "codex", "--detach"])
+            .status
+            .success()
+    );
+    assert!(sandbox.output(&["pin", "api/feat-login"]).status.success());
+    let wt = sandbox.home.path().join("worktrees/api/feat-login");
+    std::fs::write(wt.join("untracked"), "dirty").unwrap();
+    let output = sandbox.output(&["rm", "api/feat-login"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().replace(
+            sandbox
+                .home
+                .path()
+                .join("worktrees")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "<ROOT>"
+        ),
+        include_str!("golden/workspace-dirty.txt")
+    );
+    assert!(wt.is_dir());
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    sandbox.tmux(&["has-session", "-t", "=api/feat-login"]);
+    let output = sandbox.output(&["rm", wt.to_str().unwrap(), "--force", "--delete-branch"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!wt.exists());
+    assert_eq!(git(&repo, &["branch", "--list", "feat/login"]), "");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    assert!(
+        !sandbox
+            .tmux(&["list-sessions", "-F", "#{session_name}"])
+            .contains("api/feat-login")
+    );
+    assert!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["state"] == "finished")
+    );
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    let output = sandbox.output(&["rm", "missing"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-missing.txt")
+    );
+}
+
+#[test]
+fn pin_toggles_persists_and_survives_a_registry_rebuild() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feat/login",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let output = sandbox.output(&["pin", "api/feat-login"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-pinned.txt")
+    );
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["list", "--json"])[0]["body"]["pinned"], true);
+    let path = sandbox.home.path().join("worktrees/api/feat-login");
+    assert!(
+        sandbox
+            .output(&["pin", path.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert_eq!(
+        sandbox.json(&["list", "--json"])[0]["body"]["pinned"],
+        false
+    );
+    let output = sandbox.output(&["pin", "missing"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-missing.txt")
+    );
+}
+
+#[test]
 fn new_creates_a_worktree_a_registered_workspace_and_a_tagged_tmux_session() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo("api");
@@ -394,6 +1013,60 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
 }
 
 impl Sandbox {
+    fn tty_output(
+        &self,
+        environment: Command,
+        args: &[&str],
+        prompt: &str,
+        answer: &str,
+    ) -> Output {
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-I",
+                "-c",
+                include_str!("workspace-tty.py"),
+                env!("CARGO_BIN_EXE_ws"),
+                prompt,
+                answer,
+            ])
+            .args(args);
+        for (key, value) in environment.get_envs() {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
+        command.current_dir(self.home.path()).output().unwrap()
+    }
+
+    fn focus_command(&self) -> Command {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = self.home.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let real_tmux = Command::new("zsh")
+            .args(["-fc", "command -v tmux"])
+            .output()
+            .unwrap();
+        assert!(real_tmux.status.success());
+        let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
+        let script = bin.join("tmux");
+        std::fs::write(&script, format!("#!/bin/sh\ncase \"$3\" in attach-session|switch-client) printf '%s\\n' \"$@\" > \"$WS_TEST_FOCUS\"; exit 0 ;; esac\nexec {} \"$@\"\n", shell_words::quote(real_tmux.trim()))).unwrap();
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = self.command();
+        command
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("WS_TEST_FOCUS", self.home.path().join("focus"));
+        command
+    }
+
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         let socket = home.path().join("wsd.sock");

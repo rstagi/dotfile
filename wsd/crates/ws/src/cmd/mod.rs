@@ -1,7 +1,11 @@
 pub mod add;
+pub mod attach;
 pub mod list;
 pub mod name;
 pub mod new;
+pub mod open;
+pub mod pin;
+pub mod rm;
 pub mod sessions;
 pub mod show;
 pub mod whoami;

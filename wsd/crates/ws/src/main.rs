@@ -13,11 +13,36 @@ type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 #[command(version, about = "Control local WS sessions")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Focus or resume a workspace or session.
+    Open {
+        #[arg(default_value = "")]
+        target: String,
+        #[arg(long)]
+        detach: bool,
+    },
+    /// Remove a workspace and all its tabs.
+    Rm {
+        #[arg(default_value = "")]
+        target: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        delete_branch: bool,
+        #[arg(long)]
+        force_delete_branch: bool,
+        #[arg(long)]
+        interactive: bool,
+    },
+    /// Toggle the workspace pin.
+    Pin {
+        #[arg(default_value = "")]
+        target: String,
+    },
     /// Initialize the local device identity.
     Init,
     /// Serve the local API on the Unix socket.
@@ -97,7 +122,31 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    match cli.command {
+    let Some(command) = cli.command else {
+        return cmd::attach::run(&socket_path()?).await;
+    };
+    match command {
+        Command::Open { target, detach } => {
+            cmd::open::run(&socket_path()?, &target, detach).await?
+        }
+        Command::Rm {
+            target,
+            force,
+            delete_branch,
+            force_delete_branch,
+            interactive,
+        } => {
+            cmd::rm::run(
+                &socket_path()?,
+                &target,
+                force,
+                delete_branch,
+                force_delete_branch,
+                interactive,
+            )
+            .await?
+        }
+        Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
         Command::Init => init::run()?,
         Command::Daemon => {
             let socket = socket_path()?;
