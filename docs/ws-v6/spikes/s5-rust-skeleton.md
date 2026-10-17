@@ -41,6 +41,14 @@ cd wsd
 cargo test -p ws --test tmux -- --nocapture
 ```
 
+The default run measures the full ingest path and prints `HOOK_ROUND_TRIP` with the p50, p95 and max.
+The 50 ms p95 assertion is opt-in, because parallel loops on the same machine raise scheduler latency above the target.
+Assert it on an idle machine with:
+
+```sh
+WS_ASSERT_LATENCY=1 cargo test -p ws --test tmux -- --nocapture
+```
+
 Build measurements use an isolated workspace copy and a fresh target directory under `/tmp`.
 They use `cargo build --locked --offline`, with dependencies already present in the local registry.
 The clean measurement includes compilation of all dependencies but excludes downloads.
