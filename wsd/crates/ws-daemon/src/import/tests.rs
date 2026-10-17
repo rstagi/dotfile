@@ -495,6 +495,75 @@ async fn imports_spawn_actions_and_resumes_from_the_frozen_workspace_snapshot() 
     assert_eq!(fs::read(state.join("import-zsh.json")).unwrap(), journal);
 }
 
+#[test]
+fn imports_legacy_slot_windows_for_idle_delivery() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let source = sandbox.path().join("legacy");
+    let state = sandbox.path().join("state");
+    let root = source.join("worktrees");
+    let repo = sandbox.path().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+            "--allow-empty",
+        ],
+    );
+    let branch = root.join("project/feature");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            branch.to_str().unwrap(),
+        ],
+    );
+    fs::create_dir_all(source.join("sessions/7")).unwrap();
+    fs::create_dir_all(source.join("sessions/8")).unwrap();
+    fs::write(source.join("sessions/counter"), "8").unwrap();
+    fs::write(
+        source.join("sessions/7/meta"),
+        r#"{"agent":"claude","workspace":"project/feature","window":"@42"}"#,
+    )
+    .unwrap();
+    fs::write(
+        source.join("sessions/8/meta"),
+        r#"{"agent":"codex","workspace":"project/feature"}"#,
+    )
+    .unwrap();
+    let git_dir = Command::new("git")
+        .arg("-C")
+        .arg(&branch)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .unwrap();
+    let git_dir = String::from_utf8(git_dir.stdout).unwrap();
+    fs::write(
+        Path::new(git_dir.trim()).join("ws-sessions"),
+        "1\tclaude\tresume-1\t7\n2\tcodex\t\t8\n3\tgrok\t\t99\n",
+    )
+    .unwrap();
+    let plan = from_zsh_with_root(&source, &state, &root, false).unwrap();
+    let ulid = plan.sessions.iter().find(|s| s.alias == 7).unwrap().id;
+    let sessions = Sessions::open(&state, 1).unwrap();
+    let workspaces = sessions.registry.workspaces().unwrap();
+    assert_eq!(
+        workspaces[0].body["windows"],
+        json!([{"window_id": "@42", "session_id": ulid, "agent": "claude", "slot": 1}])
+    );
+}
+
 fn capture(source: &Path, home: &Path) {
     capture_mode(source, home, "exit");
 }

@@ -9,7 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::append_once;
+use super::{LegacySession, append_once};
 use crate::sessions::Sessions;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -18,6 +18,17 @@ pub struct LegacyWorkspace {
     pub path: PathBuf,
     pub branch: String,
     pub pinned: bool,
+    /// Rows of the worktree's zsh `ws-sessions` slot file.
+    #[serde(default)]
+    pub slots: Vec<LegacySlot>,
+}
+
+/// One zsh tab slot: `slot<TAB>agent<TAB>resume<TAB>alias`.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LegacySlot {
+    pub slot: i64,
+    pub agent: String,
+    pub alias: i64,
 }
 
 pub(super) fn snapshot(source: &Path, root: &Path) -> io::Result<Vec<LegacyWorkspace>> {
@@ -57,6 +68,7 @@ pub(super) fn snapshot(source: &Path, root: &Path) -> io::Result<Vec<LegacyWorks
                 .ok_or_else(|| io::Error::other("The workspace name is not UTF-8."))?
                 .to_owned();
             workspaces.push(LegacyWorkspace {
+                slots: slots(&path)?,
                 pinned: pins.lines().any(|pin| pin == id),
                 id,
                 path,
@@ -69,12 +81,32 @@ pub(super) fn snapshot(source: &Path, root: &Path) -> io::Result<Vec<LegacyWorks
     Ok(workspaces)
 }
 
-pub(super) fn import(sessions: &mut Sessions, workspaces: &[LegacyWorkspace]) -> io::Result<()> {
+/// Records each workspace with the tmux windows of its imported zsh agents, so idle
+/// delivery reaches agents that the zsh backend started.
+pub(super) fn import(
+    sessions: &mut Sessions,
+    workspaces: &[LegacyWorkspace],
+    legacy: &[LegacySession],
+) -> io::Result<()> {
     if workspaces.is_empty() {
         return Ok(());
     }
     let owner = sessions.message_session(None).map_err(io::Error::other)?.id;
     for workspace in workspaces {
+        let windows: Vec<_> = workspace
+            .slots
+            .iter()
+            .filter_map(|slot| {
+                let session = legacy.iter().find(|s| s.alias == slot.alias)?;
+                let window = session.meta["window"]
+                    .as_str()
+                    .filter(|w| w.len() > 1 && w.starts_with('@'))?;
+                Some(json!({
+                    "window_id": window, "session_id": session.id,
+                    "agent": slot.agent, "slot": slot.slot
+                }))
+            })
+            .collect();
         append_once(
             sessions,
             owner,
@@ -82,11 +114,42 @@ pub(super) fn import(sessions: &mut Sessions, workspaces: &[LegacyWorkspace]) ->
             "workspace.created",
             json!({
                 "workspace_id":workspace.id, "path":workspace.path, "branch":workspace.branch,
-                "pinned":workspace.pinned, "windows":[], "tmux_session":workspace.id.replace(['.', ':'], "_")
+                "pinned":workspace.pinned, "windows":windows, "tmux_session":workspace.id.replace(['.', ':'], "_")
             }),
         )?;
     }
     Ok(())
+}
+
+fn slots(path: &Path) -> io::Result<Vec<LegacySlot>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let directory = std::str::from_utf8(&output.stdout).map_err(io::Error::other)?;
+    let rows = match fs::read_to_string(Path::new(directory.trim_end()).join("ws-sessions")) {
+        Ok(rows) => rows,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    Ok(rows
+        .lines()
+        .filter_map(|row| {
+            let fields: Vec<_> = row.split('\t').collect();
+            let [slot, agent, _resume, alias] = fields[..] else {
+                return None;
+            };
+            Some(LegacySlot {
+                slot: slot.parse().ok()?,
+                agent: agent.to_owned(),
+                alias: alias.parse().ok().filter(|alias| *alias > 0)?,
+            })
+        })
+        .collect())
 }
 
 fn listed_branch(path: &Path) -> io::Result<Option<String>> {

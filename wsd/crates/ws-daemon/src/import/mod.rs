@@ -124,7 +124,7 @@ pub fn from_zsh_with_root(
     for session in &mut plan.sessions {
         import_session(&mut sessions, session, None)?;
     }
-    workspaces::import(&mut sessions, &plan.workspaces)?;
+    workspaces::import(&mut sessions, &plan.workspaces, &plan.sessions)?;
     triggers::import(
         &mut sessions,
         &plan.sessions,
@@ -211,7 +211,7 @@ pub fn incremental(sessions: &mut Sessions, source: &Path, root: &Path) -> io::R
     for session in &mut plan.sessions {
         import_session(sessions, session, plan.artifact_writes.as_deref())?;
     }
-    workspaces::import(sessions, &plan.workspaces)?;
+    workspaces::import(sessions, &plan.workspaces, &plan.sessions)?;
     triggers::import(sessions, &plan.sessions, &plan.triggers, &plan.workspaces)?;
     plan.complete = true;
     save(&sessions.state, &plan)?;
