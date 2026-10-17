@@ -152,6 +152,17 @@ impl Drop for Reservation {
     }
 }
 
+/// Reserves a workspace name, or fails when another operation holds it.
+fn reserve_name(name: &str) -> Result<Reservation> {
+    let mut reserved = RESERVED
+        .lock()
+        .map_err(|_| failure("Cannot lock the workspace reservations."))?;
+    if !reserved.insert(name.to_owned()) {
+        return Err(failure(format!("workspace busy: {name}")));
+    }
+    Ok(Reservation(name.to_owned()))
+}
+
 struct PlannedWorkspace {
     repo: PathBuf,
     settings: RepoSettings,
@@ -187,6 +198,14 @@ async fn create_workspace(
         Ok(plan)
     })
     .await?;
+    let started = start_agent(
+        store.clone(),
+        plan.name.clone(),
+        plan.wt.clone(),
+        agent,
+        parent,
+    )
+    .await;
     api::call(store, move |sessions| {
         let _reservation = reservation;
         let PlannedWorkspace {
@@ -196,16 +215,17 @@ async fn create_workspace(
             wt,
             ..
         } = plan;
-        let result = (|| {
-            let response = sessions.start_workspace(&name, &wt, &agent, parent)?;
-            run_setup(
-                &repo,
-                &wt,
-                &settings,
-                response["window_id"].as_str().unwrap(),
-            )?;
-            Ok(response)
-        })();
+        let result = started
+            .map_err(|ApiError(error)| error)
+            .and_then(|response| {
+                run_setup(
+                    &repo,
+                    &wt,
+                    &settings,
+                    response["window_id"].as_str().unwrap(),
+                )?;
+                Ok(response)
+            });
         if result.is_err()
             && !sessions
                 .registry
@@ -216,6 +236,40 @@ async fn create_workspace(
             remove_worktree(&repo, &wt);
         }
         result
+    })
+    .await
+}
+
+/// Starts a new agent window. The tmux launch runs without the store lock.
+async fn start_agent(
+    store: Store,
+    name: String,
+    wt: PathBuf,
+    agent: String,
+    parent: Option<SessionId>,
+) -> std::result::Result<Value, ApiError> {
+    let plan = api::call(store.clone(), move |sessions| {
+        sessions.plan_workspace_agent(
+            &name,
+            &wt,
+            &agent,
+            parent,
+            LaunchContext {
+                resume: None,
+                run: None,
+                spawn: None,
+            },
+        )
+    })
+    .await?;
+    let (plan, launched) = tokio::task::spawn_blocking(move || {
+        let launched = plan.launch();
+        (plan, launched)
+    })
+    .await
+    .map_err(|_| ApiError(Error::Io(io::Error::other("The workspace worker failed."))))?;
+    api::call(store, move |sessions| {
+        sessions.commit_workspace_agent(plan, launched)
     })
     .await
 }
@@ -272,9 +326,15 @@ async fn add(
     State(store): State<Store>,
     Json(request): Json<AddWorkspace>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    Ok(Json(
-        api::call(store, move |sessions| sessions.add_workspace(request)).await?,
-    ))
+    let agent = request.agent.clone();
+    let parent = request.parent_session_id;
+    let (name, wt) = api::call(store.clone(), move |sessions| {
+        sessions.record_call(request.parent_session_id, "workspace.add", None)?;
+        check_agent(&request.agent)?;
+        workspace_path(&request.target)
+    })
+    .await?;
+    Ok(Json(start_agent(store, name, wt, agent, parent).await?))
 }
 
 async fn pin(
@@ -308,8 +368,18 @@ async fn remove(
     State(store): State<Store>,
     Json(request): Json<RemoveWorkspace>,
 ) -> std::result::Result<Json<Value>, ApiError> {
+    let plan = api::call(store.clone(), move |sessions| {
+        sessions.begin_remove(request)
+    })
+    .await?;
+    let (plan, removed) = off_lock(move || {
+        let removed = remove_files(&plan);
+        Ok((plan, removed))
+    })
+    .await?;
+    let removed = removed.map_err(ApiError)?;
     Ok(Json(
-        api::call(store, move |sessions| sessions.remove_workspace(request)).await?,
+        api::call(store, move |sessions| sessions.finish_remove(plan, removed)).await?,
     ))
 }
 
@@ -408,69 +478,43 @@ impl Sessions {
         }
     }
 
-    fn remove_workspace(&mut self, request: RemoveWorkspace) -> Result<Value> {
+    /// Step 1 of a removal: checks the target and reserves its name under the store lock.
+    fn begin_remove(&mut self, request: RemoveWorkspace) -> Result<RemovePlan> {
         self.record_call(
             request.parent_session_id,
             "workspace.remove",
             Some(&request.target),
         )?;
-        let workspace = self.find_workspace(&request.target)?;
+        self.find_workspace(&request.target)?;
         let (name, wt) = workspace_path(&request.target)?;
-        let wt = wt.as_path();
-        let repo = main_checkout(wt)?;
-        let branch = git(wt, &["branch", "--show-current"])?;
-        if !request.force && !git(wt, &["status", "--porcelain"])?.is_empty() {
-            return Err(failure(format!(
-                "workspace has uncommitted changes: {} (use --force)",
-                wt.display()
-            )));
-        }
+        let reservation = reserve_name(&name)?;
+        let repo = main_checkout(&wt)?;
+        let branch = git(&wt, &["branch", "--show-current"])?;
+        Ok(RemovePlan {
+            request,
+            name,
+            wt,
+            repo,
+            branch,
+            _reservation: reservation,
+        })
+    }
+
+    /// Step 3 of a removal: records the result under the store lock and closes the tabs.
+    fn finish_remove(&mut self, plan: RemovePlan, removed: Removed) -> Result<Value> {
+        let RemovePlan { request, name, .. } = plan;
+        let Removed {
+            session_ids,
+            window_ids,
+            warning,
+            git_stderr,
+        } = removed;
         let tmux = Tmux::from_env();
-        // Capture ids before removing the directory. Kill tabs after durable state changes.
-        let session_ids = tmux
-            .execute(&["list-sessions", "-F", "#{session_id}\t#{@ws_path}"])
-            .unwrap_or_default();
-        let window_ids = tmux
-            .execute(&["list-windows", "-a", "-F", "#{window_id}\t#{@ws_path}"])
-            .unwrap_or_default();
-        let same_path = |path: &str| Path::new(path).canonicalize().ok() == wt.canonicalize().ok();
-        let targets = |rows: &str| {
-            rows.lines()
-                .filter_map(|line| line.split_once('\t'))
-                .filter(|(_, path)| same_path(path))
-                .map(|(id, _)| id.to_owned())
-                .collect::<Vec<_>>()
-        };
-        let session_ids = targets(&session_ids);
-        let window_ids = targets(&window_ids);
-        let mut args = vec!["worktree", "remove"];
-        if request.force {
-            args.extend(["--force", "--force"]);
-        }
-        args.push(wt.to_str().unwrap());
-        git(&repo, &args)
-            .map_err(|_| failure(format!("git worktree remove failed: {}", wt.display())))?;
-        let _ = fs::remove_dir(wt.parent().unwrap());
-        let mut warning = None;
-        let mut git_stderr = String::new();
-        if !branch.is_empty() && (request.delete_branch || request.force_delete_branch) {
-            let flag = if request.force_delete_branch {
-                "-D"
-            } else {
-                "-d"
-            };
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(["branch", flag, &branch])
-                .output()?;
-            git_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            if !output.status.success() && !request.force_delete_branch {
-                warning = Some(format!(
-                    "kept unmerged branch {branch} (git branch -D to force)"
-                ));
-            }
-        }
+        let workspace = self
+            .registry
+            .workspaces()?
+            .into_iter()
+            .find(|workspace| workspace.id == name);
         if let Some(workspace) = workspace {
             self.append(
                 workspace.owner_session_id,
@@ -566,13 +610,6 @@ impl Sessions {
         Ok(Reservation(name.to_owned()))
     }
 
-    fn add_workspace(&mut self, request: AddWorkspace) -> Result<Value> {
-        self.record_call(request.parent_session_id, "workspace.add", None)?;
-        check_agent(&request.agent)?;
-        let (name, wt) = workspace_path(&request.target)?;
-        self.start_workspace(&name, &wt, &request.agent, request.parent_session_id)
-    }
-
     fn start_workspace(
         &mut self,
         name: &str,
@@ -613,6 +650,20 @@ impl Sessions {
         parent_session_id: Option<SessionId>,
         context: LaunchContext<'_>,
     ) -> Result<Value> {
+        let plan = self.plan_workspace_agent(name, wt, agent, parent_session_id, context)?;
+        let launched = plan.launch();
+        self.commit_workspace_agent(plan, launched)
+    }
+
+    /// Step 1: checks the request and records the session and slot under the store lock.
+    fn plan_workspace_agent(
+        &mut self,
+        name: &str,
+        wt: &Path,
+        agent: &str,
+        parent_session_id: Option<SessionId>,
+        context: LaunchContext<'_>,
+    ) -> Result<AgentLaunch> {
         let LaunchContext { resume, run, spawn } = context;
         if resume.is_none() {
             self.check_spawn_limits(parent_session_id)?;
@@ -626,7 +677,7 @@ impl Sessions {
             .as_ref()
             .map(|origin| origin.id)
             .unwrap_or_else(|| resume.map_or_else(Ulid::new, |session| session.id));
-        let mut windows = existing
+        let windows = existing
             .as_ref()
             .and_then(|workspace| workspace.body["windows"].as_array())
             .cloned()
@@ -744,11 +795,43 @@ impl Sessions {
             "_agent".into(),
             id.to_string(),
         ]);
-        let launched = if let Some(run) = run {
-            tmux.window_for_pane(&run.pane)
-        } else {
-            tmux.execute(&args.iter().map(String::as_str).collect::<Vec<_>>())
-        };
+        Ok(AgentLaunch {
+            name: name.to_owned(),
+            wt: wt.to_owned(),
+            agent: agent.to_owned(),
+            parent_session_id,
+            id,
+            slot,
+            session_name,
+            existed: existing.is_some(),
+            run_pane: run.map(|run| run.pane.clone()),
+            was_running: resume.is_some_and(|session| session.state == "running"),
+            args,
+        })
+    }
+
+    /// Step 3: rechecks the session, workspace and slot, then registers the window.
+    fn commit_workspace_agent(
+        &mut self,
+        plan: AgentLaunch,
+        launched: Result<String>,
+    ) -> Result<Value> {
+        let AgentLaunch {
+            name,
+            wt,
+            agent,
+            parent_session_id,
+            id,
+            slot,
+            session_name,
+            existed,
+            run_pane,
+            was_running,
+            args: _,
+        } = plan;
+        let (name, wt, agent) = (name.as_str(), wt.as_path(), agent.as_str());
+        let run = run_pane.as_deref();
+        let tmux = Tmux::from_env();
         let window = match launched {
             Ok(window) => window,
             Err(error) => {
@@ -758,12 +841,38 @@ impl Sessions {
                     ws_core::state::SessionState::Failed,
                     parent_session_id,
                 )?;
-                return Err(error.into());
+                return Err(error);
             }
         };
+        let existing = self
+            .registry
+            .workspaces()?
+            .into_iter()
+            .find(|workspace| workspace.id == name);
+        let mut windows = existing
+            .as_ref()
+            .and_then(|workspace| workspace.body["windows"].as_array())
+            .cloned()
+            .unwrap_or_default();
         let result = (|| {
+            let session = self.get_record(&id.to_string())?;
+            if ["finished", "failed"].contains(&session.state.as_str()) {
+                return Err(failure(format!(
+                    "The session {id} ended during its launch."
+                )));
+            }
+            if existed && existing.is_none() {
+                return Err(failure(format!(
+                    "The workspace {name} was removed during the launch."
+                )));
+            }
+            if crate::agents::slots::register(wt, Some(slot), agent, &id.to_string())? != slot {
+                return Err(failure(format!(
+                    "The slot {slot} was reassigned during the launch."
+                )));
+            }
             let pane = match run {
-                Some(run) => run.pane.clone(),
+                Some(pane) => pane.to_owned(),
                 None => tmux.execute(&["display-message", "-p", "-t", &window, "#{pane_id}"])?,
             };
             tmux.execute(&[
@@ -806,7 +915,7 @@ impl Sessions {
                 "workspace.created"
             };
             self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
-            if resume.is_none_or(|session| session.state != "running") {
+            if !was_running {
                 self.transition(
                     &id.to_string(),
                     ws_core::state::SessionState::Running,
@@ -839,6 +948,118 @@ impl Sessions {
         }
         result
     }
+}
+
+/// An agent launch recorded under the store lock. Step 2 runs tmux without the lock.
+pub(crate) struct AgentLaunch {
+    name: String,
+    wt: PathBuf,
+    agent: String,
+    parent_session_id: Option<SessionId>,
+    id: Ulid,
+    slot: u64,
+    session_name: String,
+    existed: bool,
+    run_pane: Option<String>,
+    was_running: bool,
+    args: Vec<String>,
+}
+
+impl AgentLaunch {
+    /// Step 2: opens the tmux window. Callers may run this without the store lock.
+    fn launch(&self) -> Result<String> {
+        let tmux = Tmux::from_env();
+        Ok(match &self.run_pane {
+            Some(pane) => tmux.window_for_pane(pane)?,
+            None => tmux.execute(&self.args.iter().map(String::as_str).collect::<Vec<_>>())?,
+        })
+    }
+}
+
+/// Step 2 of a removal: runs git without the store lock.
+fn remove_files(plan: &RemovePlan) -> Result<Removed> {
+    let RemovePlan {
+        request,
+        wt,
+        repo,
+        branch,
+        ..
+    } = plan;
+    let wt = wt.as_path();
+    if !request.force && !git(wt, &["status", "--porcelain"])?.is_empty() {
+        return Err(failure(format!(
+            "workspace has uncommitted changes: {} (use --force)",
+            wt.display()
+        )));
+    }
+    let tmux = Tmux::from_env();
+    // Capture ids before removing the directory. Kill tabs after durable state changes.
+    let session_ids = tmux
+        .execute(&["list-sessions", "-F", "#{session_id}\t#{@ws_path}"])
+        .unwrap_or_default();
+    let window_ids = tmux
+        .execute(&["list-windows", "-a", "-F", "#{window_id}\t#{@ws_path}"])
+        .unwrap_or_default();
+    let same_path = |path: &str| Path::new(path).canonicalize().ok() == wt.canonicalize().ok();
+    let targets = |rows: &str| {
+        rows.lines()
+            .filter_map(|line| line.split_once('\t'))
+            .filter(|(_, path)| same_path(path))
+            .map(|(id, _)| id.to_owned())
+            .collect::<Vec<_>>()
+    };
+    let session_ids = targets(&session_ids);
+    let window_ids = targets(&window_ids);
+    let mut args = vec!["worktree", "remove"];
+    if request.force {
+        args.extend(["--force", "--force"]);
+    }
+    args.push(wt.to_str().unwrap());
+    git(repo, &args)
+        .map_err(|_| failure(format!("git worktree remove failed: {}", wt.display())))?;
+    let _ = fs::remove_dir(wt.parent().unwrap());
+    let mut warning = None;
+    let mut git_stderr = String::new();
+    if !branch.is_empty() && (request.delete_branch || request.force_delete_branch) {
+        let flag = if request.force_delete_branch {
+            "-D"
+        } else {
+            "-d"
+        };
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["branch", flag, branch])
+            .output()?;
+        git_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        if !output.status.success() && !request.force_delete_branch {
+            warning = Some(format!(
+                "kept unmerged branch {branch} (git branch -D to force)"
+            ));
+        }
+    }
+    Ok(Removed {
+        session_ids,
+        window_ids,
+        warning,
+        git_stderr,
+    })
+}
+
+struct RemovePlan {
+    request: RemoveWorkspace,
+    name: String,
+    wt: PathBuf,
+    repo: PathBuf,
+    branch: String,
+    _reservation: Reservation,
+}
+
+struct Removed {
+    session_ids: Vec<String>,
+    window_ids: Vec<String>,
+    warning: Option<String>,
+    git_stderr: String,
 }
 
 fn workspace_root() -> Result<PathBuf> {

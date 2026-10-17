@@ -194,6 +194,187 @@ fn headless_stdin_fifo_without_writer_does_not_hold_the_session_store_lock() {
     assert_eq!(std::fs::read_to_string(&output).unwrap(), "");
 }
 
+#[test]
+fn tmux_new_session_does_not_hold_the_session_store_lock() {
+    let sandbox = BlockingSandbox::new("tmux", "new-session");
+    let mut create = sandbox.command();
+    create
+        .args(["new", "--repo", sandbox.repo.to_str().unwrap()])
+        .args(["--branch", "feature", "--detach"]);
+    let created = sandbox.while_blocked(create);
+    assert!(created.status.success(), "{created:?}");
+    let listed = common::request(&sandbox.socket, "GET", "/v1/workspaces", "");
+    assert!(listed.contains("api/feature"), "{listed}");
+}
+
+#[test]
+fn workspace_remove_git_does_not_hold_the_session_store_lock() {
+    for word in ["status", "remove"] {
+        let sandbox = BlockingSandbox::new("git", word);
+        let created = sandbox
+            .command()
+            .args(["new", "--repo", sandbox.repo.to_str().unwrap()])
+            .args(["--branch", "feature", "--detach"])
+            .output()
+            .unwrap();
+        assert!(created.status.success(), "{created:?}");
+        let mut remove = sandbox.command();
+        remove.args(["rm", "api/feature"]);
+        let removed = sandbox.while_blocked(remove);
+        assert!(removed.status.success(), "{word}: {removed:?}");
+        assert!(!sandbox.home.path().join("worktrees/api/feature").exists());
+    }
+}
+
+/// A daemon sandbox whose fake tool blocks on a FIFO once `arm` creates it.
+struct BlockingSandbox {
+    home: tempfile::TempDir,
+    socket: std::path::PathBuf,
+    repo: std::path::PathBuf,
+    path: String,
+    server: String,
+    started: std::path::PathBuf,
+    release: std::path::PathBuf,
+    _daemon: common::Daemon,
+    _tmux: TmuxServer,
+}
+
+impl BlockingSandbox {
+    fn new(tool: &str, word: &str) -> Self {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = home.path().join("wsd.sock");
+        let server = format!(
+            "ws-lock-io-{}-{}",
+            std::process::id(),
+            home.path().file_name().unwrap().to_str().unwrap()
+        );
+        let real = |name: &str| {
+            let output = Command::new("zsh")
+                .args(["-fc", &format!("command -v {name}")])
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let repo = home.path().join("api");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.email=t@e.invalid",
+                "-c",
+                "user.name=T",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "seed",
+            ],
+        ] {
+            assert!(
+                Command::new(real("git"))
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let started = home.path().join("started");
+        let release = home.path().join("release");
+        let bin = home.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join(tool),
+            format!(
+                "#!/bin/sh\nif [ -p {started} ]; then case \" $* \" in *\" {word} \"*) echo started > {started}; read _ < {release} ;; esac; fi\nexec {real} \"$@\"\n",
+                started = shell_words::quote(started.to_str().unwrap()),
+                release = shell_words::quote(release.to_str().unwrap()),
+                real = shell_words::quote(&real(tool)),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(bin.join(tool), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = common::ws(home.path(), &socket)
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let path = format!("{}:{path}", bin.display());
+        let daemon =
+            common::Daemon::start(environment(home.path(), &socket, &path, &server), &socket);
+        Self {
+            _tmux: TmuxServer(server.clone(), home.path().to_owned()),
+            _daemon: daemon,
+            home,
+            socket,
+            repo,
+            path,
+            server,
+            started,
+            release,
+        }
+    }
+
+    fn command(&self) -> Command {
+        environment(self.home.path(), &self.socket, &self.path, &self.server)
+    }
+
+    /// Runs `command` until the fake tool blocks, then checks that the daemon still answers.
+    fn while_blocked(&self, mut command: Command) -> std::process::Output {
+        for fifo in [&self.started, &self.release] {
+            assert!(Command::new("mkfifo").arg(fifo).status().unwrap().success());
+        }
+        let child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = self.started.clone();
+        let watcher = std::thread::spawn(move || {
+            let output = child.wait_with_output().unwrap();
+            // Unblock the reader when the command exits before the tool blocks.
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc_nonblock())
+                .open(&started);
+            output
+        });
+        let marker = std::fs::read_to_string(&self.started).unwrap();
+        if marker != "started\n" {
+            panic!(
+                "The command exited before the tool blocked: {:?}",
+                watcher.join().unwrap()
+            );
+        }
+        let listed = request(&self.socket, "/v1/sessions", Duration::from_secs(2));
+        std::fs::remove_file(&self.started).unwrap();
+        std::fs::write(&self.release, "go\n").unwrap();
+        let output = watcher.join().unwrap();
+        let listed = listed.expect("session list must not wait for the blocked tool");
+        assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
+        std::fs::remove_file(&self.release).unwrap();
+        output
+    }
+}
+
+fn environment(home: &Path, socket: &Path, path: &str, server: &str) -> Command {
+    let mut command = common::ws(home, socket);
+    command
+        .env("PATH", path)
+        .env("WS_ROOT", home.join("worktrees"))
+        .env("WS_TMUX_SOCKET", server)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("WS_SESSION")
+        .env_remove("WS_SESSION_ID");
+    command
+}
+
 struct TmuxServer(String, std::path::PathBuf);
 
 impl Drop for TmuxServer {
