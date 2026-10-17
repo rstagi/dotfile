@@ -39,11 +39,12 @@ pub async fn run(
     if branch.is_empty() {
         return Err("new: branch required".into());
     }
+    let parent_session_id = super::caller(socket).await?;
     let body = client::request(
         socket,
         Method::POST,
         "/v1/workspaces",
-        serde_json::to_vec(&json!({"repo": repo, "branch": branch, "agent": agent}))?,
+        serde_json::to_vec(&json!({"repo": repo, "branch": branch, "agent": agent, "parent_session_id": parent_session_id}))?,
     )
     .await?;
     let response: serde_json::Value = serde_json::from_slice(&body)?;
@@ -53,6 +54,39 @@ pub async fn run(
             .ok_or("The workspace response has no window id.")?,
         detach,
     )
+}
+
+pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
+    if !detach {
+        let tmux = ws_daemon::tmux::Tmux::from_env();
+        if std::env::var_os("TMUX").is_some() {
+            tmux.execute(&["switch-client", "-t", window])?;
+        } else {
+            let mut command = std::process::Command::new("tmux");
+            if let Some(socket) =
+                std::env::var_os("WS_TMUX_SOCKET").filter(|socket| !socket.is_empty())
+            {
+                command.arg("-L").arg(socket);
+            }
+            if !command
+                .args(["attach-session", "-t", window])
+                .status()?
+                .success()
+            {
+                return Err("Cannot attach to the workspace.".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn expand_home(path: &str) -> Result<std::path::PathBuf> {
+    if path == "~" || path.starts_with("~/") {
+        let home = std::env::var_os("HOME").ok_or("Set HOME to expand a repository path.")?;
+        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
+    } else {
+        Ok(path.into())
+    }
 }
 
 fn pick_repo() -> Result<std::path::PathBuf> {
@@ -136,15 +170,6 @@ fn pick_repo() -> Result<std::path::PathBuf> {
     expand_home(selected)
 }
 
-fn expand_home(path: &str) -> Result<std::path::PathBuf> {
-    if path == "~" || path.starts_with("~/") {
-        let home = std::env::var_os("HOME").ok_or("Set HOME to expand a repository path.")?;
-        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
-    } else {
-        Ok(path.into())
-    }
-}
-
 fn scan_repos(root: &Path, depth: usize, candidates: &mut Vec<std::path::PathBuf>) {
     if !root.is_dir() {
         return;
@@ -179,28 +204,4 @@ fn scan_repos(root: &Path, depth: usize, candidates: &mut Vec<std::path::PathBuf
             scan_repos(&path, depth + 1, candidates);
         }
     }
-}
-
-pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
-    if !detach {
-        let tmux = ws_daemon::tmux::Tmux::from_env();
-        if std::env::var_os("TMUX").is_some() {
-            tmux.execute(&["switch-client", "-t", window])?;
-        } else {
-            let mut command = std::process::Command::new("tmux");
-            if let Some(socket) =
-                std::env::var_os("WS_TMUX_SOCKET").filter(|socket| !socket.is_empty())
-            {
-                command.arg("-L").arg(socket);
-            }
-            if !command
-                .args(["attach-session", "-t", window])
-                .status()?
-                .success()
-            {
-                return Err("Cannot attach to the workspace.".into());
-            }
-        }
-    }
-    Ok(())
 }

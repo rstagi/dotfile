@@ -1,11 +1,15 @@
 //! Workspace operations over the durable registry and sandbox-aware tmux driver.
 
 use crate::{
-    api::{self, ApiError, Store},
+    api::{self, ApiError, CallContext, Store},
     sessions::{Error, Result, Sessions},
     tmux::Tmux,
 };
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    routing::get,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -14,7 +18,10 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use ws_core::{ids::Ulid, registry::Workspace};
+use ws_core::{
+    ids::{SessionId, Ulid},
+    registry::Workspace,
+};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +29,7 @@ pub struct CreateWorkspace {
     pub repo: String,
     pub branch: String,
     pub agent: String,
+    pub parent_session_id: Option<SessionId>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -29,6 +37,7 @@ pub struct CreateWorkspace {
 pub struct AddWorkspace {
     pub target: String,
     pub agent: String,
+    pub parent_session_id: Option<SessionId>,
 }
 
 #[derive(Default, Deserialize)]
@@ -49,10 +58,13 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/workspaces/add", axum::routing::post(add))
 }
 
-async fn list(State(store): State<Store>) -> std::result::Result<Json<Vec<Workspace>>, ApiError> {
+async fn list(
+    State(store): State<Store>,
+    Query(context): Query<CallContext>,
+) -> std::result::Result<Json<Vec<Workspace>>, ApiError> {
     Ok(Json(
-        api::call(store, |sessions| {
-            sessions.record_call(None, "workspace.list", None)?;
+        api::call(store, move |sessions| {
+            sessions.record_call(context.parent_session_id, "workspace.list", None)?;
             Ok(sessions.registry.workspaces()?)
         })
         .await?,
@@ -79,7 +91,7 @@ async fn add(
 
 impl Sessions {
     fn create_workspace(&mut self, request: CreateWorkspace) -> Result<Value> {
-        self.record_call(None, "workspace.create", None)?;
+        self.record_call(request.parent_session_id, "workspace.create", None)?;
         check_agent(&request.agent)?;
         let repo = main_checkout(Path::new(&request.repo))?;
         let branch = &request.branch;
@@ -99,6 +111,9 @@ impl Sessions {
             .ok_or(Error::InvalidRequest("The repository name is invalid."))?;
         let name = format!("{repo_name}/{}", branch.replace('/', "-"));
         let wt = root.join(&name);
+        if wt.to_str().is_none() {
+            return Err(Error::InvalidRequest("The workspace path is not UTF-8."));
+        }
         if wt.try_exists()?
             || self
                 .registry
@@ -115,7 +130,8 @@ impl Sessions {
         add_worktree(&repo, branch, &wt)?;
         let result = (|| {
             copy_included_files(&repo, &wt, &settings)?;
-            let response = self.start_workspace(&name, &wt, &request.agent)?;
+            let response =
+                self.start_workspace(&name, &wt, &request.agent, request.parent_session_id)?;
             run_setup(
                 &repo,
                 &wt,
@@ -140,7 +156,7 @@ impl Sessions {
     }
 
     fn add_workspace(&mut self, request: AddWorkspace) -> Result<Value> {
-        self.record_call(None, "workspace.add", None)?;
+        self.record_call(request.parent_session_id, "workspace.add", None)?;
         check_agent(&request.agent)?;
         let root = workspace_root()?;
         let target = Path::new(&request.target);
@@ -164,10 +180,16 @@ impl Sessions {
         let name = relative
             .to_str()
             .ok_or(Error::InvalidRequest("The workspace path is not UTF-8."))?;
-        self.start_workspace(name, &wt, &request.agent)
+        self.start_workspace(name, &wt, &request.agent, request.parent_session_id)
     }
 
-    fn start_workspace(&mut self, name: &str, wt: &Path, agent: &str) -> Result<Value> {
+    fn start_workspace(
+        &mut self,
+        name: &str,
+        wt: &Path,
+        agent: &str,
+        parent_session_id: Option<SessionId>,
+    ) -> Result<Value> {
         let existing = self
             .registry
             .workspaces()?
@@ -207,7 +229,7 @@ impl Sessions {
         self.append(
             id,
             "session.created",
-            json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot}),
+            json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id}),
         )?;
         let tab = if slot > 1 {
             format!("{agent}#{slot}")
@@ -260,7 +282,11 @@ impl Sessions {
         let window = match tmux.execute(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
             Ok(window) => window,
             Err(error) => {
-                self.transition(&id.to_string(), ws_core::state::SessionState::Failed, None)?;
+                self.transition(
+                    &id.to_string(),
+                    ws_core::state::SessionState::Failed,
+                    parent_session_id,
+                )?;
                 return Err(error.into());
             }
         };
@@ -291,13 +317,21 @@ impl Sessions {
             } else {
                 "workspace.created"
             };
-            self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows}))?;
-            self.transition(&id.to_string(), ws_core::state::SessionState::Running, None)?;
+            self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
+            self.transition(
+                &id.to_string(),
+                ws_core::state::SessionState::Running,
+                parent_session_id,
+            )?;
             Ok(json!({"window_id": window}))
         })();
         if result.is_err() {
             let _ = tmux.execute(&["kill-window", "-t", &window]);
-            let _ = self.transition(&id.to_string(), ws_core::state::SessionState::Failed, None);
+            let _ = self.transition(
+                &id.to_string(),
+                ws_core::state::SessionState::Failed,
+                parent_session_id,
+            );
         }
         result
     }
@@ -317,9 +351,9 @@ fn check_agent(agent: &str) -> Result<()> {
     if ["claude", "codex", "grok"].contains(&agent) {
         Ok(())
     } else {
-        Err(failure(format!(
-            "unknown agent: {agent} (claude|codex|grok)"
-        )))
+        Err(Error::InvalidRequest(
+            "agent must be one of: claude, codex, grok",
+        ))
     }
 }
 

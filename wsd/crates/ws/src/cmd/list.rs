@@ -4,7 +4,12 @@ use std::path::Path;
 use ws_core::registry::Workspace;
 
 pub async fn run(socket: &Path, json: bool) -> Result<()> {
-    let body = client::request(socket, Method::GET, "/v1/workspaces", Vec::new()).await?;
+    let parent = super::caller(socket).await?;
+    let path = parent.map_or_else(
+        || "/v1/workspaces".into(),
+        |id| format!("/v1/workspaces?parent_session_id={id}"),
+    );
+    let body = client::request(socket, Method::GET, &path, Vec::new()).await?;
     let workspaces: Vec<Workspace> = serde_json::from_slice(&body)?;
     if json {
         println!("{}", serde_json::to_string(&workspaces)?);

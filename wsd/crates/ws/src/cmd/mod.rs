@@ -23,3 +23,11 @@ pub fn status(session: &Session) -> &str {
         _ => "active",
     }
 }
+
+async fn caller(socket: &std::path::Path) -> crate::Result<Option<ws_core::ids::SessionId>> {
+    if whoami::identity().is_some() {
+        Ok(Some(whoami::current(socket).await?.id))
+    } else {
+        Ok(None)
+    }
+}

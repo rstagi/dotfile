@@ -221,6 +221,167 @@ fn new_reads_repo_candidates_without_writing_the_loop_mapping() {
     );
 }
 
+#[test]
+fn workspace_creation_preserves_the_calling_session_identity() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("parented");
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/sessions",
+        r#"{"name":"orchestrator"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    let parent: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let output = sandbox
+        .command()
+        .args([
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "child",
+            "--detach",
+        ])
+        .env("WS_SESSION_ID", parent["id"].as_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let child = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["workspace_id"] == "parented/child")
+        .unwrap();
+    assert_eq!(child["body"]["parent_session_id"], parent["id"]);
+}
+
+#[test]
+fn add_uses_the_current_tmux_workspace_when_the_directory_is_outside_git() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "current",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let pane = sandbox.tmux(&["display-message", "-p", "-t", "api/current:", "#{pane_id}"]);
+    let output = sandbox
+        .command()
+        .args(["add", "--agent", "codex", "--detach"])
+        .current_dir(sandbox.home.path())
+        .env("TMUX_PANE", pane)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn registered_workspaces_survive_a_registry_rebuild_without_discovering_directories() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feat/login",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let before = sandbox.json(&["list", "--json"]);
+    let orphan = sandbox.home.path().join("worktrees/api/unregistered");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            orphan.to_str().unwrap(),
+        ],
+    );
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["list", "--json"]), before);
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-live.txt")
+    );
+}
+
+#[test]
+fn new_keeps_an_existing_branch_and_uses_the_default_setup_script() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("space repo");
+    git(&repo, &["branch", "existing"]);
+    let script = repo.join(".ws-setup");
+    std::fs::write(&script, "#!/bin/sh\ntouch DEFAULT-SETUP\n").unwrap();
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "existing",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let wt = sandbox.home.path().join("worktrees/space repo/existing");
+    wait_until(|| wt.join("DEFAULT-SETUP").is_file());
+    assert_eq!(
+        git(&wt, &["rev-parse", "HEAD"]),
+        git(&repo, &["rev-parse", "existing"])
+    );
+}
+
+#[test]
+fn a_tmux_name_collision_preserves_the_session_and_removes_the_unregistered_worktree() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    sandbox.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "api/collision",
+        "/bin/sleep",
+        "300",
+    ]);
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "collision",
+        "--detach",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("belongs to another workspace")
+    );
+    assert!(!sandbox.home.path().join("worktrees/api/collision").exists());
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    sandbox.tmux(&["has-session", "-t", "=api/collision"]);
+}
+
 fn wait_until(mut ready: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !ready() {
@@ -273,6 +434,7 @@ impl Sandbox {
         command
             .env("WS_ROOT", self.home.path().join("worktrees"))
             .env("WS_TMUX_SOCKET", &self.server)
+            .env("WS_AGENT_SHELL", "zsh -fc")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .env_remove("WS_SESSION")

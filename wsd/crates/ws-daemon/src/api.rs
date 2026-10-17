@@ -29,8 +29,8 @@ pub(crate) struct ApiError(pub(crate) Error);
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CallContext {
-    parent_session_id: Option<SessionId>,
+pub(crate) struct CallContext {
+    pub(crate) parent_session_id: Option<SessionId>,
 }
 
 #[derive(Deserialize)]

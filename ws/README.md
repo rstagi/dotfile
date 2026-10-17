@@ -101,6 +101,7 @@ Without `--branch`, it reads the branch from the terminal.
 It copies ignored files that match `.conductor/settings.toml` `file_include_globs`, with `.env*` as the default.
 It runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux window.
 `add` registers an existing worktree or adds a tab to a registered workspace.
+When the target is absent, it uses the current directory or tmux workspace.
 `list` selects workspaces from the registry. A worktree directory without a registry entry does not appear.
 Workspace tabs start a shell. The agent launch contract comes in a later port phase.
 

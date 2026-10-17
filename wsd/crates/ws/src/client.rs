@@ -79,7 +79,11 @@ pub(crate) async fn request(
     path: &str,
     body: Vec<u8>,
 ) -> Result<Bytes> {
-    let seconds = if path.starts_with("/v1/workspaces") { 120 } else { 2 };
+    let seconds = if path.starts_with("/v1/workspaces") {
+        120
+    } else {
+        2
+    };
     timeout(
         Duration::from_secs(seconds),
         send_request(socket, method, path, body),
