@@ -7,6 +7,75 @@ use ws_daemon::sessions::{CreateSession, Sessions};
 struct LockHolder(std::process::Child);
 
 #[test]
+fn resumes_a_partial_import_from_its_saved_snapshot_without_duplicate_messages() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    let capture = Command::new("zsh")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ws-daemon/src/import/fixtures/capture.zsh"
+        ))
+        .arg(&source)
+        .env("HOME", root.path())
+        .output()
+        .unwrap();
+    assert!(capture.status.success(), "{capture:?}");
+    let output = migrate(root.path(), &source, &state);
+    assert!(output.status.success(), "{output:?}");
+    let mut plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let human = sessions.get("human", None).unwrap();
+    let target = sessions.get("#2", None).unwrap();
+    let original_message = sessions.inbox(target.id).unwrap()[0].event_id;
+    drop(sessions);
+    // Model a crash after the first message append and before the completion marker.
+    let log_path = state
+        .join("sessions")
+        .join(human.id.to_string())
+        .join("log.jsonl");
+    let original = fs::read_to_string(&log_path).unwrap();
+    let prefix = original.lines().take(2).collect::<Vec<_>>().join("\n") + "\n";
+    fs::write(&log_path, &prefix).unwrap();
+    plan["complete"] = json!(false);
+    plan["sessions"][0]["event_map"] = json!([]);
+    fs::write(
+        state.join("import-zsh.json"),
+        serde_json::to_vec(&plan).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(
+        state
+            .join("sessions")
+            .join(target.id.to_string())
+            .join("prompt"),
+    )
+    .unwrap();
+    // The next attempt must use the frozen source, even if the zsh files now differ.
+    fs::write(
+        source.join("sessions/2/inbox"),
+        "changed after the snapshot",
+    )
+    .unwrap();
+    let resumed = migrate(root.path(), &source, &state);
+    assert!(resumed.status.success(), "{resumed:?}");
+    assert_eq!(resumed.stdout, output.stdout);
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let messages = sessions.inbox(target.id).unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].event_id, original_message);
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.content.pair_seq)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(fs::read_to_string(log_path).unwrap().starts_with(&prefix));
+    assert_eq!(sessions.list(None).unwrap().len(), 3);
+}
+
+#[test]
 fn respects_zsh_fcntl_locks_before_reading_the_snapshot() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
@@ -23,7 +92,7 @@ fn respects_zsh_fcntl_locks_before_reading_the_snapshot() {
     ] {
         let path = source.join(format!("sessions/{name}.lock"));
         fs::write(&path, "").unwrap();
-        let _holder = LockHolder::new(&path);
+        let _holder = LockHolder::new(&path, root.path());
         let output = migrate(root.path(), &source, &state);
         assert!(
             !output.status.success(),
@@ -39,14 +108,14 @@ fn respects_zsh_fcntl_locks_before_reading_the_snapshot() {
 }
 
 impl LockHolder {
-    fn new(path: &Path) -> Self {
+    fn new(path: &Path, home: &Path) -> Self {
         use std::{
             io::{BufRead, BufReader},
             process::Stdio,
             time::Duration,
         };
         let mut child = Command::new("zsh").args(["-fc", "zmodload zsh/system; zsystem flock -t 0 \"$1\" || exit 1; print ready; read -r release", "lock-holder"])
-            .arg(path).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+            .arg(path).env("HOME", home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
         let stdout = child.stdout.take().unwrap();
         let holder = Self(child);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -114,6 +183,9 @@ fn imports_all_artifacts_and_requeues_interrupted_stop_and_unconfirmed_paste() {
         .unwrap(),
         before["sessions/2/prompt"]
     );
+    let paste: serde_json::Value =
+        serde_json::from_slice(&before["sessions/2/inbox.paste"]).unwrap();
+    assert_eq!(plan["sessions"][1]["paste"], paste);
     let entries = SessionLog::new(&state, done.id, Device::load(&state).unwrap().device_id)
         .read()
         .unwrap()

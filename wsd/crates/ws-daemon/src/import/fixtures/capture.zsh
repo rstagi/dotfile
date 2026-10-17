@@ -20,7 +20,7 @@ print -rn -- 'completed output' > "$WS_HOME/completed"
 with_lock "$WS_SESSIONS/1/output" ws_bus_done_locked 1 "$WS_HOME/completed"
 ws_bus_event 1 done '{"output":"/legacy/output.md"}'
 ws_bus_event 1 exit '{"code":0}'
-print -rn -- 'initial prompt\nsecond line' > "$WS_SESSIONS/2/prompt"
+print -rn -- $'initial prompt\nsecond line' > "$WS_SESSIONS/2/prompt"
 with_lock "$WS_SESSIONS/2/inbox" ws_bus_enqueue 2 $'[ws terminal]\nunconfirmed paste'
 with_lock "$WS_SESSIONS/2/inbox" ws_bus_idle_locked 2 @1
 with_lock "$WS_SESSIONS/2/inbox" ws_bus_enqueue 2 $'[ws #1]\ninterrupted Stop reply'

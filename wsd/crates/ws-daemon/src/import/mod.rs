@@ -55,8 +55,19 @@ pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> 
         return Ok(plan);
     }
     let mut sessions = Sessions::open(state, plan.alias_floor).map_err(io::Error::other)?;
-    // Save the assigned ids before the first append so a crash cannot allocate replacements.
-    if !state.join(JOURNAL).exists() {
+    // Another importer can finish after the first journal read and before this lock.
+    if let Some(current) = load(state)? {
+        if current.source != source {
+            return Err(io::Error::other(
+                "The state already contains an import from another zsh directory.",
+            ));
+        }
+        if current.complete {
+            return Ok(current);
+        }
+        plan = current;
+    } else {
+        // Save the assigned ids before the first append so a crash cannot allocate replacements.
         for session in &plan.sessions {
             if sessions
                 .registry
