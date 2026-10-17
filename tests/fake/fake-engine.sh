@@ -9,6 +9,10 @@ set -u
 [[ -n "${FAKE_ENGINE_ARGS_LOG:-}" ]] && print -r -- "$*" >> "$FAKE_ENGINE_ARGS_LOG"
 SUB="${LOOP_SUB_DIR:?LOOP_SUB_DIR required}"
 [[ -n "${FAKE_ENGINE_ARGS_LOG:-}" ]] && print -r -- "$*" >> "$FAKE_ENGINE_ARGS_LOG"
+if [[ -n "${FAKE_ORCH_RUNNER:-}" ]]; then
+  zsh "$FAKE_ORCH_RUNNER" --worktree "$FAKE_RUNNER_WORKTREE" --run-dir "$FAKE_RUN_DIR" \
+    --prompt-file "$FAKE_RUNNER_PROMPT" --timeout 30 || exit $?
+fi
 cf="$SUB/.fake-count"
 n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$cf"

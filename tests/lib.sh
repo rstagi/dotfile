@@ -6,6 +6,8 @@ set -u
 # Never let tests push events to the user's real daemon (:7717); tests that need one
 # start their own and override this.
 export LOOP_DAEMON_URL="http://127.0.0.1:9"
+# Suites enable ws only after they configure a private daemon.
+export LOOP_WS_SESSIONS=0
 
 TESTS_RUN=0
 TESTS_FAIL=0
@@ -61,7 +63,7 @@ test_summary() {
 
 # Start a private Rust daemon. The caller must stop WS_TEST_DAEMON_PID on exit.
 start_ws_test_daemon() {
-  export WS_RUST_BIN="$ROOT/wsd/target/debug/ws"
+  WS_RUST_BIN="$ROOT/wsd/target/debug/ws"
   [[ -x "$WS_RUST_BIN" ]] || { print -u2 -- "Missing Rust binary: $WS_RUST_BIN. Run cargo build in wsd."; return 1; }
   "$WS_RUST_BIN" daemon > "$TMP/ws-daemon.log" 2>&1 &
   WS_TEST_DAEMON_PID=$!

@@ -28,6 +28,30 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$RUN_ID" ]] || { echo "loop-orchestrator: --run-id required" >&2; exit 1; }
 
+mkdir -p "$DIR/sub"
+
+# wsd supervises the respawner. Its SUBs inherit the orchestrator session id.
+if [[ "${LOOP_WS_SESSIONS:-1}" != 0 ]]; then
+  WS_BIN="$(whence -p ws)"
+  if [[ -n "$WS_BIN" ]] && "$WS_BIN" --version 2>/dev/null | grep -q '^ws [0-9]' &&
+      "$WS_BIN" ping >/dev/null 2>&1; then
+    if (( ! WS_ACTIVE )); then
+      ws_environment=()
+      for key in ${(k)parameters}; do
+        [[ "${parameters[$key]}" == *export* ]] && ws_environment+=(--env "$key=${(P)key}")
+      done
+      exec "$WS_BIN" session run --headless --cwd "$PWD" "${ws_environment[@]}" \
+        --stdout "${DIR:A}/sub/orchestrator.stdout.log" --stderr "${DIR:A}/sub/orchestrator.stderr.log" -- \
+        zsh "$SCRIPT_DIR/loop-orchestrator.sh" "${ORIGINAL_ARGS[@]}" --ws-session
+    fi
+    if [[ -n "${WS_SESSION_ID:-}" ]]; then
+      [[ -f "$DIR/state.json" ]] || print -r -- '{}' > "$DIR/state.json"
+      jq --arg id "$WS_SESSION_ID" '.wsSession=$id' "$DIR/state.json" > "$DIR/state.json.ws-$$" &&
+        mv "$DIR/state.json.ws-$$" "$DIR/state.json"
+    fi
+  fi
+fi
+
 # --- config + wiring (seams: ENGINE_CMD / LOOP_EMIT_SH / LOOP_NOTIFY_SH override for tests) ---
 # Precedence: explicit env > loop-models.conf > hardcoded default. Snapshot env BEFORE sourcing
 # the conf (the conf assigns these knobs unconditionally and would otherwise clobber the env).
@@ -63,28 +87,6 @@ STATUS="$SUB/status.json"
 PIDFILE="$SUB/current.pid"
 PAUSE_FILE="$DIR/control/pause"
 mkdir -p "$SUB"
-
-# wsd supervises the respawner. Its SUBs inherit the orchestrator session id.
-if [[ "${LOOP_WS_SESSIONS:-1}" != 0 ]]; then
-  WS_BIN="$(whence -p ws)"
-  if [[ -n "$WS_BIN" ]] && "$WS_BIN" --version 2>/dev/null | grep -q '^ws [0-9]' &&
-      "$WS_BIN" ping >/dev/null 2>&1; then
-    if (( ! WS_ACTIVE )); then
-      ws_environment=()
-      for key in ${(k)parameters}; do
-        [[ "${parameters[$key]}" == *export* ]] && ws_environment+=(--env "$key=${(P)key}")
-      done
-      exec "$WS_BIN" session run --headless --cwd "$PWD" "${ws_environment[@]}" \
-        --stdout "${SUB:A}/orchestrator.stdout.log" --stderr "${SUB:A}/orchestrator.stderr.log" -- \
-        zsh "$SCRIPT_DIR/loop-orchestrator.sh" "${ORIGINAL_ARGS[@]}" --ws-session
-    fi
-    if [[ -n "${WS_SESSION_ID:-}" ]]; then
-      [[ -f "$DIR/state.json" ]] || print -r -- '{}' > "$DIR/state.json"
-      jq --arg id "$WS_SESSION_ID" '.wsSession=$id' "$DIR/state.json" > "$DIR/state.json.ws-$$" &&
-        mv "$DIR/state.json.ws-$$" "$DIR/state.json"
-    fi
-  fi
-fi
 
 # First CHAIN_ORCHESTRATE leg → engine:model[+fallback]  (zsh arrays are 1-indexed).
 leg="${CHAIN_ORCHESTRATE[1]:-claude:opus}"

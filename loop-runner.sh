@@ -382,7 +382,11 @@ launch_engine() {
       eval "$prepared"
       # Loop supplies the headless command and the engine resume arguments.
       [[ "$agent" == (claude|codex) ]] && shift
-      exec "${engine_argv[@]}" "$@"
+      additions=("$@")
+      # Loop already supplies these permission flags.
+      additions=("${(@)additions:#--dangerously-bypass-approvals-and-sandbox}")
+      additions=("${(@)additions:#--always-approve}")
+      exec "${engine_argv[@]}" "${additions[@]}"
     ' loop-ws-agent "$WS_BIN" "$CUR_ENGINE" "$RUN_DIR" "$@"
 }
 
@@ -469,7 +473,11 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
   local child=$!
   # watchdog only marks + TERMs the whole tree; the KILL follow-through happens in the
   # main flow after wait (the watchdog dies with its TERM'd parent otherwise)
-  ( sleep "$leg_timeout"
+  ( local timer=""
+    trap 'if [[ -n "$timer" ]]; then kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; fi; exit 0' TERM INT HUP
+    sleep "$leg_timeout" & timer=$!
+    wait "$timer"
+    timer=""
     kill -0 "$child" 2>/dev/null || exit 0
     { echo "$child"; descendants "$child"; } > "$RUN_DIR/.victims"
     touch "$RUN_DIR/.timeout"
@@ -477,8 +485,12 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
   ) &
   local watchdog=$!
   # control watcher: a pause file or a note edit halts the engine within one poll
-  ( while kill -0 "$child" 2>/dev/null; do
-      sleep "$CONTROL_POLL"
+  ( local timer=""
+    trap 'if [[ -n "$timer" ]]; then kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; fi; exit 0' TERM INT HUP
+    while kill -0 "$child" 2>/dev/null; do
+      sleep "$CONTROL_POLL" & timer=$!
+      wait "$timer"
+      timer=""
       local marker=""
       if is_paused; then marker=.paused
       elif [[ "$(note_sig)" != "$NOTE_SIG" ]]; then marker=.note-changed
@@ -494,7 +506,7 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
   local watcher=$!
   wait "$child"; local rc=$?
   kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
-  { echo "$watcher"; descendants "$watcher"; } | xargs kill 2>/dev/null; wait "$watcher" 2>/dev/null
+  kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
   if [[ -f "$RUN_DIR/.paused" ]]; then
     reap_victims "$RUN_DIR/.ctl-victims"
     return 201
