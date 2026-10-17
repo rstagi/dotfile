@@ -96,7 +96,9 @@ pub fn get(socket: &Path, path: &str) -> String {
 }
 
 pub fn request(socket: &Path, method: &str, path: &str, body: &str) -> String {
-    try_request(socket, method, path, body, Duration::from_secs(2)).unwrap()
+    // The daemon completes trigger actions before it sends the response.
+    // Allow parallel tests to finish that work within a generous hang guard.
+    try_request(socket, method, path, body, Duration::from_secs(30)).unwrap()
 }
 
 // The tmux test binary shares this module but does not create stale sockets.
