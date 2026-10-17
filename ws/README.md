@@ -116,6 +116,13 @@ The daemon records callbacks before it reduces the window state. Repeated `worki
 The window options retain the zsh sequence, turn and background subagent rules. A blocked Stop keeps its turn active.
 A failed transport writes the callback to `$WS_STATE/spool/`. The daemon replays pending callbacks at startup.
 Every hook exits 0. Stop returns its decision as JSON. Each tmux command has a 100 ms deadline.
+The Rust daemon sends the same desktop notification events through terminal-notifier, osascript, boringnotch, or a custom adapter.
+Hooks retain their notification settings, including `WS_NOTIFY=0`, when the daemon replays their spool records.
+Built-in banners and sounds require an unfocused tab in `idle` or `waiting`. Custom adapters and boringnotch receive every state transition.
+`ws _dismiss <window|pane>` emits `closed` once for an open notification. It keeps the tab state.
+`ws _build-notifier` creates the branded `$WS_HOME/ws.app` from `WS_NOTIFIER_SOURCE`.
+Run `cd wsd && cargo test -p ws --test notifications` to check adapters with fake commands in a private HOME.
+Run `zsh wsd/crates/ws/tests/golden/notify-capture.zsh` to regenerate the zsh notification fixture.
 Run `cd wsd && cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to check hooks and latency.
 The tests check p95 below 50 ms for the full ingest path and the daemon-down spool path.
 Run `zsh wsd/crates/ws/tests/golden/hook-capture.zsh` to regenerate the zsh hook state fixture.

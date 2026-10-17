@@ -74,6 +74,7 @@ async fn deliver(socket: &Path, state: &str, payload: Value, observed_at_us: u64
                 .map(str::to_owned)
         }),
         payload,
+        notify: Some(ws_daemon::notify::Config::from_env()),
     };
     if let Ok(Ok(reply)) = tokio::time::timeout(
         TRANSPORT_DEADLINE,

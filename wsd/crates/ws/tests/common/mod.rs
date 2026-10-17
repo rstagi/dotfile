@@ -85,6 +85,7 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
     command
         .env("HOME", home)
         .env("WS_HOME", home.join(".ws"))
+        .env("WS_NOTIFY", "0")
         .env("WS_STATE", home.join("state"))
         .env("WS_SOCK", socket);
     command

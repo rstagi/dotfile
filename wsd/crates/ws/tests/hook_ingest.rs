@@ -260,6 +260,7 @@ impl HookSandbox {
             tmux_socket: Some(self.server.clone()),
             tmux_path: None,
             payload,
+            notify: None,
         }
     }
     fn post(&self, state: &str, payload: Value, seq: u64) -> Value {

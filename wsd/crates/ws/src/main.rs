@@ -117,6 +117,10 @@ enum Command {
         json: bool,
         target: Vec<String>,
     },
+    #[command(name = "_build-notifier", hide = true)]
+    BuildNotifier,
+    #[command(name = "_dismiss", hide = true)]
+    Dismiss { target: Option<String> },
     /// Send a hook event from the current tmux pane.
     Hook { state: String },
 }
@@ -213,6 +217,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
         Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
+        Command::BuildNotifier => cmd::build_notifier::run()?,
+        Command::Dismiss { target } => {
+            cmd::dismiss::run(&socket_path().unwrap_or_default(), target.as_deref()).await;
+        }
         Command::Hook { state } => {
             cmd::hook::run(&socket_path().unwrap_or_default(), &state).await;
         }
