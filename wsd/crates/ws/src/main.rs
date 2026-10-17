@@ -18,6 +18,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Merge the current workspace PR.
+    Merge,
     /// Focus or resume a workspace or session.
     Open {
         #[arg(default_value = "")]
@@ -126,6 +128,7 @@ async fn run(cli: Cli) -> Result<()> {
         return cmd::attach::run(&socket_path()?).await;
     };
     match command {
+        Command::Merge => cmd::merge::run(&socket_path()?).await?,
         Command::Open { target, detach } => {
             cmd::open::run(&socket_path()?, &target, detach).await?
         }

@@ -1,6 +1,7 @@
 pub mod add;
 pub mod attach;
 pub mod list;
+pub mod merge;
 pub mod name;
 pub mod new;
 pub mod open;
