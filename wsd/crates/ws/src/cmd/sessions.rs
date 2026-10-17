@@ -9,6 +9,7 @@ pub async fn run(socket: &Path, targets: &[String], json: bool) -> Result<()> {
         return Err("sessions: expected [id|name]".into());
     }
     let sessions = match targets.first() {
+        Some(target) if target == "me" => vec![super::whoami::current(socket).await?],
         Some(target) => vec![client::session(socket, target).await?],
         None => client::sessions(socket).await?,
     };

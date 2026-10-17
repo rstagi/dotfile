@@ -1,4 +1,5 @@
 pub mod sessions;
+pub mod whoami;
 
 use ws_core::registry::Session;
 

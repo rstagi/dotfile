@@ -8,6 +8,26 @@ use ws_core::{HookEvent, HookRecord, PingResponse};
 
 use crate::Result;
 
+#[derive(Debug)]
+struct ApiError {
+    code: String,
+    message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<ApiError>()
+        .is_some_and(|error| error.code == "session_not_found")
+}
+
 pub async fn ping(socket: &Path) -> Result<PingResponse> {
     let body = request(socket, Method::GET, "/v1/ping", Vec::new()).await?;
     Ok(serde_json::from_slice(&body)?)
@@ -20,7 +40,17 @@ pub async fn sessions(socket: &Path) -> Result<Vec<ws_core::registry::Session>> 
 
 pub async fn session(socket: &Path, target: &str) -> Result<ws_core::registry::Session> {
     let path = format!("/v1/sessions/{}", encode(target));
-    let body = request(socket, Method::GET, &path, Vec::new()).await?;
+    let body = request(socket, Method::GET, &path, Vec::new())
+        .await
+        .map_err(|error| match error.downcast::<ApiError>() {
+            Ok(mut error) => {
+                if error.code == "session_not_found" {
+                    error.message = format!("no such session: {target}");
+                }
+                error as Box<dyn std::error::Error + Send + Sync>
+            }
+            Err(error) => error,
+        })?;
     Ok(serde_json::from_slice(&body)?)
 }
 
@@ -88,21 +118,13 @@ async fn send_request(socket: &Path, method: Method, path: &str, body: Vec<u8>) 
     let body = response.into_body().collect().await?.to_bytes();
     if !status.is_success() {
         let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-        if error["error"]["code"] == "session_not_found" {
-            // The URI contains the escaped target. The daemon message contains its literal value.
-            let message = error["error"]["message"].as_str().unwrap_or("");
-            if let Some(target) = message
-                .strip_prefix("No session matches ")
-                .and_then(|s| s.strip_suffix('.'))
-            {
-                return Err(format!("no such session: {target}").into());
-            }
-        }
-        return Err(error["error"]["message"]
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("The daemon returned HTTP {status}."))
-            .into());
+        return Err(Box::new(ApiError {
+            code: error["error"]["code"].as_str().unwrap_or("").into(),
+            message: error["error"]["message"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("The daemon returned HTTP {status}.")),
+        }));
     }
     Ok(body)
 }

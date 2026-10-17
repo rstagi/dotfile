@@ -49,6 +49,69 @@ fn sessions_matches_the_zsh_golden_output_and_resolves_names() {
     );
 }
 
+#[test]
+fn whoami_uses_environment_precedence_then_the_tmux_window() {
+    let sandbox = Sandbox::new();
+    let output = sandbox
+        .command()
+        .args(["whoami"])
+        .env("WS_SESSION_ID", &sandbox.ids[0])
+        .env("WS_SESSION", "#2")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        include_str!("golden/whoami.txt")
+    );
+    let output = sandbox
+        .command()
+        .args(["whoami", "--json"])
+        .env("WS_SESSION_ID", "")
+        .env("WS_SESSION", "#2")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let identity: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(identity["id"], sandbox.ids[1]);
+    assert_eq!(identity["alias"], 2);
+    let output = sandbox
+        .command()
+        .args(["whoami"])
+        .env("TMUX_PANE", &sandbox.window)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        include_str!("golden/whoami.txt")
+    );
+    sandbox.assert_error(&["whoami"], include_str!("golden/whoami-outside.txt"));
+    let invalid = sandbox
+        .command()
+        .args(["whoami"])
+        .env("WS_SESSION_ID", "missing")
+        .env("TMUX_PANE", &sandbox.window)
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&invalid.stderr),
+        include_str!("golden/whoami-outside.txt")
+    );
+    let me = sandbox
+        .command()
+        .args(["sessions", "me"])
+        .env("WS_SESSION_ID", &sandbox.ids[1])
+        .output()
+        .unwrap();
+    assert!(me.status.success(), "{me:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&me.stdout),
+        include_str!("golden/selected.txt")
+    );
+}
+
 impl Sandbox {
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();

@@ -24,6 +24,11 @@ enum Command {
     Daemon,
     /// Show the daemon version and uptime.
     Ping,
+    /// Show the current session identity.
+    Whoami {
+        #[arg(long)]
+        json: bool,
+    },
     /// List the registered sessions.
     Sessions {
         #[arg(long)]
@@ -73,6 +78,7 @@ async fn run(cli: Cli) -> Result<()> {
                 response.version, response.uptime_secs
             );
         }
+        Command::Whoami { json } => cmd::whoami::run(&socket_path()?, json).await?,
         Command::Sessions { json, target } => {
             cmd::sessions::run(&socket_path()?, &target, json).await?
         }
