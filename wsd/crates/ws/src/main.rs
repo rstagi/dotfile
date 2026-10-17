@@ -18,6 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Merge the current workspace PR.
+    Merge,
+    #[command(name = "_merge_popup", hide = true)]
+    MergePopup,
     /// Focus or resume a workspace or session.
     Open {
         #[arg(default_value = "")]
@@ -113,7 +117,7 @@ enum HookCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
     match run(Cli::parse()).await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("ws: {error}");
             ExitCode::FAILURE
@@ -121,11 +125,15 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> Result<()> {
+async fn run(cli: Cli) -> Result<ExitCode> {
     let Some(command) = cli.command else {
-        return cmd::attach::run(&socket_path()?).await;
+        return cmd::attach::run(&socket_path()?)
+            .await
+            .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Merge => cmd::merge::run(&socket_path()?).await?,
+        Command::MergePopup => return cmd::merge::popup(&socket_path()?).await,
         Command::Open { target, detach } => {
             cmd::open::run(&socket_path()?, &target, detach).await?
         }
@@ -186,7 +194,7 @@ async fn run(cli: Cli) -> Result<()> {
             event: HookCommand::Stop,
         } => hook::stop(&socket_path()?).await?,
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn socket_path() -> Result<PathBuf> {
