@@ -134,9 +134,138 @@ async fn create(
     State(store): State<Store>,
     Json(request): Json<CreateWorkspace>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    Ok(Json(
-        api::call(store, move |sessions| sessions.create_workspace(request)).await?,
-    ))
+    Ok(Json(create_workspace(store, request).await?))
+}
+
+/// Names of workspaces whose git and tmux setup runs outside the store lock.
+static RESERVED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Releases a workspace name reservation when creation ends.
+struct Reservation(String);
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if let Ok(mut reserved) = RESERVED.lock() {
+            reserved.remove(&self.0);
+        }
+    }
+}
+
+struct PlannedWorkspace {
+    repo: PathBuf,
+    settings: RepoSettings,
+    branch: String,
+    name: String,
+    wt: PathBuf,
+}
+
+/// Runs git commands without the store lock. Short lock sections record, reserve and start.
+async fn create_workspace(
+    store: Store,
+    request: CreateWorkspace,
+) -> std::result::Result<Value, ApiError> {
+    let parent = request.parent_session_id;
+    api::call(store.clone(), move |sessions| {
+        sessions.record_call(parent, "workspace.create", None)
+    })
+    .await?;
+    let agent = request.agent.clone();
+    let plan = off_lock(move || plan_workspace(&request)).await?;
+    let (name, wt) = (plan.name.clone(), plan.wt.clone());
+    let reservation = api::call(store.clone(), move |sessions| {
+        sessions.reserve_workspace(&name, &wt)
+    })
+    .await?;
+    let plan = off_lock(move || {
+        fs::create_dir_all(plan.wt.parent().unwrap())?;
+        add_worktree(&plan.repo, &plan.branch, &plan.wt)?;
+        if let Err(error) = copy_included_files(&plan.repo, &plan.wt, &plan.settings) {
+            remove_worktree(&plan.repo, &plan.wt);
+            return Err(error);
+        }
+        Ok(plan)
+    })
+    .await?;
+    api::call(store, move |sessions| {
+        let _reservation = reservation;
+        let PlannedWorkspace {
+            repo,
+            settings,
+            name,
+            wt,
+            ..
+        } = plan;
+        let result = (|| {
+            let response = sessions.start_workspace(&name, &wt, &agent, parent)?;
+            run_setup(
+                &repo,
+                &wt,
+                &settings,
+                response["window_id"].as_str().unwrap(),
+            )?;
+            Ok(response)
+        })();
+        if result.is_err()
+            && !sessions
+                .registry
+                .workspaces()?
+                .iter()
+                .any(|workspace| workspace.id == name)
+        {
+            remove_worktree(&repo, &wt);
+        }
+        result
+    })
+    .await
+}
+
+async fn off_lock<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T> + Send + 'static,
+) -> std::result::Result<T, ApiError> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| ApiError(Error::Io(io::Error::other("The workspace worker failed."))))?
+        .map_err(ApiError)
+}
+
+fn plan_workspace(request: &CreateWorkspace) -> Result<PlannedWorkspace> {
+    check_agent(&request.agent)?;
+    let repo = main_checkout(Path::new(&request.repo))?;
+    let branch = &request.branch;
+    if !Command::new("git")
+        .args(["check-ref-format", "--branch", branch])
+        .output()?
+        .status
+        .success()
+    {
+        return Err(failure(format!("invalid branch: {branch}")));
+    }
+    let settings = repo_settings(&repo)?;
+    let root = workspace_root()?;
+    let repo_name = repo
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or(Error::InvalidRequest("The repository name is invalid."))?;
+    let name = format!("{repo_name}/{}", branch.replace('/', "-"));
+    let wt = root.join(&name);
+    if wt.to_str().is_none() {
+        return Err(Error::InvalidRequest("The workspace path is not UTF-8."));
+    }
+    Ok(PlannedWorkspace {
+        repo,
+        settings,
+        branch: branch.clone(),
+        name,
+        wt,
+    })
+}
+
+fn remove_worktree(repo: &Path, wt: &Path) {
+    let _ = git(
+        repo,
+        &["worktree", "remove", "--force", wt.to_str().unwrap()],
+    );
 }
 
 async fn add(
@@ -416,31 +545,12 @@ impl Sessions {
         self.workspace(target)
     }
 
-    fn create_workspace(&mut self, request: CreateWorkspace) -> Result<Value> {
-        self.record_call(request.parent_session_id, "workspace.create", None)?;
-        check_agent(&request.agent)?;
-        let repo = main_checkout(Path::new(&request.repo))?;
-        let branch = &request.branch;
-        if !Command::new("git")
-            .args(["check-ref-format", "--branch", branch])
-            .output()?
-            .status
-            .success()
-        {
-            return Err(failure(format!("invalid branch: {branch}")));
-        }
-        let settings = repo_settings(&repo)?;
-        let root = workspace_root()?;
-        let repo_name = repo
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or(Error::InvalidRequest("The repository name is invalid."))?;
-        let name = format!("{repo_name}/{}", branch.replace('/', "-"));
-        let wt = root.join(&name);
-        if wt.to_str().is_none() {
-            return Err(Error::InvalidRequest("The workspace path is not UTF-8."));
-        }
-        if wt.try_exists()?
+    fn reserve_workspace(&mut self, name: &str, wt: &Path) -> Result<Reservation> {
+        let mut reserved = RESERVED
+            .lock()
+            .map_err(|_| failure("Cannot lock the workspace reservations."))?;
+        if reserved.contains(name)
+            || wt.try_exists()?
             || self
                 .registry
                 .workspaces()?
@@ -452,33 +562,8 @@ impl Sessions {
                 wt.display()
             )));
         }
-        fs::create_dir_all(wt.parent().unwrap())?;
-        add_worktree(&repo, branch, &wt)?;
-        let result = (|| {
-            copy_included_files(&repo, &wt, &settings)?;
-            let response =
-                self.start_workspace(&name, &wt, &request.agent, request.parent_session_id)?;
-            run_setup(
-                &repo,
-                &wt,
-                &settings,
-                response["window_id"].as_str().unwrap(),
-            )?;
-            Ok(response)
-        })();
-        if result.is_err()
-            && !self
-                .registry
-                .workspaces()?
-                .iter()
-                .any(|workspace| workspace.id == name)
-        {
-            let _ = git(
-                &repo,
-                &["worktree", "remove", "--force", wt.to_str().unwrap()],
-            );
-        }
-        result
+        reserved.insert(name.to_owned());
+        Ok(Reservation(name.to_owned()))
     }
 
     fn add_workspace(&mut self, request: AddWorkspace) -> Result<Value> {
