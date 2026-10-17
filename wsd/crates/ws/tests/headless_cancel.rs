@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
     path::PathBuf,
-    process::Command,
+    process::{Child, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -13,6 +13,8 @@ use ws_core::{ids::Ulid, log::SessionLog};
 
 #[allow(dead_code)]
 mod common;
+
+struct Client(Child);
 
 struct Sandbox {
     daemon: common::Daemon,
@@ -64,6 +66,103 @@ fn stop_waits_for_a_grandchild_after_the_group_leader_exits() {
     assert!(!alive.status.success());
 }
 
+#[test]
+fn run_waits_for_success_with_the_headless_io_arguments() {
+    let sandbox = Sandbox::new();
+    fs::create_dir(sandbox.home.path().join("work")).unwrap();
+    fs::write(sandbox.home.path().join("input"), "input bytes").unwrap();
+    let parent = sandbox.create("exit 0");
+    let mut client = Client(
+        sandbox
+            .command()
+            .args([
+                "session",
+                "run",
+                "--headless",
+                "--parent",
+                &parent,
+                "--cwd",
+                "work",
+                "--env",
+                "VALUE=first",
+                "--env",
+                "VALUE=last",
+                "--stdin",
+                "input",
+                "--stdout",
+                "output",
+                "--stderr",
+                "error",
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf '%s\\n' \"$VALUE\"; cat; printf failure >&2",
+            ])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(client.wait().code(), Some(0));
+    assert_eq!(
+        fs::read_to_string(sandbox.home.path().join("output")).unwrap(),
+        "last\ninput bytes"
+    );
+    assert_eq!(
+        fs::read_to_string(sandbox.home.path().join("error")).unwrap(),
+        "failure"
+    );
+}
+
+#[test]
+fn run_returns_a_nonzero_child_exit_code() {
+    let sandbox = Sandbox::new();
+    let mut client = sandbox.run("printf '%s' \"$WS_SESSION_ID\" > ready; exit 7");
+    assert_eq!(client.wait().code(), Some(7));
+    let id = sandbox.wait_file("ready");
+    sandbox.assert_exit(&id, 7);
+}
+
+#[test]
+fn sigterm_to_run_stops_its_child_and_waits_for_exit() {
+    cancel_run("-TERM", false);
+}
+
+#[test]
+fn sigint_to_run_stops_its_child_and_waits_for_exit() {
+    cancel_run("-INT", false);
+}
+
+#[test]
+fn sighup_to_run_kills_an_uncooperative_child_and_waits_for_exit() {
+    cancel_run("-HUP", true);
+}
+
+fn cancel_run(signal: &str, ignore: bool) {
+    let sandbox = Sandbox::new();
+    let trap = if ignore {
+        "printf term > term"
+    } else {
+        "exit 23"
+    };
+    let mut client = sandbox.run(&format!(
+        "trap '{trap}' TERM; printf '%s' \"$WS_SESSION_ID\" > ready; while :; do sleep 1; done"
+    ));
+    let id = sandbox.wait_file("ready");
+    assert!(
+        Command::new("/bin/kill")
+            .args([signal, &client.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let code = if ignore { 137 } else { 23 };
+    assert_eq!(client.wait().code(), Some(code));
+    if ignore {
+        assert_eq!(sandbox.wait_file("term"), "term");
+    }
+    sandbox.assert_exit(&id, code);
+}
+
 impl Sandbox {
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
@@ -83,6 +182,26 @@ impl Sandbox {
             .env_remove("WS_SESSION_ID")
             .env_remove("WS_SESSION");
         command
+    }
+
+    fn run(&self, script: &str) -> Client {
+        Client(
+            self.command()
+                .args(["session", "run", "--", "/bin/sh", "-c", script])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    fn assert_exit(&self, id: &str, code: i32) {
+        let exit = self
+            .entries(id)
+            .into_iter()
+            .find(|entry| entry.event_type == "exit")
+            .expect("The exit event must exist before the client exits.");
+        assert_eq!(exit.body["code"], code);
+        self.assert_group_gone(id);
     }
 
     fn create(&self, script: &str) -> String {
@@ -183,5 +302,25 @@ impl Drop for Sandbox {
                 }
             }
         }
+    }
+}
+
+impl Client {
+    fn wait(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "The client did not exit.");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }

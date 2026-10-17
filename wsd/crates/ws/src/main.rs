@@ -187,7 +187,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .await?
         }
         Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
-        Command::Session { command } => cmd::session::run(&socket_path()?, command).await?,
+        Command::Session { command } => return cmd::session::run(&socket_path()?, command).await,
         Command::Init => init::run()?,
         Command::Daemon => {
             let socket = socket_path()?;
