@@ -1,5 +1,8 @@
+use std::collections::VecDeque;
+
 use super::*;
 use crate::{ids::Ulid, log::SessionLog};
+use proptest::prelude::*;
 use serde_json::json;
 
 #[test]
@@ -421,9 +424,6 @@ fn rebuild_removes_rows_that_have_no_source_log() {
     assert_eq!(registry.next_alias().unwrap(), 50);
 }
 
-use proptest::prelude::*;
-use std::collections::VecDeque;
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
@@ -532,5 +532,70 @@ fn workspace_mutations_use_the_creator_log_so_replay_order_cannot_change_the_res
             Err(Error::InvalidEvent(_))
         ));
         assert_eq!(registry.workspaces().unwrap(), expected);
+    }
+}
+
+#[test]
+fn removed_workspace_ids_keep_their_log_owner() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    registry
+        .apply(
+            &log.append(0, "workspace.created", json!({"workspace_id": "project"}))
+                .unwrap(),
+        )
+        .unwrap();
+    registry
+        .apply(
+            &log.append(0, "workspace.removed", json!({"workspace_id": "project"}))
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(registry.workspaces().unwrap().is_empty());
+    let foreign = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    let entry = foreign
+        .append(0, "workspace.created", json!({"workspace_id": "project"}))
+        .unwrap();
+    assert!(matches!(
+        registry.apply(&entry),
+        Err(Error::InvalidEvent(_))
+    ));
+    assert!(registry.workspaces().unwrap().is_empty());
+    let update = log
+        .append(
+            0,
+            "workspace.updated",
+            json!({"workspace_id": "project", "pinned": true}),
+        )
+        .unwrap();
+    assert!(matches!(
+        registry.apply(&update),
+        Err(Error::InvalidEvent(_))
+    ));
+}
+
+#[test]
+fn rejects_malformed_session_fields_without_consuming_an_alias() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 10).unwrap();
+    for body in [
+        json!({}),
+        json!({"alias": 0}),
+        json!({"alias": -1}),
+        json!({"alias": 1.5}),
+        json!({"alias": "10"}),
+        json!({"alias": 10, "name": []}),
+        json!({"alias": 10, "name": ""}),
+        json!({"alias": 10, "workspace_id": 42}),
+    ] {
+        let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        let entry = log.append(0, "session.created", body.clone()).unwrap();
+        assert!(
+            matches!(registry.apply(&entry), Err(Error::InvalidEvent(_))),
+            "{body}"
+        );
+        assert!(registry.sessions().unwrap().is_empty());
+        assert_eq!(registry.next_alias().unwrap(), 10);
     }
 }

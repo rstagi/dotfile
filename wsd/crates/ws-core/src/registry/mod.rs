@@ -1,8 +1,24 @@
 //! Rebuildable SQLite projections of session logs.
+//!
+//! Event bodies use these fields:
+//! - `session.created`: positive integer `alias`, optional `name` and `workspace_id`.
+//!   The caller obtains the alias from [`Registry::next_alias`] before the log append.
+//! - `session.renamed`: `name`. Lifecycle events use `session.<state>`.
+//!   The lifecycle service validates transitions. This module projects the recorded state.
+//! - `workspace.created|updated|removed`: `workspace_id`. Other fields form workspace data.
+//!   Updates merge top-level fields. All mutations use the creator session's log.
+//!   Removed workspace ids retain that log owner.
+//! - `edge.added`: `target` (ULID), `kind` (`depends_on`, `block_on`, or `parent`).
+//!   The event id identifies the edge. `edge.removed` contains `edge_id`.
+//! - `message.sent`: `recipient` (ULID). The event id identifies the message.
+//!   `message.delivered|read` contains `message_id` in the recipient's log.
+//!
+//! Apply entries in sequence within each session. Independent logs can arrive in any order.
+//! Unknown event types advance the projection cursor without changing the query tables.
 
 use std::{fmt, fs, io, path::Path, time::Duration};
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -10,6 +26,10 @@ use crate::{
     ids::{DeviceId, EventId, SessionId},
     log::{LogEntry, SessionLog},
 };
+
+mod projection;
+
+use projection::apply_entry;
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -28,6 +48,7 @@ pub struct Session {
     pub device_id: DeviceId,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// The original `session.created` body. Current values appear in the fields above.
     pub body: Value,
 }
 
@@ -61,6 +82,7 @@ pub struct Message {
 #[derive(Debug, Default, PartialEq)]
 pub struct RebuildReport {
     pub events: usize,
+    /// Each pair contains the session id and the one-based incomplete line number.
     pub truncated_logs: Vec<(SessionId, usize)>,
 }
 
@@ -214,6 +236,49 @@ impl Registry {
         Err(Error::NotFound(input.into()))
     }
 
+    pub fn sessions(&self) -> Result<Vec<Session>> {
+        let mut statement = self.connection.prepare(
+            "SELECT s.id, a.alias, s.name, s.state, s.workspace_id, s.device_id, s.created_at_ms, s.updated_at_ms, s.body
+             FROM sessions s JOIN aliases a ON a.session_id = s.id ORDER BY a.alias")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get::<_, String>(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (
+                id,
+                alias,
+                name,
+                state,
+                workspace_id,
+                device_id,
+                created_at_ms,
+                updated_at_ms,
+                body,
+            ) = row?;
+            Ok(Session {
+                id: parse_id(&id)?,
+                alias,
+                name,
+                state,
+                workspace_id,
+                device_id: parse_id(&device_id)?,
+                created_at_ms,
+                updated_at_ms,
+                body: serde_json::from_str(&body)?,
+            })
+        })
+        .collect()
+    }
     pub fn messages(&self) -> Result<Vec<Message>> {
         let mut statement = self.connection.prepare("SELECT id, sender, recipient, body, sent_at_ms, delivered_at_ms, read_at_ms FROM messages ORDER BY id")?;
         let rows = statement.query_map([], |row| {
@@ -269,9 +334,9 @@ impl Registry {
     }
 
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT id, owner_session_id, body FROM workspaces ORDER BY id")?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, owner_session_id, body FROM workspaces WHERE removed = 0 ORDER BY id",
+        )?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -284,50 +349,6 @@ impl Registry {
             Ok(Workspace {
                 id,
                 owner_session_id: parse_id(&owner)?,
-                body: serde_json::from_str(&body)?,
-            })
-        })
-        .collect()
-    }
-
-    pub fn sessions(&self) -> Result<Vec<Session>> {
-        let mut statement = self.connection.prepare(
-            "SELECT s.id, a.alias, s.name, s.state, s.workspace_id, s.device_id, s.created_at_ms, s.updated_at_ms, s.body
-             FROM sessions s JOIN aliases a ON a.session_id = s.id ORDER BY a.alias")?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get::<_, String>(5)?,
-                row.get(6)?,
-                row.get(7)?,
-                row.get::<_, String>(8)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (
-                id,
-                alias,
-                name,
-                state,
-                workspace_id,
-                device_id,
-                created_at_ms,
-                updated_at_ms,
-                body,
-            ) = row?;
-            Ok(Session {
-                id: parse_id(&id)?,
-                alias,
-                name,
-                state,
-                workspace_id,
-                device_id: parse_id(&device_id)?,
-                created_at_ms,
-                updated_at_ms,
                 body: serde_json::from_str(&body)?,
             })
         })
@@ -350,235 +371,6 @@ fn select_session(
         [id] => Ok(Some(parse_id(id)?)),
         _ => Err(Error::Ambiguous(input.into())),
     }
-}
-
-fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<()> {
-    let serialized = serde_json::to_string(entry)?;
-    let previous: Option<String> = connection
-        .query_row(
-            "SELECT entry FROM applied_events WHERE event_id = ?1",
-            [entry.event_id.to_string()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(previous) = previous {
-        if previous != serialized {
-            return Err(Error::InvalidEvent(
-                "The event id has different content.".into(),
-            ));
-        }
-        return Ok(());
-    }
-    let previous_seq: i64 = connection.query_row(
-        "SELECT COALESCE(MAX(seq), 0) FROM applied_events WHERE session_id = ?1",
-        [entry.session_id.to_string()],
-        |row| row.get(0),
-    )?;
-    if sql_number(entry.seq)? != previous_seq + 1 {
-        return Err(Error::InvalidEvent(
-            "The event sequence is not consecutive.".into(),
-        ));
-    }
-    if entry.event_type == "session.created" {
-        let alias = entry
-            .body
-            .get("alias")
-            .and_then(Value::as_i64)
-            .filter(|alias| *alias > 0)
-            .ok_or_else(|| {
-                Error::InvalidEvent(
-                    "The session.created event requires a positive integer alias.".into(),
-                )
-            })?;
-        connection.execute(
-            "INSERT INTO sessions (id, name, state, workspace_id, device_id, created_at_ms, updated_at_ms, body)
-             VALUES (?1, ?2, 'created', ?3, ?4, ?5, ?5, ?6)",
-            params![entry.session_id.to_string(), entry.body.get("name").and_then(Value::as_str),
-                entry.body.get("workspace_id").and_then(Value::as_str), entry.device_id.to_string(), sql_number(entry.ts_ms)?, entry.body.to_string()])?;
-        connection.execute(
-            "INSERT INTO aliases (alias, session_id) VALUES (?1, ?2)",
-            params![alias, entry.session_id.to_string()],
-        )?;
-    }
-    match entry.event_type.as_str() {
-        "message.sent" => {
-            let recipient = parse_id(required_str(entry, "recipient")?)?;
-            check_recipient(connection, entry.event_id, recipient)?;
-            connection.execute(
-                "INSERT INTO messages (id, sender, recipient, body, sent_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(id) DO UPDATE SET sender = excluded.sender, body = excluded.body, sent_at_ms = excluded.sent_at_ms",
-                params![entry.event_id.to_string(), entry.session_id.to_string(), recipient.to_string(), entry.body.to_string(), sql_number(entry.ts_ms)?])?;
-        }
-        "message.delivered" | "message.read" => {
-            let id = parse_id(required_str(entry, "message_id")?)?;
-            check_recipient(connection, id, entry.session_id)?;
-            let column = if entry.event_type == "message.delivered" {
-                "delivered_at_ms"
-            } else {
-                "read_at_ms"
-            };
-            connection.execute(&format!(
-                "INSERT INTO messages (id, recipient, {column}) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET {column} = MIN(COALESCE({column}, excluded.{column}), excluded.{column})"),
-                params![id.to_string(), entry.session_id.to_string(), sql_number(entry.ts_ms)?])?;
-        }
-        "edge.added" => {
-            let target = parse_id(required_str(entry, "target")?)?;
-            let kind = required_str(entry, "kind")?;
-            if !["depends_on", "block_on", "parent"].contains(&kind) {
-                return Err(Error::InvalidEvent(format!("Invalid edge kind: {kind}.")));
-            }
-            connection.execute(
-                "INSERT INTO edges (id, source, target, kind, body) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    entry.event_id.to_string(),
-                    entry.session_id.to_string(),
-                    target.to_string(),
-                    kind,
-                    entry.body.to_string()
-                ],
-            )?;
-        }
-        "edge.removed" => {
-            let id = parse_id(required_str(entry, "edge_id")?)?;
-            connection.execute(
-                "DELETE FROM edges WHERE id = ?1 AND source = ?2",
-                params![id.to_string(), entry.session_id.to_string()],
-            )?;
-        }
-        "workspace.created" => {
-            let id = required_str(entry, "workspace_id")?;
-            connection.execute(
-                "INSERT INTO workspaces (id, owner_session_id, body) VALUES (?1, ?2, ?3)",
-                params![id, entry.session_id.to_string(), entry.body.to_string()],
-            )?;
-        }
-        "workspace.updated" => {
-            let id = required_str(entry, "workspace_id")?;
-            check_workspace_owner(connection, id, entry.session_id)?;
-            let stored: Option<String> = connection
-                .query_row("SELECT body FROM workspaces WHERE id = ?1", [id], |row| {
-                    row.get(0)
-                })
-                .optional()?;
-            let Some(stored) = stored else {
-                return Err(Error::InvalidEvent(format!(
-                    "Workspace {id} does not exist."
-                )));
-            };
-            let mut body: Value = serde_json::from_str(&stored)?;
-            body.as_object_mut()
-                .unwrap()
-                .extend(entry.body.as_object().unwrap().clone());
-            connection.execute(
-                "UPDATE workspaces SET body = ?1 WHERE id = ?2",
-                params![body.to_string(), id],
-            )?;
-        }
-        "workspace.removed" => {
-            let id = required_str(entry, "workspace_id")?;
-            check_workspace_owner(connection, id, entry.session_id)?;
-            connection.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
-        }
-        "session.renamed" => {
-            let name = required_str(entry, "name")?;
-            let changed = connection.execute(
-                "UPDATE sessions SET name = ?1, updated_at_ms = ?2 WHERE id = ?3",
-                params![name, sql_number(entry.ts_ms)?, entry.session_id.to_string()],
-            )?;
-            require_session(changed, entry)?;
-        }
-        "session.running" | "session.blocked" | "session.finished" | "session.failed"
-        | "session.reopened" => {
-            let state = entry.event_type.strip_prefix("session.").unwrap();
-            let changed = connection.execute(
-                "UPDATE sessions SET state = ?1, device_id = ?2, updated_at_ms = ?3 WHERE id = ?4",
-                params![
-                    state,
-                    entry.device_id.to_string(),
-                    sql_number(entry.ts_ms)?,
-                    entry.session_id.to_string()
-                ],
-            )?;
-            require_session(changed, entry)?;
-        }
-        _ => {}
-    }
-    connection.execute(
-        "INSERT INTO applied_events (event_id, session_id, seq, entry) VALUES (?1, ?2, ?3, ?4)",
-        params![
-            entry.event_id.to_string(),
-            entry.session_id.to_string(),
-            sql_number(entry.seq)?,
-            serialized
-        ],
-    )?;
-    Ok(())
-}
-
-fn check_workspace_owner(connection: &Connection, id: &str, session: SessionId) -> Result<()> {
-    let owner: Option<String> = connection
-        .query_row(
-            "SELECT owner_session_id FROM workspaces WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    match owner {
-        Some(owner) if owner == session.to_string() => Ok(()),
-        Some(owner) => Err(Error::InvalidEvent(format!(
-            "Workspace {id} belongs to session {owner}."
-        ))),
-        None => Err(Error::InvalidEvent(format!(
-            "Workspace {id} does not exist."
-        ))),
-    }
-}
-
-fn check_recipient(connection: &Connection, id: EventId, recipient: SessionId) -> Result<()> {
-    let stored: Option<String> = connection
-        .query_row(
-            "SELECT recipient FROM messages WHERE id = ?1",
-            [id.to_string()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if stored.is_some_and(|stored| stored != recipient.to_string()) {
-        return Err(Error::InvalidEvent(format!(
-            "The recipient does not match message {id}."
-        )));
-    }
-    Ok(())
-}
-
-fn required_str<'a>(entry: &'a LogEntry, field: &str) -> Result<&'a str> {
-    entry
-        .body
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            Error::InvalidEvent(format!(
-                "The {} event requires {field} as a nonempty string.",
-                entry.event_type
-            ))
-        })
-}
-
-fn require_session(changed: usize, entry: &LogEntry) -> Result<()> {
-    if changed == 0 {
-        return Err(Error::InvalidEvent(format!(
-            "Session {} does not exist.",
-            entry.session_id
-        )));
-    }
-    Ok(())
-}
-
-fn sql_number(value: u64) -> Result<i64> {
-    value
-        .try_into()
-        .map_err(|_| Error::InvalidEvent("The integer exceeds the SQLite range.".into()))
 }
 
 fn parse_id(value: &str) -> Result<SessionId> {
