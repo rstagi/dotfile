@@ -1,4 +1,7 @@
+pub mod add;
+pub mod list;
 pub mod name;
+pub mod new;
 pub mod sessions;
 pub mod show;
 pub mod whoami;
@@ -18,5 +21,13 @@ pub fn status(session: &Session) -> &str {
         "finished" => "done",
         "failed" => "closed",
         _ => "active",
+    }
+}
+
+async fn caller(socket: &std::path::Path) -> crate::Result<Option<ws_core::ids::SessionId>> {
+    if whoami::identity().is_some() {
+        Ok(Some(whoami::current(socket).await?.id))
+    } else {
+        Ok(None)
     }
 }

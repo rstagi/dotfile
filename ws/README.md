@@ -80,7 +80,7 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 
 `ws/ws.sh` is the entry point (env/config, command dispatch); it sources `ws/lib/`: `core.sh` (tmux wrappers, locks, window tagging), `workspace.sh` (worktree + session create/rm/list/merge), `tabs.sh` (agent tabs, launch/resume, per-agent commands), `hooks.sh` (`ws hook` ingest, hook config writers), `notify.sh` (notification adapters, notifier build), `picker.sh` (picker, key bindings), `bus.sh` (registry, send/inbox/delivery) and `triggers.sh` (done/on triggers). `ws/tests/` holds the suite (`zsh ws/tests/run.sh`): the `<area>.test.sh` files run in 4 groups (core, send, triggers, misc) in parallel, each in its own process where `helpers.sh` builds a sandbox (private HOME, tmux server, fake agents, real-HOME guard) and the group's areas are sourced in order, because workspaces and session ids carry across them. `zsh ws/tests/run.sh <group>` runs one group; `WS_TESTS_JOBS=1` runs every area sequentially in one sandbox.
 
-## Rust session commands
+## Rust commands
 
 The Rust CLI in `wsd/` supports `whoami`, `name <label>`, `sessions [id|name]` and `show <id|name>`.
 Each command accepts `--json`. Human output uses `#N` aliases. Targets accept aliases, names, ULIDs and unique ULID prefixes.
@@ -92,6 +92,21 @@ JSON returns the registry session fields, including the ULID `id`, numeric `alia
 `sessions --json` returns an array. The other commands return one session object. `show --json` adds the `output` path.
 Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
 The TSV state column reports the live tmux state or `stopped` when no tagged window exists.
+
+The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,
+`add [repo/branch|path] [--agent <agent>] [--detach]`, and `list|ls [--json]`.
+`new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.
+Without `--repo`, `new` offers the current repository, the read-only Loop mappings, and repositories under `$WS_REPO_ROOTS` through fzf.
+Without `--branch`, it reads the branch from the terminal.
+It copies ignored files that match `.conductor/settings.toml` `file_include_globs`, with `.env*` as the default.
+It runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux window.
+`add` registers an existing worktree or adds a tab to a registered workspace.
+When the target is absent, it uses the current directory or tmux workspace.
+`list` selects workspaces from the registry. A worktree directory without a registry entry does not appear.
+Workspace tabs start a shell. The agent launch contract comes in a later port phase.
+
+Run `zsh wsd/crates/ws/tests/golden/workspace-capture.zsh` to regenerate the zsh workspace fixtures.
+Run `cd wsd && cargo test -p ws --test workspaces` to check the Rust workspace commands.
 
 Run `zsh wsd/crates/ws/tests/golden/capture.zsh` from the repository root to regenerate the zsh fixtures.
 The capture uses `ws/tests/helpers.sh` with a private HOME and tmux server.

@@ -251,7 +251,7 @@ impl Tmux {
         }
     }
 
-    fn execute(&self, args: &[&str]) -> io::Result<String> {
+    pub fn execute(&self, args: &[&str]) -> io::Result<String> {
         output_text(self.command().args(args).output()?)
     }
 

@@ -16,7 +16,7 @@ use ws_core::{ids::SessionId, registry::Session};
 
 use crate::sessions::{CreateSession, Error, Sessions};
 
-type Store = Arc<Mutex<Sessions>>;
+pub(crate) type Store = Arc<Mutex<Sessions>>;
 
 #[derive(Serialize)]
 struct SessionResponse {
@@ -25,12 +25,12 @@ struct SessionResponse {
     parent_session_id: Option<SessionId>,
 }
 
-struct ApiError(Error);
+pub(crate) struct ApiError(pub(crate) Error);
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CallContext {
-    parent_session_id: Option<SessionId>,
+pub(crate) struct CallContext {
+    pub(crate) parent_session_id: Option<SessionId>,
 }
 
 #[derive(Deserialize)]
@@ -43,12 +43,14 @@ struct RenameSession {
 /// Builds routes over one serialized lifecycle service. File operations use blocking workers.
 /// POST bodies and GET query parameters accept the optional caller field `parent_session_id`.
 pub fn router(sessions: Sessions) -> Router {
+    let store = Arc::new(Mutex::new(sessions));
     Router::new()
+        .merge(crate::workspaces::router())
         .route("/v1/sessions", get(list).post(create))
         .route("/v1/sessions/{id}", get(fetch))
         .route("/v1/sessions/{id}/stop", axum::routing::post(stop))
         .route("/v1/sessions/{id}/name", axum::routing::post(rename))
-        .with_state(Arc::new(Mutex::new(sessions)))
+        .with_state(store)
 }
 
 async fn create(
@@ -121,7 +123,7 @@ async fn stop(
     ))
 }
 
-async fn call<T: Send + 'static>(
+pub(crate) async fn call<T: Send + 'static>(
     store: Store,
     operation: impl FnOnce(&mut Sessions) -> crate::sessions::Result<T> + Send + 'static,
 ) -> Result<T, ApiError> {

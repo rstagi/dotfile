@@ -21,7 +21,7 @@ use ws_core::{
 pub struct Sessions {
     state: PathBuf,
     device_id: DeviceId,
-    registry: Registry,
+    pub(crate) registry: Registry,
     needs_rebuild: bool,
     _writer_lock: File,
 }
@@ -177,7 +177,7 @@ impl Sessions {
     }
 
     /// Anonymous calls have no caller log. Attributed calls append even when the target is invalid.
-    fn record_call(
+    pub(crate) fn record_call(
         &mut self,
         parent_session_id: Option<SessionId>,
         operation: &str,
@@ -199,7 +199,12 @@ impl Sessions {
         Ok(())
     }
 
-    fn append(&mut self, id: SessionId, event_type: &str, body: serde_json::Value) -> Result<()> {
+    pub(crate) fn append(
+        &mut self,
+        id: SessionId,
+        event_type: &str,
+        body: serde_json::Value,
+    ) -> Result<()> {
         let log = SessionLog::new(&self.state, id, self.device_id);
         let epoch = log.read()?.entries.last().map_or(0, |entry| entry.epoch);
         self.needs_rebuild = true;

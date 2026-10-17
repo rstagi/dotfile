@@ -24,6 +24,31 @@ enum Command {
     Daemon,
     /// Show the daemon version and uptime.
     Ping,
+    /// Create a workspace and its first session.
+    New {
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long, default_value = "claude")]
+        agent: String,
+        #[arg(long)]
+        detach: bool,
+    },
+    /// Add a session to a workspace.
+    Add {
+        target: Option<String>,
+        #[arg(long, default_value = "claude")]
+        agent: String,
+        #[arg(long)]
+        detach: bool,
+    },
+    /// List the registered workspaces.
+    #[command(alias = "ls")]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the current session identity.
     Whoami {
         #[arg(long)]
@@ -90,6 +115,18 @@ async fn run(cli: Cli) -> Result<()> {
                 response.version, response.uptime_secs
             );
         }
+        Command::New {
+            repo,
+            branch,
+            agent,
+            detach,
+        } => cmd::new::run(&socket_path()?, repo, branch, agent, detach).await?,
+        Command::Add {
+            target,
+            agent,
+            detach,
+        } => cmd::add::run(&socket_path()?, target, agent, detach).await?,
+        Command::List { json } => cmd::list::run(&socket_path()?, json).await?,
         Command::Whoami { json } => cmd::whoami::run(&socket_path()?, json).await?,
         Command::Sessions { json, target } => {
             cmd::sessions::run(&socket_path()?, &target, json).await?

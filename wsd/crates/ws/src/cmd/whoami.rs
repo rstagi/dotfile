@@ -33,7 +33,7 @@ pub async fn current(socket: &Path) -> Result<Session> {
     })
 }
 
-fn identity() -> Option<String> {
+pub(super) fn identity() -> Option<String> {
     for key in ["WS_SESSION_ID", "WS_SESSION"] {
         if let Ok(value) = env::var(key)
             && !value.is_empty()

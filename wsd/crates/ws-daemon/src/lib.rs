@@ -20,6 +20,7 @@ use ws_core::{HookRecord, PingResponse, VERSION};
 pub mod api;
 pub mod sessions;
 pub mod tmux;
+pub mod workspaces;
 
 const HOOK_CAPACITY: usize = 256;
 type ApiError = (StatusCode, &'static str);
