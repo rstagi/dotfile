@@ -58,6 +58,7 @@ pub(crate) fn router_with_store(store: Store) -> Router {
     Router::new()
         .merge(crate::bus::router())
         .merge(crate::edges::router())
+        .merge(crate::wait::router())
         .merge(crate::hooks::router())
         .merge(crate::notify::router())
         .merge(crate::workspaces::router())
@@ -187,6 +188,9 @@ impl IntoResponse for ApiError {
             Error::Registry(registry::Error::Ambiguous(_)) => {
                 (StatusCode::CONFLICT, "ambiguous_session")
             }
+            Error::ShuttingDown => (StatusCode::SERVICE_UNAVAILABLE, "daemon_stopping"),
+            Error::WaitTimeout => (StatusCode::REQUEST_TIMEOUT, "wait_timeout"),
+            Error::PendingMessages => (StatusCode::CONFLICT, "pending_messages"),
             Error::DependencyCycle(_) => (StatusCode::CONFLICT, "dependency_cycle"),
             Error::NameTaken(_) => (StatusCode::CONFLICT, "name_taken"),
             Error::Transition(_) => (StatusCode::CONFLICT, "invalid_transition"),
@@ -213,6 +217,184 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::sessions::Sessions;
+
+    #[tokio::test]
+    async fn session_end_hooks_append_exit_and_wake_waiters() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, session) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let id = session["id"].as_str().unwrap();
+        let callback = json!({"callback_id":ws_core::ids::Ulid::new(), "session_id":id, "observed_at_us":1, "state":"exit", "pane":null, "tmux_socket":null, "tmux_path":null, "payload":{"hook_event_name":"SessionEnd", "exit_code":7}});
+        for code in [json!("invalid"), json!(2147483648_i64)] {
+            let mut invalid = callback.clone();
+            invalid["callback_id"] = json!(ws_core::ids::Ulid::new());
+            invalid["payload"]["exit_code"] = code;
+            let (status, _) = request(&app, "POST", "/v1/hooks/ingest", invalid).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        for _ in 0..2 {
+            let (status, _) = request(&app, "POST", "/v1/hooks/ingest", callback.clone()).await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        let (status, result) = request(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/wait"),
+            json!({"for":"exit", "timeout":0}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["event"]["body"]["code"], 7);
+        let entries = ws_core::log::SessionLog::new(
+            sandbox.path(),
+            id.parse().unwrap(),
+            ws_core::ids::Ulid::nil(),
+        )
+        .read()
+        .unwrap()
+        .entries;
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.event_type == "exit")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn waits_observe_done_state_and_events_without_blocking_mutations() {
+        use std::{future::Future, task::Poll, time::Duration};
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, session) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let id = session["id"].as_str().unwrap();
+        let endpoint = format!("/v1/sessions/{id}/wait");
+        let mut waits = Vec::new();
+        for condition in ["done", "state=finished", "event=done"] {
+            waits.push(Box::pin(request(
+                &app,
+                "POST",
+                &endpoint,
+                json!({"for":condition}),
+            )));
+        }
+        for wait in &mut waits {
+            std::future::poll_fn(|cx| {
+                assert!(wait.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+        }
+        let (status, _) = request(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/done"),
+            json!({"output":"ready"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        for wait in waits {
+            let (status, result) = tokio::time::timeout(Duration::from_secs(30), wait)
+                .await
+                .unwrap();
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(result["session"]["id"], id);
+        }
+        let (status, _) =
+            request(&app, "POST", &endpoint, json!({"for":"exit", "timeout":0})).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        let (status, _) = request(&app, "POST", &endpoint, json!({"for":"state=invalid"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/v1/sessions/missing/wait",
+            json!({"for":"done"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        drop(app);
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (status, result) =
+            request(&app, "POST", &endpoint, json!({"for":"done", "timeout":0})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["event"]["type"], "done");
+    }
+
+    #[tokio::test]
+    async fn done_publishes_output_and_refuses_unread_messages() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, session) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let id = session["id"].as_str().unwrap();
+        let endpoint = format!("/v1/sessions/{id}/done");
+        let (status, completed) = request(
+            &app,
+            "POST",
+            &endpoint,
+            json!({"output":"alpha \"quoted\" $literal\nbeta"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(completed["state"], "finished");
+        let output = sandbox.path().join("sessions").join(id).join("output.md");
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "alpha \"quoted\" $literal\nbeta"
+        );
+        let (status, _) = request(&app, "POST", &endpoint, json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "");
+        let (_, sender) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        // A new session needs no agent restart to accept queued work.
+        let (_, target) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let target_id = target["id"].as_str().unwrap();
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/v1/messages",
+            json!({"target":target_id, "body":"pending", "parent_session_id":sender["id"]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, error) = request(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{target_id}/done"),
+            json!({"output":"must not publish"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(error["error"]["code"], "pending_messages");
+        assert!(
+            !sandbox
+                .path()
+                .join("sessions")
+                .join(target_id)
+                .join("output.md")
+                .exists()
+        );
+        let entries = ws_core::log::SessionLog::new(
+            sandbox.path(),
+            id.parse().unwrap(),
+            ws_core::ids::Ulid::nil(),
+        )
+        .read()
+        .unwrap()
+        .entries;
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.event_type == "done")
+                .count(),
+            2
+        );
+        drop(app);
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, rebuilt) = request(&app, "GET", &format!("/v1/sessions/{id}"), Value::Null).await;
+        assert_eq!(rebuilt["state"], "finished");
+    }
 
     #[tokio::test]
     async fn dependency_edges_reject_a_named_cycle_and_survive_index_rebuild() {

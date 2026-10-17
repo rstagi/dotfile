@@ -27,6 +27,7 @@ pub async fn run(socket: &Path, state: &str) {
         .or_else(|| payload["hookEventName"].as_str())
         .unwrap_or("");
     let state = match (state, event) {
+        (_, "SessionEnd" | "session_end") => "exit",
         ("idle", "Stop" | "stop") => "stop",
         ("idle", "StopCancelled" | "stop_cancelled" | "Interrupt") => "cancel",
         _ => state,
@@ -68,6 +69,7 @@ async fn deliver(
         "waiting",
         "subagent-start",
         "subagent-stop",
+        "exit",
     ]
     .contains(&state)
     {

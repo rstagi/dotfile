@@ -277,6 +277,13 @@ impl Sessions {
         if !self.owns_agent_window(&session, &request.pane)? {
             return Ok(());
         }
+        if !self.process_exited(session.id)? {
+            self.append(
+                session.id,
+                "exit",
+                json!({"code":request.code, "pane":request.pane}),
+            )?;
+        }
         if request.code == 0 {
             slots::remove(&self.agent_directory(&session)?, &request.id)?;
             if !["finished", "failed"].contains(&session.state.as_str()) {

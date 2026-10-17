@@ -36,6 +36,13 @@ pub(super) fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<(
             "The event sequence is not consecutive.".into(),
         ));
     }
+    if entry.event_type == "done" {
+        let changed = connection.execute(
+            "UPDATE sessions SET state = 'finished', updated_at_ms = ?1 WHERE id = ?2",
+            params![sql_number(entry.ts_ms)?, entry.session_id.to_string()],
+        )?;
+        require_session(changed, entry)?;
+    }
     match entry.event_type.split_once('.') {
         Some(("session", _)) => project_session(connection, entry)?,
         Some(("workspace", _)) => project_workspace(connection, entry)?,

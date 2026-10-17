@@ -26,6 +26,7 @@ pub mod phases;
 pub mod sessions;
 pub mod supervisor;
 pub mod tmux;
+pub mod wait;
 pub mod workspaces;
 
 #[derive(Clone)]
@@ -79,13 +80,19 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .with_state(AppState {
             started: Instant::now(),
         })
-        .merge(api::router_with_store(store));
+        .merge(api::router_with_store(store.clone()));
+    let shutdown_store = store.clone();
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
                 _ = terminate.recv() => {}
                 _ = interrupt.recv() => {}
             }
+            let _ = api::call(shutdown_store, |sessions| {
+                sessions.shutdown.send_replace(true);
+                Ok(())
+            })
+            .await;
         })
         .await;
     delivery.shutdown().await;

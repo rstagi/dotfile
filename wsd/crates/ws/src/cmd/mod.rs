@@ -6,6 +6,7 @@ pub mod build_notifier;
 pub mod claude;
 pub mod codex;
 pub mod dismiss;
+pub mod done;
 pub mod grok;
 pub mod hook;
 pub mod inbox;
@@ -20,6 +21,7 @@ pub mod send;
 pub mod session;
 pub mod sessions;
 pub mod show;
+pub mod wait;
 pub mod whoami;
 
 use ws_core::registry::Session;

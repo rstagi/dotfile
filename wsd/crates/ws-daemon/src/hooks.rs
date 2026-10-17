@@ -190,6 +190,14 @@ async fn ingest_callback(
                 .map(|window| &window.id)
         );
         event["stop_reply"] = stop_reply(&decision);
+        if event_type == "exit" {
+            event["code"] = callback
+                .payload
+                .get("exit_code")
+                .or_else(|| callback.payload.get("code"))
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
         api::call(store.clone(), move |sessions| {
             sessions.append_callback(&callback, event_type, event)
         })
@@ -480,7 +488,11 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         state: String::new(),
         event_type: event_type(callback, decision),
     };
-    let mut event = callback.state.as_str();
+    let mut event = if matches!(event_name(callback), "SessionEnd" | "session_end") {
+        "exit"
+    } else {
+        callback.state.as_str()
+    };
     if event == "idle" {
         match event_name(callback) {
             "Stop" | "stop" => event = "stop",
@@ -526,7 +538,7 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         result.changes.push((sub, None));
     }
     if callback.observed_at_us <= window.seq {
-        if event == "stop" {
+        if event == "stop" || event == "exit" {
             result.event_type = None;
         }
         return result;
@@ -545,6 +557,7 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         result.event_type = Some("turn.cancelled");
     }
     let state = match event {
+        "exit" => "closed",
         "stop" | "idle" => {
             if event == "stop" && matches!(decision, StopDecision::Block(_)) {
                 result
@@ -652,10 +665,28 @@ fn validate(callback: &Callback) -> crate::sessions::Result<()> {
         "waiting",
         "subagent-start",
         "subagent-stop",
+        "exit",
     ]
     .contains(&callback.state.as_str())
     {
         return Err(Error::InvalidRequest("Use a supported hook state."));
+    }
+    if event_type(callback, &StopDecision::Accept) == Some("exit") {
+        let code = callback
+            .payload
+            .get("exit_code")
+            .or_else(|| callback.payload.get("code"));
+        if code.is_some_and(|code| {
+            !code.is_null()
+                && code
+                    .as_i64()
+                    .and_then(|code| i32::try_from(code).ok())
+                    .is_none()
+        }) {
+            return Err(Error::InvalidRequest(
+                "The exit code must be a 32-bit integer or null.",
+            ));
+        }
     }
     if callback
         .pane
@@ -682,6 +713,7 @@ fn event_name(callback: &Callback) -> &str {
 
 fn event_type(callback: &Callback, decision: &StopDecision) -> Option<&'static str> {
     Some(match event_name(callback) {
+        "SessionEnd" | "session_end" => "exit",
         "UserPromptSubmit" | "user_prompt_submit" => "turn.started",
         "PreToolUse" | "pre_tool_use" => "tool.pre",
         "PostToolUse" | "post_tool_use" => "tool.post",
@@ -705,6 +737,7 @@ fn event_type(callback: &Callback, decision: &StopDecision) -> Option<&'static s
                     "turn.ended"
                 }
             }
+            "exit" => "exit",
             "waiting" => "agent.waiting",
             "subagent-start" => "subagent.started",
             "subagent-stop" => "subagent.stopped",
