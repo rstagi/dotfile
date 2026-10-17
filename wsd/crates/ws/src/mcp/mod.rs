@@ -16,7 +16,7 @@ use crate::{Result, client};
 
 mod params;
 
-use params::{Create, Dependency, Empty, Send, Spawn, Stream, Tail, Target, Wait};
+use params::{Create, Dependency, Empty, Loop, Send, Spawn, Stream, Tail, Target, Wait};
 use rmcp::schemars::{self, JsonSchema};
 
 #[derive(Clone)]
@@ -39,6 +39,17 @@ impl Control {
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {
         match name {
+            "loop_start" | "loop_stop" => {
+                let mut request: Loop = serde_json::from_value(arguments)?;
+                request.loop_dir = std::env::current_dir()?.join(request.loop_dir);
+                let operation = name.strip_prefix("loop_").unwrap();
+                self.request(
+                    Method::POST,
+                    &format!("/v1/loops/{operation}"),
+                    Some(serde_json::to_value(request)?),
+                )
+                .await
+            }
             "session_list" => {
                 let _: Empty = serde_json::from_value(arguments)?;
                 self.request(Method::GET, "/v1/sessions", None).await
@@ -228,6 +239,14 @@ impl ServerHandler for Control {
 
 fn tools() -> Vec<Tool> {
     vec![
+        tool::<Loop>(
+            "loop_start",
+            "Start a prepared Loop orchestrator as a headless session. The loop directory must contain state.json.",
+        ),
+        tool::<Loop>(
+            "loop_stop",
+            "Pause a loop through its control/pause file. The orchestrator and phase runners observe this file.",
+        ),
         tool::<Empty>("session_list", "List the registered sessions."),
         tool::<Target>("session_get", "Read one registered session."),
         tool::<Target>(

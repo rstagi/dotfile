@@ -18,6 +18,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show the current session's Loop dashboard.
+    Top {
+        #[arg(long)]
+        once: bool,
+        #[arg(long)]
+        worktrees: bool,
+        #[arg(long)]
+        graph: bool,
+    },
+    /// Start or pause a local Loop orchestrator.
+    Loop {
+        #[command(subcommand)]
+        command: cmd::loops::Command,
+    },
     /// Start a local phase.
     Phase {
         #[command(subcommand)]
@@ -232,6 +246,12 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Top {
+            once,
+            worktrees,
+            graph,
+        } => return cmd::top::run(&socket_path()?, once, worktrees, graph).await,
+        Command::Loop { command } => cmd::loops::run(&socket_path()?, command).await?,
         Command::Phase { command } => return cmd::phase::run(&socket_path()?, command).await,
         Command::Mcp => cmd::mcp::run(&socket_path()?).await?,
         Command::Migrate { dry_run, .. } => cmd::migrate::run(dry_run)?,
