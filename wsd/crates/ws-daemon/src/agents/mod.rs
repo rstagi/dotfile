@@ -10,6 +10,10 @@ use std::{
 };
 use ws_core::ids::Ulid;
 
+pub mod launch;
+pub(crate) mod slots;
+pub(crate) use launch::router;
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub enum Mode {
     Interactive,
@@ -102,10 +106,11 @@ pub fn prepare(
             }
         }
         "codex" => {
+            if matches!(mode, Mode::Headless) {
+                prepared.argv.push("exec".into());
+            }
             if let Some(resume) = resume.filter(|s| !s.is_empty()) {
                 prepared.argv.extend(["resume".into(), resume.into()]);
-            } else if matches!(mode, Mode::Headless) {
-                prepared.argv.push("exec".into());
             }
             prepared.argv.extend([
                 "--dangerously-bypass-approvals-and-sandbox".into(),
@@ -139,6 +144,22 @@ pub fn prepare(
             prepared
                 .argv
                 .extend(["--always-approve".into(), "--rules".into(), preamble]);
+            if matches!(mode, Mode::Headless)
+                && let Some(prompt) = &session.prompt
+            {
+                let path = session
+                    .ws_home
+                    .join("launches")
+                    .join(Ulid::new().to_string())
+                    .join("prompt");
+                prepared
+                    .argv
+                    .extend(["--prompt-file".into(), path.to_string_lossy().into_owned()]);
+                prepared.files.push(GeneratedFile {
+                    path,
+                    contents: prompt.as_bytes().to_vec(),
+                });
+            }
             if let Some(resume) = resume.filter(|s| !s.is_empty()) {
                 prepared.argv.extend(["--resume".into(), resume.into()]);
             }
@@ -152,6 +173,7 @@ pub fn prepare(
     }
     prepared.argv.extend(session.arguments.iter().cloned());
     if agent != "claude"
+        && !(agent == "grok" && matches!(mode, Mode::Headless))
         && let Some(prompt) = &session.prompt
     {
         prepared.argv.extend(["--".into(), prompt.clone()]);

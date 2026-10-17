@@ -103,7 +103,15 @@ It runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux wind
 `add` registers an existing worktree or adds a tab to a registered workspace.
 When the target is absent, it uses the current directory or tmux workspace.
 `list` selects workspaces from the registry. A worktree directory without a registry entry does not appear.
-Workspace tabs start a shell. The agent launch contract comes in a later port phase.
+Workspace tabs start the selected agent through one preparation contract in `ws-daemon`.
+`ws claude`, `ws codex` and `ws grok` run tracked agents in the current workspace tab and forward their arguments.
+Each agent receives the same ULID in `WS_SESSION` and `WS_SESSION_ID`.
+Claude receives a private settings file for each launch. Codex receives per-launch `-c hooks.*` flags and `--dangerously-bypass-hook-trust`.
+Grok receives `$HOME/.grok/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.
+Slots remain in `<git-dir>/ws-sessions`. A clean exit removes the slot. Other exits retain it for `ws open` and resume.
+The hook configuration covers every agent event. Hook ingestion beyond `stop` remains a later port phase.
+Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.
+The tests use fake agents and private tmux servers. Preparation tests also compare the existing zsh builders.
 
 Run `zsh wsd/crates/ws/tests/golden/workspace-capture.zsh` to regenerate the zsh workspace fixtures.
 Run `cd wsd && cargo test -p ws --test workspaces` to check the Rust workspace commands.

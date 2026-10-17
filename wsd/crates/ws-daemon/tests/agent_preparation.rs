@@ -9,7 +9,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         ws_home: home.path().join(".ws"),
-        ws_bin: PathBuf::from("/test/ws-rs"),
+        ws_bin: std::env::current_exe().unwrap(),
         spawned: false,
         prompt: None,
         arguments: vec![],
@@ -23,7 +23,6 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
             source "$REPO/ws/lib/tabs.sh"
             source "$REPO/ws/lib/hooks.sh"
             hooks_migrate() { :; }
-            write_grok_hooks() { :; }
             WS_SESSIONS="$HOME/sessions"
             agent_command "$AGENT" resume-123 "" "$SID"
         "#;
@@ -35,6 +34,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
             )
             .env("HOME", home.path())
             .env("WS_HOME", &context.ws_home)
+            .env("GROK_HOOKS", context.home.join(".grok/hooks/ws.json"))
             .env("WS_BIN", &context.ws_bin)
             .env("AGENT", agent)
             .env("SID", &context.id)
@@ -55,6 +55,15 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
             .unwrap();
             let generated: Value = serde_json::from_slice(&prepared.files[0].contents).unwrap();
             assert_eq!(generated, legacy);
+        }
+        if agent == "grok" {
+            let legacy: Value = serde_json::from_slice(
+                &std::fs::read(context.home.join(".grok/hooks/ws.json")).unwrap(),
+            )
+            .unwrap();
+            let generated: Value = serde_json::from_slice(&prepared.files[0].contents).unwrap();
+            assert_eq!(generated, legacy);
+            std::fs::remove_file(context.home.join(".grok/hooks/ws.json")).unwrap();
         }
         assert_eq!(actual, expected, "{agent}");
         assert_eq!(
@@ -111,4 +120,39 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
     let grok = prepare("grok", Mode::Interactive, &session, None).unwrap();
     grok.write_files().unwrap();
     assert!(session.home.join(".grok/hooks/ws.json").is_file());
+}
+
+#[test]
+fn headless_resume_uses_each_agents_noninteractive_mode() {
+    let home = tempfile::tempdir().unwrap();
+    let context = AgentSession {
+        id: "01K7Q0K5M00000000000000001".into(),
+        home: home.path().into(),
+        ws_home: home.path().join(".ws"),
+        ws_bin: PathBuf::from("/test/ws-rs"),
+        spawned: false,
+        prompt: Some("Return exactly READY\nThen stop.".into()),
+        arguments: vec![],
+    };
+    let codex = prepare("codex", Mode::Headless, &context, Some("resume-123")).unwrap();
+    assert_eq!(&codex.argv[..3], ["exec", "resume", "resume-123"]);
+    let grok = prepare("grok", Mode::Headless, &context, Some("resume-123")).unwrap();
+    let index = grok.argv.iter().position(|v| v == "--prompt-file").unwrap();
+    let prompt = grok
+        .files
+        .iter()
+        .find(|file| file.path.to_str() == Some(&grok.argv[index + 1]))
+        .unwrap();
+    assert_eq!(prompt.contents, b"Return exactly READY\nThen stop.");
+    assert!(
+        !grok
+            .argv
+            .iter()
+            .any(|arg| arg == context.prompt.as_ref().unwrap())
+    );
+    assert!(
+        grok.argv
+            .windows(2)
+            .any(|pair| pair == ["--resume", "resume-123"])
+    );
 }

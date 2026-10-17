@@ -236,6 +236,7 @@ impl Sessions {
                 agent,
                 request.parent_session_id,
                 Some(&session),
+                None,
             );
         }
         let retained = workspace.body["windows"]
@@ -256,6 +257,7 @@ impl Sessions {
                 agent,
                 request.parent_session_id,
                 Some(&session),
+                None,
             )?;
         }
         let workspace = self.workspace(&workspace.id)?;
@@ -481,16 +483,17 @@ impl Sessions {
         agent: &str,
         parent_session_id: Option<SessionId>,
     ) -> Result<Value> {
-        self.start_workspace_session(name, wt, agent, parent_session_id, None)
+        self.start_workspace_session(name, wt, agent, parent_session_id, None, None)
     }
 
-    fn start_workspace_session(
+    pub(crate) fn start_workspace_session(
         &mut self,
         name: &str,
         wt: &Path,
         agent: &str,
         parent_session_id: Option<SessionId>,
         resume: Option<&Session>,
+        run: Option<&crate::agents::launch::RunAgent>,
     ) -> Result<Value> {
         let existing = self
             .registry
@@ -503,22 +506,19 @@ impl Sessions {
             .and_then(|workspace| workspace.body["windows"].as_array())
             .cloned()
             .unwrap_or_default();
-        let next_slot = windows
-            .iter()
-            .filter_map(|window| window["slot"].as_u64())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let slot = resume
+        let preferred_slot = resume
             .and_then(|session| {
                 windows
                     .iter()
                     .find(|window| window["session_id"].as_str() == Some(&session.id.to_string()))
             })
-            .and_then(|window| window["slot"].as_u64())
-            .unwrap_or(next_slot);
+            .and_then(|window| window["slot"].as_u64());
         let tmux = Tmux::from_env();
-        let session_name = name.replace(['.', ':'], "_");
+        let session_name = if let Some(run) = run {
+            tmux.execute(&["display-message", "-p", "-t", &run.pane, "#{session_name}"])?
+        } else {
+            name.replace(['.', ':'], "_")
+        };
         let live_session = if tmux
             .execute(&["has-session", "-t", &format!("={session_name}")])
             .is_ok()
@@ -527,14 +527,16 @@ impl Sessions {
         } else {
             None
         };
-        if live_session
-            .as_ref()
-            .is_some_and(|path| Path::new(path).canonicalize().ok() != wt.canonicalize().ok())
+        if run.is_none()
+            && live_session
+                .as_ref()
+                .is_some_and(|path| Path::new(path).canonicalize().ok() != wt.canonicalize().ok())
         {
             return Err(failure(format!(
                 "The tmux session {session_name} belongs to another workspace."
             )));
         }
+        let slot = crate::agents::slots::register(wt, preferred_slot, agent, &id.to_string())?;
         if let Some(session) = resume {
             if ["finished", "failed"].contains(&session.state.as_str()) {
                 self.transition(
@@ -545,7 +547,7 @@ impl Sessions {
             }
         } else {
             let alias = self.registry.next_alias()?;
-            self.append(id, "session.created", json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id}))?;
+            self.append(id, "session.created", json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)}))?;
         }
         let tab = if slot > 1 {
             format!("{agent}#{slot}")
@@ -590,12 +592,32 @@ impl Sessions {
             "WS_STATE",
             "WS_SOCK",
             "WS_TMUX_SOCKET",
+            "PATH",
+            "GROK_HOME",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
         ] {
             if let Ok(value) = env::var(key) {
                 args.extend(["-e".into(), format!("{key}={value}")]);
             }
         }
-        let window = match tmux.execute(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
+        let ws_bin = env::current_exe()?;
+        args.extend(["-e".into(), format!("WS_BIN={}", ws_bin.display())]);
+        args.extend([
+            "/bin/sh".into(),
+            "-c".into(),
+            "exec \"$@\"".into(),
+            "sh".into(),
+            ws_bin.to_string_lossy().into_owned(),
+            "_agent".into(),
+            id.to_string(),
+        ]);
+        let launched = if let Some(run) = run {
+            tmux.window_for_pane(&run.pane)
+        } else {
+            tmux.execute(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        };
+        let window = match launched {
             Ok(window) => window,
             Err(error) => {
                 self.transition(
@@ -607,22 +629,40 @@ impl Sessions {
             }
         };
         let result = (|| {
+            let pane = match run {
+                Some(run) => run.pane.clone(),
+                None => tmux.execute(&["display-message", "-p", "-t", &window, "#{pane_id}"])?,
+            };
+            tmux.execute(&[
+                "rename-window",
+                "-t",
+                &window,
+                &if slot > 1 {
+                    format!("{agent}#{slot}")
+                } else {
+                    agent.into()
+                },
+            ])?;
+            tmux.set_window_option(&window, "automatic-rename", "off")?;
             for (key, value) in [
                 ("@ws_path", wt.to_str().unwrap()),
                 ("@ws_slot", &slot.to_string()),
                 ("@ws_agent", agent),
                 ("@ws_state", "idle"),
                 ("@ws_session", &id.to_string()),
+                ("@ws_pane", &pane),
             ] {
                 tmux.set_window_option(&window, key, value)?;
             }
-            tmux.execute(&[
-                "set-option",
-                "-t",
-                &session_name,
-                "@ws_path",
-                wt.to_str().unwrap(),
-            ])?;
+            if run.is_none() {
+                tmux.execute(&[
+                    "set-option",
+                    "-t",
+                    &session_name,
+                    "@ws_path",
+                    wt.to_str().unwrap(),
+                ])?;
+            }
             windows.retain(|window| window["session_id"].as_str() != Some(&id.to_string()));
             windows
                 .push(json!({"window_id": window, "session_id": id, "agent": agent, "slot": slot}));
@@ -640,10 +680,23 @@ impl Sessions {
                     parent_session_id,
                 )?;
             }
-            Ok(json!({"window_id": window}))
+            Ok(json!({"window_id": window, "session_id": id}))
         })();
         if result.is_err() {
-            let _ = tmux.execute(&["kill-window", "-t", &window]);
+            if run.is_none() {
+                let _ = tmux.execute(&["kill-window", "-t", &window]);
+            } else {
+                for key in [
+                    "@ws_slot",
+                    "@ws_agent",
+                    "@ws_state",
+                    "@ws_session",
+                    "@ws_pane",
+                    "automatic-rename",
+                ] {
+                    let _ = tmux.unset_window_option(&window, key);
+                }
+            }
             let _ = self.transition(
                 &id.to_string(),
                 ws_core::state::SessionState::Failed,

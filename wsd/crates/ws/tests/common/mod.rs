@@ -62,7 +62,25 @@ impl Drop for Daemon {
 }
 
 pub fn ws(home: &Path, socket: &Path) -> Command {
+    use std::os::unix::fs::PermissionsExt;
+    let agents = home.join("fake-agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    for agent in ["claude", "codex", "grok"] {
+        let path = agents.join(agent);
+        if !path.exists() {
+            std::fs::write(&path, "#!/bin/sh\nexec /bin/cat\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
     let mut command = Command::new(env!("CARGO_BIN_EXE_ws"));
+    command
+        .env(
+            "PATH",
+            format!("{}:{}", agents.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("GROK_HOME", home.join(".grok"))
+        .env("CODEX_HOME", home.join(".codex"))
+        .env("CLAUDE_CONFIG_DIR", home.join(".claude"));
     command
         .env("HOME", home)
         .env("WS_HOME", home.join(".ws"))

@@ -18,6 +18,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run Claude in the current workspace tab.
+    Claude {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<String>,
+    },
+    /// Run Codex in the current workspace tab.
+    Codex {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<String>,
+    },
+    /// Run Grok in the current workspace tab.
+    Grok {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<String>,
+    },
+    #[command(name = "_agent", hide = true)]
+    Agent { id: String },
     /// Merge the current workspace PR.
     Merge,
     #[command(name = "_merge_popup", hide = true)]
@@ -132,6 +149,12 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Claude { arguments } => {
+            return cmd::claude::run(&socket_path()?, "claude", arguments).await;
+        }
+        Command::Codex { arguments } => return cmd::codex::run(&socket_path()?, arguments).await,
+        Command::Grok { arguments } => return cmd::grok::run(&socket_path()?, arguments).await,
+        Command::Agent { id } => return cmd::claude::execute(&socket_path()?, &id, false).await,
         Command::Merge => cmd::merge::run(&socket_path()?).await?,
         Command::MergePopup => return cmd::merge::popup(&socket_path()?).await,
         Command::Open { target, detach } => {

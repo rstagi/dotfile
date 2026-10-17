@@ -46,6 +46,7 @@ pub fn router(sessions: Sessions) -> Router {
     let store = Arc::new(Mutex::new(sessions));
     Router::new()
         .merge(crate::workspaces::router())
+        .merge(crate::agents::router())
         .route("/v1/sessions", get(list).post(create))
         .route("/v1/sessions/{id}", get(fetch))
         .route("/v1/sessions/{id}/stop", axum::routing::post(stop))
