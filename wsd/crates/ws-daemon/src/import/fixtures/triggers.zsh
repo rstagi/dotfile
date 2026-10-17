@@ -22,3 +22,6 @@ if [[ "${2:-}" == done ]]; then
   ws_bus_event 1 done '{"output":"/legacy/output.md"}'
   with_lock "$WS_TRIGGERS/registry" ws_bus_register_trigger '["1"]' done send 2 'result {id}: {output}' 1 '' claude >/dev/null
 fi
+if [[ -n "${3:-}" ]]; then
+  with_lock "$WS_TRIGGERS/registry" ws_bus_register_trigger '["1"]' exit spawn '' 'continue {id}: {output}' '' "$3" codex >/dev/null
+fi

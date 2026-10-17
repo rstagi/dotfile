@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ws_core::ids::Ulid;
 
-use super::{LegacySession, append_once, locks::Locks};
+use super::{LegacySession, LegacyWorkspace, append_once, locks::Locks};
 use crate::{sessions::Sessions, triggers::Trigger};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -40,6 +40,7 @@ pub(super) fn snapshot(
 ) -> io::Result<Vec<LegacyTrigger>> {
     let directory = source.join("triggers");
     if !directory.try_exists()? {
+        locks.acquire(&directory.join("registry.lock"), true)?;
         return Ok(Vec::new());
     }
     locks.acquire(&directory.join("registry.lock"), dry_run)?;
@@ -64,12 +65,19 @@ pub(super) fn snapshot(
         if record["status"] != "pending" {
             continue;
         }
-        let record: Record = serde_json::from_value(record)?;
+        let mut record: Record = serde_json::from_value(record)?;
         if !["done", "exit"].contains(&record.event.as_str())
             || !["send", "spawn"].contains(&record.action.as_str())
             || record.sources.is_empty()
         {
             return Err(io::Error::other("The pending zsh trigger is invalid."));
+        }
+        if record.action == "spawn" {
+            record.path = Path::new(&record.path)
+                .canonicalize()?
+                .to_str()
+                .ok_or_else(|| io::Error::other("The spawn workspace path is not UTF-8."))?
+                .to_owned();
         }
         triggers.push(LegacyTrigger {
             legacy_id: path.file_stem().unwrap().to_string_lossy().into_owned(),
@@ -84,6 +92,7 @@ pub(super) fn import(
     sessions: &mut Sessions,
     legacy_sessions: &[LegacySession],
     triggers: &[LegacyTrigger],
+    workspaces: &[LegacyWorkspace],
 ) -> io::Result<()> {
     for legacy in triggers {
         let record = &legacy.record;
@@ -136,6 +145,21 @@ pub(super) fn import(
                 edges.push(json!({"id":Ulid::new(), "source":dependent, "target":session.id, "kind":"block_on", "trigger_id":legacy.id, "owner":owner}));
             }
         }
+        let workspace = if record.action == "spawn" {
+            let path = Path::new(&record.path);
+            Some(
+                workspaces
+                    .iter()
+                    .find(|workspace| workspace.path == path)
+                    .ok_or_else(|| {
+                        io::Error::other("The spawn trigger requires a listed branch workspace.")
+                    })?
+                    .id
+                    .clone(),
+            )
+        } else {
+            None
+        };
         let trigger = Trigger {
             id: legacy.id,
             owner,
@@ -145,7 +169,7 @@ pub(super) fn import(
             target,
             template: record.template.clone(),
             agent: (record.action == "spawn").then(|| record.agent.clone()),
-            workspace: None,
+            workspace,
             spawned_session,
             event_offsets: offsets,
             edges,

@@ -19,10 +19,12 @@ use crate::sessions::Sessions;
 mod locks;
 mod snapshot;
 mod triggers;
+mod workspaces;
 
 use snapshot::snapshot;
 pub use snapshot::{EventMapping, LegacySession};
 pub use triggers::LegacyTrigger;
+pub use workspaces::LegacyWorkspace;
 
 const JOURNAL: &str = "import-zsh.json";
 
@@ -34,11 +36,28 @@ pub struct Plan {
     #[serde(default)]
     pub triggers: Vec<LegacyTrigger>,
     #[serde(default)]
+    pub workspaces: Vec<LegacyWorkspace>,
+    #[serde(default)]
     pub complete: bool,
 }
 
 /// Imports one durable snapshot. A completed journal makes subsequent calls read-only.
 pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> {
+    let root = std::env::var_os("WS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".ws/worktrees")
+        });
+    from_zsh_with_root(source, state, &root, dry_run)
+}
+
+/// Imports a snapshot with an explicit workspace root.
+pub fn from_zsh_with_root(
+    source: &Path,
+    state: &Path,
+    root: &Path,
+    dry_run: bool,
+) -> io::Result<Plan> {
     let source = source.canonicalize()?;
     let stored = load(state)?;
     if let Some(plan) = &stored {
@@ -53,7 +72,7 @@ pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> 
     }
     let mut plan = match stored {
         Some(plan) => plan,
-        None => snapshot(&source, dry_run)?,
+        None => snapshot(&source, root, dry_run)?,
     };
     if dry_run {
         return Ok(plan);
@@ -89,7 +108,13 @@ pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> 
     for session in &mut plan.sessions {
         import_session(&mut sessions, session)?;
     }
-    triggers::import(&mut sessions, &plan.sessions, &plan.triggers)?;
+    workspaces::import(&mut sessions, &plan.workspaces)?;
+    triggers::import(
+        &mut sessions,
+        &plan.sessions,
+        &plan.triggers,
+        &plan.workspaces,
+    )?;
     plan.complete = true;
     save(state, &plan)?;
     Ok(plan)
