@@ -20,6 +20,7 @@ pub mod new;
 pub mod on;
 pub mod open;
 pub mod phase;
+pub mod pick;
 pub mod picker;
 pub mod pin;
 pub mod rm;

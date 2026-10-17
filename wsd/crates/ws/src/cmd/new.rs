@@ -57,6 +57,7 @@ pub async fn run(
 }
 
 pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
+    super::pick::configure_bindings()?;
     if !detach {
         let tmux = ws_daemon::tmux::Tmux::from_env();
         let session = tmux.execute(&["display-message", "-p", "-t", window, "#{session_id}"])?;

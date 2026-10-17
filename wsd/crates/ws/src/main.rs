@@ -18,6 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Select a workspace or tab with fzf.
+    Pick,
+    #[command(name = "_pick_focus", hide = true)]
+    PickFocus { window: String },
     #[command(name = "_rows", hide = true)]
     PickerRows,
     #[command(name = "_preview", hide = true)]
@@ -259,11 +263,11 @@ fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     let Some(command) = cli.command else {
-        return cmd::attach::run(&socket_path()?)
-            .await
-            .map(|()| ExitCode::SUCCESS);
+        return cmd::attach::run(&socket_path()?).await;
     };
     match command {
+        Command::Pick => return cmd::pick::run(),
+        Command::PickFocus { window } => cmd::pick::focus(&window)?,
         Command::PickerPreview { workspace, window } => {
             return cmd::picker::preview(&socket_path()?, &workspace, &window).await;
         }
