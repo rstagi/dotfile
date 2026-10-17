@@ -158,6 +158,7 @@ impl Sessions {
         let context = AgentSession {
             id: session.id.to_string(),
             home,
+            grok_home: env::var_os("GROK_HOME").map(PathBuf::from),
             ws_home,
             ws_bin: env::current_exe()?,
             spawned: false,

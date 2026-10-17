@@ -107,7 +107,7 @@ Workspace tabs start the selected agent through one preparation contract in `ws-
 `ws claude`, `ws codex` and `ws grok` run tracked agents in the current workspace tab and forward their arguments.
 Each agent receives the same ULID in `WS_SESSION` and `WS_SESSION_ID`.
 Claude receives a private settings file for each launch. Codex receives per-launch `-c hooks.*` flags and `--dangerously-bypass-hook-trust`.
-Grok receives `$HOME/.grok/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.
+Grok receives `${GROK_HOME:-$HOME/.grok}/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.
 Slots remain in `<git-dir>/ws-sessions`. A clean exit removes the slot. Other exits retain it for `ws open` and resume.
 The hook configuration covers every agent event. Hook ingestion beyond `stop` remains a later port phase.
 Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.

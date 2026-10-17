@@ -23,6 +23,7 @@ pub enum Mode {
 pub struct AgentSession {
     pub id: String,
     pub home: PathBuf,
+    pub grok_home: Option<PathBuf>,
     pub ws_home: PathBuf,
     pub ws_bin: PathBuf,
     pub spawned: bool,
@@ -138,7 +139,11 @@ pub fn prepare(
         }
         "grok" => {
             prepared.files.push(GeneratedFile {
-                path: session.home.join(".grok/hooks/ws.json"),
+                path: session
+                    .grok_home
+                    .clone()
+                    .unwrap_or_else(|| session.home.join(".grok"))
+                    .join("hooks/ws.json"),
                 contents: serde_json::to_vec(&hooks("grok", &hook))?,
             });
             prepared

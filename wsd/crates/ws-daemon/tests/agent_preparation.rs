@@ -8,6 +8,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
     let context = AgentSession {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
+        grok_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: std::env::current_exe().unwrap(),
         spawned: false,
@@ -84,6 +85,7 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
     let session = AgentSession {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
+        grok_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: PathBuf::from("/test/ws rs'bin"),
         spawned: false,
@@ -128,6 +130,7 @@ fn headless_resume_uses_each_agents_noninteractive_mode() {
     let context = AgentSession {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
+        grok_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: PathBuf::from("/test/ws-rs"),
         spawned: false,
@@ -155,4 +158,23 @@ fn headless_resume_uses_each_agents_noninteractive_mode() {
             .windows(2)
             .any(|pair| pair == ["--resume", "resume-123"])
     );
+}
+
+#[test]
+fn grok_hooks_follow_the_configured_home_inside_the_sandbox() {
+    let home = tempfile::tempdir().unwrap();
+    let context = AgentSession {
+        id: "01K7Q0K5M00000000000000001".into(),
+        home: home.path().into(),
+        grok_home: Some(home.path().join("custom-grok")),
+        ws_home: home.path().join(".ws"),
+        ws_bin: PathBuf::from("/test/ws-rs"),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    let prepared = prepare("grok", Mode::Interactive, &context, None).unwrap();
+    prepared.write_files().unwrap();
+    assert!(home.path().join("custom-grok/hooks/ws.json").is_file());
+    assert!(!home.path().join(".grok/hooks/ws.json").exists());
 }
