@@ -23,6 +23,18 @@ use ws_core::{
     registry::{Session, Workspace},
 };
 
+pub(crate) struct LaunchContext<'a> {
+    pub resume: Option<&'a Session>,
+    pub run: Option<&'a crate::agents::launch::RunAgent>,
+    pub spawn: Option<SpawnOrigin<'a>>,
+}
+
+pub(crate) struct SpawnOrigin<'a> {
+    pub id: SessionId,
+    pub trigger_id: Ulid,
+    pub prompt: &'a str,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateWorkspace {
@@ -495,12 +507,37 @@ impl Sessions {
         resume: Option<&Session>,
         run: Option<&crate::agents::launch::RunAgent>,
     ) -> Result<Value> {
+        self.start_workspace_agent(
+            name,
+            wt,
+            agent,
+            parent_session_id,
+            LaunchContext {
+                resume,
+                run,
+                spawn: None,
+            },
+        )
+    }
+
+    pub(crate) fn start_workspace_agent(
+        &mut self,
+        name: &str,
+        wt: &Path,
+        agent: &str,
+        parent_session_id: Option<SessionId>,
+        context: LaunchContext<'_>,
+    ) -> Result<Value> {
+        let LaunchContext { resume, run, spawn } = context;
         let existing = self
             .registry
             .workspaces()?
             .into_iter()
             .find(|workspace| workspace.id == name);
-        let id = resume.map_or_else(Ulid::new, |session| session.id);
+        let id = spawn
+            .as_ref()
+            .map(|origin| origin.id)
+            .unwrap_or_else(|| resume.map_or_else(Ulid::new, |session| session.id));
         let mut windows = existing
             .as_ref()
             .and_then(|workspace| workspace.body["windows"].as_array())
@@ -547,7 +584,13 @@ impl Sessions {
             }
         } else {
             let alias = self.registry.next_alias()?;
-            self.append(id, "session.created", json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)}))?;
+            let mut body = json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)});
+            if let Some(origin) = &spawn {
+                body["spawned"] = json!(true);
+                body["trigger_id"] = json!(origin.trigger_id);
+                body["prompt"] = json!(origin.prompt);
+            }
+            self.append(id, "session.created", body)?;
         }
         let tab = if slot > 1 {
             format!("{agent}#{slot}")
@@ -621,6 +664,7 @@ impl Sessions {
         let window = match launched {
             Ok(window) => window,
             Err(error) => {
+                crate::agents::slots::remove(wt, &id.to_string())?;
                 self.transition(
                     &id.to_string(),
                     ws_core::state::SessionState::Failed,
@@ -684,6 +728,7 @@ impl Sessions {
             Ok(json!({"window_id": window, "session_id": id}))
         })();
         if result.is_err() {
+            let _ = crate::agents::slots::remove(wt, &id.to_string());
             if run.is_none() {
                 let _ = tmux.execute(&["kill-window", "-t", &window]);
             } else {

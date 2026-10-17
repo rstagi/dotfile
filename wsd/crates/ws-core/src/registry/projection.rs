@@ -179,6 +179,23 @@ fn project_workspace(connection: &Connection, entry: &LogEntry) -> Result<()> {
 
 fn project_edge(connection: &Connection, entry: &LogEntry) -> Result<()> {
     match entry.event_type.as_str() {
+        "edge.action_registered" => {
+            for edge in entry.body["edges"].as_array().ok_or_else(|| {
+                Error::InvalidEvent("The trigger requires dependency edges.".into())
+            })? {
+                let field = |name: &str| -> Result<String> {
+                    let value = edge[name].as_str().ok_or_else(|| {
+                        Error::InvalidEvent("The trigger edge requires an id.".into())
+                    })?;
+                    Ok(parse_id(value)?.to_string())
+                };
+                connection.execute("INSERT INTO edges (id, source, target, kind, body) VALUES (?1, ?2, ?3, 'block_on', ?4)",
+                    params![field("id")?, field("source")?, field("target")?, edge.to_string()])?;
+            }
+        }
+        "edge.action_removed" | "edge.action_fired" | "edge.action_failed" => {
+            remove_action_edges(connection, entry)?
+        }
         "edge.added" | "session.depends_on" | "session.block_on" => {
             let target = parse_id(required_str(entry, "target")?)?;
             let kind = match entry.event_type.as_str() {
@@ -212,9 +229,19 @@ fn project_edge(connection: &Connection, entry: &LogEntry) -> Result<()> {
     Ok(())
 }
 
+fn remove_action_edges(connection: &Connection, entry: &LogEntry) -> Result<()> {
+    let id = required_str(entry, "trigger_id")?;
+    connection.execute("DELETE FROM edges WHERE json_extract(body, '$.trigger_id') = ?1 AND json_extract(body, '$.owner') = ?2",
+        params![id, entry.session_id.to_string()])?;
+    Ok(())
+}
+
 fn project_message(connection: &Connection, entry: &LogEntry) -> Result<()> {
     match entry.event_type.as_str() {
         "message.sent" => {
+            if entry.body.get("trigger_id").is_some() {
+                remove_action_edges(connection, entry)?;
+            }
             let recipient = parse_id(required_str(
                 entry,
                 if entry.body.get("to_session").is_some() {

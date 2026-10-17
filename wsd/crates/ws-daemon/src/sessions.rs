@@ -20,6 +20,7 @@ use ws_core::{
 };
 
 pub struct Sessions {
+    pub(crate) triggers: std::collections::BTreeMap<Ulid, crate::triggers::Trigger>,
     pub(crate) state: PathBuf,
     pub(crate) device_id: DeviceId,
     pub(crate) registry: Registry,
@@ -74,7 +75,8 @@ impl Sessions {
         }
         let mut registry = Registry::open(&state.join("registry.sqlite"), alias_floor)?;
         registry.rebuild(state)?;
-        Ok(Self {
+        let mut sessions = Self {
+            triggers: Default::default(),
             state: state.into(),
             device_id: device.device_id,
             registry,
@@ -84,7 +86,9 @@ impl Sessions {
             changes: tokio::sync::watch::channel(()).0,
             shutdown: tokio::sync::watch::channel(false).0,
             _writer_lock: writer_lock,
-        })
+        };
+        sessions.restore_triggers()?;
+        Ok(sessions)
     }
 
     pub fn create(&mut self, request: CreateSession) -> Result<Session> {
@@ -199,6 +203,7 @@ impl Sessions {
         // A failed append or index update can leave a durable record. Recover before another call.
         if self.needs_rebuild {
             self.registry.rebuild(&self.state)?;
+            self.restore_triggers()?;
             self.needs_rebuild = false;
         }
         if let Some(parent) = parent_session_id {
@@ -235,7 +240,13 @@ impl Sessions {
         let entry = writer.append_current(event_type, body)?;
         self.registry.apply(&entry)?;
         self.needs_rebuild = false;
+        self.apply_trigger_entry(&entry);
         self.changes.send_replace(());
+        if ["done", "exit"].contains(&event_type)
+            && let Err(error) = self.evaluate_triggers()
+        {
+            eprintln!("Cannot evaluate triggers: {error}");
+        }
         Ok(entry)
     }
 

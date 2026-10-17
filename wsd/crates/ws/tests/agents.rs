@@ -22,6 +22,84 @@ struct Sandbox {
 }
 
 #[test]
+fn trigger_spawn_preserves_a_literal_prompt_and_closes_the_child_on_done() {
+    // Golden scenarios: ws/tests/triggers-actions.test.sh.
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feature",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    let (owner, _running) = sandbox.capture();
+    let owner_id = owner["id"].as_str().unwrap();
+    let response = common::request(&sandbox.socket, "POST", "/v1/sessions", "{}");
+    let source: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let source_id = source["id"].as_str().unwrap();
+    assert!(
+        common::request(
+            &sandbox.socket,
+            "POST",
+            &format!("/v1/sessions/{source_id}/done"),
+            r#"{"output":"literal {id} $value\n"}"#
+        )
+        .starts_with("HTTP/1.1 200")
+    );
+    for agent in ["claude", "codex", "grok"] {
+        let prompt =
+            "Follow \"quoted\" $literal\nsource {id}: {output}; $(touch never-execute-ws-prompt)";
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", owner_id)
+            .args(["on", source_id, "done", "--spawn", agent, prompt])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let tid = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+        let (child, _connection) = sandbox.capture();
+        let id = child["id"].as_str().unwrap();
+        assert_ne!(id, owner_id);
+        assert_eq!(child["agent"], agent);
+        let argv = child["argv"].as_array().unwrap();
+        let expected = format!(
+            "Follow \"quoted\" $literal\nsource {source_id}: literal {{id}} $value\n; $(touch never-execute-ws-prompt)"
+        );
+        assert!(
+            argv.iter().any(|argument| argument == &expected),
+            "{argv:?}"
+        );
+        let session = sandbox.json(&["show", id, "--json"]);
+        assert_eq!(session["body"]["spawned"], true);
+        assert_eq!(session["body"]["trigger_id"], tid);
+        assert_eq!(session["body"]["parent_session_id"], owner_id);
+        let window = sandbox.window(id);
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .arg("done")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            !sandbox
+                .tmux(&["list-windows", "-a", "-F", "#{window_id}"])
+                .lines()
+                .any(|line| line == window)
+        );
+        assert!(!fs::read_to_string(sandbox.slots()).unwrap().contains(id));
+    }
+    assert!(!sandbox.worktree().join("never-execute-ws-prompt").exists());
+}
+
+#[test]
 fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo();

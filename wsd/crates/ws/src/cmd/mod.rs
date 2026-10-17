@@ -14,6 +14,7 @@ pub mod list;
 pub mod merge;
 pub mod name;
 pub mod new;
+pub mod on;
 pub mod open;
 pub mod pin;
 pub mod rm;
@@ -21,6 +22,7 @@ pub mod send;
 pub mod session;
 pub mod sessions;
 pub mod show;
+pub mod triggers;
 pub mod wait;
 pub mod whoami;
 

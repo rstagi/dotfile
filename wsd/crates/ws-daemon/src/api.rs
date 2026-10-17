@@ -58,6 +58,7 @@ pub(crate) fn router_with_store(store: Store) -> Router {
     Router::new()
         .merge(crate::bus::router())
         .merge(crate::edges::router())
+        .merge(crate::triggers::router())
         .merge(crate::wait::router())
         .merge(crate::hooks::router())
         .merge(crate::notify::router())

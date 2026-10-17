@@ -107,6 +107,24 @@ It returns the session and the matching event, or a null event for a state condi
 Daemon shutdown releases pending waits with HTTP 503.
 `POST /v1/sessions/{id}/done` accepts `{"output":"completion text"}`. Both routes accept `parent_session_id` for caller audit.
 
+`ws on <id,id,...> done|exit --send-to <id|me> [--template <text>]` registers a one-shot action.
+`ws on <ids> done|exit --spawn <claude|codex|grok> [prompt]` starts a tracked child in the owner's workspace.
+The legacy forms `--send-to <id> <text>` and `--spawn <prompt> [--agent <agent>]` also work.
+Omitted text uses a completion message with `{id}` and `{output}`. Expansion preserves literal text and source order.
+Templates must contain text or `{id}` in addition to `{output}`.
+Done triggers accept earlier completion events. Exit triggers require a new exit after registration.
+All sources must satisfy the condition. Repeated events and daemon restarts do not repeat a completed action.
+The owner log stores `edge.action_registered` with the sources, offsets, dependency edges, and action.
+A terminal caller uses the local human session as the owner. A send records `message.sent` in that owner's log.
+A spawn records its claim before launch. Failed actions record `edge.action_failed` and do not retry.
+Trigger changes use the daemon's serialized store, without trigger lock files.
+`ws triggers [--json]` lists pending actions. Human output keeps the six-column TSV format.
+`ws on --rm <trigger-ULID>` removes a pending action and its projected edges.
+`ws done` closes a spawned child's tab after it publishes the output.
+The API uses `POST /v1/triggers`, `GET /v1/triggers`, and `POST /v1/triggers/{id}/remove`.
+Registration accepts `sources`, `event`, either `target` or `spawn`, optional `template`, and `parent_session_id`.
+A terminal spawn also supplies the registered `workspace`. Removal accepts the caller context.
+
 Dependency edges use `POST /v1/sessions/{id}/depends_on` or `/block_on` with `{"target":"<id|name>"}`.
 `GET /v1/edges` returns the projected graph. A cycle returns HTTP 409 and the cycle's session IDs.
 The source log records `session.depends_on` or `session.block_on`. The registry rebuild restores these edges.
