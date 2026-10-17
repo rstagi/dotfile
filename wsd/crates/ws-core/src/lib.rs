@@ -1,5 +1,9 @@
 //! Shared types for the WS daemon and CLI.
 
+pub mod device;
+pub mod ids;
+pub mod log;
+
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
