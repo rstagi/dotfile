@@ -66,6 +66,8 @@ async fn send(
     State(store): State<Store>,
     Json(request): Json<SendRequest>,
 ) -> std::result::Result<Json<Message>, ApiError> {
+    // Resume and window retirement must finish before hooks or paste workers can deliver.
+    let _guard = crate::hooks::INGEST_LOCK.lock().await;
     Ok(Json(
         api::call(store, move |sessions| {
             sessions.send_message(&request.target, request.parent_session_id, &request.body)

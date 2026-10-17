@@ -92,7 +92,21 @@ impl Sessions {
             .workspace_id
             .as_deref()
             .ok_or(Error::InvalidRequest("The agent session has no workspace."))?;
-        self.start_workspace_session(
+        let old_windows: Vec<_> = self
+            .registry
+            .workspaces()?
+            .into_iter()
+            .filter(|record| record.id == workspace)
+            .flat_map(|record| {
+                record.body["windows"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter(|window| window["session_id"] == session.id.to_string())
+            .filter_map(|window| window["window_id"].as_str().map(str::to_owned))
+            .collect();
+        let launched = self.start_workspace_session(
             workspace,
             &directory,
             session.body["agent"].as_str().unwrap_or("claude"),
@@ -100,6 +114,30 @@ impl Sessions {
             Some(session),
             None,
         )?;
+        let tmux = Tmux::from_env();
+        for window in old_windows {
+            if launched["window_id"] == window
+                || tmux
+                    .window_option(&window, "@ws_session")
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    != Some(&session.id.to_string())
+            {
+                continue;
+            }
+            // A finished agent can still own a live pane. Retire that launch generation.
+            for key in [
+                "@ws_session",
+                "@ws_pane",
+                "@ws_slot",
+                "@ws_agent",
+                "@ws_state",
+                "@ws_main",
+            ] {
+                let _ = tmux.unset_window_option(&window, key);
+            }
+        }
         Ok(())
     }
 

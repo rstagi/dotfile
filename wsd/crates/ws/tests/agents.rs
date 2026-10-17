@@ -22,6 +22,74 @@ struct Sandbox {
 }
 
 #[test]
+fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feature",
+                "--detach",
+            ])
+            .status
+            .success()
+    );
+    let (initial, _running) = sandbox.capture();
+    let id = initial["id"].as_str().unwrap();
+    let old_window = sandbox.window(id);
+    let pane = sandbox.tmux(&["display-message", "-p", "-t", &old_window, "#{pane_id}"]);
+    let stop = || {
+        common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &json!({
+                "session_id": id, "callback_id": ws_core::ids::Ulid::new(),
+                "observed_at_us": ws_daemon::hooks::receipt_time_us().unwrap(),
+                "state": "stop", "pane": pane, "tmux_socket": sandbox.server,
+                "payload": {"hook_event_name":"Stop", "session_id":"retained-conversation"}
+            })
+            .to_string(),
+        )
+    };
+    assert!(stop().starts_with("HTTP/1.1 201"));
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{id}/stop"),
+        "{}",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(
+        sandbox
+            .output(&["send", id, "only for the new window"])
+            .status
+            .code(),
+        Some(75)
+    );
+    let (resumed, _resumed) = sandbox.capture();
+    assert_eq!(resumed["id"], id);
+    let new_window = sandbox.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        resumed["pane"].as_str().unwrap(),
+        "#{window_id}",
+    ]);
+    assert_ne!(new_window, old_window);
+    let response = stop();
+    let reply: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert!(reply.get("decision").is_none(), "{reply}");
+    assert!(sandbox.events(id, "hook.delivery").is_empty());
+    assert_eq!(sandbox.window(id), new_window);
+    assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+}
+
+#[test]
 fn a_message_reopens_a_finished_agent_before_delivery() {
     for agent in ["claude", "codex"] {
         let sandbox = Sandbox::new();
@@ -475,7 +543,7 @@ impl Sandbox {
 import json, os, socket, subprocess, sys, tty
 s = socket.socket(socket.AF_UNIX)
 s.connect({:?})
-s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL')))+'\n').encode())
+s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE')))+'\n').encode())
 control = s.recv(1)
 if control == b'd':
     tty.setraw(0)

@@ -162,6 +162,7 @@ Pending batches survive daemon restart. The worker replaces the detached zsh ret
 A message to a finished local agent session appends `session.reopened` and starts a new tmux window before delivery.
 Claude uses `--resume <id>`. Codex uses `resume <id>`.
 Durable hook records retain the conversation ID after a clean exit removes its slot.
+A previous live window loses its session tags, so its hooks cannot consume the new messages.
 The Rust backend accepts `--force` before the target or after the message. The flag has no effect.
 If the agent cannot resume, the message stays queued. Sessions on other devices do not launch locally.
 
