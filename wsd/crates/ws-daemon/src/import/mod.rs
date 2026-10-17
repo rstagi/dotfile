@@ -42,14 +42,24 @@ pub struct Plan {
     pub complete: bool,
 }
 
+/// Opens the daemon state and completes its first legacy import before serving requests.
+pub fn open_for_daemon(state: &Path, home: &Path) -> io::Result<Sessions> {
+    let legacy_exists = home.join("sessions").is_dir();
+    let mut sessions = Sessions::open_with_home(state, 1, home).map_err(io::Error::other)?;
+    let journal = load(state)?;
+    let import = match journal {
+        Some(plan) => !plan.complete,
+        None => legacy_exists && !has_session_state(state)?,
+    };
+    if import {
+        incremental(&mut sessions, home, &workspace_root())?;
+    }
+    Ok(sessions)
+}
+
 /// Imports one durable snapshot. A completed journal makes subsequent calls read-only.
 pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> {
-    let root = std::env::var_os("WS_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".ws/worktrees")
-        });
-    from_zsh_with_root(source, state, &root, dry_run)
+    from_zsh_with_root(source, state, &workspace_root(), dry_run)
 }
 
 /// Imports a snapshot with an explicit workspace root.
@@ -192,6 +202,22 @@ pub fn incremental(sessions: &mut Sessions, source: &Path, root: &Path) -> io::R
 
 pub(crate) fn alias_floor(state: &Path) -> io::Result<i64> {
     Ok(load(state)?.map_or(1, |plan| plan.alias_floor))
+}
+
+fn workspace_root() -> PathBuf {
+    std::env::var_os("WS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".ws/worktrees")
+        })
+}
+
+fn has_session_state(state: &Path) -> io::Result<bool> {
+    match fs::read_dir(state.join("sessions")) {
+        Ok(mut entries) => Ok(entries.next().transpose()?.is_some()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn load(state: &Path) -> io::Result<Option<Plan>> {

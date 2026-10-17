@@ -1,20 +1,35 @@
 # ws — terminal workspaces
 
-Bare-minimum Conductor in tmux: `./install.sh ws`, then `ws`.
+Install with `./install.sh ws`, then run `ws` for the picker.
+The dispatcher selects the Rust CLI and local daemon by default.
+The [Rust command reference](#rust-commands) describes state, migration and automation.
 
-- Workspace = git worktree under `~/.ws/worktrees/<repo>/<branch>` + its own tmux session (`repo/branch`). Each agent session is a tab in it (`claude`, `claude#2`, `codex#3`, `grok#4`). Agents run with permission prompts off (Claude `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--always-approve`; resumed with `--resume <id>`).
-- `ws new [--agent codex|grok]` picks a repo (current repo, `~/.loop/repos.json`, then repos found under `$WS_REPO_ROOTS`, default `~/Dev ~/dotfile`; or type any path) + branch, copies `.env*`, runs setup in a `setup` tab (closes on success). Honors `.conductor/settings.toml` (`file_include_globs`, `[scripts] setup`), else an executable `.ws-setup`.
-- Picker: `ws` (attaches from a plain terminal) or `prefix+w` inside a ws session — one row per worktree, pinned first, then grouped by repo. enter open · ^n new · ^o new codex · ^r new grok · ^a add claude tab · ^t add codex tab · ^v add grok tab · ^s show/hide sessions · ^p pin · ^x rm. `prefix+N` = new; `prefix+a` / `prefix+A` / `prefix+G` = claude / codex / grok tab in the current worktree. CLI: `ws add [repo/branch] [--agent codex|grok]` (defaults to the worktree you're in), `ws open` (focuses the tab you last used), `ws rm`, `ws list`. In a tab you opened by hand (`prefix+c`), `ws claude` / `ws codex` / `ws grok` runs the agent as a tracked session (hooks, status, resume); the tab is a plain shell again after it exits.
-- Persistence: sessions + their Claude/Codex session ids are recorded per worktree. After a reboot (or closing tabs), workspaces show as stopped; opening one resumes every session by id. Quitting an agent cleanly forgets its workspace resume slot and marks its global record closed.
-- Each agent tab also gets a global ID in `WS_SESSION`, stored under `$WS_HOME/sessions/<id>/` (default `~/.ws`). Codex launches pass `-c developer_instructions=...` (the ws preamble), overriding any configured `developer_instructions`. `ws whoami` prints your ID; `ws sessions [id|name]` lists ID, name, workspace, agent, state and status as TSV. IDs survive workspace resume and never reuse. `ws name <label>` names your own session (unique, starts with a letter; letters/digits/dots/underscores/hyphens; `me` reserved). `ws open <id|name>` focuses or resumes that session.
-- `ws send <id|name> <message|->` delivers a message to an idle agent with bracketed paste and Enter. Use `-` to read multiline text from stdin. Messages start with `[ws #<sender-id>]` (`[ws terminal]` outside a session). Working/waiting targets queue messages durably in their inbox; Claude, Codex and Grok drain them through a synchronous Stop hook, keeping the tab working during continuation. A continuation Stop delivers messages queued since the last reply; cancellation falls back to paste only when its turn id matches the current turn and the tab is idle (including background subagents). Stale or idless cancel/Interrupt hooks leave state and inbox unchanged. A Stop that cannot take the hook lock within 3s hands off to a detached retry that settles the tab idle and drains the inbox (`WS_LOCK_SCALE`, default 1, multiplies every lock wait; for tests). Hooks only act for the tab's agent pane (a Grok in a split pane is ignored). A Stop hook killed before its reply landed leaves the messages in flight for the next delivery. Grok session-end Stops (`channel_closed`/`shutdown`) leave the inbox for resume. Idle-pasted batches stay in flight until a newer `UserPromptSubmit` confirms submission; paste alone leaves the tab idle. If Enter is swallowed, `WS_PASTE_ACK_TIMEOUT` (seconds, default 10) requeues the batch for a later send or Stop; delivery may repeat after an unconfirmed submission. An interrupted (Esc) turn may emit no hook, so queued messages wait for the next turn's Stop/idle. Paste + Enter submits whatever is in the agent's input: unsent text typed into a human-opened tab goes out with the message. Done targets warn and require `--force` (before the target or after the message). Stopped targets resume by their retained ID before delivery. Sending during a fresh/resumed tab's startup requires tmux 3.8+ to verify bracketed-paste readiness and avoid pasting into the shell. If startup fails or times out, the message remains queued. Exit 75 (with a `message queued` warning) means durably queued but not yet delivered: a later Stop or idle delivers it, and for an idle target a detached retry (`WS_DELIVER_RETRIES` attempts, default 12, every `WS_DELIVER_RETRY_INTERVAL` seconds, default 5) delivers it once input is ready, so it is not a failure and must not be re-sent. Exit 1 is a genuine failure (bad target, missing workspace, enqueue failed).
-- `ws done [--output <file>|-]` declares your own session done, writes `output.md` (empty when omitted), and appends a `done` lifecycle event. Both `-` and `--output -` read stdin; repeated declarations replace output and append another event; fan-in triggers evaluate in a detached worker, so `ws done` returns without waiting on their actions. Pending inbox or in-flight messages refuse completion without publishing output or closing the tab: finish the turn so Stop delivers them, handle them, then retry `ws done`. Tabs marked `spawned` close after publication; user-opened tabs stay open. Agent process termination appends an `exit` event with its exit code, including manually adopted tabs; received SIGHUP is recorded as code 129. Exited tabs stop accepting messages before exit triggers run; sends resume the session. Events live as JSONL in `$WS_HOME/sessions/<id>/events` (`id`, `event`, `at`; `done` adds `output`, `exit` adds `code`). `ws show <id|name>` prints session metadata, status and the output path.
-- `ws on <id[,id…]> <done|exit> (--send-to <id|me> <message> | --spawn <prompt> [--agent claude|codex|grok])` registers a one-shot fan-in trigger. It fires after every source has emitted the event. Already-recorded `done` events count; `exit` requires a new event from every source after registration, so past exits before a resume do not fire a new watcher. Spawn defaults to Claude and opens a tracked child in the registering session’s worktree (or the current ws worktree when run from a terminal), with `WS_SESSION` and the expanded prompt as a single positional argument. Prompts follow `--`, so option-like text stays a prompt. Spawn origin is recorded before launch; `ws done` closes the child tab. `{id}` expands to comma-separated source IDs in registration order; `{output}` expands to their output contents joined by a newline (empty for sources without output). Replacement is literal. Output-only templates are rejected at registration: include text or `{id}` alongside `{output}` so a plain `ws done` cannot produce an empty continuation. `ws triggers` lists pending triggers as TSV (trigger ID, sources, event, action, target, template). `ws on --rm <trigger-id>` cancels a pending trigger. Direct and transitive cycles in pending send dependencies are rejected under the registration lock. Pending trigger records live under `$WS_HOME/triggers/`; firing is claimed before delivery. Fired, queued (send accepted but not yet delivered; warning in `warning`, not a failure, never re-send) and failed records move to `$WS_HOME/triggers/archive/` after the action, retaining diagnostics without scanning them on later events. Failed actions are never retried automatically.
-- Agents launched, resumed or run in an existing tab receive their global session id; spawned sessions also get a reminder to run `ws done` when the task is complete (done is permanent, so user-opened tabs aren't told to). Tabs get `WS_BIN` and a `ws` on `PATH` (`$WS_HOME/bin/ws`); `install.sh ws` also links `~/.local/bin/ws`, so non-interactive agent shells can run `ws`. Spawn prompts reach the agent via a one-shot `0600` file, so size isn't bound by tmux's command limit. `WS_READY_TIMEOUT` (seconds, default 60) bounds the wait for a starting tab's input before a send stays queued. The [ws-sessions skill](../.claude/skills/ws-sessions/SKILL.md) teaches discovery, messages, completion output, “wait for #123 then do ABC” and “spawn after” handoffs. `./install-agent-skills.sh` shares it with Claude (`/ws-sessions`), Codex (`$ws-sessions`) and Ratel Local; `--no-ratel` skips Ratel registration. Handoffs use the session bus without a Loop plan.
-- Status (○ idle · ◐ working · ● needs input) comes from per-launch agent hooks (a Claude tab stays ◐ while background subagents run past the main turn) → tab icons + a `terminal-notifier` notification (sound; click brings the terminal + tab to front) when an unfocused agent stops or needs input. Notifications come from a branded copy of terminal-notifier at `~/.ws/ws.app` (own name + robot icon `assets/ws/app.png`, composed from `assets/ws/robot.png`, built by `install.sh ws` or `ws _build-notifier`; re-run after `brew upgrade terminal-notifier`). Allow **ws** in System Settings → Notifications (style *Alerts* keeps them on screen); until then it falls back to `osascript`. Customize icons via `WS_NOTIFY_ICON_DONE` / `WS_NOTIFY_ICON_WAITING` (default `assets/ws/{done,waiting}.png`); sound settings are below.
-- `ws merge` / `prefix+M` (inside a workspace): merges the branch's PR with `gh` (`$WS_MERGE_METHOD`, default squash), fast-forwards the default branch in the main checkout, then — after confirmation — removes the worktree, its tabs and the local + remote branch.
-- Grok Build (xAI `grok`, optional: `install.sh ws` asks, or `./install.sh grok`): it has no per-launch hooks flag, so ws writes global hooks to `~/.grok/hooks/ws.json` (`$GROK_HOME` honored; no-ops outside ws). Grok also runs your `~/.claude/settings.json` hooks (Claude compat; disable with `[compat.claude] hooks = false` in `~/.grok/config.toml`). ⚠️ In July 2026 Grok Build CLI (v0.2.93) uploaded whole tracked repos + git history to xAI storage; reportedly disabled server-side 13 Jul 2026, no advisory — use only on repos you're OK sending to xAI.
-- Trust: run `claude` once in `~/.ws/worktrees` and accept (covers all worktrees); Codex asks once per repo.
+- A workspace combines a git worktree and a tmux session. Each interactive agent uses a window in that session.
+- `ws new [--repo <path>] [--branch <branch>] [--agent claude|codex|grok] [--detach]` creates a workspace.
+- `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
+- `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace or session.
+- `ws list [--json]`, `ws pin <workspace|path>` and `ws rm [<workspace|path>]` manage registered workspaces.
+- `ws merge` merges the workspace PR through `gh`, then offers to remove the worktree and branch.
+- `ws claude|codex|grok [args]` starts a tracked agent in the current workspace window.
+- `ws sessions [<id>|<name>] [--json]`, `ws whoami [--json]`, `ws name <label>` and `ws show <target> [--json]` manage session identity.
+- Session IDs are ULIDs. Targets accept names, unique ULID prefixes and quoted aliases such as `'#123'`.
+- Agents receive the ULID in `WS_SESSION_ID` and the compatibility variable `WS_SESSION`. IDs survive resume.
+- `ws send <target> <message|->` queues a durable message. Exit 75 means queued. Do not send the message again.
+- A message to a finished session reopens it. `--force` remains accepted for compatibility.
+- `ws inbox [--json]` lists unread messages. `ws ack [<event_id>...]` acknowledges selected messages, or all visible unread messages.
+- `ws done [--output <file>|-]` publishes completion output. Unread messages refuse completion.
+- `ws wait <target> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through the daemon.
+- `ws on <ids> done|exit --send-to <target> <text>` registers a continuation. `--spawn <prompt> [--agent <agent>]` starts a child instead.
+- `ws triggers [--json]` lists pending actions. `ws on --rm <trigger-ULID>` removes one action.
+- `ws mcp` serves local stdio MCP tools. Agent launches configure this server without changing Claude or Codex configuration files.
+- `ws backend zsh` restores the legacy implementation. `ws backend rust` returns to Rust and imports new legacy records.
+
+The picker uses fzf. Enter opens a workspace. Ctrl-N creates a Claude workspace, Ctrl-O uses Codex, and Ctrl-R uses Grok.
+Ctrl-A adds Claude, Ctrl-T adds Codex, and Ctrl-V adds Grok. Ctrl-S shows sessions, Ctrl-P changes pins, and Ctrl-X removes workspaces.
+The tmux bindings include `prefix+w` for the picker and `prefix+M` for merge.
+Agent starts use permission bypass flags.
+The [ws-sessions skill](../.claude/skills/ws-sessions/SKILL.md) describes agent coordination.
+`./install-agent-skills.sh` shares that skill with Claude, Codex and Ratel Local.
 
 ## Notification adapters
 
@@ -78,7 +93,15 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 
 ## Layout
 
-`ws/ws.sh` is the entry point (env/config, command dispatch); it sources `ws/lib/`: `core.sh` (tmux wrappers, locks, window tagging), `workspace.sh` (worktree + session create/rm/list/merge), `tabs.sh` (agent tabs, launch/resume, per-agent commands), `hooks.sh` (`ws hook` ingest, hook config writers), `notify.sh` (notification adapters, notifier build), `picker.sh` (picker, key bindings), `bus.sh` (registry, send/inbox/delivery) and `triggers.sh` (done/on triggers). `ws/tests/` holds the suite (`zsh ws/tests/run.sh`): the `<area>.test.sh` files run in 4 groups (core, send, triggers, misc) in parallel, each in its own process where `helpers.sh` builds a sandbox (private HOME, tmux server, fake agents, real-HOME guard) and the group's areas are sourced in order, because workspaces and session ids carry across them. `zsh ws/tests/run.sh <group>` runs one group; `WS_TESTS_JOBS=1` runs every area sequentially in one sandbox.
+`ws/ws.sh` reads `$WS_HOME/backend` and executes `$WS_HOME/bin/ws-rs` for Rust commands.
+The Cargo workspace in `wsd/` contains `ws-core` for durable data, `ws-daemon` for the runtime, and `ws` for the CLI.
+Rust owns sessions, messages, logs, dependency edges and the local MCP server.
+`ws/lib/picker.sh` supplies the embedded fzf UI. The other shell modules support the explicit zsh backend.
+
+`ws/tests/` retains the zsh suite. Its four groups use private homes, isolated tmux servers and fake agents.
+Run `zsh ws/tests/run.sh`, or select `core`, `send`, `triggers` or `misc`.
+`zsh ws/tests/run.sh rust` checks the Rust dispatcher in a sandbox.
+`cd wsd && cargo test -p ws --test backend` tests startup import, Rust commands, MCP and backend changes through the dispatcher.
 
 ## Rust commands
 
@@ -94,7 +117,7 @@ Concurrent starts share a startup lock. A failed start reports the log path besi
 Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
 
 `ws backend rust` selects Rust through `$WS_HOME/backend`. The dispatcher uses `$WS_HOME/bin/ws-rs`.
-`WS_RUST_BIN` overrides the binary path for tests. An absent selector selects zsh during this migration stage.
+`WS_RUST_BIN` overrides the binary path for tests. An absent selector selects Rust.
 `ws backend zsh` restores zsh and reports how many Rust-only sessions it cannot reach.
 Both commands hold a switch lock. Rust suppresses message injection and automatic trigger actions while zsh is selected.
 Returning to Rust imports new zsh sessions, pending messages and triggers without changing existing Rust session IDs.
@@ -108,7 +131,14 @@ The tmux keys keep the picker, new workspace, agent tab and merge actions.
 Bindings retain the configured state paths and tmux socket. They preserve user hooks at index 0.
 The zsh backend keeps its data functions in `ws/lib/picker-legacy.sh` until its removal.
 
-`ws migrate --from-zsh [--dry-run]` imports `$WS_HOME/sessions` into `$WS_STATE` (default `~/.ws/state`).
+On its first start with empty Rust state and an existing `$WS_HOME/sessions`, the daemon imports legacy state before serving requests.
+It imports sessions, pending messages, pending triggers, listed branch workspaces and pins.
+The import journal makes startup import resumable. A completed startup import does not read the source again.
+Existing Rust logs prevent an automatic import when no journal exists.
+The source files remain available for `ws backend zsh`. Rust-only sessions remain inaccessible to zsh.
+Rust state lives in `$WS_STATE` (default `~/.ws/state`). The socket uses `$WS_SOCK` (default `~/.ws/wsd.sock`).
+
+`ws migrate --from-zsh [--dry-run]` manually imports `$WS_HOME/sessions` into `$WS_STATE` (default `~/.ws/state`).
 Stop the Rust daemon before an import. The importer takes the zsh counter, names, output, inbox, metadata and event locks.
 A busy lock stops the import with an error. Retry after the writer releases that lock.
 Each legacy session receives a ULID and keeps its `#N` alias. New aliases start above `sessions/counter`.
@@ -120,6 +150,7 @@ An interrupted import resumes from that snapshot. A completed import makes subse
 The Rust CLI in `wsd/` supports `whoami`, `name <label>`, `sessions [id|name]` and `show <id|name>`.
 Each command accepts `--json`. Human output uses `#N` aliases. Targets accept aliases, names, ULIDs and unique ULID prefixes.
 The `me` target selects the current session.
+`WS_SESSION_ID` contains the session ULID. `WS_SESSION` carries the same value for compatibility.
 `whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window option `@ws_session`.
 `WS_TMUX_SOCKET` selects the tmux server.
 
