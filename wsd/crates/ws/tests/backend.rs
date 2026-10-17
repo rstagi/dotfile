@@ -149,6 +149,51 @@ fn switches_backends_and_imports_new_zsh_sessions_without_losing_rust_messages()
         assert_eq!(inbox.as_array().unwrap().len(), 1);
         assert_eq!(inbox[0]["body"], expected);
     }
+    let response = common::request(
+        &socket,
+        "POST",
+        "/v1/sessions",
+        r#"{"name":"after-return"}"#,
+    );
+    let last: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(last["alias"], 4);
+    let legacy = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["alias"] == 3)
+        .unwrap();
+    for (sender, target, expected_first, message) in [
+        (
+            last["id"].as_str().unwrap(),
+            legacy,
+            "created under zsh",
+            "after return to Rust",
+        ),
+        (
+            legacy["id"].as_str().unwrap(),
+            &first,
+            "retained Rust message",
+            "reply after return",
+        ),
+    ] {
+        let output = dispatcher(home.path(), &socket)
+            .env("WS_SESSION_ID", sender)
+            .args(["send", target["id"].as_str().unwrap(), message])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(75), "{output:?}");
+        let output = dispatcher(home.path(), &socket)
+            .env("WS_SESSION_ID", target["id"].as_str().unwrap())
+            .args(["inbox", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let inbox: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(inbox.as_array().unwrap().len(), 2);
+        assert_eq!(inbox[0]["body"], expected_first);
+        assert_eq!(inbox[1]["body"], message);
+    }
     let output = dispatcher(home.path(), &socket)
         .args(["backend", "rust"])
         .output()
