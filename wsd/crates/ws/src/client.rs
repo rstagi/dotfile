@@ -73,9 +73,18 @@ pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {
         .is_some_and(|error| error.code == "session_not_found")
 }
 
-async fn request(socket: &Path, method: Method, path: &str, body: Vec<u8>) -> Result<Bytes> {
+pub(crate) async fn request(
+    socket: &Path,
+    method: Method,
+    path: &str,
+    body: Vec<u8>,
+) -> Result<Bytes> {
     timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(if path.starts_with("/v1/workspaces") {
+            120
+        } else {
+            2
+        }),
         send_request(socket, method, path, body),
     )
     .await
