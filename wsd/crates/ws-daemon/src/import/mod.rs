@@ -16,6 +16,11 @@ use ws_core::{
 
 use crate::sessions::Sessions;
 
+mod snapshot;
+
+use snapshot::snapshot;
+pub use snapshot::{EventMapping, LegacySession};
+
 const JOURNAL: &str = "import-zsh.json";
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -25,13 +30,6 @@ pub struct Plan {
     pub sessions: Vec<LegacySession>,
     #[serde(default)]
     pub complete: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct LegacySession {
-    pub alias: i64,
-    pub id: SessionId,
-    pub meta: Value,
 }
 
 /// Imports one durable snapshot. A completed journal makes subsequent calls read-only.
@@ -72,29 +70,8 @@ pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> 
         }
         save(state, &plan)?;
     }
-    for session in &plan.sessions {
-        let mut body = session.meta.clone();
-        body["alias"] = json!(session.alias);
-        body["workspace_id"] = session.meta["workspace"].clone();
-        body["zsh_meta"] = session.meta.clone();
-        append_once(&mut sessions, session.id, "meta", "session.created", body)?;
-        if session.meta["status"] == "closed" {
-            append_once(
-                &mut sessions,
-                session.id,
-                "status",
-                "session.failed",
-                json!({}),
-            )?;
-        } else if session.meta["status"] == "done" {
-            append_once(
-                &mut sessions,
-                session.id,
-                "status",
-                "session.finished",
-                json!({}),
-            )?;
-        }
+    for session in &mut plan.sessions {
+        import_session(&mut sessions, session)?;
     }
     plan.complete = true;
     save(state, &plan)?;
@@ -113,44 +90,112 @@ fn load(state: &Path) -> io::Result<Option<Plan>> {
     }
 }
 
-fn snapshot(source: &Path) -> io::Result<Plan> {
-    let directory = source.join("sessions");
-    let counter = fs::read_to_string(directory.join("counter"))?
-        .trim()
-        .parse::<i64>()
-        .map_err(io::Error::other)?;
-    let alias_floor = counter
-        .checked_add(1)
-        .filter(|floor| *floor > 0)
-        .ok_or_else(|| io::Error::other("The zsh session counter is invalid."))?;
-    let mut sessions = Vec::new();
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let Ok(alias) = entry.file_name().to_string_lossy().parse::<i64>() else {
-            continue;
+fn import_session(sessions: &mut Sessions, session: &mut LegacySession) -> io::Result<()> {
+    let mut body = session.meta.clone();
+    body["alias"] = json!(session.alias);
+    body["name"] = session.meta["name"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .map_or(Value::Null, |name| json!(name));
+    body["workspace_id"] = session.meta["workspace"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .map_or(Value::Null, |name| json!(name));
+    body["zsh_meta"] = session.meta.clone();
+    if let Some(prompt) = &session.prompt {
+        body["prompt"] = json!(String::from_utf8_lossy(prompt));
+    }
+    append_once(sessions, session.id, "meta", "session.created", body)?;
+    let directory = sessions.state.join("sessions").join(session.id.to_string());
+    for (name, bytes) in [("output.md", &session.output), ("prompt", &session.prompt)] {
+        if let Some(bytes) = bytes {
+            atomic_write(&directory.join(name), bytes)?;
+        }
+    }
+    session.event_map.clear();
+    for event in &session.events {
+        let event_type = event.record["event"].as_str().unwrap();
+        let mut body = event.record.clone();
+        body["zsh_record"] = event.record.clone();
+        if event_type == "done" {
+            body["output"] = json!(directory.join("output.md"));
+        }
+        let kind = if ["done", "exit"].contains(&event_type) {
+            event_type.to_owned()
+        } else {
+            format!("zsh.{event_type}")
         };
-        if alias < 1 || !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let meta: Value = serde_json::from_slice(&fs::read(entry.path().join("meta"))?)?;
-        if !meta.is_object() || alias >= alias_floor {
-            return Err(io::Error::other(
-                "The zsh session metadata or counter is invalid.",
-            ));
-        }
-        sessions.push(LegacySession {
-            alias,
-            id: Ulid::new(),
-            meta,
+        let seq = append_once(
+            sessions,
+            session.id,
+            &format!("events:{}", event.line),
+            &kind,
+            body,
+        )?;
+        session.event_map.push(EventMapping {
+            line: event.line,
+            raw: event.raw.clone(),
+            seq,
         });
     }
-    sessions.sort_by_key(|session| session.alias);
-    Ok(Plan {
-        source: source.into(),
-        alias_floor,
-        sessions,
-        complete: false,
-    })
+    if session.meta["status"] == "closed" {
+        append_once(sessions, session.id, "status", "session.failed", json!({}))?;
+    } else if session.meta["status"] == "done" || session.output.is_some() {
+        append_once(
+            sessions,
+            session.id,
+            "status",
+            "session.finished",
+            json!({}),
+        )?;
+        if !session
+            .events
+            .iter()
+            .any(|event| event.record["event"] == "done")
+        {
+            append_once(
+                sessions,
+                session.id,
+                "output",
+                "done",
+                json!({"output":directory.join("output.md")}),
+            )?;
+        }
+    }
+    if let Some(paste) = &session.paste {
+        append_once(
+            sessions,
+            session.id,
+            "paste",
+            "zsh.paste.pending",
+            paste.clone(),
+        )?;
+    }
+    if !session.messages.is_empty() {
+        let human = sessions.message_session(None).map_err(io::Error::other)?;
+        for message in &session.messages {
+            let pair_seq = sessions
+                .registry
+                .messages()
+                .map_err(io::Error::other)?
+                .iter()
+                .filter(|message| {
+                    message.sender == Some(human.id) && message.recipient == session.id
+                })
+                .filter_map(|message| message.body.as_ref()?.get("pair_seq")?.as_u64())
+                .max()
+                .unwrap_or(0)
+                + 1;
+            append_once(
+                sessions,
+                human.id,
+                &format!("{}:{}:{}", session.alias, message.artifact, message.line),
+                "message.sent",
+                json!({"from_session":human.id, "to_session":session.id, "pair_seq":pair_seq, "body":message.record["message"], "zsh_artifact":message.artifact, "zsh_record":message.record}),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn append_once(

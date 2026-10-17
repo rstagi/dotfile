@@ -1,7 +1,118 @@
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 use serde_json::json;
+use ws_core::{device::Device, log::SessionLog};
 use ws_daemon::sessions::{CreateSession, Sessions};
+
+#[test]
+fn imports_all_artifacts_and_requeues_interrupted_stop_and_unconfirmed_paste() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    let capture = Command::new("zsh")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ws-daemon/src/import/fixtures/capture.zsh"
+        ))
+        .arg(&source)
+        .env("HOME", root.path())
+        .output()
+        .unwrap();
+    assert!(capture.status.success(), "{capture:?}");
+    let before = tree(&source);
+    let output = migrate(root.path(), &source, &state);
+    assert!(output.status.success(), "{output:?}");
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let done = sessions.get("#1", None).unwrap();
+    let target = sessions.get("#2", None).unwrap();
+    let human = sessions.get("human", None).unwrap();
+    assert_eq!(done.state, "finished");
+    assert_eq!(
+        fs::read(
+            state
+                .join("sessions")
+                .join(done.id.to_string())
+                .join("output.md")
+        )
+        .unwrap(),
+        b"completed output"
+    );
+    assert_eq!(
+        fs::read(
+            state
+                .join("sessions")
+                .join(target.id.to_string())
+                .join("prompt")
+        )
+        .unwrap(),
+        before["sessions/2/prompt"]
+    );
+    let entries = SessionLog::new(&state, done.id, Device::load(&state).unwrap().device_id)
+        .read()
+        .unwrap()
+        .entries;
+    let mapping = plan["sessions"][0]["event_map"].as_array().unwrap();
+    assert_eq!(mapping.len(), 2);
+    for (index, event_type) in ["done", "exit"].iter().enumerate() {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.seq == mapping[index]["seq"].as_u64().unwrap())
+            .unwrap();
+        assert_eq!(&entry.event_type, event_type);
+        assert_eq!(mapping[index]["line"], index + 1);
+        let original = std::str::from_utf8(&before["sessions/1/events"])
+            .unwrap()
+            .lines()
+            .nth(index)
+            .unwrap();
+        assert_eq!(mapping[index]["raw"], original);
+    }
+    let messages = sessions.inbox(target.id).unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.content.body.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "[ws terminal]\nunconfirmed paste",
+            "[ws #1]\ninterrupted Stop reply",
+            "[ws terminal]\nqueued message"
+        ]
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.content.from_session == human.id)
+    );
+    let device = Device::load(&state).unwrap().device_id;
+    let sent = SessionLog::new(&state, human.id, device)
+        .read()
+        .unwrap()
+        .entries;
+    assert_eq!(
+        sent.iter()
+            .filter(|event| event.event_type == "message.sent")
+            .count(),
+        3
+    );
+    assert!(
+        !sent
+            .iter()
+            .any(|event| event.event_type == "message.delivered")
+    );
+    // Import may create lock files. Every pre-existing source artifact must stay unchanged.
+    let after = tree(&source);
+    for (path, bytes) in before {
+        assert_eq!(after[&path], bytes, "{path}");
+    }
+    drop(sessions);
+    let imported = tree(&state);
+    let repeated = migrate(root.path(), &source, &state);
+    assert!(repeated.status.success(), "{repeated:?}");
+    assert_eq!(repeated.stdout, output.stdout);
+    assert_eq!(tree(&state), imported);
+}
 
 #[test]
 fn imports_identity_and_keeps_the_alias_floor_after_restart() {
