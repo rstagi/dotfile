@@ -121,7 +121,7 @@ mod tests {
             .as_u64()
             .unwrap() as u32;
         let _group = ProcessGroup(pid);
-        wait_for("the ready event", || {
+        wait_for("the ready event", false, || {
             sandbox.path().join("ready").exists()
                 && fs::read_to_string(sandbox.path().join("descendant"))
                     .is_ok_and(|text| text.parse::<u32>().is_ok())
@@ -129,7 +129,7 @@ mod tests {
         .await;
         let descendant = fs::read_to_string(sandbox.path().join("descendant")).unwrap();
         tokio::time::advance(Duration::from_secs(3600)).await;
-        wait_for("the TERM event", || {
+        wait_for("the TERM event", false, || {
             fs::read_to_string(sandbox.path().join("term")).is_ok_and(|text| text == "term")
         })
         .await;
@@ -138,7 +138,7 @@ mod tests {
             "term"
         );
         tokio::time::advance(Duration::from_secs(10)).await;
-        wait_for("the failed state", || {
+        wait_for("the failed state", true, || {
             log.read()
                 .unwrap()
                 .entries
@@ -157,7 +157,7 @@ mod tests {
                 .any(|entry| entry.event_type == "session.failed"
                     && entry.body["reason"] == "The phase exceeded its maximum runtime.")
         );
-        wait_for("the descendant exit", || {
+        wait_for("the descendant exit", true, || {
             let output = std::process::Command::new("ps")
                 .args(["-o", "stat=", "-p", &descendant])
                 .output()
@@ -170,15 +170,20 @@ mod tests {
         .await;
     }
 
-    async fn wait_for(event: &str, mut condition: impl FnMut() -> bool) {
+    async fn wait_for(event: &str, advance_clock: bool, mut condition: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(30);
         while !condition() {
             assert!(
                 Instant::now() < deadline,
                 "The process did not produce {event}."
             );
-            // Keep the paused clock stationary until the external process writes the event.
-            tokio::task::yield_now().await;
+            if advance_clock {
+                // After escalation, advance the timers that poll process group membership.
+                tokio::time::advance(Duration::from_millis(20)).await;
+            } else {
+                // Keep the deadline stationary until the external process writes its signal.
+                tokio::task::yield_now().await;
+            }
         }
     }
 

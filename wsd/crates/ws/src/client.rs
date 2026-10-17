@@ -64,6 +64,9 @@ pub(crate) async fn request(
     path: &str,
     body: Vec<u8>,
 ) -> Result<Bytes> {
+    if method == Method::POST && path.starts_with("/v1/sessions/") && path.ends_with("/stop") {
+        return send_request(socket, method, path, body).await;
+    }
     let seconds = if path.starts_with("/v1/workspaces") {
         120
     } else {
