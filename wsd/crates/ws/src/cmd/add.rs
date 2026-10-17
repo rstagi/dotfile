@@ -27,7 +27,7 @@ pub async fn run(socket: &Path, target: Option<String>, agent: String, detach: b
     )
 }
 
-fn current_workspace() -> Result<String> {
+pub(super) fn current_workspace() -> Result<String> {
     let root = std::env::var_os("WS_ROOT")
         .map(std::path::PathBuf::from)
         .or_else(|| {
