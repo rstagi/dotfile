@@ -16,6 +16,18 @@ pub struct Tmux {
     socket: Option<OsString>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaneStatus {
+    Running,
+    /// tmux retains the pane when `remain-on-exit` is enabled.
+    /// The exit status is absent if a signal killed the process.
+    Dead {
+        exit_status: Option<i32>,
+    },
+    /// tmux no longer has this pane. Its exit status is unavailable.
+    Missing,
+}
+
 impl Tmux {
     pub fn named(socket: impl Into<OsString>) -> Self {
         Self {
@@ -25,7 +37,7 @@ impl Tmux {
 
     pub fn from_env() -> Self {
         Self {
-            socket: env::var_os("WS_TMUX_SOCKET"),
+            socket: env::var_os("WS_TMUX_SOCKET").filter(|socket| !socket.is_empty()),
         }
     }
 
@@ -176,6 +188,54 @@ impl Tmux {
                 .args(["capture-pane", "-p", "-e", "-S", "-", "-t", target])
                 .output()?,
         )
+    }
+
+    /// Reads a `%N` pane's liveness. A server or command failure returns an error.
+    pub fn pane_status(&self, pane: &str) -> io::Result<PaneStatus> {
+        if !pane
+            .strip_prefix('%')
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Use a tmux pane id such as %1.",
+            ));
+        }
+        let panes = self.execute(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id}\t#{pane_dead}\t#{pane_dead_status}",
+        ])?;
+        let prefix = format!("{pane}\t");
+        let Some(status) = panes.lines().find_map(|line| line.strip_prefix(&prefix)) else {
+            return Ok(PaneStatus::Missing);
+        };
+        let (dead, exit_status) = status.split_once('\t').ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The tmux pane status is invalid.",
+            )
+        })?;
+        match dead {
+            "0" => Ok(PaneStatus::Running),
+            "1" => {
+                let exit_status = if exit_status.is_empty() {
+                    None
+                } else {
+                    Some(
+                        exit_status
+                            .parse()
+                            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+                    )
+                };
+                Ok(PaneStatus::Dead { exit_status })
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The tmux pane status is invalid.",
+            )),
+        }
     }
 
     fn execute(&self, args: &[&str]) -> io::Result<String> {
@@ -334,6 +394,102 @@ mod tests {
         assert!(captured.contains("\x1b[31mred marker"), "{captured:?}");
         assert!(captured.ends_with('\n'), "{captured:?}");
         assert!(sandbox.tmux.capture_pane("%999999").is_err());
+    }
+
+    #[test]
+    fn reports_live_dead_and_removed_panes() {
+        use super::PaneStatus;
+
+        let sandbox = Sandbox::new();
+        let window = sandbox
+            .tmux
+            .create_window("keepalive", "liveness", &["/bin/sleep", "300"])
+            .unwrap();
+        sandbox
+            .tmux
+            .set_window_option(&window, "remain-on-exit", "on")
+            .unwrap();
+        let release = sandbox.home.path().join("release");
+        let pane = sandbox
+            .tmux
+            .create_pane(
+                &window,
+                &[
+                    "/bin/sh",
+                    "-c",
+                    "while [ ! -f \"$1\" ]; do sleep 0.01; done; exit 17",
+                    "sh",
+                    release.to_str().unwrap(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            sandbox.tmux.pane_status(&pane).unwrap(),
+            PaneStatus::Running
+        );
+        std::fs::write(release, "").unwrap();
+        wait_until(|| {
+            sandbox.tmux.pane_status(&pane).unwrap()
+                == PaneStatus::Dead {
+                    exit_status: Some(17),
+                }
+        });
+        sandbox.output(&["kill-pane", "-t", &pane]);
+        assert_eq!(
+            sandbox.tmux.pane_status(&pane).unwrap(),
+            PaneStatus::Missing
+        );
+        assert_eq!(
+            sandbox.tmux.pane_status("%999999").unwrap(),
+            PaneStatus::Missing
+        );
+        assert!(sandbox.tmux.pane_status("agent").is_err());
+        sandbox.output(&["kill-server"]);
+        assert!(sandbox.tmux.pane_status(&pane).is_err());
+    }
+
+    #[test]
+    fn from_env_uses_named_socket_and_ignores_empty_override() {
+        const CHILD: &str = "WS_DRIVER_ENV_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let tmux = Tmux::from_env();
+            let window = tmux
+                .create_window("keepalive", "environment", &["/bin/sleep", "300"])
+                .unwrap();
+            tmux.set_state(&window, "working").unwrap();
+            assert_eq!(tmux.state(&window).unwrap(), "working");
+            return;
+        }
+        let sandbox = Sandbox::new();
+        let tmux_env = String::from_utf8(
+            sandbox
+                .output(&["display-message", "-p", "#{socket_path},#{pid},0"])
+                .stdout,
+        )
+        .unwrap();
+        for socket in [Some(sandbox.server.as_str()), Some(""), None] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "tmux::tests::from_env_uses_named_socket_and_ignores_empty_override",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("HOME", sandbox.home.path())
+                .env("WS_HOME", sandbox.home.path().join(".ws"))
+                .env("WS_STATE", sandbox.home.path().join("state"))
+                .env("WS_SOCK", sandbox.home.path().join("wsd.sock"))
+                .env("TMUX", tmux_env.trim())
+                .env_remove("TMUX_PANE");
+            if let Some(socket) = socket {
+                child.env("WS_TMUX_SOCKET", socket);
+            } else {
+                child.env_remove("WS_TMUX_SOCKET");
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "socket={socket:?}: {output:?}");
+        }
     }
 
     impl Sandbox {
