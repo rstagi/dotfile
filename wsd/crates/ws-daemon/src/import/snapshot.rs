@@ -34,11 +34,12 @@ pub struct EventMapping {
     pub seq: u64,
 }
 
-pub(super) fn snapshot(source: &Path, dry_run: bool) -> io::Result<Plan> {
+pub(super) fn snapshot(source: &Path, root: &Path, dry_run: bool) -> io::Result<Plan> {
     let directory = source.join("sessions");
     let mut locks = Locks::default();
     locks.acquire(&directory.join("counter.lock"), dry_run)?;
     locks.acquire(&directory.join("names.lock"), dry_run)?;
+    let triggers = super::triggers::snapshot(source, &mut locks, dry_run)?;
     let mut directories = fs::read_dir(&directory)?.collect::<io::Result<Vec<_>>>()?;
     directories.retain(|entry| {
         entry
@@ -127,11 +128,14 @@ pub(super) fn snapshot(source: &Path, dry_run: bool) -> io::Result<Plan> {
         });
     }
     sessions.sort_by_key(|session| session.alias);
+    let workspaces = super::workspaces::snapshot(source, root)?;
     locks.finish()?;
     Ok(Plan {
         source: source.into(),
         alias_floor,
         sessions,
+        triggers,
+        workspaces,
         complete: false,
     })
 }
