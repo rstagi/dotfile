@@ -29,6 +29,7 @@ fn phase_spawn_runs_a_local_child_and_records_its_parent_and_phase_context() {
         "caps_required": [], "max_runtime": 60
     });
     let child = sandbox.request("POST", "/v1/phases/spawn", request.clone());
+    assert_eq!(child["parent_session_id"], parent["id"]);
     let id = child["id"].as_str().unwrap();
     let child = sandbox.wait(id);
     assert_eq!(child["state"], "finished");
@@ -64,6 +65,12 @@ fn phase_spawn_runs_a_local_child_and_records_its_parent_and_phase_context() {
         running.body["process"]["pgid"]
     );
     let parent_entries = sandbox.entries(parent["id"].as_str().unwrap());
+    assert!(
+        parent_entries
+            .iter()
+            .any(|entry| entry.event_type == "api.called"
+                && entry.body["operation"] == "phase.spawn")
+    );
     assert!(
         parent_entries
             .iter()

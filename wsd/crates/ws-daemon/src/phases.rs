@@ -4,10 +4,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
-use ws_core::{ids::SessionId, registry::Session};
+use ws_core::ids::SessionId;
 
 use crate::{
-    api::{ApiError, Store},
+    api::{ApiError, SessionResponse, Store},
     sessions::Error,
     supervisor::{self, CreateHeadless},
 };
@@ -37,7 +37,7 @@ pub(crate) fn router() -> Router<Store> {
 async fn spawn(
     State(store): State<Store>,
     Json(request): Json<SpawnPhase>,
-) -> Result<(StatusCode, Json<Session>), ApiError> {
+) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
     if request.base.trim().is_empty() || request.max_runtime == 0 {
         return Err(ApiError(Error::InvalidRequest(
             "Specify a base and a positive maximum runtime.",
@@ -59,7 +59,7 @@ async fn spawn(
         metadata,
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(session)))
+    Ok((StatusCode::CREATED, Json(session.into())))
 }
 
 #[cfg(test)]

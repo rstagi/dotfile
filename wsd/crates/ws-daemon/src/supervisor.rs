@@ -356,7 +356,11 @@ impl Sessions {
         let id = Ulid::new();
         self.record_call(
             request.parent_session_id,
-            "session.create",
+            if metadata.get("phase").is_some() {
+                "phase.spawn"
+            } else {
+                "session.create"
+            },
             Some(&id.to_string()),
         )?;
         let directory = self

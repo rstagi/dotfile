@@ -19,7 +19,7 @@ use crate::sessions::{CreateSession, Error, Sessions};
 pub(crate) type Store = Arc<Mutex<Sessions>>;
 
 #[derive(Serialize)]
-struct SessionResponse {
+pub(crate) struct SessionResponse {
     #[serde(flatten)]
     session: Session,
     parent_session_id: Option<SessionId>,
