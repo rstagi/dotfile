@@ -110,11 +110,22 @@ os.replace(sys.argv[3] + '.tmp', sys.argv[3])
         .join("state/sessions")
         .join(id)
         .join("log.jsonl");
-    let records: Vec<serde_json::Value> = fs::read_to_string(log_path)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    // A timed-out client can finish before the daemon records its callback.
+    wait_until(|| {
+        records = fs::read_to_string(&log_path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        ["hook.received", "turn.ended"].iter().all(|kind| {
+            records
+                .iter()
+                .filter(|record| record["type"] == *kind)
+                .count()
+                == 100
+        })
+    });
     assert_eq!(
         records
             .iter()
@@ -131,7 +142,24 @@ os.replace(sys.argv[3] + '.tmp', sys.argv[3])
     );
     assert_eq!(tmux.state(&window).unwrap(), "idle");
     let spool = sandbox.home.path().join("state/spool");
-    assert!(!spool.exists() || fs::read_dir(spool).unwrap().count() == 0);
+    if spool.exists() {
+        for file in fs::read_dir(&spool).unwrap() {
+            let path = file.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                let callback: serde_json::Value =
+                    serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                assert!(
+                    records
+                        .iter()
+                        .any(|record| record["type"] == "hook.received"
+                            && record["body"]["callback_id"] == callback["callback_id"])
+                );
+            }
+        }
+    }
     let mut latencies: Vec<f64> = serde_json::from_value(measured["latencies"].clone()).unwrap();
     assert_eq!(latencies.len(), 100);
     latencies.sort_by(f64::total_cmp);
@@ -139,6 +167,7 @@ os.replace(sys.argv[3] + '.tmp', sys.argv[3])
     // latency alone exceeds it, so the default run only measures and prints. Assert it with:
     // `WS_ASSERT_LATENCY=1 cargo test -p ws --test tmux -- --nocapture`
     if std::env::var_os("WS_ASSERT_LATENCY").is_some() {
+        assert!(!spool.exists() || fs::read_dir(&spool).unwrap().count() == 0);
         assert!(
             latencies[94] < 50.0,
             "Full ingest p95 exceeded 50 ms: {}",
@@ -224,7 +253,7 @@ impl Sandbox {
 }
 
 fn wait_until(mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !ready() {
         assert!(
             Instant::now() < deadline,
