@@ -7,8 +7,13 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, env, io, path::PathBuf, process::Stdio, time::Duration};
 use tokio::io::AsyncWriteExt;
 
-const ADAPTER_DEADLINE: Duration = Duration::from_secs(2);
-static DELIVERY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Guards delivery against a hung adapter. Delivery runs on its own task, so this bound
+/// delays no hook reply. It must stay above the process start latency that ordinary
+/// scheduling load causes, because a timeout drops the notification.
+const ADAPTER_DEADLINE: Duration = Duration::from_secs(10);
+type WindowKey = (Option<String>, Option<String>, String);
+static DELIVERY_LOCK: tokio::sync::Mutex<BTreeMap<WindowKey, u64>> =
+    tokio::sync::Mutex::const_new(BTreeMap::new());
 const ENVIRONMENT: &[&str] = &[
     "HOME",
     "PATH",
@@ -34,6 +39,15 @@ struct Context {
     tmux_path: Option<String>,
 }
 
+#[derive(Default)]
+pub(crate) struct Target {
+    pub window: String,
+    pub session: String,
+    pub path: PathBuf,
+    pub agent: String,
+    pub focused: bool,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct DismissRequest {
     target: String,
@@ -42,7 +56,7 @@ pub struct DismissRequest {
 }
 
 /// Queues one event after an accepted window state transition.
-pub(crate) async fn transition(callback: &Callback, window: &str, previous: &str, state: &str) {
+pub(crate) async fn transition(callback: &Callback, window: &Target, previous: &str, state: &str) {
     let config = callback.notify.clone().unwrap_or_else(Config::from_env);
     if previous == state || config.value("WS_NOTIFY", "1") == "0" {
         return;
@@ -51,7 +65,7 @@ pub(crate) async fn transition(callback: &Callback, window: &str, previous: &str
         tmux_socket: callback.tmux_socket.clone(),
         tmux_path: callback.tmux_path.clone(),
     };
-    let _ = emit(
+    if let Err(error) = emit(
         &context,
         window,
         previous,
@@ -60,7 +74,13 @@ pub(crate) async fn transition(callback: &Callback, window: &str, previous: &str
         callback.observed_at_us,
         &callback.payload,
     )
-    .await;
+    .await
+    {
+        eprintln!(
+            "Cannot queue the {state} notification for {}: {error}",
+            window.window
+        );
+    }
 }
 
 pub(crate) fn router() -> Router<crate::api::Store> {
@@ -109,14 +129,22 @@ async fn dismiss_open(request: DismissRequest, seq: u64) -> io::Result<()> {
             "-p",
             "-t",
             &request.target,
-            "#{@ws_notify_open}|#{@ws_state}|#{window_id}",
+            "#{@ws_notify_open}|#{@ws_state}|#{window_id}\u{1f}#{session_id}\u{1f}#{@ws_path}\u{1f}#{@ws_agent}\u{1f}#{&&:#{window_active},#{session_attached}}",
         ])
         .await?;
-    let fields: Vec<_> = snapshot.split('|').collect();
-    if fields.len() == 3 && fields[0] == "1" {
+    let metadata: Vec<_> = snapshot.split('\u{1f}').collect();
+    let fields: Vec<_> = metadata[0].split('|').collect();
+    if metadata.len() == 5 && fields.len() == 3 && fields[0] == "1" {
+        let target = Target {
+            window: fields[2].into(),
+            session: metadata[1].into(),
+            path: metadata[2].into(),
+            agent: metadata[3].into(),
+            focused: metadata[4] == "1",
+        };
         emit(
             &request.context,
-            fields[2],
+            &target,
             fields[1],
             "closed",
             request.config,
@@ -159,20 +187,15 @@ impl Config {
 
 async fn emit(
     context: &Context,
-    window: &str,
+    target: &Target,
     previous: &str,
     state: &str,
     config: Config,
     seq: u64,
     payload: &Value,
 ) -> io::Result<()> {
-    let metadata = context.tmux( &["display-message", "-p", "-t", window,
-        "#{session_id}\u{1f}#{@ws_path}\u{1f}#{@ws_agent}\u{1f}#{&&:#{window_active},#{session_attached}}"]).await?;
-    let fields: Vec<_> = metadata.split('\u{1f}').collect();
-    if fields.len() != 4 {
-        return Ok(());
-    }
-    let path = PathBuf::from(fields[1]);
+    let window = target.window.as_str();
+    let path = &target.path;
     let default_name = format!(
         "{}/{}",
         path.parent()
@@ -197,7 +220,7 @@ async fn emit(
     click.push_str(&format!(
         " select-window -t {} \\; switch-client -t {}",
         shell_words::quote(window),
-        shell_words::quote(fields[0])
+        shell_words::quote(&target.session)
     ));
     if !bundle.is_empty() {
         click.push_str(&format!(" ; open -b {}", shell_words::quote(&bundle)));
@@ -216,12 +239,12 @@ async fn emit(
     .take(1024)
     .collect::<String>();
     let event = json!({"v":1, "id":format!("ws:{window}"), "source":"ws", "state":state,
-        "prev":previous, "title":"ws", "message":message, "detail":detail, "agent":fields[2],
-        "repo":name.split('/').next().unwrap_or(""), "branch":branch(&path, &config).await, "focused":fields[3]=="1",
+        "prev":previous, "title":"ws", "message":message, "detail":detail, "agent":target.agent,
+        "repo":name.split('/').next().unwrap_or(""), "branch":branch(path, &config).await, "focused":target.focused,
         "sound":match state { "idle"=>"done", "waiting"=>"waiting", _=>"" },
         "actions":[{"id":"focus", "label":"Focus tab", "command":click}],
         "seq":seq, "ts":hooks::receipt_time_us().unwrap_or(seq) / 1_000_000});
-    context
+    let _ = context
         .tmux(&[
             "set-option",
             "-w",
@@ -230,12 +253,30 @@ async fn emit(
             "@ws_notify_open",
             if state == "closed" { "0" } else { "1" },
         ])
-        .await?;
+        .await;
     let context = context.clone();
     let window = window.to_owned();
     tokio::spawn(async move {
-        let _guard = DELIVERY_LOCK.lock().await;
-        let _ = deliver(&context, &window, &event, &config).await;
+        let mut delivered = DELIVERY_LOCK.lock().await;
+        let key = (
+            context.tmux_socket.clone(),
+            context
+                .tmux_path
+                .clone()
+                .filter(|_| context.tmux_socket.is_none()),
+            window.clone(),
+        );
+        let seq = event["seq"].as_u64().unwrap_or(0);
+        if delivered.get(&key).is_some_and(|last| seq <= *last) {
+            return;
+        }
+        delivered.insert(key, seq);
+        if let Err(error) = deliver(&context, &window, &event, &config).await {
+            eprintln!(
+                "Cannot deliver the {} notification for {window}: {error}",
+                event["state"]
+            );
+        }
     });
     Ok(())
 }
@@ -283,12 +324,13 @@ async fn deliver(
     }
     let last = context
         .tmux(&["display-message", "-p", "-t", window, "#{@ws_notify_seq}"])
-        .await?;
+        .await
+        .unwrap_or_default();
     let seq = event["seq"].as_u64().unwrap_or(0);
     if last.parse::<u64>().is_ok_and(|last| seq <= last) {
         return Ok(());
     }
-    context
+    let _ = context
         .tmux(&[
             "set-option",
             "-w",
@@ -297,7 +339,7 @@ async fn deliver(
             "@ws_notify_seq",
             &seq.to_string(),
         ])
-        .await?;
+        .await;
     if event["state"] == "closed" {
         if adapter != "osascript" {
             let _ = run(

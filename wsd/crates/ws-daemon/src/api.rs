@@ -25,6 +25,13 @@ struct SessionResponse {
     parent_session_id: Option<SessionId>,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CreateRequest {
+    Headless(crate::supervisor::CreateHeadless),
+    Session(CreateSession),
+}
+
 pub(crate) struct ApiError(pub(crate) Error);
 
 #[derive(Default, Deserialize)]
@@ -62,9 +69,14 @@ pub(crate) fn router_with_store(store: Store) -> Router {
 
 async fn create(
     State(store): State<Store>,
-    Json(request): Json<CreateSession>,
+    Json(request): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
-    let session = call(store, move |sessions| sessions.create(request)).await?;
+    let session = match request {
+        CreateRequest::Headless(request) => crate::supervisor::create(store, request).await?,
+        CreateRequest::Session(request) => {
+            call(store, move |sessions| sessions.create(request)).await?
+        }
+    };
     Ok((StatusCode::CREATED, Json(session.into())))
 }
 
@@ -199,6 +211,49 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::sessions::Sessions;
+
+    #[tokio::test]
+    async fn a_disconnected_hook_request_still_records_its_callback() {
+        use std::{future::Future, task::Poll};
+        use ws_core::{ids::Ulid, log::SessionLog};
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, session) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let id = session["id"].as_str().unwrap();
+        let first = Ulid::new();
+        let second = Ulid::new();
+        let callback = |callback_id, observed_at_us| {
+            json!({
+                "callback_id": callback_id, "session_id": id,
+                "observed_at_us": observed_at_us, "state": "waiting",
+                "pane": null, "tmux_socket": null, "tmux_path": null, "payload": {}
+            })
+        };
+        let first_callback = callback(first, 1);
+        let guard = crate::hooks::INGEST_LOCK.lock().await;
+        let mut disconnected = Box::pin(request(&app, "POST", "/v1/hooks/ingest", first_callback));
+        std::future::poll_fn(|cx| {
+            assert!(disconnected.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::task::yield_now().await;
+        drop(disconnected);
+        drop(guard);
+        let (status, _) = request(&app, "POST", "/v1/hooks/ingest", callback(second, 2)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let log = SessionLog::new(sandbox.path(), id.parse().unwrap(), Ulid::new());
+        let received: Vec<_> = log
+            .read()
+            .unwrap()
+            .entries
+            .into_iter()
+            .filter(|entry| entry.event_type == "hook.received")
+            .map(|entry| entry.body["callback_id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(received, [first.to_string(), second.to_string()]);
+    }
 
     #[tokio::test]
     async fn creates_lists_and_gets_sessions_through_the_in_process_client() {

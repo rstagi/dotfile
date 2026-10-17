@@ -516,6 +516,30 @@ fn slow_tmux_lookup_has_a_deadline_and_preserves_the_callback() {
 }
 
 #[test]
+fn a_slow_but_live_tmux_lookup_still_applies_the_callback() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = HookSandbox::new();
+    let real_tmux = std::process::Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .unwrap();
+    let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
+    // Scheduling under load delays tmux by hundreds of milliseconds. That is not a hang.
+    let fake_tmux = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(
+        &fake_tmux,
+        format!(
+            "#!/bin/sh\n/bin/sleep 0.3\nexec {} \"$@\"\n",
+            shell_words::quote(real_tmux.trim())
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_tmux, fs::Permissions::from_mode(0o755)).unwrap();
+    sandbox.post("waiting", json!({}), 100);
+    assert_eq!(sandbox.options(), "waiting|||||");
+}
+
+#[test]
 fn split_panes_and_untagged_unbound_windows_cannot_change_the_session_state() {
     let sandbox = HookSandbox::new();
     let tmux = ws_daemon::tmux::Tmux::named(&sandbox.server);

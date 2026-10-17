@@ -1,14 +1,20 @@
 use serde_json::Value;
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     os::unix::fs::PermissionsExt,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::mpsc,
+    thread,
     time::{Duration, Instant},
 };
 mod common;
 use common::{Daemon, request, ws};
+
+/// Every wait returns on the adapter's completion signal. This bound only turns a hung
+/// delivery into a failure; it is not a latency budget.
+const HANG_GUARD: Duration = Duration::from_secs(30);
 
 struct Sandbox {
     home: tempfile::TempDir,
@@ -18,11 +24,19 @@ struct Sandbox {
     window: String,
     id: String,
     daemon: Option<Daemon>,
+    signals: AdapterSignals,
+}
+
+struct AdapterSignals {
+    receiver: mpsc::Receiver<()>,
+    pipe: fs::File,
+    reader: Option<thread::JoinHandle<()>>,
 }
 
 impl Sandbox {
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
+        let signals = AdapterSignals::new(home.path());
         let server = format!("ws-notify-{}", ws_core::ids::Ulid::new());
         let socket = home.path().join("wsd.sock");
         let output = Command::new("tmux")
@@ -52,7 +66,7 @@ impl Sandbox {
         let _ = ws(home.path(), &socket);
         for name in ["terminal-notifier", "osascript", "afplay"] {
             let path = home.path().join("fake-agents").join(name);
-            fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/{name}.tmp\"\nmv \"$HOME/{name}.tmp\" \"$HOME/{name}.out\"\n")).unwrap();
+            fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/{name}.tmp\"\nmv \"$HOME/{name}.tmp\" \"$HOME/{name}.out\"\nprintf . > \"$HOME/adapter-ready\"\n")).unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let mut command = ws(home.path(), &socket);
@@ -80,6 +94,7 @@ impl Sandbox {
             window,
             id,
             daemon: Some(daemon),
+            signals,
         }
     }
 
@@ -113,7 +128,7 @@ impl Sandbox {
 
     fn output(&self, adapter: &str) -> String {
         let path = self.home.path().join(format!("{adapter}.out"));
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + HANG_GUARD;
         loop {
             if let Ok(text) = fs::read_to_string(&path) {
                 return text;
@@ -123,7 +138,7 @@ impl Sandbox {
                 "No {adapter} output. Daemon: {}",
                 self.daemon.as_ref().unwrap().stderr()
             );
-            std::thread::yield_now();
+            self.signals.wait(deadline);
         }
     }
 }
@@ -134,6 +149,44 @@ impl Drop for Sandbox {
         let _ = Command::new("tmux")
             .args(["-L", &self.server, "kill-server"])
             .output();
+    }
+}
+
+#[test]
+fn notification_delivery_survives_failed_tmux_bookkeeping() {
+    for pattern in ["@ws_notify_seq", "@ws_notify_open", " #{session_id}"] {
+        let sandbox = Sandbox::new();
+        let real_tmux = Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .unwrap();
+        let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
+        let wrapper = sandbox.home.path().join("fake-agents/tmux");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *{}*) exit 1;; esac\nexec {} \"$@\"\n",
+                shell_words::quote(pattern),
+                shell_words::quote(real_tmux.trim())
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        // Validate the fixture before the hook starts its bounded tmux calls.
+        assert!(
+            Command::new(&wrapper)
+                .arg("-V")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        sandbox.hook("waiting");
+        assert!(
+            sandbox
+                .output("terminal-notifier")
+                .contains("api/feat-login needs input")
+        );
     }
 }
 
@@ -205,7 +258,11 @@ fn custom_adapter_receives_the_zsh_events_and_dismisses_once() {
         .unwrap();
     tmux.set_state(&sandbox.window, "idle").unwrap();
     let adapter = sandbox.home.path().join("custom adapter");
-    fs::write(&adapter, "#!/bin/sh\ncat >> \"$HOME/events.jsonl\"\n").unwrap();
+    fs::write(
+        &adapter,
+        "#!/bin/sh\ncat >> \"$HOME/events.jsonl\"\nprintf . > \"$HOME/adapter-ready\"\n",
+    )
+    .unwrap();
     fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
     for (state, payload, count) in [
         ("working", "{}", 1),
@@ -277,7 +334,7 @@ fn custom_adapter_receives_the_zsh_events_and_dismisses_once() {
 
 impl Sandbox {
     fn events(&self, count: usize) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + HANG_GUARD;
         loop {
             let events: Vec<Value> = fs::read_to_string(self.home.path().join("events.jsonl"))
                 .unwrap_or_default()
@@ -289,9 +346,10 @@ impl Sandbox {
             }
             assert!(
                 Instant::now() < deadline,
-                "Expected {count} notification events, got {events:?}"
+                "Expected {count} notification events, got {events:?}. Daemon: {}",
+                self.daemon.as_ref().unwrap().stderr()
             );
-            std::thread::yield_now();
+            self.signals.wait(deadline);
         }
     }
 }
@@ -306,12 +364,59 @@ fn project_event(event: &Value) -> Value {
     Value::Object(projected)
 }
 
+impl AdapterSignals {
+    fn new(home: &std::path::Path) -> Self {
+        let path = home.join("adapter-ready");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        // The fixture starts children, so neither pipe descriptor can cross a fork.
+        let pipe = ws_core::lockfile::open_lock_file(&path).unwrap();
+        let mut input = ws_core::lockfile::open_lock_file(&path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut byte = [0];
+            while input.read_exact(&mut byte).is_ok() && byte != [0] {
+                if sender.send(()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            receiver,
+            pipe,
+            reader: Some(reader),
+        }
+    }
+
+    fn wait(&self, deadline: Instant) {
+        // The capture writes a byte only after the complete output is available.
+        // Block here so concurrent tests do not starve daemon subprocesses.
+        let _ = self
+            .receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    }
+}
+
+impl Drop for AdapterSignals {
+    fn drop(&mut self) {
+        let _ = self.pipe.write_all(&[0]);
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
 #[test]
 fn boringnotch_uses_nc_with_the_event_on_stdin_and_falls_back_on_failure() {
     for success in [true, false] {
         let sandbox = Sandbox::new();
         let nc = sandbox.home.path().join("fake-agents/nc");
-        fs::write(&nc, format!("#!/bin/sh\ncat > \"$HOME/notch-event.json\"\nprintf '%s\\n' \"$@\" > \"$HOME/nc.tmp\"\nmv \"$HOME/nc.tmp\" \"$HOME/nc.out\"\nexit {}\n", if success { 0 } else { 1 })).unwrap();
+        fs::write(&nc, format!("#!/bin/sh\ncat > \"$HOME/notch-event.json\"\nprintf '%s\\n' \"$@\" > \"$HOME/nc.tmp\"\nmv \"$HOME/nc.tmp\" \"$HOME/nc.out\"\nprintf . > \"$HOME/adapter-ready\"\nexit {}\n", if success { 0 } else { 1 })).unwrap();
         fs::set_permissions(nc, fs::Permissions::from_mode(0o755)).unwrap();
         let socket = sandbox.home.path().join("notch notify.sock");
         let output = sandbox
@@ -351,7 +456,11 @@ fn boringnotch_uses_nc_with_the_event_on_stdin_and_falls_back_on_failure() {
 fn hook_overrides_disable_every_adapter_even_when_the_daemon_enables_notifications() {
     let sandbox = Sandbox::new();
     let adapter = sandbox.home.path().join("capture");
-    fs::write(&adapter, "#!/bin/sh\ncat >> \"$HOME/events.jsonl\"\n").unwrap();
+    fs::write(
+        &adapter,
+        "#!/bin/sh\ncat >> \"$HOME/events.jsonl\"\nprintf . > \"$HOME/adapter-ready\"\n",
+    )
+    .unwrap();
     fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
     for notifier in [
         "terminal-notifier",
@@ -479,7 +588,7 @@ fn build_notifier_brands_a_copy_and_uses_it_for_notifications() {
     let plist = "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>original.notifier</string><key>CFBundleName</key><string>terminal-notifier</string></dict></plist>";
     fs::write(source.join("Contents/Info.plist"), plist).unwrap();
     let binary = source.join("Contents/MacOS/terminal-notifier");
-    fs::write(&binary, "#!/bin/sh\n{ printf 'BRANDED\\n'; printf '%s\\n' \"$@\"; } > \"$HOME/terminal-notifier.tmp\"\nmv \"$HOME/terminal-notifier.tmp\" \"$HOME/terminal-notifier.out\"\n").unwrap();
+    fs::write(&binary, "#!/bin/sh\n{ printf 'BRANDED\\n'; printf '%s\\n' \"$@\"; } > \"$HOME/terminal-notifier.tmp\"\nmv \"$HOME/terminal-notifier.tmp\" \"$HOME/terminal-notifier.out\"\nprintf . > \"$HOME/adapter-ready\"\n").unwrap();
     fs::set_permissions(binary, fs::Permissions::from_mode(0o755)).unwrap();
     for (name, script) in [
         (
@@ -560,7 +669,11 @@ fn focused_tabs_send_custom_events_and_suppress_builtin_banners_and_sounds() {
         }
     }
     let adapter = sandbox.home.path().join("capture");
-    fs::write(&adapter, "#!/bin/sh\ncat >> \"$HOME/events.jsonl\"\n").unwrap();
+    fs::write(
+        &adapter,
+        "#!/bin/sh\ncat >> \"$HOME/events.jsonl\"\nprintf . > \"$HOME/adapter-ready\"\n",
+    )
+    .unwrap();
     fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
     let output = sandbox
         .command()

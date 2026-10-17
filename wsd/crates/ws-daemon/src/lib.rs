@@ -21,6 +21,7 @@ pub mod api;
 pub mod hooks;
 pub mod notify;
 pub mod sessions;
+pub mod supervisor;
 pub mod tmux;
 pub mod workspaces;
 
