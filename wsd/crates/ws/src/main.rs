@@ -4,7 +4,6 @@ use clap::{Parser, Subcommand};
 
 mod client;
 mod cmd;
-mod hook;
 mod init;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -119,16 +118,7 @@ enum Command {
         target: Vec<String>,
     },
     /// Send a hook event from the current tmux pane.
-    Hook {
-        #[command(subcommand)]
-        event: HookCommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum HookCommand {
-    /// Record the end of an agent turn.
-    Stop,
+    Hook { state: String },
 }
 
 #[tokio::main]
@@ -213,9 +203,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
         Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
-        Command::Hook {
-            event: HookCommand::Stop,
-        } => hook::stop(&socket_path()?).await?,
+        Command::Hook { state } => cmd::hook::run(&socket_path()?, &state).await,
     }
     Ok(ExitCode::SUCCESS)
 }

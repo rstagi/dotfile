@@ -44,7 +44,12 @@ struct RenameSession {
 /// POST bodies and GET query parameters accept the optional caller field `parent_session_id`.
 pub fn router(sessions: Sessions) -> Router {
     let store = Arc::new(Mutex::new(sessions));
+    router_with_store(store)
+}
+
+pub(crate) fn router_with_store(store: Store) -> Router {
     Router::new()
+        .merge(crate::hooks::router())
         .merge(crate::workspaces::router())
         .merge(crate::agents::router())
         .route("/v1/sessions", get(list).post(create))

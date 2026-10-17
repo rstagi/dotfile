@@ -110,7 +110,10 @@ Each agent receives the same ULID in `WS_SESSION` and `WS_SESSION_ID`.
 Claude receives a private settings file for each launch. Codex receives per-launch `-c hooks.*` flags and `--dangerously-bypass-hook-trust`.
 Grok receives `${GROK_HOME:-$HOME/.grok}/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.
 Slots remain in `<git-dir>/ws-sessions`. A clean exit removes the slot. Other exits retain it for `ws open` and resume.
-The hook configuration covers every agent event. Hook ingestion beyond `stop` remains a later port phase.
+The Rust `hook` command records every callback and its original payload in the session log.
+It retains prompt, turn and tool identifiers. Receipt times remain separate from agent durations.
+Each callback first enters `$WS_STATE/spool/`. The daemon replays pending callbacks at startup.
+A failed transport retains the spool file, and the hook exits 0.
 Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.
 The tests use fake agents and private tmux servers. Preparation tests also compare the existing zsh builders.
 

@@ -19,6 +19,7 @@ use ws_core::{HookRecord, PingResponse, VERSION};
 
 pub mod agents;
 pub mod api;
+pub mod hooks;
 pub mod sessions;
 pub mod tmux;
 pub mod workspaces;
@@ -67,6 +68,8 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .join(".ws/state"),
     };
     let sessions = sessions::Sessions::open(&state, 1).map_err(io::Error::other)?;
+    let store = Arc::new(Mutex::new(sessions));
+    hooks::replay(store.clone(), &state).await?;
     let app = Router::new()
         .route("/v1/ping", get(ping))
         .route("/v1/hooks", get(hooks).post(record_hook))
@@ -74,7 +77,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
             started: Instant::now(),
             hooks: Arc::new(Mutex::new(VecDeque::new())),
         })
-        .merge(api::router(sessions));
+        .merge(api::router_with_store(store));
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {

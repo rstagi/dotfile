@@ -167,7 +167,7 @@ impl Sessions {
         self.change_state(input, SessionState::Finished, parent_session_id)
     }
 
-    fn get_record(&self, input: &str) -> Result<Session> {
+    pub(crate) fn get_record(&self, input: &str) -> Result<Session> {
         let id = self.registry.resolve(input)?;
         self.registry
             .sessions()?
@@ -212,6 +212,10 @@ impl Sessions {
         self.registry.apply(&entry)?;
         self.needs_rebuild = false;
         Ok(())
+    }
+
+    pub(crate) fn session_log(&self, id: SessionId) -> SessionLog {
+        SessionLog::new(&self.state, id, self.device_id)
     }
 
     fn change_state(

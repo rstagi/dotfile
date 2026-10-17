@@ -4,6 +4,7 @@ pub mod attach;
 pub mod claude;
 pub mod codex;
 pub mod grok;
+pub mod hook;
 pub mod list;
 pub mod merge;
 pub mod name;
