@@ -110,7 +110,15 @@ Each agent receives the same ULID in `WS_SESSION` and `WS_SESSION_ID`.
 Claude receives a private settings file for each launch. Codex receives per-launch `-c hooks.*` flags and `--dangerously-bypass-hook-trust`.
 Grok receives `${GROK_HOME:-$HOME/.grok}/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.
 Slots remain in `<git-dir>/ws-sessions`. A clean exit removes the slot. Other exits retain it for `ws open` and resume.
-The hook configuration covers every agent event. Hook ingestion beyond `stop` remains a later port phase.
+The Rust `hook` command records every callback and its original payload in the session log.
+It retains prompt, turn and tool identifiers. Receipt times remain separate from agent durations.
+The daemon records callbacks before it reduces the window state. Repeated `working` callbacks stay separate log events.
+The window options retain the zsh sequence, turn and background subagent rules. A blocked Stop keeps its turn active.
+A failed transport writes the callback to `$WS_STATE/spool/`. The daemon replays pending callbacks at startup.
+Every hook exits 0. Stop returns its decision as JSON. Each tmux command has a 100 ms deadline.
+Run `cd wsd && cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to check hooks and latency.
+The tests check p95 below 50 ms for the full ingest path and the daemon-down spool path.
+Run `zsh wsd/crates/ws/tests/golden/hook-capture.zsh` to regenerate the zsh hook state fixture.
 Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.
 The tests use fake agents and private tmux servers. Preparation tests also compare the existing zsh builders.
 

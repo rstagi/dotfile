@@ -247,7 +247,7 @@ fn ping_to_a_stale_socket_exits_one() {
 }
 
 #[test]
-fn hook_without_a_tmux_pane_reports_the_required_context() {
+fn hook_outside_a_session_returns_an_empty_stop_decision() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("missing.sock");
     let output = ws(sandbox.path(), &socket)
@@ -257,45 +257,28 @@ fn hook_without_a_tmux_pane_reports_the_required_context() {
         .args(["hook", "stop"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("inside a tmux pane")
-    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.stdout, b"{}\n");
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
-fn hook_api_rejects_invalid_records_and_exposes_accepted_events() {
+fn hook_api_rejects_invalid_states_and_panes() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
     let _daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
-    for window in ["@", "@-1", "%1", "spike:1"] {
-        let body = serde_json::json!({"event": "stop", "window_id": window}).to_string();
-        let response = request(&socket, "POST", "/v1/hooks", &body);
+    let created = request(&socket, "POST", "/v1/sessions", "{}");
+    let created: serde_json::Value =
+        serde_json::from_str(created.split_once("\r\n\r\n").unwrap().1).unwrap();
+    for (state, pane) in [
+        ("unknown", "%1"),
+        ("working", "%"),
+        ("stop", "@1"),
+        ("waiting", "%x"),
+    ] {
+        let body = serde_json::json!({"callback_id": ws_core::ids::Ulid::new(), "session_id":created["id"], "observed_at_us":1,
+            "state":state, "pane":pane, "tmux_socket":null, "tmux_path":null, "payload":{}});
+        let response = request(&socket, "POST", "/v1/hooks/ingest", &body.to_string());
         assert!(response.starts_with("HTTP/1.1 400"), "{response}");
     }
-    let response = request(
-        &socket,
-        "POST",
-        "/v1/hooks",
-        r#"{"event":"unknown","window_id":"@7"}"#,
-    );
-    assert!(response.starts_with("HTTP/1.1 422"), "{response}");
-    assert_eq!(
-        get(&socket, "/v1/hooks").split_once("\r\n\r\n").unwrap().1,
-        "[]"
-    );
-
-    let body = r#"{"event":"stop","window_id":"@7"}"#;
-    let response = request(&socket, "POST", "/v1/hooks", body);
-    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
-    let response = get(&socket, "/v1/hooks");
-    let records: serde_json::Value =
-        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
-    assert_eq!(
-        records,
-        serde_json::json!([{"event":"stop", "window_id":"@7"}])
-    );
 }

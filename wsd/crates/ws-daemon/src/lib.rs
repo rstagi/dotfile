@@ -1,7 +1,6 @@
 //! The local WS daemon runtime.
 
 use std::{
-    collections::VecDeque,
     fs::{self, File, TryLockError},
     io,
     os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
@@ -10,26 +9,23 @@ use std::{
     time::Instant,
 };
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{Json, Router, extract::State, routing::get};
 use tokio::{
     net::UnixListener,
     signal::unix::{SignalKind, signal},
 };
-use ws_core::{HookRecord, PingResponse, VERSION};
+use ws_core::{PingResponse, VERSION};
 
 pub mod agents;
 pub mod api;
+pub mod hooks;
 pub mod sessions;
 pub mod tmux;
 pub mod workspaces;
 
-const HOOK_CAPACITY: usize = 256;
-type ApiError = (StatusCode, &'static str);
-
 #[derive(Clone)]
 struct AppState {
     started: Instant,
-    hooks: Arc<Mutex<VecDeque<HookRecord>>>,
 }
 
 struct SocketFile {
@@ -67,14 +63,14 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .join(".ws/state"),
     };
     let sessions = sessions::Sessions::open(&state, 1).map_err(io::Error::other)?;
+    let store = Arc::new(Mutex::new(sessions));
+    hooks::replay(store.clone(), &state).await?;
     let app = Router::new()
         .route("/v1/ping", get(ping))
-        .route("/v1/hooks", get(hooks).post(record_hook))
         .with_state(AppState {
             started: Instant::now(),
-            hooks: Arc::new(Mutex::new(VecDeque::new())),
         })
-        .merge(api::router(sessions));
+        .merge(api::router_with_store(store));
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
@@ -123,40 +119,6 @@ async fn ping(State(state): State<AppState>) -> Json<PingResponse> {
         version: VERSION.to_owned(),
         uptime_secs: state.started.elapsed().as_secs(),
     })
-}
-
-async fn hooks(State(state): State<AppState>) -> Result<Json<Vec<HookRecord>>, ApiError> {
-    let hooks = state.hooks.lock().map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Cannot read the hook store.",
-        )
-    })?;
-    Ok(Json(hooks.iter().cloned().collect()))
-}
-
-async fn record_hook(
-    State(state): State<AppState>,
-    Json(record): Json<HookRecord>,
-) -> Result<(StatusCode, Json<HookRecord>), ApiError> {
-    if !record
-        .window_id
-        .strip_prefix('@')
-        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
-    {
-        return Err((StatusCode::BAD_REQUEST, "Use a tmux window id such as @1."));
-    }
-    let mut hooks = state.hooks.lock().map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Cannot write the hook store.",
-        )
-    })?;
-    if hooks.len() == HOOK_CAPACITY {
-        hooks.pop_front();
-    }
-    hooks.push_back(record.clone());
-    Ok((StatusCode::CREATED, Json(record)))
 }
 
 impl Drop for SocketFile {

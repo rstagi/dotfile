@@ -1,9 +1,9 @@
 //! Durable JSON Lines storage for one session.
 
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, BufRead, BufReader, Seek, SeekFrom, Write},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -48,6 +48,29 @@ pub struct SessionLog {
     device_id: DeviceId,
 }
 
+/// Retains a verified head. Every append checks file identity, size and modification time.
+pub struct LogWriter {
+    log: SessionLog,
+    head: Option<WriterHead>,
+}
+
+struct WriterHead {
+    stamp: FileStamp,
+    seq: u64,
+    epoch: u64,
+    valid_bytes: u64,
+    hash: String,
+}
+
+#[derive(PartialEq)]
+struct FileStamp {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: SystemTime,
+    changed: (i64, i64),
+}
+
 impl SessionLog {
     pub fn new(state: &Path, session_id: SessionId, device_id: DeviceId) -> Self {
         Self {
@@ -64,56 +87,15 @@ impl SessionLog {
     /// A crash tail is removed under the writer lock before the next append.
     /// Hashes use RFC 8785. Store integers outside the exact JSON range as strings.
     pub fn append(&self, epoch: u64, event_type: &str, body: Value) -> io::Result<LogEntry> {
-        let directory = self.path.parent().unwrap();
-        crate::create_state_directory(directory)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(&self.path)?;
-        // Lock the stable log inode across validation, sequence allocation, and fsync.
-        file.lock()?;
-        let previous = read_file(&mut file, self.session_id)?;
-        if previous
-            .entries
-            .last()
-            .is_some_and(|entry| epoch < entry.epoch)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "The append epoch is older than the log epoch.",
-            ));
+        self.writer().append(Some(epoch), event_type, body)
+    }
+
+    /// Creates a writer that avoids repeated validation when the log file does not change externally.
+    pub fn writer(&self) -> LogWriter {
+        LogWriter {
+            log: self.clone(),
+            head: None,
         }
-        let entry = LogEntry {
-            event_id: Ulid::new(),
-            session_id: self.session_id,
-            epoch,
-            seq: previous.entries.len() as u64 + 1,
-            prev_hash: previous.head_hash,
-            ts_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(io::Error::other)?
-                .as_millis()
-                .try_into()
-                .map_err(io::Error::other)?,
-            event_type: event_type.to_owned(),
-            body,
-            device_id: self.device_id,
-            sig: String::new(),
-        };
-        validate_numbers(&serde_json::to_value(&entry)?)?;
-        let mut bytes = serde_json::to_vec(&entry)?;
-        bytes.push(b'\n');
-        if previous.truncated_line.is_some() {
-            file.set_len(previous.valid_bytes)?;
-        }
-        file.seek(SeekFrom::Start(previous.valid_bytes))?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        File::open(directory)?.sync_all()?;
-        Ok(entry)
     }
 
     /// Checks sequence numbers and hash links. Reports an incomplete final line separately.
@@ -128,6 +110,113 @@ impl SessionLog {
             Err(error) => Err(error),
         }
     }
+}
+
+impl LogWriter {
+    /// Appends in the current epoch. A changed file forces complete hash-chain validation.
+    pub fn append_current(&mut self, event_type: &str, body: Value) -> io::Result<LogEntry> {
+        self.append(None, event_type, body)
+    }
+
+    fn append(
+        &mut self,
+        epoch: Option<u64>,
+        event_type: &str,
+        body: Value,
+    ) -> io::Result<LogEntry> {
+        let directory = self.log.path.parent().unwrap();
+        crate::create_state_directory(directory)?;
+        let mut file = crate::lockfile::open_lock_file(&self.log.path)?;
+        file.lock()?;
+        let result = self.append_locked(&mut file, epoch, event_type, body);
+        let unlocked = file.unlock();
+        match (result, unlocked) {
+            (Ok(entry), Ok(())) => Ok(entry),
+            (Err(error), _) | (_, Err(error)) => {
+                self.head = None;
+                Err(error)
+            }
+        }
+    }
+
+    fn append_locked(
+        &mut self,
+        file: &mut File,
+        epoch: Option<u64>,
+        event_type: &str,
+        body: Value,
+    ) -> io::Result<LogEntry> {
+        let stamp = file_stamp(file)?;
+        let previous = match self.head.take() {
+            Some(head) if head.stamp == stamp => head,
+            _ => {
+                let read = read_file(file, self.log.session_id)?;
+                WriterHead {
+                    stamp,
+                    seq: read.entries.len() as u64,
+                    epoch: read.entries.last().map_or(0, |entry| entry.epoch),
+                    valid_bytes: read.valid_bytes,
+                    hash: read.head_hash,
+                }
+            }
+        };
+        let epoch = epoch.unwrap_or(previous.epoch);
+        if epoch < previous.epoch {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "The append epoch is older than the log epoch.",
+            ));
+        }
+        let entry = LogEntry {
+            event_id: Ulid::new(),
+            session_id: self.log.session_id,
+            epoch,
+            seq: previous.seq + 1,
+            prev_hash: previous.hash,
+            ts_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_millis()
+                .try_into()
+                .map_err(io::Error::other)?,
+            event_type: event_type.into(),
+            body,
+            device_id: self.log.device_id,
+            sig: String::new(),
+        };
+        let value = serde_json::to_value(&entry)?;
+        validate_numbers(&value)?;
+        let mut bytes = serde_json::to_vec(&entry)?;
+        bytes.push(b'\n');
+        // Use the same stored representation that a reader validates.
+        let hash = entry_hash(&serde_json::from_slice(&bytes)?).map_err(io::Error::other)?;
+        if previous.stamp.size != previous.valid_bytes {
+            file.set_len(previous.valid_bytes)?;
+        }
+        file.seek(SeekFrom::Start(previous.valid_bytes))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        File::open(self.log.path.parent().unwrap())?.sync_all()?;
+        self.head = Some(WriterHead {
+            stamp: file_stamp(file)?,
+            seq: entry.seq,
+            epoch,
+            valid_bytes: previous.valid_bytes + bytes.len() as u64,
+            hash,
+        });
+        Ok(entry)
+    }
+}
+
+fn file_stamp(file: &File) -> io::Result<FileStamp> {
+    let metadata = file.metadata()?;
+    Ok(FileStamp {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified: metadata.modified()?,
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+    })
 }
 
 fn read_file(file: &mut File, session_id: SessionId) -> io::Result<LogRead> {
@@ -222,7 +311,7 @@ mod tests {
     use super::*;
     use crate::ids::Ulid;
     use serde_json::json;
-    use std::fs;
+    use std::fs::{self, OpenOptions};
 
     #[test]
     fn preserves_float_bodies_and_their_hashes_after_reopening() {
@@ -495,5 +584,65 @@ mod chain_tests {
         let before = fs::read(&path).unwrap();
         assert!(log.append(0, "session.finished", json!({})).is_err());
         assert_eq!(fs::read(path).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs::OpenOptions;
+
+    #[test]
+    fn retained_writer_revalidates_external_appends_crash_tails_and_corruption() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        let mut writer = log.writer();
+        writer.append_current("first", json!({"value":1})).unwrap();
+        log.append(2, "external", json!({})).unwrap();
+        let third = writer.append_current("third", json!({})).unwrap();
+        assert_eq!((third.seq, third.epoch), (3, 2));
+        OpenOptions::new()
+            .append(true)
+            .open(&log.path)
+            .unwrap()
+            .write_all(b"{partial")
+            .unwrap();
+        assert_eq!(writer.append_current("fourth", json!({})).unwrap().seq, 4);
+        assert_eq!(log.read().unwrap().entries.len(), 4);
+        let text = std::fs::read_to_string(&log.path)
+            .unwrap()
+            .replace("\"value\":1", "\"value\":2");
+        std::fs::write(&log.path, text).unwrap();
+        assert!(writer.append_current("rejected", json!({})).is_err());
+    }
+
+    #[test]
+    fn retained_writer_hashes_the_stored_float_representation() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        let mut writer = log.writer();
+        writer
+            .append_current("float", json!({"numbers":[51.248178375505404, -93.31137037688033, 2.0030397744267762e-253, 7.101215824554616e260, -0.0]}))
+            .unwrap();
+        writer.append_current("next", json!({})).unwrap();
+        assert_eq!(log.read().unwrap().entries.len(), 2);
+    }
+
+    #[test]
+    fn independent_retained_writers_keep_one_hash_chain() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        let mut first = log.writer();
+        let mut second = log.writer();
+        for seq in 1..=20 {
+            let writer = if seq % 2 == 0 {
+                &mut first
+            } else {
+                &mut second
+            };
+            assert_eq!(writer.append_current("event", json!({})).unwrap().seq, seq);
+        }
+        assert_eq!(log.read().unwrap().entries.len(), 20);
     }
 }

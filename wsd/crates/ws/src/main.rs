@@ -4,7 +4,6 @@ use clap::{Parser, Subcommand};
 
 mod client;
 mod cmd;
-mod hook;
 mod init;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -119,21 +118,22 @@ enum Command {
         target: Vec<String>,
     },
     /// Send a hook event from the current tmux pane.
-    Hook {
-        #[command(subcommand)]
-        event: HookCommand,
-    },
+    Hook { state: String },
 }
 
-#[derive(Subcommand)]
-enum HookCommand {
-    /// Record the end of an agent turn.
-    Stop,
-}
-
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run(Cli::parse()).await {
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    // Hooks only perform one socket request. Avoid creating a worker pool for each callback.
+    let mut builder = if matches!(cli.command, Some(Command::Hook { .. })) {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+    };
+    let result = match builder.enable_all().build() {
+        Ok(runtime) => runtime.block_on(run(cli)),
+        Err(error) => Err(error.into()),
+    };
+    match result {
         Ok(code) => code,
         Err(error) => {
             eprintln!("ws: {error}");
@@ -213,9 +213,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
         Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
-        Command::Hook {
-            event: HookCommand::Stop,
-        } => hook::stop(&socket_path()?).await?,
+        Command::Hook { state } => {
+            cmd::hook::run(&socket_path().unwrap_or_default(), &state).await;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
