@@ -1,0 +1,6 @@
+id: #2
+name: finisher
+workspace: api/seed
+agent: codex
+status: done
+output: <OUTPUT>

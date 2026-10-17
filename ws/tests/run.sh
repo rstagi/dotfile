@@ -18,6 +18,25 @@ typeset -A groups=(
 )
 order=(core send triggers misc)
 
+if [[ "${1:-}" == rust ]]; then
+  source "$HERE/helpers.sh"
+  export WS_STATE="$WS_HOME/state" WS_SOCK="$NOTCH_HOME/wsd.sock"
+  export WS_RUST_BIN="$ROOT/wsd/target/debug/ws"
+  [[ -x "$WS_RUST_BIN" ]] || { print -u2 'Build wsd before the Rust smoke test.'; exit 1; }
+  "$WS_RUST_BIN" daemon > "$TMP/daemon.log" 2>&1 &
+  ws_rust_daemon_pid=$!
+  wait_until test -S "$WS_SOCK" || { cat "$TMP/daemon.log"; exit 1; }
+  "$WS" backend rust || exit 1
+  assert_eq "$(<"$WS_HOME/backend")" rust 'the Rust smoke selects rust'
+  mkdir -p "$WS_HOME/bin"
+  ln -s "$WS_RUST_BIN" "$WS_HOME/bin/ws-rs"
+  unset WS_RUST_BIN
+  assert_eq "${$("$WS" ping)%% *}" wsd 'the dispatcher uses the installed Rust path'
+  "$WS" backend zsh || exit 1
+  assert_eq "$(<"$WS_HOME/backend")" zsh 'the dispatcher can return to zsh'
+  test_summary
+fi
+
 ws_tests_areas() {
   local area
   for area in "$@"; do

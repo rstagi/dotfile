@@ -48,6 +48,10 @@ if [[ -n "$ws_pid" ]]; then
   echo "== ws/tests/run.sh =="
   wait "$ws_pid" || fail=1
   cat "$TEST_HOME_DIR/ws.log"
+  if [[ -x "$ROOT/wsd/target/debug/ws" ]]; then
+    echo "== ws Rust smoke =="
+    zsh "$ROOT/ws/tests/run.sh" rust || fail=1
+  fi
   echo
 fi
 

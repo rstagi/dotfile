@@ -1,0 +1,1 @@
+ws: whoami: not inside a ws session

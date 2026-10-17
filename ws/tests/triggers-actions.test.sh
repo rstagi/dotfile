@@ -128,6 +128,8 @@ T send-keys -t "$EMPTY_WIN" Enter
 
 # --- G4: queued-not-delivered sends are not failures ---
 echo "ws send/on: a durably queued but undelivered send exits 75 and triggers record queued"
+# Keep this target busy so a delivery retry cannot paste into the fake agent.
+hook api/triggers "$DEFAULT_WIN" working </dev/null
 QUEUED_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$DEFAULT_WIN.lock"
 rm -f "$TMP/queued-held" "$TMP/queued-release"
 (zmodload zsh/system; : >> "$QUEUED_LOCK"; zsystem flock -f queued_fd "$QUEUED_LOCK"; : > "$TMP/queued-held"
@@ -144,6 +146,8 @@ assert_eq "$(jq -r '.status' "$WS_HOME/triggers/archive/$QUEUED_TID.json" 2>/dev
 assert_contains "$(jq -r '.warning // ""' "$WS_HOME/triggers/archive/$QUEUED_TID.json" 2>/dev/null)" "message queued" "queued record keeps the warning"
 : > "$TMP/queued-release"
 wait "$queued_holder"
+# Run the competing delivery worker before the Stop callback.
+WS_DELIVER_RETRIES=1 WS_DELIVER_RETRY_INTERVAL=0 "$WS" _deliver-retry "$DEFAULT_ID"
 reply="$(hook api/triggers "$DEFAULT_WIN" stop </dev/null | jq -r '.reason // empty')"
 assert_eq "$(print -r -- "$reply" | grep -c '^queued direct$')" "1" "queued direct send delivered exactly once"
 assert_eq "$(print -r -- "$reply" | grep -c '^queued trigger$')" "1" "queued trigger send delivered exactly once"

@@ -15,6 +15,8 @@ migrate() { WS_HOME="$MIG_HOME" GROK_HOME="$MIG_GROK" "$WS" "$@"; }
 
 echo "ws migrate: stale hook files are re-pointed at the current ws"
 MIG_HOME="$TMP/mig-home" MIG_GROK="$TMP/mig-grok" MIG_GROK_HOOKS="$TMP/mig-grok/hooks/ws.json"
+mkdir -p "$MIG_HOME"
+print -r -- zsh > "$MIG_HOME/backend"
 stale_hooks "/old/dotfile/ws.sh"
 migrate _migrate-hooks
 assert_exit "$?" "0" "_migrate-hooks succeeds"
@@ -114,3 +116,29 @@ assert_eq "$(hook_stop_cmd "$MIG_GROK_HOOKS")" "/old/dotfile/ws.sh hook stop" "G
 assert_eq "$(hook_stop_cmd "$MIG_HOME/claude-settings.json")" "${(q)COPY}/ws.sh hook stop" "claude-settings.json still migrates"
 WS_HOME="$MIG_HOME" GROK_HOME="$MIG_GROK" zsh "$COPY/ws.sh" open no/such-workspace 2>/dev/null
 assert_exit "$?" "1" "startup survives the Grok failure (open itself fails as usual)"
+
+echo "ws dispatch: an install without ws-rs and without a selector falls back to zsh"
+UP_HOME="$TMP/upgrade-home"
+mkdir -p "$UP_HOME/bin"
+ln -s "$WS" "$UP_HOME/bin/ws"
+up_help="$(WS_HOME="$UP_HOME" "$UP_HOME/bin/ws" --help 2>&1)"
+assert_exit "$?" "0" "ws --help runs without the Rust binary"
+assert_contains "$up_help" "ws new" "the fallback prints the zsh help"
+WS_HOME="$UP_HOME" "$UP_HOME/bin/ws" backend zsh >/dev/null 2>&1
+assert_exit "$?" "0" "ws backend zsh runs without the Rust binary"
+assert_eq "$(<"$UP_HOME/backend")" "zsh" "ws backend zsh writes the zsh selector"
+rm -f "$UP_HOME/backend"
+WS_HOME="$UP_HOME" "$UP_HOME/bin/ws" backend rust >/dev/null 2>&1
+assert_exit "$?" "1" "ws backend rust refuses without the Rust binary"
+assert_eq "$([[ -e "$UP_HOME/backend" ]] && print present)" "" "a refused selection writes no selector"
+
+echo "ws dispatch: an installed ws-rs is the default without a selector"
+print -r -- '#!/bin/sh
+echo "fake-rust $*"' > "$UP_HOME/bin/ws-rs"
+chmod +x "$UP_HOME/bin/ws-rs"
+assert_eq "$(WS_HOME="$UP_HOME" "$UP_HOME/bin/ws" ping)" "fake-rust ping" "ws execs the installed Rust binary"
+assert_eq "$(WS_HOME="$UP_HOME" "$UP_HOME/bin/ws" backend rust)" "fake-rust backend rust" "ws backend execs the installed Rust binary"
+print -r -- rust > "$UP_HOME/backend"
+rm -f "$UP_HOME/bin/ws-rs"
+WS_HOME="$UP_HOME" "$UP_HOME/bin/ws" ping >/dev/null 2>&1
+assert_exit "$?" "127" "an explicit rust selector still execs the missing Rust binary"

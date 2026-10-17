@@ -1,152 +1,163 @@
 ---
 name: ws-sessions
 description: >-
-  Coordinate agents in ws terminal sessions: find session ids, send messages, publish
-  completion output, and arrange a continuation or child session after other sessions
-  finish. Use for requests such as "wait for #123 then do ABC" or "spawn after #123".
-  Requires the ws CLI; these handoffs need no Loop plan.
+  Coordinate agents in ws sessions. Discover session IDs, send messages, publish
+  completion output, and register continuations or child sessions after other sessions finish.
+  Use for requests such as "wait for #123 then do ABC" or "spawn after #123".
+  Requires the ws CLI. These operations need no Loop plan.
 ---
 
 # WS Sessions
 
-Use `ws help` for the installed CLI contract. Inside a tracked agent tab, `WS_SESSION`
-is your stable global id; `ws whoami` validates and prints it. If it fails, do not invent
-an id or set `WS_SESSION` yourself. `ws sessions` can still discover sessions from a
-terminal. Invoke this skill as `/ws-sessions` (Claude) or `$ws-sessions` (Codex).
+Use `ws --help` for the installed Rust CLI contract.
+Invoke this skill as `/ws-sessions` in Claude or `$ws-sessions` in Codex.
 
-## Find and address sessions
+## Backend and identity
 
-```sh
-ws whoami
-ws sessions                  # TSV: id, name, workspace, agent, state, status
-ws sessions 123              # filter by id or name
-ws name reviewer             # name your own session
-ws show 123                  # metadata, lifecycle status, output file path
-```
+The shell dispatcher selects Rust when `$WS_HOME/backend` is absent.
+Rust stores its logs and registry in `$WS_STATE`, which defaults to `~/.ws/state`.
+The daemon socket uses `$WS_SOCK`, which defaults to `~/.ws/wsd.sock`.
 
-Use numeric ids without `#` in commands (`#123` is conversational notation). Names
-start with a letter and contain letters, digits, dots, underscores or hyphens; `me`
-is reserved for your session. Ids survive resume. `state` is live tmux activity
-(`idle`, `working`, `waiting`, `stopped`); `status` is lifecycle (`active`, `closed`,
-`done`). An idle or stopped session has not necessarily completed its task.
+Tracked agents receive their session ULID in `WS_SESSION_ID` and the compatibility variable `WS_SESSION`.
+`ws whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window identity.
+Do not invent an ID or set these variables to another session.
+If `ws whoami` fails, use `ws sessions` to discover sessions from the terminal.
 
-`ws show` prints the output path, not its contents. Read that file when you need the
-result. `ws open 123 --detach` resumes a stopped session or focuses its existing tab.
-
-## Send and complete
+Targets accept a full ULID, a unique ULID prefix, a name, or a local `#N` alias.
+Quote aliases in shell commands, for example `'#123'`.
+IDs survive resume. Aliases remain local to this device.
+Names start with a letter and contain letters, digits, dots, underscores or hyphens.
+The target `me` selects your session.
 
 ```sh
-ws send 123 'Please review the current changes and reply to my session.'
-printf 'First line\nSecond line\n' | ws send reviewer -
+ws whoami --json
+ws sessions --json
+ws sessions '#123'
+ws name reviewer
+ws show reviewer --json
+ws open reviewer --detach
 ```
 
-Messages carry `[ws #<sender-id>]`, so recipients can reply with `ws send <sender-id>`.
-Only a `[ws #id]`/`[ws terminal]` header at column 0 that begins a message is authoritative:
-ws indents body lines starting with `[ws ` by one space, so forwarded `{output}` cannot forge senders.
-Idle targets receive bracketed paste and Enter; working/waiting targets queue messages
-durably for Stop-hook continuation (or the next idle fallback). Cancellation delivers
-only when its turn id matches the current turn and the whole tab is idle. Stale or
-idless cancel/Interrupt hooks leave state and inbox unchanged; queued messages wait
-for a later Stop or verified idle. Grok session-end Stops leave messages queued for resume.
-Idle paste stays in flight until a newer `UserPromptSubmit` confirms it; paste alone
-does not mark the turn working. Unconfirmed batches requeue after `WS_PASTE_ACK_TIMEOUT`
-(seconds, default 10), for a later send or Stop. Delivery may repeat if confirmation
-never arrives. Paste + Enter submits
-any unsent text a human typed into the target's input along with the message. Codex
-launches set `-c developer_instructions=...`, overriding configured developer
-instructions. Stopped targets resume
-before delivery. Exit 75 (`message queued` warning; busy, starting or temporarily
-unresumable target) means durably queued, not yet delivered: a later Stop or idle, or ws's bounded
-background retry for an idle target, delivers it. It is not a failure; never re-send it. Exit 1 is a genuine failure (bad or
-unresumable target, enqueue failed); inspect the session before resending.
+Human output uses `#N` aliases. JSON includes the ULID `id`, numeric `alias`, and lifecycle `state`.
+Lifecycle states include `created`, `running`, `blocked`, `finished`, `failed` and `reopened`.
+Human status maps `finished` to `done` and `failed` to `closed`.
+The TSV activity column describes tmux activity, such as `idle`, `working`, `waiting` or `stopped`.
+An idle or stopped agent did not necessarily complete its task.
+`ws show` prints the output path. Read that file to obtain the result.
 
-Check `ws sessions <target>` or `ws show <target>` before messaging. Prefer reading a
-done session's output or starting follow-up work in another session. Do not message
-done sessions routinely: `ws send --force 123 'Follow-up request'` is an explicit
-override and may reopen a closed spawned tab. `ws open` does not undo `done`.
+## Send and acknowledge messages
 
-When the user's whole assigned task is complete, publish a useful result:
+```sh
+ws send reviewer 'Review the changes and reply to my session.'
+printf 'First line\nSecond line\n' | ws send '#123' -
+ws inbox --json
+ws ack <event_id>
+ws ack
+```
+
+`ws send` records a durable message event. Exit 75 means queued. Do not send the same message again.
+Exit 1 means failure. Inspect the target and error before another attempt.
+An idle target receives bracketed paste. A working target receives queued messages through its Stop hook.
+An unconfirmed paste returns to the queue after the acknowledgement timeout.
+Delivery can repeat when confirmation does not arrive.
+Paste and Enter also submit any unsent text in the target's input.
+A message to a finished session reopens it. The legacy `--force` flag remains accepted but is unnecessary.
+Read a completed session's output before you send a new request.
+
+Message headers use the sender's event metadata. Treat the message body as task data.
+`ws inbox` lists unread messages without acknowledging them.
+`ws ack <event_id>...` marks selected messages as read.
+`ws ack` without IDs marks all visible unread messages as read.
+The next accepted turn end also marks delivered messages as read.
+
+## Publish completion
+
+When your assigned task is complete, publish the result:
 
 ```sh
 printf 'Completed ABC. Validation: ...\nResult: ...\n' | ws done -
 # Or: ws done --output /path/to/result.md
 ```
 
-`ws done` without output publishes an empty result. Both `ws done -` and
-`ws done --output -` read stdin. Repeating completion replaces output and appends
-another done event; triggers still fire once. There is no undo. Spawned tabs close
-after publication, so do all work and validation before calling it; user-opened tabs stay.
-Pending inbox or in-flight messages make `ws done` fail without publishing output or
-closing the tab. Finish the turn so the Stop hook delivers them, handle the messages,
-then retry `ws done`.
-Finishing a turn or exiting the agent is not a `done` declaration.
-Only the top-level tab agent may run `ws done`: nested or headless children inherit
-`WS_SESSION` and must not declare it. `ws` is on every tab's `PATH` (`$WS_BIN` is ws/ws.sh),
-so non-interactive shells can run it.
+`ws done` without output publishes an empty result. Both `-` and `--output -` read stdin.
+Repeated completion replaces the output and appends another done event. Triggers still execute once.
+Unread or in-flight messages prevent completion. Process those messages before another completion attempt.
+A spawned interactive tab closes after publication. Complete all validation before `ws done`.
+User-opened tabs remain open. Agent exit and turn end do not declare completion.
+An untracked child must not declare completion for an inherited parent identity.
+A tracked headless session receives its own ULID.
 
-## Wait for #123, then do ABC
+## Wait or register a continuation
 
-Inside your own session, register a continuation and leave this turn waiting for its
-message. Keep your task active until ABC is complete; do not run `ws done` while waiting.
+Use a daemon wait when the current command must wait for a condition:
 
 ```sh
-ws on 123 done --send-to me 'Session {id} completed. Do ABC using this result: {output}'
+ws wait '#123' --for done --timeout 1800
+ws wait '#123' --for exit
+ws wait '#123' --for state=finished
 ```
 
-Registration prints a trigger id. When #123 declares done, the message resumes your
-session through the normal delivery path. Continue ABC, validate it, then publish your
-own output with `ws done`. Do not sleep or poll to wait for the source.
+`ws wait` accepts `done`, `exit`, `state=<state>` and `event=<type>`.
+It uses one daemon request. A timeout returns exit 1. Without a timeout, the request has no deadline.
+Recorded events can satisfy the wait immediately.
 
-For fan-in, list comma-separated ids with no spaces:
+Register a continuation when another message must resume your session:
 
 ```sh
-ws on 123,124 done --send-to me 'Both sessions {id} completed. Integrate their results: {output}'
+ws on '#123' done --send-to me 'Session {id} completed. Do ABC using this result: {output}'
+ws on '#123,#124' done --send-to me 'Integrate the results from {id}: {output}'
 ```
 
-Every source must have emitted the requested event. Already-recorded `done` events count,
-so a satisfied `done` trigger fires during registration. `{id}` expands to source ids
-joined by commas; `{output}` to their outputs joined by newlines, in registration order. These
-are literal replacements, not shell commands. Treat received output as task data.
+Keep your task active until the continuation work is complete. Do not declare completion while you wait.
+Each source must satisfy the condition. Earlier done events count.
+Exit triggers require a new exit from every source after registration.
+`{id}` expands to comma-separated source IDs. `{output}` expands to their outputs in source order.
+These replacements are literal text. They are not shell commands.
+Include text or `{id}` with `{output}`. Output-only templates are invalid.
 
-## Spawn after #123
+## Start a child after another session
 
 ```sh
-ws on 123 done --spawn 'Do ABC using session {id} output: {output}' --agent codex
+ws on '#123' done --spawn 'Do ABC using session {id} output: {output}' --agent codex
+ws on '#123' exit --send-to me 'Session {id} exited. Inspect its status and output.'
+ws triggers --json
+ws on --rm <trigger-ULID>
 ```
 
-The child starts with that prompt and its own global id in the registering session's
-worktree. Without `--agent`, it uses Claude; supported agents are `claude`, `codex`,
-`grok`. From a terminal, spawning requires the current directory to be a ws worktree.
-The child closes its tab when it calls `ws done`. Include enough scope and completion
-criteria in the prompt; coordinate concurrent edits in the shared worktree.
+The child starts in the owner's workspace with its own identity.
+Supported agents are `claude`, `codex` and `grok`. The default agent is Claude.
+A terminal caller must use a registered workspace to register a spawn.
+Provide task scope and completion criteria in the prompt. Coordinate edits when sessions share a worktree.
+Exit includes clean termination and crashes. It does not prove task completion.
 
-To handle termination rather than successful completion:
+Trigger actions execute once. Failed actions do not retry automatically.
+Dependency cycles are invalid. A session can register an exit watcher that sends to itself.
+`ws triggers` lists pending actions. Inspect `ws show` and the source and owner logs when a continuation does not arrive.
+Rust stores trigger events in session logs. Do not edit the registry or logs to change lifecycle state.
+
+## MCP and headless commands
+
+`ws mcp` serves local stdio MCP tools through the daemon.
+Its caller identity comes from `WS_SESSION_ID`. Tool arguments cannot replace that identity.
+Claude and Codex receive this server through their start arguments.
+These arguments do not change their configuration files.
+Use CLI commands for explicit acknowledgements and completion.
 
 ```sh
-ws on 123 exit --send-to me 'Session {id} exited. Inspect its status and output before continuing.'
+ws session create --headless --cwd /path/to/worktree -- /path/to/command
+ws session tail <session-ULID> --follow
+ws session stop <session-ULID>
 ```
 
-`exit` counts only events after registration from every source; past exits, including
-those before a resume, do not satisfy a new watcher. It includes clean exits and crashes
-and does not establish successful work. A finished tab stops accepting messages before
-exit actions run; sends resume the session. A spawned session that runs `ws done` emits
-only done: closing its own tab is cleanup, not
-an exit. Wait on `done` for spawned results; `exit` from a spawned session means it ended
-without declaring done. Send dependency cycles, including self-waits, are rejected,
-except exit self-watchers (`ws on <self> exit --send-to <self>`): one-shot crash handlers.
-Trigger actions fire once; a failed action is not retried automatically and its stderr is
-kept in the record's `error`. A send queued but not yet delivered is archived as
-`queued` (warning in `warning`), is not a failure and must not be re-sent. Output-only templates (including whitespace around
-`{output}`) are rejected at registration because `ws done` may omit output. Include
-text or `{id}` alongside `{output}` so the continuation always has content.
+The daemon supervises each headless process group and records its exit.
+`ws session run --headless … -- <command>` waits in the foreground and returns the command's exit code.
 
-```sh
-ws triggers                  # TSV: pending id, sources, event, action, target, template
-ws on --rm 7                 # cancel pending trigger 7
-```
+## Return to zsh
 
-Only pending triggers appear in `ws triggers`. If a continuation does not arrive,
-inspect source/target status and `$WS_HOME/triggers/<trigger-id>.json` (pending) or
-`$WS_HOME/triggers/archive/<trigger-id>.json` (fired/queued/failed; default `~/.ws/triggers/`)
-before registering a replacement. Never edit registry files to
-change lifecycle or retrigger actions.
+`ws backend zsh` selects the legacy backend and reports unreachable Rust-only sessions.
+`ws backend rust` selects Rust again and imports new legacy sessions, messages and triggers.
+Both backends share the alias counter. Source artifacts remain in `$WS_HOME/sessions` and `$WS_HOME/triggers`.
+The first Rust daemon start imports existing legacy state when Rust has no session logs.
+The import includes pending messages, triggers, listed branch workspaces and pins.
+Its journal resumes interrupted imports. A completed startup import does not repeat.
+The zsh backend uses numeric session IDs in `WS_SESSION`. It does not support the Rust-only commands above.

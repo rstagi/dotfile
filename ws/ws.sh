@@ -55,6 +55,23 @@ zmodload zsh/system # zsystem flock (sessions file)
 WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
 WS_HOME="${WS_HOME:-$HOME/.ws}"
+# The selector is durable, so child shells need no backend environment variable.
+# Without a selector, an install that has no ws-rs yet (pulled before ./install.sh ws) uses zsh.
+if [[ "$ZSH_EVAL_CONTEXT" != *:file ]]; then
+  rust_available=0
+  [[ -z "${WS_RUST_BIN:-}" && ! -x "$WS_HOME/bin/ws-rs" ]] || rust_available=1
+  backend=zsh
+  (( ! rust_available )) || backend=rust
+  [[ ! -f "$WS_HOME/backend" ]] || backend="$(<"$WS_HOME/backend")"
+  case "$backend" in
+    rust|zsh) ;;
+    *) print -u2 'ws: the backend selector must contain rust or zsh'; exit 1 ;;
+  esac
+  if [[ "$backend" == rust ]] || { [[ "${1:-}" == backend ]] && (( rust_available )); }; then
+    export WS_HOME WS_ROOT
+    exec "${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}" "$@"
+  fi
+fi
 WS_NOTIFY="${WS_NOTIFY:-1}"
 WS_NOTIFIER="${WS_NOTIFIER:-auto}" # auto | osascript | terminal-notifier | boringnotch | executable path
 WS_BORINGNOTCH_SOCKET="${WS_BORINGNOTCH_SOCKET:-$HOME/Library/Application Support/boringNotch/notify.sock}"
@@ -123,9 +140,24 @@ main() {
   _hook-retry) hook_retry "$@" ;;
   _migrate-hooks) hooks_migrate --force ;;
   _build-notifier) build_notifier ;;
+  backend) cmd_backend_without_rust "$@" ;;
   -h | --help | help) sed -n '/^# ws —/,/^# Workspace slots/{ /^# Workspace slots/d; p; }' "$WS_BIN" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try: ws help)" ;;
   esac
+}
+
+# cmd_backend_without_rust <rust|zsh> — `ws backend` when ws-rs is not installed: zsh writes the
+# selector atomically; rust fails until ./install.sh ws installs the Rust binary.
+cmd_backend_without_rust() {
+  case "${1:-}" in
+    zsh) ;;
+    rust) die "the Rust binary $WS_HOME/bin/ws-rs is missing (run: ./install.sh ws)" ;;
+    *) die "select the rust or zsh backend" ;;
+  esac
+  mkdir -p "$WS_HOME" || return 1
+  local temporary="$WS_HOME/.backend-$$"
+  print -r -- zsh > "$temporary" && mv -f "$temporary" "$WS_HOME/backend" || return 1
+  print "ws backend: zsh"
 }
 
 [[ "$ZSH_EVAL_CONTEXT" == *:file ]] || main "$@" # sourced (tests): functions only
