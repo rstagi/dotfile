@@ -112,6 +112,28 @@ fn whoami_uses_environment_precedence_then_the_tmux_window() {
     );
 }
 
+#[test]
+fn show_matches_zsh_and_reports_the_durable_output_path() {
+    let sandbox = Sandbox::new();
+    let output_path = sandbox
+        .home
+        .path()
+        .join("state/sessions")
+        .join(&sandbox.ids[1])
+        .join("output.md");
+    let expected =
+        include_str!("golden/show.txt").replace("<OUTPUT>", output_path.to_str().unwrap());
+    sandbox.assert_golden(&["show", "finisher"], &expected);
+    sandbox.assert_golden(&["show", "#1"], include_str!("golden/show-empty.txt"));
+    let shown = sandbox.json(&["show", "--json", "#2"]);
+    assert_eq!(shown["id"], sandbox.ids[1]);
+    assert_eq!(shown["alias"], 2);
+    assert_eq!(shown["name"], "finisher");
+    assert_eq!(shown["output"], output_path.to_str().unwrap());
+    sandbox.assert_error(&["show", "absent"], include_str!("golden/missing.txt"));
+    sandbox.assert_error(&["show"], "ws: show: expected <id|name>\n");
+}
+
 impl Sandbox {
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();

@@ -35,6 +35,12 @@ enum Command {
         json: bool,
         target: Vec<String>,
     },
+    /// Show one session and its output path.
+    Show {
+        #[arg(long)]
+        json: bool,
+        target: Vec<String>,
+    },
     /// Send a hook event from the current tmux pane.
     Hook {
         #[command(subcommand)]
@@ -82,6 +88,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Sessions { json, target } => {
             cmd::sessions::run(&socket_path()?, &target, json).await?
         }
+        Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
         Command::Hook {
             event: HookCommand::Stop,
         } => hook::stop(&socket_path()?).await?,
