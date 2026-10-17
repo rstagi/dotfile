@@ -12,6 +12,7 @@ pub mod hook;
 pub mod inbox;
 pub mod list;
 pub mod merge;
+pub mod migrate;
 pub mod name;
 pub mod new;
 pub mod on;

@@ -17,6 +17,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Import the legacy zsh session state.
+    Migrate {
+        #[arg(long, required = true)]
+        from_zsh: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Register or remove a session trigger.
     On {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -205,6 +212,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Migrate { dry_run, .. } => cmd::migrate::run(dry_run)?,
         Command::On { arguments } => cmd::on::run(&socket_path()?, arguments).await?,
         Command::Triggers { json } => cmd::triggers::run(&socket_path()?, json).await?,
         Command::Done { output, stdin } => {

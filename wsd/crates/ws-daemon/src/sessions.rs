@@ -60,6 +60,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl Sessions {
     /// Opens the local index and restores it from the session logs.
     pub fn open(state: &Path, alias_floor: i64) -> Result<Self> {
+        let alias_floor = alias_floor.max(crate::import::alias_floor(state)?);
         let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".into());
         let device = Device::init(state, &hostname)?;
         let writer_lock = lockfile::open_lock_file(&state.join("sessions.lock"))?;

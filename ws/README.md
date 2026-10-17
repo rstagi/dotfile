@@ -82,6 +82,15 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 
 ## Rust commands
 
+`ws migrate --from-zsh [--dry-run]` imports `$WS_HOME/sessions` into `$WS_STATE` (default `~/.ws/state`).
+Stop the Rust daemon before an import. The importer takes the zsh counter, names, output, inbox, metadata and event locks.
+A busy lock stops the import with an error. Retry after the writer releases that lock.
+Each legacy session receives a ULID and keeps its `#N` alias. New aliases start above `sessions/counter`.
+The import copies completion output and prompts. It preserves pending inbox, Stop and unconfirmed paste messages as undelivered events from the human session.
+`$WS_STATE/import-zsh.json` stores the snapshot, session ids and the map from each original event line to its new sequence number.
+An interrupted import resumes from that snapshot. A completed import makes subsequent runs read-only.
+`--dry-run` prints the JSON import plan and creates no files. The source artifacts remain in place.
+
 The Rust CLI in `wsd/` supports `whoami`, `name <label>`, `sessions [id|name]` and `show <id|name>`.
 Each command accepts `--json`. Human output uses `#N` aliases. Targets accept aliases, names, ULIDs and unique ULID prefixes.
 The `me` target selects the current session.
