@@ -349,6 +349,14 @@ fn named_agent_commands_run_in_the_current_tab_and_preserve_failed_slots() {
         let rows = fs::read_to_string(sandbox.slots()).unwrap();
         assert_eq!(rows.contains(id), exit_code != 0);
         let session = sandbox.json(&["show", id, "--json"]);
+        assert_eq!(session["exit_code"], exit_code);
+        let response = common::request(
+            &sandbox.socket,
+            "POST",
+            &format!("/v1/sessions/{id}/wait"),
+            r#"{"for":"exit","timeout":0}"#,
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert_eq!(
             session["state"],
             if exit_code == 0 {

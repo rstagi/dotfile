@@ -36,6 +36,13 @@ pub(super) fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<(
             "The event sequence is not consecutive.".into(),
         ));
     }
+    if entry.event_type == "done" {
+        let changed = connection.execute(
+            "UPDATE sessions SET state = 'finished', updated_at_ms = ?1 WHERE id = ?2",
+            params![sql_number(entry.ts_ms)?, entry.session_id.to_string()],
+        )?;
+        require_session(changed, entry)?;
+    }
     match entry.event_type.split_once('.') {
         Some(("session", _)) => project_session(connection, entry)?,
         Some(("workspace", _)) => project_workspace(connection, entry)?,
@@ -57,6 +64,7 @@ pub(super) fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<(
 
 fn project_session(connection: &Connection, entry: &LogEntry) -> Result<()> {
     match entry.event_type.as_str() {
+        "session.depends_on" | "session.block_on" => project_edge(connection, entry)?,
         "session.created" => {
             let alias = entry
                 .body
@@ -171,9 +179,13 @@ fn project_workspace(connection: &Connection, entry: &LogEntry) -> Result<()> {
 
 fn project_edge(connection: &Connection, entry: &LogEntry) -> Result<()> {
     match entry.event_type.as_str() {
-        "edge.added" => {
+        "edge.added" | "session.depends_on" | "session.block_on" => {
             let target = parse_id(required_str(entry, "target")?)?;
-            let kind = required_str(entry, "kind")?;
+            let kind = match entry.event_type.as_str() {
+                "session.depends_on" => "depends_on",
+                "session.block_on" => "block_on",
+                _ => required_str(entry, "kind")?,
+            };
             if !["depends_on", "block_on", "parent"].contains(&kind) {
                 return Err(Error::InvalidEvent(format!("Invalid edge kind: {kind}.")));
             }

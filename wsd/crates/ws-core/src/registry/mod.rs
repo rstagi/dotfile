@@ -8,6 +8,7 @@
 //! - `workspace.created|updated|removed`: `workspace_id`. Other fields form workspace data.
 //!   Updates merge top-level fields. All mutations use the creator session's log.
 //!   Removed workspace ids retain that log owner.
+//! - `session.depends_on|block_on`: `target` (ULID). The event id identifies the edge.
 //! - `edge.added`: `target` (ULID), `kind` (`depends_on`, `block_on`, or `parent`).
 //!   The event id identifies the edge. `edge.removed` contains `edge_id`.
 //! - `message.sent`: `from_session` (the log owner), `to_session`, positive `pair_seq`, and `body`.
@@ -138,6 +139,29 @@ impl Registry {
         let entry: Option<String> = self.connection.query_row(
             "SELECT entry FROM applied_events WHERE session_id = ?1 AND json_extract(entry, '$.type') = ?2 AND json_extract(entry, '$.body.callback_id') = ?3 ORDER BY seq LIMIT 1",
             params![session.to_string(), event_type, callback_id], |row| row.get(0),
+        ).optional()?;
+        entry
+            .map(|entry| serde_json::from_str(&entry).map_err(Error::Json))
+            .transpose()
+    }
+
+    /// Returns the latest recorded event of this type for a session.
+    pub fn latest_event(&self, session: SessionId, event_type: &str) -> Result<Option<LogEntry>> {
+        let entry: Option<String> = self.connection.query_row(
+            "SELECT entry FROM applied_events WHERE session_id = ?1 AND json_extract(entry, '$.type') = ?2 ORDER BY seq DESC LIMIT 1",
+            params![session.to_string(), event_type], |row| row.get(0),
+        ).optional()?;
+        entry
+            .map(|entry| serde_json::from_str(&entry).map_err(Error::Json))
+            .transpose()
+    }
+
+    /// Returns the latest exit recorded by a supervisor or launch wrapper.
+    /// Hook callbacks do not prove that the operating system reaped the process.
+    pub fn latest_process_exit(&self, session: SessionId) -> Result<Option<LogEntry>> {
+        let entry: Option<String> = self.connection.query_row(
+            "SELECT entry FROM applied_events WHERE session_id = ?1 AND json_extract(entry, '$.type') = 'exit' AND json_type(entry, '$.body.callback_id') IS NULL ORDER BY seq DESC LIMIT 1",
+            [session.to_string()], |row| row.get(0),
         ).optional()?;
         entry
             .map(|entry| serde_json::from_str(&entry).map_err(Error::Json))

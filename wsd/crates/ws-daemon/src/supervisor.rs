@@ -86,7 +86,7 @@ pub(crate) async fn stop(
             return sessions.stop(&input, caller).map(|session| (session, None));
         }
         sessions.record_call(caller, "session.stop", Some(&input))?;
-        if ["finished", "failed"].contains(&session.state.as_str()) {
+        if sessions.process_exited(session.id)? {
             return Ok((session, None));
         }
         let entries = SessionLog::new(&sessions.state, session.id, session.device_id)
@@ -114,9 +114,13 @@ pub(crate) async fn stop(
             .map_err(ApiError)?;
         loop {
             let id = session.id.to_string();
-            let current =
-                api::call(store.clone(), move |sessions| sessions.get_record(&id)).await?;
-            if ["finished", "failed"].contains(&current.state.as_str()) {
+            let (current, exited) = api::call(store.clone(), move |sessions| {
+                let current = sessions.get_record(&id)?;
+                let exited = sessions.process_exited(current.id)?;
+                Ok((current, exited))
+            })
+            .await?;
+            if exited {
                 return Ok(current);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -188,9 +192,7 @@ pub(crate) async fn adopt(store: Store) -> std::result::Result<(), ApiError> {
     let monitor_store = store.clone();
     api::call(store, move |sessions| {
         for session in sessions.registry.sessions()? {
-            if session.body["kind"] != "headless"
-                || ["finished", "failed"].contains(&session.state.as_str())
-            {
+            if session.body["kind"] != "headless" || sessions.process_exited(session.id)? {
                 continue;
             }
             let parent = session.body["parent_session_id"]
@@ -398,7 +400,7 @@ fn finish(
     reason: Option<&str>,
 ) -> Result<()> {
     let session = sessions.get_record(&id.to_string())?;
-    if ["finished", "failed"].contains(&session.state.as_str()) {
+    if sessions.process_exited(id)? {
         return Ok(());
     }
     let state = if code == Some(0) && reason.is_none() {
@@ -413,6 +415,9 @@ fn finish(
             "code": code, "signal": signal, "reason": reason, "parent_session_id": parent,
         }),
     )?;
+    if ["finished", "failed"].contains(&session.state.as_str()) {
+        return Ok(());
+    }
     sessions.append(
         id,
         state.event_type(),
@@ -436,6 +441,14 @@ impl Process {
 }
 
 impl Sessions {
+    pub(crate) fn process_exited(&self, id: SessionId) -> Result<bool> {
+        let Some(exit) = self.registry.latest_process_exit(id)? else {
+            return Ok(false);
+        };
+        let running = self.registry.latest_event(id, "session.running")?;
+        Ok(running.is_none_or(|running| exit.seq > running.seq))
+    }
+
     fn spawn_headless(
         &mut self,
         request: CreateHeadless,

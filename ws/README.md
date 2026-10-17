@@ -93,6 +93,24 @@ JSON returns the registry session fields, including the ULID `id`, numeric `alia
 Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
 The TSV state column reports the live tmux state or `stopped` when no tagged window exists.
 
+`ws done [--output <file>|-]` writes `$WS_STATE/sessions/<ULID>/output.md` and appends a `done` event.
+Omitted output produces an empty file. `-` and `--output -` read stdin. Repeated calls replace the output.
+Unread messages refuse completion. Completion marks the session `finished`. Process exit remains a separate event.
+The supervisor and interactive launch wrapper record `exit`. `ws hook exit` also records exit callbacks.
+Claude receives a generated `SessionEnd` hook. A `SessionEnd` payload selects the exit event. An `exit_code` field supplies its code.
+
+`ws wait <id|name> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through one daemon request.
+It prints no output on success. A timeout exits 1. Without `--timeout`, the wait has no deadline.
+Recorded events satisfy a wait immediately, including after a daemon restart. State conditions check the current lifecycle state.
+The API is `POST /v1/sessions/{id}/wait` with `{"for":"done","timeout":30}`. Omit `timeout` for an indefinite wait.
+It returns the session and the matching event, or a null event for a state condition. A timeout returns HTTP 408.
+Daemon shutdown releases pending waits with HTTP 503.
+`POST /v1/sessions/{id}/done` accepts `{"output":"completion text"}`. Both routes accept `parent_session_id` for caller audit.
+
+Dependency edges use `POST /v1/sessions/{id}/depends_on` or `/block_on` with `{"target":"<id|name>"}`.
+`GET /v1/edges` returns the projected graph. A cycle returns HTTP 409 and the cycle's session IDs.
+The source log records `session.depends_on` or `session.block_on`. The registry rebuild restores these edges.
+
 `ws session create --headless [--parent <id>] [--cwd <dir>] [--env K=V]... [--stdin <file>] [--stdout <file>] [--stderr <file>] -- <cmd>`
 starts a process under the daemon and prints its session ULID. The process leads its own process group.
 The working directory defaults to the CLI's current directory. Relative I/O paths use that same CLI directory, independent of `--cwd`.

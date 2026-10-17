@@ -54,7 +54,18 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
                 &std::fs::read(context.ws_home.join("claude-settings.json")).unwrap(),
             )
             .unwrap();
-            let generated: Value = serde_json::from_slice(&prepared.files[0].contents).unwrap();
+            let mut generated: Value = serde_json::from_slice(&prepared.files[0].contents).unwrap();
+            let exit = generated["hooks"]
+                .as_object_mut()
+                .unwrap()
+                .remove("SessionEnd")
+                .expect("Claude must report session exit.");
+            assert!(
+                exit[0]["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(" hook exit")
+            );
             assert_eq!(generated, legacy);
         }
         if agent == "grok" {

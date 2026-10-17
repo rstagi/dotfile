@@ -26,6 +26,8 @@ pub struct Sessions {
     needs_rebuild: bool,
     writers: HashMap<SessionId, LogWriter>,
     pub(crate) headless_hooks: HashMap<SessionId, crate::hooks::HookState>,
+    pub(crate) changes: tokio::sync::watch::Sender<()>,
+    pub(crate) shutdown: tokio::sync::watch::Sender<bool>,
     _writer_lock: File,
 }
 
@@ -44,6 +46,10 @@ pub enum Error {
     InvalidRequest(&'static str),
     Transition(TransitionError),
     NameTaken(String),
+    DependencyCycle(Vec<SessionId>),
+    PendingMessages,
+    WaitTimeout,
+    ShuttingDown,
     Json(serde_json::Error),
 }
 
@@ -75,6 +81,8 @@ impl Sessions {
             needs_rebuild: false,
             writers: HashMap::new(),
             headless_hooks: HashMap::new(),
+            changes: tokio::sync::watch::channel(()).0,
+            shutdown: tokio::sync::watch::channel(false).0,
             _writer_lock: writer_lock,
         })
     }
@@ -227,6 +235,7 @@ impl Sessions {
         let entry = writer.append_current(event_type, body)?;
         self.registry.apply(&entry)?;
         self.needs_rebuild = false;
+        self.changes.send_replace(());
         Ok(entry)
     }
 
@@ -252,6 +261,23 @@ impl Sessions {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ShuttingDown => {
+                formatter.write_str("The daemon stopped before the wait condition held.")
+            }
+            Self::WaitTimeout => {
+                formatter.write_str("The wait condition did not hold before the timeout.")
+            }
+            Self::PendingMessages => formatter
+                .write_str("The session has pending messages. Process them before completion."),
+            Self::DependencyCycle(cycle) => write!(
+                formatter,
+                "Dependency cycle: {}.",
+                cycle
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            ),
             Self::Io(error) => error.fmt(formatter),
             Self::Registry(error) => error.fmt(formatter),
             Self::InvalidRequest(message) => formatter.write_str(message),

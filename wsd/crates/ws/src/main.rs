@@ -17,6 +17,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Publish completion output for the current session.
+    Done {
+        #[arg(long, conflicts_with = "stdin")]
+        output: Option<String>,
+        #[arg(value_parser = ["-"])]
+        stdin: Option<String>,
+    },
+    /// Wait for a session condition through the daemon.
+    Wait {
+        target: String,
+        #[arg(long = "for")]
+        condition: String,
+        #[arg(long)]
+        timeout: Option<u32>,
+    },
     /// Mark selected messages, or all unread messages, as read.
     Ack {
         event_ids: Vec<ws_core::ids::EventId>,
@@ -180,6 +195,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Done { output, stdin } => {
+            cmd::done::run(&socket_path()?, output.as_deref().or(stdin.as_deref())).await?
+        }
+        Command::Wait {
+            target,
+            condition,
+            timeout,
+        } => cmd::wait::run(&socket_path()?, &target, &condition, timeout).await?,
         Command::Ack { event_ids } => cmd::ack::run(&socket_path()?, event_ids).await?,
         Command::Send {
             target, message, ..
