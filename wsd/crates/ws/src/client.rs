@@ -4,7 +4,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, body::Bytes, client::conn::http1};
 use hyper_util::rt::TokioIo;
 use tokio::{net::UnixStream, time::timeout};
-use ws_core::{HookEvent, HookRecord, PingResponse};
+use ws_core::PingResponse;
 
 use crate::Result;
 
@@ -50,21 +50,6 @@ pub async fn rename(socket: &Path, id: &str, name: &str) -> Result<ws_core::regi
     )
     .await?;
     Ok(serde_json::from_slice(&body)?)
-}
-
-pub async fn hook_stop(socket: &Path, window_id: String) -> Result<()> {
-    let record = HookRecord {
-        event: HookEvent::Stop,
-        window_id,
-    };
-    request(
-        socket,
-        Method::POST,
-        "/v1/hooks",
-        serde_json::to_vec(&record)?,
-    )
-    .await?;
-    Ok(())
 }
 
 pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {

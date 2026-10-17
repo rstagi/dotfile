@@ -121,9 +121,19 @@ enum Command {
     Hook { state: String },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run(Cli::parse()).await {
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    // Hooks only perform one socket request. Avoid creating a worker pool for each callback.
+    let mut builder = if matches!(cli.command, Some(Command::Hook { .. })) {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+    };
+    let result = match builder.enable_all().build() {
+        Ok(runtime) => runtime.block_on(run(cli)),
+        Err(error) => Err(error.into()),
+    };
+    match result {
         Ok(code) => code,
         Err(error) => {
             eprintln!("ws: {error}");
@@ -203,7 +213,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
         Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
-        Command::Hook { state } => cmd::hook::run(&socket_path()?, &state).await,
+        Command::Hook { state } => {
+            cmd::hook::run(&socket_path().unwrap_or_default(), &state).await;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

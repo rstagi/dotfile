@@ -1,0 +1,12 @@
+working|working|p1|||
+waiting|working|p1|||
+working|working|p1|||
+working|working|p1|1||
+working|working|p1|1|1|
+working|idle||1|1|
+working|idle||1|1|
+working|idle|||1|
+idle|idle||||1
+working|working|t2|||1
+working|working|t2|||1
+idle|idle||||1

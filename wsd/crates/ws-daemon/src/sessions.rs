@@ -219,10 +219,6 @@ impl Sessions {
         Ok(())
     }
 
-    pub(crate) fn session_log(&self, id: SessionId) -> SessionLog {
-        SessionLog::new(&self.state, id, self.device_id)
-    }
-
     fn change_state(
         &mut self,
         input: &str,

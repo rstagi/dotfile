@@ -100,3 +100,477 @@ fn cli_spools_every_callback_and_daemon_replays_logical_boundaries() {
         log.len()
     );
 }
+
+struct HookSandbox {
+    home: tempfile::TempDir,
+    server: String,
+    socket: std::path::PathBuf,
+    pane: String,
+    window: String,
+    id: String,
+    daemon: Option<Daemon>,
+}
+
+impl HookSandbox {
+    fn new() -> Self {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let server = format!(
+            "ws-hook-{}-{}",
+            std::process::id(),
+            ws_core::ids::Ulid::new()
+        );
+        let socket = home.path().join("wsd.sock");
+        let output = std::process::Command::new("tmux")
+            .args([
+                "-L",
+                &server,
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "hooks",
+                "/bin/sleep",
+                "300",
+            ])
+            .env("HOME", home.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let tmux = ws_daemon::tmux::Tmux::named(&server);
+        let window = tmux
+            .execute(&["display-message", "-p", "-t", "hooks", "#{window_id}"])
+            .unwrap();
+        let pane = tmux
+            .execute(&["display-message", "-p", "-t", &window, "#{pane_id}"])
+            .unwrap();
+        let mut command = ws(home.path(), &socket);
+        command.env("WS_TMUX_SOCKET", &server);
+        let daemon = Daemon::start(command, &socket);
+        let created = request(&socket, "POST", "/v1/sessions", "{}");
+        let created: Value =
+            serde_json::from_str(created.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let id = created["id"].as_str().unwrap().to_owned();
+        tmux.set_window_option(&window, "@ws_session", &id).unwrap();
+        tmux.set_window_option(&window, "@ws_pane", &pane).unwrap();
+        tmux.set_state(&window, "idle").unwrap();
+        Self {
+            home,
+            server,
+            socket,
+            pane,
+            window,
+            id,
+            daemon: Some(daemon),
+        }
+    }
+
+    fn hook(&self, state: &str, payload: Value) -> std::time::Duration {
+        let start = std::time::Instant::now();
+        let mut child = ws(self.home.path(), &self.socket)
+            .env("WS_SESSION_ID", &self.id)
+            .env("TMUX_PANE", &self.pane)
+            .env("WS_TMUX_SOCKET", &self.server)
+            .args(["hook", state])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        start.elapsed()
+    }
+
+    fn options(&self) -> String {
+        ws_daemon::tmux::Tmux::named(&self.server)
+            .execute(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.window,
+                "#{@ws_state}|#{@ws_main}|#{@ws_turn}|#{@ws_sub_a}|#{@ws_sub_b}|#{@ws_unread}",
+            ])
+            .unwrap()
+    }
+}
+
+impl Drop for HookSandbox {
+    fn drop(&mut self) {
+        self.daemon.take();
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &self.server, "kill-server"])
+            .env("HOME", self.home.path())
+            .output();
+    }
+}
+
+#[test]
+fn hook_window_options_match_the_zsh_hook_scenarios() {
+    let sandbox = HookSandbox::new();
+    let mut actual = String::new();
+    for (state, payload) in [
+        (
+            "working",
+            json!({"hook_event_name":"UserPromptSubmit", "prompt_id":"p1"}),
+        ),
+        ("waiting", json!({"hook_event_name":"PermissionRequest"})),
+        ("working", json!({"hook_event_name":"PreToolUse"})),
+        ("subagent-start", json!({"agent_id":"a"})),
+        ("subagent-start", json!({"agent_id":"b"})),
+        ("idle", json!({})),
+        ("working", json!({"agent_id":"a"})),
+        ("subagent-stop", json!({"agent_id":"a"})),
+        ("subagent-stop", json!({"agent_id":"b"})),
+        (
+            "working",
+            json!({"hook_event_name":"UserPromptSubmit", "turn_id":"t2"}),
+        ),
+        (
+            "cancel",
+            json!({"hook_event_name":"Interrupt", "turn_id":"old"}),
+        ),
+        (
+            "cancel",
+            json!({"hook_event_name":"Interrupt", "turn_id":"t2"}),
+        ),
+    ] {
+        sandbox.hook(state, payload);
+        actual.push_str(&sandbox.options());
+        actual.push('\n');
+    }
+    assert_eq!(actual, include_str!("golden/hook-states.txt"));
+}
+
+impl HookSandbox {
+    fn callback(&self, state: &str, payload: Value, seq: u64) -> ws_daemon::hooks::Callback {
+        ws_daemon::hooks::Callback {
+            callback_id: ws_core::ids::Ulid::new(),
+            session_id: self.id.parse().unwrap(),
+            observed_at_us: seq,
+            state: state.into(),
+            pane: Some(self.pane.clone()),
+            tmux_socket: Some(self.server.clone()),
+            tmux_path: None,
+            payload,
+        }
+    }
+    fn post(&self, state: &str, payload: Value, seq: u64) -> Value {
+        let callback = self.callback(state, payload, seq);
+        let response = request(
+            &self.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &serde_json::to_string(&callback).unwrap(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+    fn log(&self) -> Vec<Value> {
+        fs::read_to_string(
+            self.home
+                .path()
+                .join("state/sessions")
+                .join(&self.id)
+                .join("log.jsonl"),
+        )
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+    }
+}
+
+#[test]
+fn stale_hooks_preserve_callbacks_without_replacing_a_newer_turn() {
+    let sandbox = HookSandbox::new();
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "turn_id":"t1"}),
+        100,
+    );
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"PreToolUse", "turn_id":"t1", "tool_use_id":"tool"}),
+        300,
+    );
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "turn_id":"old"}),
+        200,
+    );
+    assert!(sandbox.options().starts_with("working|working|t1|"));
+    sandbox.post(
+        "cancel",
+        json!({"hook_event_name":"Interrupt", "turn_id":"old"}),
+        400,
+    );
+    assert!(sandbox.options().starts_with("working|working|t1|"));
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "turn_id":"t2"}),
+        500,
+    );
+    sandbox.post(
+        "cancel",
+        json!({"hook_event_name":"Interrupt", "turn_id":"t1"}),
+        600,
+    );
+    assert!(sandbox.options().starts_with("working|working|t2|"));
+    sandbox.post(
+        "cancel",
+        json!({"hook_event_name":"Interrupt", "turn_id":"t2"}),
+        700,
+    );
+    assert!(sandbox.options().starts_with("idle|idle||"));
+    let log = sandbox.log();
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["type"] == "hook.received")
+            .count(),
+        7
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["type"] == "turn.cancelled")
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["type"] == "turn.ended")
+            .count(),
+        0
+    );
+    assert_eq!(
+        ws_daemon::tmux::Tmux::named(&sandbox.server)
+            .window_option(&sandbox.window, "@ws_seq")
+            .unwrap()
+            .as_deref(),
+        Some("700")
+    );
+}
+
+#[test]
+fn stale_subagent_callbacks_keep_bookkeeping_and_reused_panes_keep_their_owner() {
+    let sandbox = HookSandbox::new();
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "promptId":"p1"}),
+        300,
+    );
+    sandbox.post("subagent-start", json!({"agent_id":"a"}), 100);
+    assert_eq!(sandbox.options(), "working|working|p1|1||");
+    sandbox.post("stop", json!({"hook_event_name":"Stop"}), 400);
+    assert_eq!(sandbox.options(), "working|idle||1||");
+    sandbox.post("subagent-stop", json!({"agent_id":"a"}), 500);
+    assert_eq!(sandbox.options(), "idle|idle||||1");
+    let tmux = ws_daemon::tmux::Tmux::named(&sandbox.server);
+    tmux.set_window_option(
+        &sandbox.window,
+        "@ws_session",
+        &ws_core::ids::Ulid::new().to_string(),
+    )
+    .unwrap();
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "prompt_id":"wrong"}),
+        600,
+    );
+    assert_eq!(sandbox.options(), "idle|idle||||1");
+    assert_eq!(sandbox.log().last().unwrap()["type"], "hook.received");
+}
+
+#[tokio::test]
+async fn blocked_stop_preserves_the_turn_and_its_decision_across_replay() {
+    use std::sync::{Arc, Mutex};
+    use ws_daemon::{
+        hooks::{self, StopDecision},
+        sessions::Sessions,
+    };
+    let mut sandbox = HookSandbox::new();
+    sandbox.hook(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "prompt_id":"same-turn"}),
+    );
+    sandbox.daemon.take();
+    let state = sandbox.home.path().join("state");
+    let store = Arc::new(Mutex::new(Sessions::open(&state, 1).unwrap()));
+    let callback = sandbox.callback(
+        "stop",
+        json!({"hook_event_name":"Stop", "prompt_id":"same-turn"}),
+        hooks::receipt_time_us().unwrap(),
+    );
+    hooks::spool(&state, &callback).unwrap();
+    let reply = hooks::ingest(
+        store.clone(),
+        callback.clone(),
+        StopDecision::Block("Continue queued work.".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reply,
+        json!({"decision":"block", "reason":"Continue queued work."})
+    );
+    assert!(sandbox.options().starts_with("working|working|same-turn|"));
+    let reply = hooks::ingest(store.clone(), callback, StopDecision::Accept)
+        .await
+        .unwrap();
+    assert_eq!(reply["decision"], "block");
+    drop(store);
+    let daemon = Daemon::start(ws(sandbox.home.path(), &sandbox.socket), &sandbox.socket);
+    sandbox.daemon = Some(daemon);
+    assert!(sandbox.options().starts_with("working|working|same-turn|"));
+    let log = sandbox.log();
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["type"] == "turn.continued")
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["type"] == "turn.ended")
+            .count(),
+        0
+    );
+    assert_eq!(fs::read_dir(state.join("spool")).unwrap().count(), 0);
+}
+
+#[test]
+fn daemon_down_hooks_spool_without_tmux_and_keep_p95_below_50_ms() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut sandbox = HookSandbox::new();
+    sandbox.daemon.take();
+    let fake_tmux = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(&fake_tmux, "#!/bin/sh\nexit 99\n").unwrap();
+    fs::set_permissions(&fake_tmux, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut times = Vec::new();
+    for _ in 0..100 {
+        times.push(sandbox.hook("working", json!({"hook_event_name":"PreToolUse", "tool_name":"Bash", "tool_use_id":"tool"})).as_secs_f64() * 1000.0);
+    }
+    times.sort_by(f64::total_cmp);
+    println!(
+        "HOOK_SPOOL samples=100 p50_ms={:.3} p95_ms={:.3} max_ms={:.3}",
+        times[49], times[94], times[99]
+    );
+    assert!(times[94] < 50.0, "Spool p95 exceeded 50 ms: {}", times[94]);
+    assert_eq!(
+        fs::read_dir(sandbox.home.path().join("state/spool"))
+            .unwrap()
+            .count(),
+        100
+    );
+    fs::remove_file(fake_tmux).unwrap();
+    sandbox.daemon = Some(Daemon::start(
+        ws(sandbox.home.path(), &sandbox.socket),
+        &sandbox.socket,
+    ));
+    let log = sandbox.log();
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["type"] == "hook.received")
+            .count(),
+        100
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|entry| entry["type"] == "tool.pre")
+            .count(),
+        100
+    );
+}
+
+#[test]
+fn slow_tmux_lookup_has_a_deadline_and_preserves_the_callback() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = HookSandbox::new();
+    let fake_tmux = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(&fake_tmux, "#!/bin/sh\nexec /bin/sleep 5\n").unwrap();
+    fs::set_permissions(&fake_tmux, fs::Permissions::from_mode(0o755)).unwrap();
+    let elapsed = sandbox.hook(
+        "working",
+        json!({"hook_event_name":"PreToolUse", "tool_use_id":"slow-tool"}),
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(400),
+        "{elapsed:?}"
+    );
+    assert_eq!(sandbox.log().last().unwrap()["type"], "hook.received");
+    assert_eq!(
+        fs::read_dir(sandbox.home.path().join("state/spool"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert!(common::get(&sandbox.socket, "/v1/ping").starts_with("HTTP/1.1 200"));
+}
+
+#[test]
+fn split_panes_and_untagged_unbound_windows_cannot_change_the_session_state() {
+    let sandbox = HookSandbox::new();
+    let tmux = ws_daemon::tmux::Tmux::named(&sandbox.server);
+    let pane = tmux
+        .create_pane(&sandbox.window, &["/bin/sleep", "300"])
+        .unwrap();
+    let mut callback = sandbox.callback(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "prompt_id":"wrong"}),
+        100,
+    );
+    callback.pane = Some(pane);
+    let response = request(
+        &sandbox.socket,
+        "POST",
+        "/v1/hooks/ingest",
+        &serde_json::to_string(&callback).unwrap(),
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    assert_eq!(sandbox.options(), "idle|||||");
+    tmux.unset_window_option(&sandbox.window, "@ws_session")
+        .unwrap();
+    tmux.unset_window_option(&sandbox.window, "@ws_pane")
+        .unwrap();
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "prompt_id":"wrong"}),
+        200,
+    );
+    assert_eq!(sandbox.options(), "idle|||||");
+}
+
+#[test]
+fn a_reused_callback_id_cannot_change_its_payload_or_receipt_time() {
+    let sandbox = HookSandbox::new();
+    let mut callback = sandbox.callback(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "turn_id":"original"}),
+        100,
+    );
+    let first = request(
+        &sandbox.socket,
+        "POST",
+        "/v1/hooks/ingest",
+        &serde_json::to_string(&callback).unwrap(),
+    );
+    assert!(first.starts_with("HTTP/1.1 201"), "{first}");
+    callback.observed_at_us = 200;
+    callback.payload["turn_id"] = json!("changed");
+    let second = request(
+        &sandbox.socket,
+        "POST",
+        "/v1/hooks/ingest",
+        &serde_json::to_string(&callback).unwrap(),
+    );
+    assert!(second.starts_with("HTTP/1.1 400"), "{second}");
+    assert!(sandbox.options().starts_with("working|working|original|"));
+    assert_eq!(sandbox.log().len(), 3);
+}
