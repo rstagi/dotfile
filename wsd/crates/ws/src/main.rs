@@ -18,6 +18,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Remove a workspace and all its tabs.
+    Rm {
+        #[arg(default_value = "")]
+        target: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        delete_branch: bool,
+        #[arg(long)]
+        force_delete_branch: bool,
+        #[arg(long)]
+        interactive: bool,
+    },
     /// Toggle the workspace pin.
     Pin {
         #[arg(default_value = "")]
@@ -103,6 +116,23 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Rm {
+            target,
+            force,
+            delete_branch,
+            force_delete_branch,
+            interactive,
+        } => {
+            cmd::rm::run(
+                &socket_path()?,
+                &target,
+                force,
+                delete_branch,
+                force_delete_branch,
+                interactive,
+            )
+            .await?
+        }
         Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
         Command::Init => init::run()?,
         Command::Daemon => {

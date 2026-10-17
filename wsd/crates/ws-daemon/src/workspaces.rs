@@ -47,6 +47,19 @@ pub struct WorkspaceTarget {
     pub parent_session_id: Option<SessionId>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveWorkspace {
+    pub target: String,
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default)]
+    pub delete_branch: bool,
+    #[serde(default)]
+    pub force_delete_branch: bool,
+    pub parent_session_id: Option<SessionId>,
+}
+
 #[derive(Default, Deserialize)]
 struct RepoSettings {
     file_include_globs: Option<String>,
@@ -64,6 +77,16 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/workspaces", get(list).post(create))
         .route("/v1/workspaces/add", axum::routing::post(add))
         .route("/v1/workspaces/pin", axum::routing::post(pin))
+        .route("/v1/workspaces/remove", axum::routing::post(remove))
+}
+
+async fn remove(
+    State(store): State<Store>,
+    Json(request): Json<RemoveWorkspace>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| sessions.remove_workspace(request)).await?,
+    ))
 }
 
 async fn pin(
@@ -113,6 +136,95 @@ async fn add(
 }
 
 impl Sessions {
+    fn remove_workspace(&mut self, request: RemoveWorkspace) -> Result<Value> {
+        self.record_call(
+            request.parent_session_id,
+            "workspace.remove",
+            Some(&request.target),
+        )?;
+        let workspace = self.workspace(&request.target)?;
+        let wt = Path::new(
+            workspace.body["path"]
+                .as_str()
+                .ok_or(Error::InvalidRequest("The workspace has no path."))?,
+        );
+        let repo = main_checkout(wt)?;
+        let branch = git(wt, &["branch", "--show-current"])?;
+        if !request.force && !git(wt, &["status", "--porcelain"])?.is_empty() {
+            return Err(failure(format!(
+                "workspace has uncommitted changes: {} (use --force)",
+                wt.display()
+            )));
+        }
+        let tmux = Tmux::from_env();
+        // Capture ids before removing the directory. Kill tabs after durable state changes.
+        let session_ids = tmux
+            .execute(&["list-sessions", "-F", "#{session_id}\t#{@ws_path}"])
+            .unwrap_or_default();
+        let window_ids = tmux
+            .execute(&["list-windows", "-a", "-F", "#{window_id}\t#{@ws_path}"])
+            .unwrap_or_default();
+        let same_path = |path: &str| Path::new(path).canonicalize().ok() == wt.canonicalize().ok();
+        let targets = |rows: &str| {
+            rows.lines()
+                .filter_map(|line| line.split_once('\t'))
+                .filter(|(_, path)| same_path(path))
+                .map(|(id, _)| id.to_owned())
+                .collect::<Vec<_>>()
+        };
+        let session_ids = targets(&session_ids);
+        let window_ids = targets(&window_ids);
+        let mut args = vec!["worktree", "remove"];
+        if request.force {
+            args.extend(["--force", "--force"]);
+        }
+        args.push(wt.to_str().unwrap());
+        git(&repo, &args)
+            .map_err(|_| failure(format!("git worktree remove failed: {}", wt.display())))?;
+        let _ = fs::remove_dir(wt.parent().unwrap());
+        let mut warning = None;
+        if !branch.is_empty() && (request.delete_branch || request.force_delete_branch) {
+            let flag = if request.force_delete_branch {
+                "-D"
+            } else {
+                "-d"
+            };
+            if git(&repo, &["branch", flag, &branch]).is_err() {
+                warning = Some(format!(
+                    "kept unmerged branch {branch} (git branch -D to force)"
+                ));
+            }
+        }
+        self.append(
+            workspace.owner_session_id,
+            "workspace.removed",
+            json!({
+                "workspace_id": workspace.id, "parent_session_id": request.parent_session_id
+            }),
+        )?;
+        for session in self
+            .registry
+            .sessions()?
+            .into_iter()
+            .filter(|session| session.workspace_id.as_deref() == Some(&workspace.id))
+        {
+            if !["finished", "failed"].contains(&session.state.as_str()) {
+                self.transition(
+                    &session.id.to_string(),
+                    ws_core::state::SessionState::Finished,
+                    request.parent_session_id,
+                )?;
+            }
+        }
+        for id in window_ids {
+            let _ = tmux.execute(&["kill-window", "-t", &id]);
+        }
+        for id in session_ids {
+            let _ = tmux.execute(&["kill-session", "-t", &id]);
+        }
+        Ok(json!({"warning": warning}))
+    }
+
     fn workspace(&self, target: &str) -> Result<Workspace> {
         let path = if Path::new(target).is_absolute() {
             PathBuf::from(target)

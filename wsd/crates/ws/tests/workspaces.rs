@@ -14,6 +14,85 @@ struct Sandbox {
 }
 
 #[test]
+fn rm_refuses_dirty_worktrees_then_removes_all_tabs_the_worktree_and_the_registry_row() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feat/login",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&["add", "api/feat-login", "--agent", "codex", "--detach"])
+            .status
+            .success()
+    );
+    assert!(sandbox.output(&["pin", "api/feat-login"]).status.success());
+    let wt = sandbox.home.path().join("worktrees/api/feat-login");
+    std::fs::write(wt.join("untracked"), "dirty").unwrap();
+    let output = sandbox.output(&["rm", "api/feat-login"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().replace(
+            sandbox
+                .home
+                .path()
+                .join("worktrees")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "<ROOT>"
+        ),
+        include_str!("golden/workspace-dirty.txt")
+    );
+    assert!(wt.is_dir());
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    sandbox.tmux(&["has-session", "-t", "=api/feat-login"]);
+    let output = sandbox.output(&["rm", wt.to_str().unwrap(), "--force", "--delete-branch"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!wt.exists());
+    assert_eq!(git(&repo, &["branch", "--list", "feat/login"]), "");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    assert!(
+        !sandbox
+            .tmux(&["list-sessions", "-F", "#{session_name}"])
+            .contains("api/feat-login")
+    );
+    assert!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["state"] == "finished")
+    );
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    let output = sandbox.output(&["rm", "missing"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-missing.txt")
+    );
+}
+
+#[test]
 fn pin_toggles_persists_and_survives_a_registry_rebuild() {
     let mut sandbox = Sandbox::new();
     let repo = sandbox.repo("api");
