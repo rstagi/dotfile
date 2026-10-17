@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 mod client;
 mod cmd;
 mod init;
+mod mcp;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -17,6 +18,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Serve MCP tools through standard input and output.
+    Mcp,
     /// Import the legacy zsh session state.
     Migrate {
         #[arg(long, required = true)]
@@ -212,6 +215,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Mcp => cmd::mcp::run(&socket_path()?).await?,
         Command::Migrate { dry_run, .. } => cmd::migrate::run(dry_run)?,
         Command::On { arguments } => cmd::on::run(&socket_path()?, arguments).await?,
         Command::Triggers { json } => cmd::triggers::run(&socket_path()?, json).await?,

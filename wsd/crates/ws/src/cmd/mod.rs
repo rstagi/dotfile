@@ -11,6 +11,7 @@ pub mod grok;
 pub mod hook;
 pub mod inbox;
 pub mod list;
+pub mod mcp;
 pub mod merge;
 pub mod migrate;
 pub mod name;

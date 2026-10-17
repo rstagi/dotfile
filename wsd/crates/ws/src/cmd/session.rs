@@ -16,6 +16,11 @@ use crate::{Result, client};
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// List registered sessions.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// Create a daemon-owned process.
     Create {
         #[arg(long, required = true)]
@@ -72,6 +77,12 @@ pub enum Stream {
 
 pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
     match command {
+        Command::List { .. } => {
+            let value = crate::mcp::Control::from_env(socket)?
+                .call("session_list", serde_json::json!({}))
+                .await?;
+            println!("{value}");
+        }
         Command::Create {
             headless,
             arguments,
