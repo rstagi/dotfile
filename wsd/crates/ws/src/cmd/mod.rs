@@ -1,8 +1,10 @@
 pub mod add;
 pub mod agent;
 pub mod attach;
+pub mod build_notifier;
 pub mod claude;
 pub mod codex;
+pub mod dismiss;
 pub mod grok;
 pub mod hook;
 pub mod list;

@@ -18,7 +18,7 @@ use std::{
 use ws_core::ids::{SessionId, Ulid};
 
 const TMUX_DEADLINE: Duration = Duration::from_millis(100);
-static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Callback {
@@ -30,6 +30,8 @@ pub struct Callback {
     pub tmux_socket: Option<String>,
     pub tmux_path: Option<String>,
     pub payload: Value,
+    #[serde(default)]
+    pub notify: Option<crate::notify::Config>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -122,6 +124,9 @@ pub async fn ingest(
     }
     if let Some(window) = window {
         apply(&callback, &window.id, &reduction.changes).await?;
+        if reduction.accepted {
+            crate::notify::transition(&callback, &window.id, &window.state, &reduction.state).await;
+        }
     }
     Ok(stop_reply(&decision))
 }
@@ -542,10 +547,23 @@ fn body(callback: &Callback) -> Value {
 
 /// Executes one tmux command with a deadline. Timeout cancels and kills the child.
 async fn tmux(callback: &Callback, args: &[&str]) -> io::Result<String> {
+    tmux_server(
+        callback.tmux_socket.as_deref(),
+        callback.tmux_path.as_deref(),
+        args,
+    )
+    .await
+}
+
+pub(crate) async fn tmux_server(
+    socket: Option<&str>,
+    path: Option<&str>,
+    args: &[&str],
+) -> io::Result<String> {
     let mut command = tokio::process::Command::new("tmux");
-    if let Some(socket) = &callback.tmux_socket {
+    if let Some(socket) = socket {
         command.args(["-L", socket]);
-    } else if let Some(path) = &callback.tmux_path {
+    } else if let Some(path) = path {
         command.args(["-S", path]);
     } else {
         return Err(io::Error::new(

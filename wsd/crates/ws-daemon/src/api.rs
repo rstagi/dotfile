@@ -50,6 +50,7 @@ pub fn router(sessions: Sessions) -> Router {
 pub(crate) fn router_with_store(store: Store) -> Router {
     Router::new()
         .merge(crate::hooks::router())
+        .merge(crate::notify::router())
         .merge(crate::workspaces::router())
         .merge(crate::agents::router())
         .route("/v1/sessions", get(list).post(create))

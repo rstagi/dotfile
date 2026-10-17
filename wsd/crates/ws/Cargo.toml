@@ -16,6 +16,4 @@ ws-core.workspace = true
 ws-daemon.workspace = true
 
 shell-words = "1"
-
-[dev-dependencies]
 tempfile.workspace = true

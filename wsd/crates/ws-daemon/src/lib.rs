@@ -19,6 +19,7 @@ use ws_core::{PingResponse, VERSION};
 pub mod agents;
 pub mod api;
 pub mod hooks;
+pub mod notify;
 pub mod sessions;
 pub mod tmux;
 pub mod workspaces;
