@@ -456,7 +456,7 @@ descendants() { # print pids of the full process tree under $1 (depth-first)
 }
 
 run_leg() { # runs current engine with watchdogs; returns engine exit code (200 = timeout, 201 = paused, 202 = note changed)
-  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims" "$RUN_DIR/.paused" "$RUN_DIR/.note-changed" "$RUN_DIR/.ctl-victims"
+  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims" "$RUN_DIR/.paused" "$RUN_DIR/.note-changed" "$RUN_DIR/.ctl-victims" "$RUN_DIR/ws-session"
   local leg_timeout="$TIMEOUT"
   if (( CHECKPOINT_MODE )); then
     leg_timeout=$(( ATTEMPT_DEADLINE - $(date +%s) ))
@@ -471,17 +471,16 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
   *) launch_codex "$CUR_MODEL" & ;;
   esac
   local child=$!
-  # watchdog only marks + TERMs the whole tree; the KILL follow-through happens in the
-  # main flow after wait (the watchdog dies with its TERM'd parent otherwise)
+  # On the ws path, wsd owns the engine group. The watcher must finish its stop and wait.
+  # Direct launches retain the descendant TERM/KILL path.
   ( local timer=""
     trap 'if [[ -n "$timer" ]]; then kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; fi; exit 0' TERM INT HUP
     sleep "$leg_timeout" & timer=$!
     wait "$timer"
     timer=""
     kill -0 "$child" 2>/dev/null || exit 0
-    { echo "$child"; descendants "$child"; } > "$RUN_DIR/.victims"
     touch "$RUN_DIR/.timeout"
-    xargs kill -TERM 2>/dev/null < "$RUN_DIR/.victims"
+    stop_leg "$child" "$RUN_DIR/.victims"
   ) &
   local watchdog=$!
   # control watcher: a pause file or a note edit halts the engine within one poll
@@ -496,23 +495,42 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
       elif [[ "$(note_sig)" != "$NOTE_SIG" ]]; then marker=.note-changed
       fi
       if [[ -n "$marker" ]]; then
-        { echo "$child"; descendants "$child"; } > "$RUN_DIR/.ctl-victims"
         touch "$RUN_DIR/$marker"
-        xargs kill -TERM 2>/dev/null < "$RUN_DIR/.ctl-victims"
-        exit 0
+        stop_leg "$child" "$RUN_DIR/.ctl-victims"
+        exit $?
       fi
     done
   ) &
   local watcher=$!
   wait "$child"; local rc=$?
-  kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
-  kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
+  local stop_failed=0
+  if [[ -n "$WS_BIN" && -f "$RUN_DIR/.timeout" ]]; then
+    wait "$watchdog" || stop_failed=1
+  else
+    kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+  fi
+  if [[ -n "$WS_BIN" && ( -f "$RUN_DIR/.paused" || -f "$RUN_DIR/.note-changed" ) ]]; then
+    wait "$watcher" || stop_failed=1
+  else
+    kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
+  fi
+  # The foreground client can exit before the process group (for example after ws done).
+  # Confirm cleanup even when neither watchdog requested a stop.
+  if [[ -n "$WS_BIN" ]] && (( ! stop_failed )); then
+    stop_leg "$child" "$RUN_DIR/.victims" || stop_failed=1
+  fi
+  if (( stop_failed )); then
+    write_meta "$rc"
+    jq -n '{outcome:"blocked",summary:"Cannot confirm the ws session exit. See ws-stop.log."}' > "$STATUS"
+    echo "loop-runner: cannot confirm the ws session exit. See ws-stop.log." >&2
+    exit 20
+  fi
   if [[ -f "$RUN_DIR/.paused" ]]; then
-    reap_victims "$RUN_DIR/.ctl-victims"
+    [[ -z "$WS_BIN" ]] && reap_victims "$RUN_DIR/.ctl-victims"
     return 201
   fi
   if [[ -f "$RUN_DIR/.note-changed" ]]; then
-    reap_victims "$RUN_DIR/.ctl-victims"
+    [[ -z "$WS_BIN" ]] && reap_victims "$RUN_DIR/.ctl-victims"
     return 202
   fi
   if [[ -f "$RUN_DIR/.timeout" ]]; then
@@ -521,6 +539,7 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
       rm -f "$RUN_DIR/.timeout"
     else
       TIMED_OUT=1
+      [[ -n "$WS_BIN" ]] && return 200
       local grace=0 survivors
       while [[ $grace -lt 30 ]]; do
         survivors="$(xargs -n1 sh -c 'kill -0 "$0" 2>/dev/null && echo "$0"' < "$RUN_DIR/.victims" 2>/dev/null)"
@@ -532,6 +551,30 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
     fi
   fi
   return $rc
+}
+
+stop_leg() { # Stop the current engine and confirm its exit before another leg can start.
+  local child="$1" victims="$2" sid=""
+  if [[ -z "$WS_BIN" ]]; then
+    { echo "$child"; descendants "$child"; } > "$victims"
+    xargs kill -TERM 2>/dev/null < "$victims"
+    return 0
+  fi
+  # A cancellation can arrive before the session wrapper publishes its id.
+  while kill -0 "$child" 2>/dev/null; do
+    sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+    [[ -n "$sid" ]] && break
+    sleep 0.05
+  done
+  [[ -n "$sid" ]] || sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+  [[ -n "$sid" ]] || return 0
+  if "$WS_BIN" session stop "$sid" >> "$RUN_DIR/ws-stop.log" 2>&1 &&
+      WS_SESSION_ID="${WS_SESSION_ID:-$sid}" "$WS_BIN" wait "$sid" --for exit >> "$RUN_DIR/ws-stop.log" 2>&1; then
+    return 0
+  fi
+  # Release the foreground wait after an API failure. Never start another engine.
+  kill -TERM "$child" 2>/dev/null
+  return 1
 }
 
 apply_note_change() { # resume the interrupted session with the new note (same attempt, no retry used)
