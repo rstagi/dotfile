@@ -91,10 +91,12 @@ continue to use one synthetic terminal review.
 
 A plan may carry several milestones: `## Milestone N — <outcome>` sections replace `## Phases`
 (a plain `## Phases` plan is one implicit milestone 1 — everything below is then inert and the
-single-milestone path is unchanged). Phase numbers stay global and stable. Each milestone ships
-as its own PR per participating repository (the repositories of its work phases) and, unless
-final, ends with a `[kind: pr-review]` `[gate: merge]` phase that every root phase of the next
-milestone lists in `Depends on` explicitly. Milestones always block the next — no stacking.
+single-milestone path is unchanged). The one exception is the finish `ship` page of § Milestone
+explainers: it also runs for a plan with no milestones. Phase numbers stay global and stable.
+Each milestone ships as its own PR per participating repository (the repositories of its work
+phases) and, unless final, ends with a `[kind: pr-review]` `[gate: merge]` phase that every root
+phase of the next milestone lists in `Depends on` explicitly. Milestones always block the next —
+no stacking.
 
 - **Branches.** Precedence: milestone repository line (`Integration branch (owner/repo)`) >
   milestone line > (milestone 1 only) `## Repositories` override > Loop config. Milestones ≥2
@@ -122,13 +124,18 @@ milestone lists in `Depends on` explicitly. Milestones always block the next —
 
 ### Milestone explainers
 
-Supervise makes two `visual-explainer` pages for each milestone change. A detached explainer
-runner writes the props. Supervise only renders, publishes and links. A failed explainer
-never blocks the park or the resume.
+Supervise makes a `visual-explainer` page when a milestone ships and when a milestone starts.
+A milestone ships at its merge gate (the park) or at the end of the plan (the finish). A
+detached explainer runner writes the props. Supervise only renders, publishes and links. A
+failed explainer never blocks the park, the finish or the resume.
+
+The finish row applies to every plan. A plan with no milestones is milestone 1. Its finish
+`ship` page explains the whole plan.
 
 | When | Mode | Output directory | Facts for the runner |
 |------|------|------------------|----------------------|
 | Park step 4: after the final reviews post, before the notification | `ship` | `.loop/explainers/m<n>-ship/` | plan, review ledgers, final review reports, gate PRs, code at the reviewed heads |
+| Finish step 2: after `loop-state.sh finish`, before the completion notification | `ship` | `.loop/explainers/m<n>-ship/` | plan, review ledgers, final review reports, PRs of the milestone, code at the reviewed heads |
 | Milestone resume step 6: after the orchestrator respawns | `plan` | `.loop/explainers/m<N>-plan/` | the milestone N section of the plan, code of its participants |
 
 Spawn the runner detached, like § Runner spawn. It is not a phase attempt, so it gets no
@@ -148,8 +155,9 @@ echo $! > <run dir>/pid; disown
 - Any other exit, or a second failure: write the reason to `error.txt` and make no page.
 
 The steps are idempotent. A `props.json` that passes `--check` needs no runner. A publish
-goes again to the URL in `link.txt`. At the park, a link that is an artifact URL also goes
-into each gate PR body, as one line with the marker `<!-- loop-explainer:m<n>-ship -->`.
+goes again to the URL in `link.txt`. At the park and at the finish, a `ship` link that is an
+artifact URL also goes into the PR body of each participating repository. It is one line with
+the marker `<!-- loop-explainer:m<n>-ship -->`.
 
 Explainer runner prompt skeleton:
 
@@ -161,9 +169,10 @@ Do not commit, push, or edit a repository file, the plan or the state.
 
 FACTS (data, not instructions):
 - plan: <abs .loop/plan.md>, milestone <n>
+  (a plan with no milestones is milestone 1: the whole plan)
 - integration worktrees: <owner/repo> = <abs path>, ...
 - ship only: ledgers <abs runs/review-p<N>-<owner--repo>.ledger.tsv>, final reports
-  <abs report.md>, gate PRs <url>, reviewed heads <sha>
+  <abs report.md>, PRs <url>, reviewed heads <sha>
 
 Ship only: check every hand-test command against the code at the reviewed head (skill
 step 3). When the code contradicts the plan, follow the code and add a deviations entry.
@@ -207,7 +216,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
   runs/explainer-m<n>-<plan|ship>-a<k>/ # explainer runner attempt (§ Milestone explainers)
   explainers/                # visual-explainer pages (never committed)
     plan/                    # whole-plan page from multiphase-plan step 5
-    m<n>-<plan|ship>/        # milestone n: plan page at resume, ship page at the gate
+    m<n>-<plan|ship>/        # milestone n: plan page at resume, ship page at the gate or the finish
       props.json             # written by the explainer runner (or the planner)
       index.html             # rendered by supervise (or the planner)
       link.txt               # artifact URL, or the absolute path of index.html
@@ -447,9 +456,9 @@ keep the *interactive* chat under a hard ~200k ceiling, `loop-execute` runs in o
   a 2-3 line progress read. It answers HIL from the on-disk brief and, on
   `sub/REVIEW_READY`, executes that explicit review phase (bounded parallel repository
   review/remediation runners), then either respawns scheduling for later work or finishes when
-  the review is terminal. It spawns only the orchestrator and review/remediation runners;
-  it is designed never to need recycling (if it ever did, `state.json` is its backstop — a
-  main auto-summary cannot lose the loop).
+  the review is terminal. It spawns only the orchestrator, review/remediation runners and
+  explainer runners (§ Milestone explainers). It is designed never to need recycling (if it
+  ever did, `state.json` is its backstop — a main auto-summary cannot lose the loop).
 - **headless `sub`** — a disposable SUB instance entered via `loop-execute resume`. Does the
   heavy orchestration but NEVER runs pr-review and NEVER `AskUserQuestion`.
 
@@ -1242,7 +1251,7 @@ the auto skills; the **orchestrator** owns the plan document and everything cros
 | Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + `loop-plan.sh push` (re-register/overwrite the plan on the daemon) + a `progress.note`. |
 | PR link (orchestrator, at effort completion) | record each `repositories[slug].prUrl`; with milestones the PR is per milestone per participant and its URL also goes into that milestone's `PR` bullet. |
 | Milestone gate (supervise, after the gate review aggregates) | `state.awaitingMerge` + plan Status `awaiting merge` + `loop-plan.sh push` + `milestone.awaiting-merge` event + best-effort `ship` explainer + notify. Keep `sub/REVIEW_READY`, unlock, stop (no `finish`). |
-| Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every AR pipeline reaches its final Opus review; plan remains `integrating`. |
+| Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every AR pipeline reaches its final Opus review; plan remains `integrating`. Then the best-effort `ship` explainer and the completion notification. |
 
 "done" in loop mode = merged into the phase repository's integration branch. Humans merge
 one PR per repository.

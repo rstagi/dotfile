@@ -484,10 +484,29 @@ final milestone is an ordinary terminal review (finish below):
 
 Resume is human-only (`LOOP_SUB` unset) and starts the next milestone — step 9. Otherwise, if later
 document phases exist, set plan Status back to `in progress`, clear `REVIEW_READY`, and respawn
-the orchestrator for the next segment. If this review is terminal, emit exactly one
-`loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`; the daemon rejects
-finish unless the terminal explicit review is done. Keep plan Status `integrating` until humans
-merge every PR. Notify once with final PRs/verdicts, unlock, stop.
+the orchestrator for the next segment.
+
+If this review is terminal, do the finish. A terminal review is the final review of the last
+milestone of a plan, or the final review of a plan with no milestones.
+
+1. Emit exactly one `loop-state.sh finish --json '{status:"integrating",repositories:{...}}'`.
+   The daemon rejects the finish until the terminal explicit review is `done`. Keep plan Status
+   `integrating` until humans merge every PR.
+2. **Ship explainer (best-effort).** Explain the work since the last merge gate in
+   `visual-explainer` `ship` mode (protocol § Milestone explainers). For a plan with no
+   milestones, this work is the whole plan. The output directory is `.loop/explainers/m<n>-ship/`,
+   where n is `state.milestone`.
+   - Supervise does not write the props. Reuse a `props.json` that passes the skill's
+     `--check`. Otherwise spawn one detached explainer runner and wait for its `meta.json`.
+     Exit 12 gets one relaunch with the `verify.log` tail.
+   - Then supervise renders, publishes and writes `link.txt`, as the skill tells it.
+   - When the link is an artifact URL, add or replace one line in the PR body of each
+     participating repository: `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
+   - On any failure, write the reason to `error.txt` in the output directory and go on
+     with the finish. A failed explainer never blocks the finish.
+3. Notify once (`loop-notify.sh --level info`): the final PRs and verdicts, and the
+   explainer link (`--url`) or the explainer failure.
+4. Unlock, stop.
 
 ### 9. `resume` / `status` / `abort`
 
