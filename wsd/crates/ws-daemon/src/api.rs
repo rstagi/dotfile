@@ -33,6 +33,13 @@ struct CallContext {
     parent_session_id: Option<SessionId>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameSession {
+    name: String,
+    parent_session_id: Option<SessionId>,
+}
+
 /// Builds routes over one serialized lifecycle service. File operations use blocking workers.
 /// POST bodies and GET query parameters accept the optional caller field `parent_session_id`.
 pub fn router(sessions: Sessions) -> Router {
@@ -40,6 +47,7 @@ pub fn router(sessions: Sessions) -> Router {
         .route("/v1/sessions", get(list).post(create))
         .route("/v1/sessions/{id}", get(fetch))
         .route("/v1/sessions/{id}/stop", axum::routing::post(stop))
+        .route("/v1/sessions/{id}/name", axum::routing::post(rename))
         .with_state(Arc::new(Mutex::new(sessions)))
 }
 
@@ -70,6 +78,20 @@ async fn fetch(
     Ok(Json(
         call(store, move |sessions| {
             sessions.get(&id, context.parent_session_id)
+        })
+        .await?
+        .into(),
+    ))
+}
+
+async fn rename(
+    State(store): State<Store>,
+    Path(id): Path<String>,
+    Json(request): Json<RenameSession>,
+) -> Result<Json<SessionResponse>, ApiError> {
+    Ok(Json(
+        call(store, move |sessions| {
+            sessions.rename(&id, &request.name, request.parent_session_id)
         })
         .await?
         .into(),
@@ -143,6 +165,7 @@ impl IntoResponse for ApiError {
             Error::Registry(registry::Error::Ambiguous(_)) => {
                 (StatusCode::CONFLICT, "ambiguous_session")
             }
+            Error::NameTaken(_) => (StatusCode::CONFLICT, "name_taken"),
             Error::Transition(_) => (StatusCode::CONFLICT, "invalid_transition"),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         };

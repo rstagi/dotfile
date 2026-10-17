@@ -8,8 +8,47 @@ use ws_core::{HookEvent, HookRecord, PingResponse};
 
 use crate::Result;
 
+#[derive(Debug)]
+struct ApiError {
+    code: String,
+    message: String,
+}
+
 pub async fn ping(socket: &Path) -> Result<PingResponse> {
     let body = request(socket, Method::GET, "/v1/ping", Vec::new()).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+pub async fn sessions(socket: &Path) -> Result<Vec<ws_core::registry::Session>> {
+    let body = request(socket, Method::GET, "/v1/sessions", Vec::new()).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+pub async fn session(socket: &Path, target: &str) -> Result<ws_core::registry::Session> {
+    let path = format!("/v1/sessions/{}", encode(target));
+    let body = request(socket, Method::GET, &path, Vec::new())
+        .await
+        .map_err(|error| match error.downcast::<ApiError>() {
+            Ok(mut error) => {
+                if error.code == "session_not_found" {
+                    error.message = format!("no such session: {target}");
+                }
+                error as Box<dyn std::error::Error + Send + Sync>
+            }
+            Err(error) => error,
+        })?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+pub async fn rename(socket: &Path, id: &str, name: &str) -> Result<ws_core::registry::Session> {
+    let path = format!("/v1/sessions/{}/name", encode(id));
+    let body = request(
+        socket,
+        Method::POST,
+        &path,
+        serde_json::to_vec(&serde_json::json!({"name": name, "parent_session_id": id}))?,
+    )
+    .await?;
     Ok(serde_json::from_slice(&body)?)
 }
 
@@ -26,6 +65,12 @@ pub async fn hook_stop(socket: &Path, window_id: String) -> Result<()> {
     )
     .await?;
     Ok(())
+}
+
+pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<ApiError>()
+        .is_some_and(|error| error.code == "session_not_found")
 }
 
 async fn request(socket: &Path, method: Method, path: &str, body: Vec<u8>) -> Result<Bytes> {
@@ -60,8 +105,38 @@ async fn send_request(socket: &Path, method: Method, path: &str, body: Vec<u8>) 
         .header("Content-Type", "application/json")
         .body(Full::new(Bytes::from(body)))?;
     let response = sender.send_request(request).await?;
-    if !response.status().is_success() {
-        return Err(format!("The daemon returned HTTP {}.", response.status()).into());
+    let status = response.status();
+    let body = response.into_body().collect().await?.to_bytes();
+    if !status.is_success() {
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        return Err(Box::new(ApiError {
+            code: error["error"]["code"].as_str().unwrap_or("").into(),
+            message: error["error"]["message"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("The daemon returned HTTP {status}.")),
+        }));
     }
-    Ok(response.into_body().collect().await?.to_bytes())
+    Ok(body)
 }
+
+fn encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}

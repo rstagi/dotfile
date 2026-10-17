@@ -80,6 +80,23 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 
 `ws/ws.sh` is the entry point (env/config, command dispatch); it sources `ws/lib/`: `core.sh` (tmux wrappers, locks, window tagging), `workspace.sh` (worktree + session create/rm/list/merge), `tabs.sh` (agent tabs, launch/resume, per-agent commands), `hooks.sh` (`ws hook` ingest, hook config writers), `notify.sh` (notification adapters, notifier build), `picker.sh` (picker, key bindings), `bus.sh` (registry, send/inbox/delivery) and `triggers.sh` (done/on triggers). `ws/tests/` holds the suite (`zsh ws/tests/run.sh`): the `<area>.test.sh` files run in 4 groups (core, send, triggers, misc) in parallel, each in its own process where `helpers.sh` builds a sandbox (private HOME, tmux server, fake agents, real-HOME guard) and the group's areas are sourced in order, because workspaces and session ids carry across them. `zsh ws/tests/run.sh <group>` runs one group; `WS_TESTS_JOBS=1` runs every area sequentially in one sandbox.
 
+## Rust session commands
+
+The Rust CLI in `wsd/` supports `whoami`, `name <label>`, `sessions [id|name]` and `show <id|name>`.
+Each command accepts `--json`. Human output uses `#N` aliases. Targets accept aliases, names, ULIDs and unique ULID prefixes.
+The `me` target selects the current session.
+`whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window option `@ws_session`.
+`WS_TMUX_SOCKET` selects the tmux server.
+
+JSON returns the registry session fields, including the ULID `id`, numeric `alias` and lifecycle `state`.
+`sessions --json` returns an array. The other commands return one session object. `show --json` adds the `output` path.
+Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
+The TSV state column reports the live tmux state or `stopped` when no tagged window exists.
+
+Run `zsh wsd/crates/ws/tests/golden/capture.zsh` from the repository root to regenerate the zsh fixtures.
+The capture uses `ws/tests/helpers.sh` with a private HOME and tmux server.
+Only ids and sandbox output paths are normalized. Run `cd wsd && cargo test -p ws --test session_commands` to compare the Rust output.
+
 ## Upgrading from the root-level `ws.sh`
 
 ws moved from `~/dotfile/ws.sh` to `~/dotfile/ws/ws.sh`. After pulling, run `./install.sh ws` (re-links `~/.local/bin/ws`, re-points the alias source and runs `ws _migrate-hooks`, which rewrites `~/.grok/hooks/ws.json`, `$WS_HOME/claude-settings.json`, the `$WS_HOME/bin/ws` link and the tmux key bindings to the new path). Starting `ws` (bare, `new`, `add`, `open`, `pick`) migrates too, but only what is broken: a file whose embedded ws path is missing or not executable (and a dangling `$WS_HOME/bin/ws`), so a second ws checkout never steals hooks that still point at a working install. `ws _migrate-hooks` forces the re-point at the ws you run it from. Missing files are not created.

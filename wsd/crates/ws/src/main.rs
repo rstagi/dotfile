@@ -3,6 +3,7 @@ use std::{env, error::Error, path::PathBuf, process::ExitCode};
 use clap::{Parser, Subcommand};
 
 mod client;
+mod cmd;
 mod hook;
 mod init;
 
@@ -23,6 +24,29 @@ enum Command {
     Daemon,
     /// Show the daemon version and uptime.
     Ping,
+    /// Show the current session identity.
+    Whoami {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the registered sessions.
+    Sessions {
+        #[arg(long)]
+        json: bool,
+        target: Vec<String>,
+    },
+    /// Set the current session name.
+    Name {
+        #[arg(long)]
+        json: bool,
+        label: Vec<String>,
+    },
+    /// Show one session and its output path.
+    Show {
+        #[arg(long)]
+        json: bool,
+        target: Vec<String>,
+    },
     /// Send a hook event from the current tmux pane.
     Hook {
         #[command(subcommand)]
@@ -66,6 +90,12 @@ async fn run(cli: Cli) -> Result<()> {
                 response.version, response.uptime_secs
             );
         }
+        Command::Whoami { json } => cmd::whoami::run(&socket_path()?, json).await?,
+        Command::Sessions { json, target } => {
+            cmd::sessions::run(&socket_path()?, &target, json).await?
+        }
+        Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
+        Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
         Command::Hook {
             event: HookCommand::Stop,
         } => hook::stop(&socket_path()?).await?,
