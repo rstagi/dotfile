@@ -149,6 +149,44 @@ impl Drop for Sandbox {
 }
 
 #[test]
+fn notification_delivery_survives_failed_tmux_bookkeeping() {
+    for pattern in ["@ws_notify_seq", "@ws_notify_open", " #{session_id}"] {
+        let sandbox = Sandbox::new();
+        let real_tmux = Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .unwrap();
+        let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
+        let wrapper = sandbox.home.path().join("fake-agents/tmux");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *{}*) exit 1;; esac\nexec {} \"$@\"\n",
+                shell_words::quote(pattern),
+                shell_words::quote(real_tmux.trim())
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        // Validate the fixture before the hook starts its bounded tmux calls.
+        assert!(
+            Command::new(&wrapper)
+                .arg("-V")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        sandbox.hook("waiting");
+        assert!(
+            sandbox
+                .output("terminal-notifier")
+                .contains("api/feat-login needs input")
+        );
+    }
+}
+
+#[test]
 fn unfocused_waiting_hook_preserves_terminal_notifier_arguments() {
     let sandbox = Sandbox::new();
     sandbox.hook("waiting");

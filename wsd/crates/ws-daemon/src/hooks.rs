@@ -53,6 +53,7 @@ struct Window {
     pane: String,
     focused: bool,
     subagents: BTreeSet<String>,
+    notification: crate::notify::Target,
 }
 
 struct Reduction {
@@ -125,7 +126,13 @@ pub async fn ingest(
     if let Some(window) = window {
         apply(&callback, &window.id, &reduction.changes).await?;
         if reduction.accepted {
-            crate::notify::transition(&callback, &window.id, &window.state, &reduction.state).await;
+            crate::notify::transition(
+                &callback,
+                &window.notification,
+                &window.state,
+                &reduction.state,
+            )
+            .await;
         }
     }
     Ok(stop_reply(&decision))
@@ -263,11 +270,12 @@ async fn window(callback: &Callback) -> io::Result<Option<Window>> {
         return Ok(None);
     }
     let snapshot = tmux(callback, &["display-message", "-p", "-t", pane,
-        "#{window_id}|#{@ws_seq}|#{@ws_state}|#{@ws_turn}|#{@ws_main}|#{@ws_session}|#{@ws_pane}|#{&&:#{window_active},#{session_attached}}",
+        "#{window_id}|#{@ws_seq}|#{@ws_state}|#{@ws_turn}|#{@ws_main}|#{@ws_session}|#{@ws_pane}|#{&&:#{window_active},#{session_attached}}\u{1f}#{session_id}\u{1f}#{@ws_path}\u{1f}#{@ws_agent}",
         ";", "show-options", "-w", "-t", pane]).await?;
     let mut lines = snapshot.lines();
-    let fields: Vec<_> = lines.next().unwrap_or("").split('|').collect();
-    if fields.len() != 8 || !valid_id(fields[0], '@') {
+    let metadata: Vec<_> = lines.next().unwrap_or("").split('\u{1f}').collect();
+    let fields: Vec<_> = metadata[0].split('|').collect();
+    if fields.len() != 8 || metadata.len() != 4 || !valid_id(fields[0], '@') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "The hook window response is invalid.",
@@ -283,6 +291,13 @@ async fn window(callback: &Callback) -> io::Result<Option<Window>> {
         session: fields[5].into(),
         pane: fields[6].into(),
         focused: fields[7] == "1",
+        notification: crate::notify::Target {
+            window: fields[0].into(),
+            session: metadata[1].into(),
+            path: metadata[2].into(),
+            agent: metadata[3].into(),
+            focused: fields[7] == "1",
+        },
         subagents: lines
             .filter_map(|line| line.split_once(' ').map(|(key, _)| key.to_owned()))
             .filter(|key| key.starts_with("@ws_sub_"))
