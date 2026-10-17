@@ -536,7 +536,7 @@ impl Sessions {
         let stderr = request
             .stderr
             .unwrap_or_else(|| directory.join("stderr.log"));
-        let input = request.stdin.map(File::open).transpose()?;
+        let input = request.stdin.as_deref().map(open_stdin).transpose()?;
         let output = output_file(&stdout)?;
         let errors = output_file(&stderr)?;
         if same_file(&output, &errors)?
@@ -750,4 +750,21 @@ fn snapshot(pid: u32) -> io::Result<Option<Snapshot>> {
         start: format!("{}:{start}", boot.trim()),
         alive: fields.first() != Some(&"Z"),
     }))
+}
+
+/// Opens stdin without blocking the store lock on a FIFO that has no writer.
+fn open_stdin(path: &Path) -> io::Result<File> {
+    use std::os::fd::AsRawFd;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    // The child gets a blocking descriptor, as with a plain open.
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is an open descriptor that `file` owns for both calls.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
 }

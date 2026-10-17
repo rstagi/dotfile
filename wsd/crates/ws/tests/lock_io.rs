@@ -144,6 +144,56 @@ fn workspace_git_fetch_does_not_hold_the_session_store_lock() {
     assert!(created.contains("api/feature"), "{created}");
 }
 
+#[test]
+fn headless_stdin_fifo_without_writer_does_not_hold_the_session_store_lock() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("wsd.sock");
+    let mut command = common::ws(home.path(), &socket);
+    command.env_remove("WS_SESSION").env_remove("WS_SESSION_ID");
+    let _daemon = common::Daemon::start(command, &socket);
+    let fifo = home.path().join("stdin");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = home.path().join("output");
+    let mut create = common::ws(home.path(), &socket);
+    create
+        .env_remove("WS_SESSION")
+        .env_remove("WS_SESSION_ID")
+        .args(["session", "create", "--headless", "--stdin"])
+        .arg(&fifo)
+        .arg("--stdout")
+        .arg(&output)
+        .args(["--", "/bin/cat"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = create.spawn().unwrap();
+    let listed = request(&socket, "/v1/sessions", Duration::from_secs(2));
+    if listed.is_err() {
+        // Give the blocked open a writer so the daemon and the CLI can end.
+        drop(std::fs::OpenOptions::new().write(true).open(&fifo));
+    }
+    let created = child.wait_with_output().unwrap();
+    let listed = listed.expect("session list must not wait for the stdin FIFO open");
+    assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
+    assert!(created.status.success(), "{created:?}");
+    let id = String::from_utf8(created.stdout).unwrap().trim().to_owned();
+    // The command sees end of input because the FIFO has no writer.
+    let waited = common::request(
+        &socket,
+        "POST",
+        &format!("/v1/sessions/{id}/wait"),
+        r#"{"for":"exit","timeout":10}"#,
+    );
+    assert!(waited.starts_with("HTTP/1.1 200"), "{waited}");
+    assert!(waited.contains(r#""state":"finished""#), "{waited}");
+    assert_eq!(std::fs::read_to_string(&output).unwrap(), "");
+}
+
 struct TmuxServer(String, std::path::PathBuf);
 
 impl Drop for TmuxServer {
