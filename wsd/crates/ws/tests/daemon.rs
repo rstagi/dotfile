@@ -10,6 +10,28 @@ mod common;
 use common::{Daemon, create_stale_socket, get, request, ws};
 
 #[test]
+fn daemon_serves_the_session_lifecycle_and_restores_it_after_restart() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    let response = request(&socket, "POST", "/v1/sessions", r#"{"name":"build"}"#);
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    let created: serde_json::Value =
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let response = request(&socket, "POST", &format!("/v1/sessions/{id}/stop"), "{}");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    drop(daemon);
+    let _restarted = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    let response = get(&socket, &format!("/v1/sessions/{id}"));
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let restored: serde_json::Value =
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(restored["state"], "finished");
+    assert_eq!(restored["name"], "build");
+}
+
+#[test]
 fn daemon_serves_versioned_json_and_ping_shows_version_and_uptime() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
