@@ -35,6 +35,12 @@ enum Command {
         json: bool,
         target: Vec<String>,
     },
+    /// Set the current session name.
+    Name {
+        #[arg(long)]
+        json: bool,
+        label: Vec<String>,
+    },
     /// Show one session and its output path.
     Show {
         #[arg(long)]
@@ -88,6 +94,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Sessions { json, target } => {
             cmd::sessions::run(&socket_path()?, &target, json).await?
         }
+        Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
         Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
         Command::Hook {
             event: HookCommand::Stop,

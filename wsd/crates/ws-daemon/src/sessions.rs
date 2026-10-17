@@ -40,6 +40,7 @@ pub enum Error {
     Registry(registry::Error),
     InvalidRequest(&'static str),
     Transition(TransitionError),
+    NameTaken(String),
     Json(serde_json::Error),
 }
 
@@ -109,6 +110,45 @@ impl Sessions {
     pub fn get(&mut self, input: &str, parent_session_id: Option<SessionId>) -> Result<Session> {
         self.record_call(parent_session_id, "session.get", Some(input))?;
         self.get_record(input)
+    }
+
+    pub fn rename(
+        &mut self,
+        input: &str,
+        name: &str,
+        parent_session_id: Option<SessionId>,
+    ) -> Result<Session> {
+        self.record_call(parent_session_id, "session.rename", Some(input))?;
+        let session = self.get_record(input)?;
+        if name == "me"
+            || !name
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic())
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+        {
+            return Err(Error::InvalidRequest(
+                "name: use a letter followed by letters, digits, dots, underscores or hyphens (me is reserved)",
+            ));
+        }
+        if self
+            .registry
+            .sessions()?
+            .iter()
+            .any(|other| other.id != session.id && other.name.as_deref() == Some(name))
+        {
+            return Err(Error::NameTaken(name.into()));
+        }
+        if session.name.as_deref() != Some(name) {
+            self.append(
+                session.id,
+                "session.renamed",
+                json!({"name": name, "parent_session_id": parent_session_id}),
+            )?;
+        }
+        self.get_record(&session.id.to_string())
     }
 
     /// Commits a legal transition before updating the query projection.
@@ -196,6 +236,7 @@ impl fmt::Display for Error {
             Self::InvalidRequest(message) => formatter.write_str(message),
             Self::Transition(error) => error.fmt(formatter),
             Self::Json(error) => error.fmt(formatter),
+            Self::NameTaken(name) => write!(formatter, "name already in use: {name}"),
         }
     }
 }

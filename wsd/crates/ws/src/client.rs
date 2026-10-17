@@ -14,20 +14,6 @@ struct ApiError {
     message: String,
 }
 
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ApiError {}
-
-pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {
-    error
-        .downcast_ref::<ApiError>()
-        .is_some_and(|error| error.code == "session_not_found")
-}
-
 pub async fn ping(socket: &Path) -> Result<PingResponse> {
     let body = request(socket, Method::GET, "/v1/ping", Vec::new()).await?;
     Ok(serde_json::from_slice(&body)?)
@@ -54,17 +40,16 @@ pub async fn session(socket: &Path, target: &str) -> Result<ws_core::registry::S
     Ok(serde_json::from_slice(&body)?)
 }
 
-fn encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-                (byte as char).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect()
+pub async fn rename(socket: &Path, id: &str, name: &str) -> Result<ws_core::registry::Session> {
+    let path = format!("/v1/sessions/{}/name", encode(id));
+    let body = request(
+        socket,
+        Method::POST,
+        &path,
+        serde_json::to_vec(&serde_json::json!({"name": name, "parent_session_id": id}))?,
+    )
+    .await?;
+    Ok(serde_json::from_slice(&body)?)
 }
 
 pub async fn hook_stop(socket: &Path, window_id: String) -> Result<()> {
@@ -80,6 +65,12 @@ pub async fn hook_stop(socket: &Path, window_id: String) -> Result<()> {
     )
     .await?;
     Ok(())
+}
+
+pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<ApiError>()
+        .is_some_and(|error| error.code == "session_not_found")
 }
 
 async fn request(socket: &Path, method: Method, path: &str, body: Vec<u8>) -> Result<Bytes> {
@@ -128,3 +119,24 @@ async fn send_request(socket: &Path, method: Method, path: &str, body: Vec<u8>) 
     }
     Ok(body)
 }
+
+fn encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}

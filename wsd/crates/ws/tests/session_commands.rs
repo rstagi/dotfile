@@ -75,10 +75,35 @@ fn whoami_uses_environment_precedence_then_the_tmux_window() {
     let identity: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(identity["id"], sandbox.ids[1]);
     assert_eq!(identity["alias"], 2);
+    let pane = Command::new("tmux")
+        .args([
+            "-L",
+            &sandbox.server,
+            "display-message",
+            "-p",
+            "-t",
+            &sandbox.window,
+            "#{pane_id}",
+        ])
+        .output()
+        .unwrap();
+    assert!(pane.status.success());
+    let pane = String::from_utf8(pane.stdout).unwrap();
     let output = sandbox
         .command()
         .args(["whoami"])
-        .env("TMUX_PANE", &sandbox.window)
+        .env("TMUX_PANE", pane.trim())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        include_str!("golden/whoami.txt")
+    );
+    let output = sandbox
+        .command()
+        .args(["whoami"])
+        .env("TMUX", "sandbox")
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -132,6 +157,65 @@ fn show_matches_zsh_and_reports_the_durable_output_path() {
     assert_eq!(shown["output"], output_path.to_str().unwrap());
     sandbox.assert_error(&["show", "absent"], include_str!("golden/missing.txt"));
     sandbox.assert_error(&["show"], "ws: show: expected <id|name>\n");
+}
+
+#[test]
+fn name_is_unique_validated_and_durable_across_daemon_restart() {
+    let mut sandbox = Sandbox::new();
+    let rename = |sandbox: &Sandbox, name: &str, json: bool| {
+        let mut command = sandbox.command();
+        command
+            .args(["name", name])
+            .env("WS_SESSION_ID", &sandbox.ids[0]);
+        if json {
+            command.arg("--json");
+        }
+        command.output().unwrap()
+    };
+    let output = rename(&sandbox, "builder", false);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        include_str!("golden/name.txt")
+    );
+    assert!(output.stderr.is_empty());
+    let output = rename(&sandbox, "builder", true);
+    assert!(output.status.success(), "{output:?}");
+    let named: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(named["id"], sandbox.ids[0]);
+    assert_eq!(named["name"], "builder");
+    for invalid in ["me", "", "123", "bad name", "a/b", "éclair"] {
+        let output = rename(&sandbox, invalid, false);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            include_str!("golden/name-invalid.txt")
+        );
+    }
+    let output = rename(&sandbox, "finisher", false);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        include_str!("golden/name-taken.txt")
+    );
+    sandbox.assert_error(&["name"], "ws: name: expected <label>\n");
+    sandbox.assert_error(
+        &["name", "builder"],
+        include_str!("golden/whoami-outside.txt"),
+    );
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    let mut command = sandbox.command();
+    command.env("WS_TMUX_SOCKET", &sandbox.server);
+    sandbox._daemon = common::Daemon::start(command, &sandbox.socket);
+    assert_eq!(
+        sandbox.json(&["show", "builder", "--json"])["name"],
+        "builder"
+    );
+    assert_eq!(
+        sandbox.json(&["sessions", "builder", "--json"])[0]["id"],
+        sandbox.ids[0]
+    );
 }
 
 impl Sandbox {
