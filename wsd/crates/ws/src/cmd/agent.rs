@@ -1,13 +1,83 @@
 use crate::{Result, client};
+use clap::{Subcommand, ValueEnum};
 use hyper::Method;
 use serde_json::json;
 use std::{
     env,
     os::unix::process::ExitStatusExt,
-    path::Path,
-    process::{Command, ExitCode},
+    path::{Path, PathBuf},
+    process::{Command as ProcessCommand, ExitCode},
 };
-use ws_daemon::agents::launch::Launch;
+use ws_daemon::agents::{self, AgentSession, Mode, launch::Launch};
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Write hook files and print launch arguments and environment variables.
+    Prepare {
+        #[arg(long, value_parser = ["claude", "codex", "grok"])]
+        agent: String,
+        #[arg(long, value_parser = ["headless"])]
+        mode: String,
+        #[arg(long)]
+        session: ws_core::ids::SessionId,
+        #[arg(long)]
+        resume: Option<String>,
+        #[arg(long, value_enum, default_value = "json")]
+        format: Format,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum Format {
+    Json,
+    Sh,
+}
+
+pub fn prepare(command: Command) -> Result<()> {
+    let Command::Prepare {
+        agent,
+        session,
+        resume,
+        format,
+        ..
+    } = command;
+    let directory = env::current_dir()?;
+    let home =
+        directory.join(env::var_os("HOME").ok_or("Set HOME to locate agent configuration files.")?);
+    let ws_home = env::var_os("WS_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".ws"));
+    let context = AgentSession {
+        id: session.to_string(),
+        home,
+        grok_home: env::var_os("GROK_HOME").map(|path| directory.join(path)),
+        ws_home: directory.join(ws_home),
+        ws_bin: env::current_exe()?,
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    let prepared = agents::prepare(&agent, Mode::Headless, &context, resume.as_deref())?;
+    prepared.write_files()?;
+    match format {
+        Format::Json => println!("{}", serde_json::to_string(&prepared)?),
+        Format::Sh => {
+            println!("WS_AGENT_PROGRAM={}", shell_words::quote(&prepared.program));
+            let paths = shell_words::join(
+                prepared
+                    .files
+                    .iter()
+                    .map(|file| file.path.to_string_lossy()),
+            );
+            println!("WS_AGENT_FILES={}", shell_words::quote(&paths));
+            for (key, value) in &prepared.env {
+                println!("export {key}={}", shell_words::quote(value));
+            }
+            println!("set -- {}", shell_words::join(&prepared.argv));
+        }
+    }
+    Ok(())
+}
 
 pub async fn run(socket: &Path, agent: &str, arguments: Vec<String>) -> Result<ExitCode> {
     let pane = env::var("TMUX_PANE")
@@ -50,7 +120,7 @@ pub async fn execute(socket: &Path, id: &str, user_tab: bool) -> Result<ExitCode
             std::iter::once(launch.prepared.program.as_str())
                 .chain(launch.prepared.argv.iter().map(String::as_str)),
         );
-        let status = Command::new(shell_program)
+        let status = ProcessCommand::new(shell_program)
             .args(&shell[1..])
             .arg(command)
             .envs(&launch.prepared.env)

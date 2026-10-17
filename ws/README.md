@@ -100,6 +100,7 @@ Environment overrides extend the daemon environment. Repeated keys use the last 
 The process receives its session ULID in `WS_SESSION_ID` and `WS_SESSION`.
 Claude, Codex and Grok use the shared agent preparation contract in headless mode.
 Stdin defaults to EOF. Stdout and stderr default to `$WS_STATE/sessions/<id>/stdout.log` and `stderr.log`.
+
 Explicit output files replace their previous contents. I/O files must refer to separate files, including through links.
 `ws session tail <id> [--follow] [--stream stdout|stderr]` reads stdout by default.
 With `--follow`, it streams new bytes until the process exits, then reads the final bytes.
@@ -116,6 +117,24 @@ After a restart, it adopts each matching live headless process and polls its liv
 A missing process or a changed identity produces `session.failed` with a reason.
 An adopted process has no waitable exit status. Its eventual exit produces a failure with a null `exit_code` and a reason.
 Run `cd wsd && cargo test -p ws --test headless` to check the I/O contract with sandbox processes.
+
+`ws agent prepare --agent claude|codex|grok --mode headless --session <ULID> [--resume <id>] --format json|sh`
+prepares an agent command for an external runner. It uses the same builder as interactive sessions.
+It writes private hook files without contacting the daemon or starting an agent.
+JSON contains `program`, `argv`, `env`, and `files` (each file has `path` and `contents`).
+The arguments include `-p` for Claude and `exec` for Codex, plus any resume arguments.
+The caller supplies its prompt and other flags. Put a Claude positional prompt before variadic flags such as `--allowedTools`.
+Shell output sets `WS_AGENT_PROGRAM`, exports the environment, and sets positional parameters to the prepared arguments.
+`WS_AGENT_FILES` contains shell-quoted generated paths. The caller owns these files after the agent exits.
+For example, a POSIX shell runner can use a prompt on stdin:
+
+```sh
+eval "$(ws agent prepare --agent claude --mode headless --session "$WS_SESSION_ID" --format sh)"
+printf '%s' "$prompt" | "$WS_AGENT_PROGRAM" "$@" --allowedTools Read Bash
+```
+
+Hooks without a pane use `WS_SESSION_ID` and retain each session's sequence and turn guards across daemon restarts.
+They record the same turn and tool events without accessing tmux.
 
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 
