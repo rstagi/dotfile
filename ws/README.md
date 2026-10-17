@@ -166,7 +166,12 @@ Run `cd wsd && cargo test -p ws --test headless` to check the I/O contract with 
 
 `ws agent prepare --agent claude|codex|grok --mode headless --session <ULID> [--resume <id>] --format json|sh`
 prepares an agent command for an external runner. It uses the same builder as interactive sessions.
-It writes private hook files without contacting the daemon or starting an agent.
+It writes private launch files without contacting the daemon or starting an agent.
+Claude and Codex receive the `ws` MCP server in fresh and resumed launches, in both modes.
+Claude receives an extra `--mcp-config` file. Codex receives `-c mcp_servers.ws.*` overrides.
+These additions preserve other MCP servers and do not edit the agent configuration files.
+The MCP child runs the same Rust binary with `mcp`. Its caller is the prepared session.
+Codex forwards `WS_SOCK` to the MCP child when that variable is set.
 JSON contains `program`, `argv`, `env`, and `files` (each file has `path` and `contents`).
 The arguments include `-p` for Claude and `exec` for Codex, plus any resume arguments.
 The caller supplies its prompt and other flags. Put a Claude positional prompt before variadic flags such as `--allowedTools`.

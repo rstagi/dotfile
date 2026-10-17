@@ -130,7 +130,7 @@ pub async fn execute(socket: &Path, id: &str, user_tab: bool) -> Result<ExitCode
             if file
                 .path
                 .file_name()
-                .is_some_and(|name| name == "claude-settings.json")
+                .is_some_and(|name| name == "claude-settings.json" || name == "claude-mcp.json")
             {
                 let _ = std::fs::remove_file(&file.path);
                 if let Some(parent) = file.path.parent() {

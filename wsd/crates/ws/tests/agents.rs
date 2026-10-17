@@ -506,6 +506,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
             assert!(sandbox.home.path().join(".grok/hooks/ws.json").is_file());
         }
         let id = session["id"].as_str().unwrap();
+        assert_mcp_registration(&args, agent, id);
         let rows = rows.replace(
             &format!("\t{agent}\t\t{id}"),
             &format!("\t{agent}\tresume-{agent}\t{id}"),
@@ -518,6 +519,8 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         let (resumed, running) = sandbox.capture();
         agents.push(running);
         assert_eq!(resumed["id"], id);
+        let resumed_args: Vec<String> = serde_json::from_value(resumed["argv"].clone()).unwrap();
+        assert_mcp_registration(&resumed_args, agent, id);
         let args = resumed["argv"].as_array().unwrap();
         assert!(args.windows(2).any(|p| p
             == [
@@ -999,4 +1002,26 @@ fn git(path: &Path, args: &[&str]) -> String {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     String::from_utf8(out.stdout).unwrap().trim_end().into()
+}
+
+fn assert_mcp_registration(args: &[String], agent: &str, id: &str) {
+    if agent == "claude" {
+        let index = args.iter().position(|arg| arg == "--mcp-config").unwrap();
+        let config: Value = serde_json::from_slice(&fs::read(&args[index + 1]).unwrap()).unwrap();
+        assert_eq!(
+            config["mcpServers"]["ws"]["command"],
+            env!("CARGO_BIN_EXE_ws")
+        );
+        assert_eq!(config["mcpServers"]["ws"]["args"], json!(["mcp"]));
+        assert_eq!(config["mcpServers"]["ws"]["env"]["WS_SESSION_ID"], id);
+    } else if agent == "codex" {
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-c", "mcp_servers.ws.args=[\"mcp\"]"])
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == &format!("mcp_servers.ws.env.WS_SESSION_ID=\"{id}\""))
+        );
+    }
 }
