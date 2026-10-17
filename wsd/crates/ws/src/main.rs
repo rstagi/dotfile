@@ -20,8 +20,22 @@ struct Cli {
 enum Command {
     #[command(name = "_rows", hide = true)]
     PickerRows,
+    #[command(name = "_preview", hide = true)]
+    PickerPreview {
+        #[arg(default_value = "")]
+        workspace: String,
+        #[arg(default_value = "")]
+        window: String,
+    },
     #[command(name = "_summary", hide = true)]
     PickerSummary,
+    #[command(name = "_toggle_sessions", hide = true)]
+    PickerToggleSessions,
+    #[command(name = "_unread", hide = true)]
+    PickerUnread {
+        #[arg(default_value = "")]
+        window: String,
+    },
     /// Show the current session's Loop dashboard.
     Top {
         #[arg(long)]
@@ -250,7 +264,12 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::PickerPreview { workspace, window } => {
+            return cmd::picker::preview(&socket_path()?, &workspace, &window).await;
+        }
         Command::PickerRows => cmd::picker::rows(&socket_path()?).await?,
+        Command::PickerUnread { window } => cmd::picker::toggle_unread(&window)?,
+        Command::PickerToggleSessions => cmd::picker::toggle_sessions()?,
         Command::PickerSummary => cmd::picker::summary(&socket_path()?).await?,
         Command::Top {
             once,
