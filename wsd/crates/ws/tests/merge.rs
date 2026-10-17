@@ -194,6 +194,230 @@ fn merge_refuses_detached_head_and_a_branch_without_a_pr() {
     assert!(output.stdout.is_empty());
 }
 
+#[test]
+fn popup_reports_merge_errors_and_waits_for_enter() {
+    use std::{io::Read, sync::mpsc, time::Duration};
+    let sandbox = Sandbox::new();
+    let mut child = sandbox
+        .command()
+        .arg("_merge_popup")
+        .current_dir(sandbox.root.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = vec![0; include_bytes!("golden/merge-popup.txt").len()];
+        let result = stdout.read_exact(&mut bytes).map(|()| bytes);
+        sender.send(result).unwrap();
+    });
+    let bytes = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(bytes, include_bytes!("golden/merge-popup.txt"));
+    assert!(child.try_wait().unwrap().is_none());
+    child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    reader.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/merge-outside.txt")
+    );
+    let output = sandbox.input(sandbox.command(), sandbox.root.path(), "_merge_popup", "");
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn an_already_merged_pr_can_continue_but_other_merge_failures_stop_before_fetch() {
+    let sandbox = Sandbox::new();
+    let wt = sandbox.workspace("feat/ship");
+    sandbox.land_squash();
+    sandbox.fake_gh(r#"#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+case "$2" in
+view) if [ "$5" = state ]; then echo "${WS_TEST_PR_STATE:-MERGED}"; else echo '#7 Ship it (https://github.com/acme/merge-me/pull/7)'; fi ;;
+merge) exit 1 ;;
+esac
+"#);
+    let output = sandbox.merge(&wt, "y\nn\n");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("  (already merged)\n")
+    );
+    assert_eq!(
+        git(&sandbox.repo(), &["log", "-1", "--format=%s", "main"]),
+        "squashed: ship it"
+    );
+    let mut command = sandbox.command();
+    command.env("WS_TEST_PR_STATE", "OPEN");
+    let output = sandbox.input(command, &wt, "merge", "y\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "ws: merge: gh pr merge failed\n"
+    );
+    assert!(
+        !String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("updating")
+    );
+    assert!(wt.is_dir());
+}
+
+#[test]
+fn popup_uses_the_same_merge_flow_and_waits_after_a_successful_deletion() {
+    let sandbox = Sandbox::new();
+    let wt = sandbox.workspace("feat/ship");
+    git(&wt, &["push", "-q", "origin", "feat/ship"]);
+    let output = sandbox.input(sandbox.command(), &wt, "_merge_popup", "n\n\n");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "{}{}",
+            include_str!("golden/merge-declined.txt"),
+            include_str!("golden/merge-popup.txt")
+        )
+    );
+    let output = sandbox.input(sandbox.command(), &wt, "_merge_popup", "y\ny\n\n");
+    assert!(output.status.success(), "{output:?}");
+    assert!(!wt.exists());
+    assert!(
+        output
+            .stdout
+            .ends_with(include_bytes!("golden/merge-popup.txt"))
+    );
+}
+
+#[test]
+fn confirmation_requires_a_complete_yes_line_and_declines_eof() {
+    let sandbox = Sandbox::new();
+    let wt = sandbox.workspace("feat/ship");
+    for input in ["", "y", "yes\n", "Y-no\n"] {
+        let output = sandbox.merge(&wt, input);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            include_str!("golden/merge-declined.txt")
+        );
+    }
+    assert!(!sandbox.gh_log().contains("pr merge"));
+}
+
+#[test]
+fn merge_honors_the_method_and_updates_a_default_branch_that_is_not_checked_out() {
+    let sandbox = Sandbox::new();
+    let wt = sandbox.workspace("feat/ship");
+    git(&sandbox.repo(), &["branch", "-m", "main", "trunk"]);
+    git(&sandbox.repo(), &["push", "-q", "origin", "trunk"]);
+    git(
+        &sandbox.repo(),
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/trunk",
+        ],
+    );
+    git(&sandbox.repo(), &["checkout", "-qb", "local-work"]);
+    let original = git(&sandbox.repo(), &["rev-parse", "HEAD"]);
+    git(&sandbox.repo(), &["fetch", "-q", "origin", "main:trunk"]);
+    sandbox.land_squash();
+    git(&sandbox.repo(), &["fetch", "-q", "origin"]);
+    git(
+        &sandbox.repo(),
+        &["push", "-q", "origin", "refs/remotes/origin/main:trunk"],
+    );
+    let mut command = sandbox.command();
+    command.env("WS_MERGE_METHOD", "rebase");
+    let output = sandbox.input(command, &wt, "merge", "Y\nn\n");
+    assert!(output.status.success(), "{output:?}");
+    assert!(sandbox.gh_log().contains("pr merge feat/ship --rebase"));
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("→ updating trunk")
+    );
+    assert_eq!(
+        git(&sandbox.repo(), &["log", "-1", "--format=%s", "trunk"]),
+        "squashed: ship it"
+    );
+    assert_eq!(
+        git(&sandbox.repo(), &["branch", "--show-current"]),
+        "local-work"
+    );
+    assert_eq!(git(&sandbox.repo(), &["rev-parse", "HEAD"]), original);
+}
+
+#[test]
+fn failed_fetch_or_fast_forward_preserves_the_worktree_and_branch() {
+    for diverged in [false, true] {
+        let sandbox = Sandbox::new();
+        let wt = sandbox.workspace("feat/ship");
+        if diverged {
+            sandbox.land_squash();
+            git(
+                &sandbox.repo(),
+                &["commit", "-q", "--allow-empty", "-m", "local change"],
+            );
+        } else {
+            git(
+                &sandbox.repo(),
+                &[
+                    "remote",
+                    "set-url",
+                    "origin",
+                    sandbox.root.path().join("missing.git").to_str().unwrap(),
+                ],
+            );
+        }
+        let head = git(&sandbox.repo(), &["rev-parse", "main"]);
+        let output = sandbox.merge(&wt, "y\n");
+        assert_eq!(output.status.code(), Some(1));
+        let message = if diverged {
+            "ws: merge: cannot fast-forward main\n"
+        } else {
+            "ws: merge: fetch failed\n"
+        };
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.ends_with(message), "{stderr}");
+        assert!(stderr.contains("fatal:"), "{stderr}");
+        assert!(wt.is_dir());
+        assert_eq!(git(&sandbox.repo(), &["rev-parse", "main"]), head);
+        assert!(!git(&sandbox.repo(), &["branch", "--list", "feat/ship"]).is_empty());
+    }
+}
+
+#[test]
+fn merge_reports_no_pr_when_the_github_cli_is_unavailable() {
+    let sandbox = Sandbox::new();
+    let wt = sandbox.workspace("feat/ship");
+    let bin = sandbox.root.path().join("bin");
+    std::fs::remove_file(bin.join("gh")).unwrap();
+    let real_git = Command::new("/usr/bin/which").arg("git").output().unwrap();
+    assert!(real_git.status.success());
+    std::os::unix::fs::symlink(
+        String::from_utf8(real_git.stdout).unwrap().trim(),
+        bin.join("git"),
+    )
+    .unwrap();
+    let mut command = sandbox.command();
+    command.env("PATH", &bin);
+    let output = sandbox.input(command, &wt, "merge", "");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/merge-no-pr.txt")
+    );
+    assert!(output.stdout.is_empty());
+}
+
 impl Sandbox {
     fn new() -> Self {
         let root = tempfile::tempdir_in("/tmp").unwrap();

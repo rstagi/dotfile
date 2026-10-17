@@ -2,7 +2,7 @@ use crate::Result;
 use std::{
     io::{self, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, ExitCode},
 };
 
 pub async fn run(socket: &Path) -> Result<()> {
@@ -30,7 +30,8 @@ pub async fn run(socket: &Path) -> Result<()> {
             "--jq",
             "\"#\\(.number) \\(.title) (\\(.url))\"",
         ])
-        .output()?;
+        .output()
+        .map_err(|_| format!("merge: no PR found for {branch}"))?;
     let pr = String::from_utf8(output.stdout)?;
     let pr = pr.trim_end();
     if pr.is_empty() {
@@ -51,7 +52,15 @@ pub async fn run(socket: &Path) -> Result<()> {
         .status()?
         .success()
     {
-        return Err("merge: gh pr merge failed".into());
+        let state = Command::new("gh")
+            .current_dir(&wt)
+            .args(["pr", "view", &branch, "--json", "state", "-q", ".state"])
+            .output();
+        if !state.is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim_end() == "MERGED")
+        {
+            return Err("merge: gh pr merge failed".into());
+        }
+        println!("  (already merged)");
     }
     let default = git(
         repo,
@@ -68,19 +77,21 @@ pub async fn run(socket: &Path) -> Result<()> {
         None => repo.display().to_string(),
     };
     println!("→ updating {default} in {display}");
-    git(repo, &["fetch", "-q", "origin"]).map_err(|_| "merge: fetch failed")?;
-    let update = if git(repo, &["branch", "--show-current"])? == default {
-        git(
+    git_run(repo, &["fetch", "-q", "origin"], "merge: fetch failed")?;
+    let failure = format!("merge: cannot fast-forward {default}");
+    if git(repo, &["branch", "--show-current"])? == default {
+        git_run(
             repo,
             &["merge", "-q", "--ff-only", &format!("origin/{default}")],
-        )
+            &failure,
+        )?;
     } else {
-        git(
+        git_run(
             repo,
             &["fetch", "-q", "origin", &format!("{default}:{default}")],
-        )
-    };
-    update.map_err(|_| format!("merge: cannot fast-forward {default}"))?;
+            &failure,
+        )?;
+    }
     if !confirm(&format!(
         "delete {name} (worktree, tabs, local + remote {branch})?"
     ))? {
@@ -101,6 +112,21 @@ pub async fn run(socket: &Path) -> Result<()> {
     }
     let _ = git(repo, &["push", "-q", "origin", "--delete", &branch]);
     super::rm::run(socket, wt.to_str().unwrap(), force, false, true, false).await
+}
+
+pub async fn popup(socket: &Path) -> Result<ExitCode> {
+    if let Err(error) = run(socket).await {
+        eprintln!("ws: {error}");
+    }
+    print!("\npress enter to close");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(if answer.ends_with('\n') {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn current_workspace() -> Result<(String, PathBuf)> {
@@ -146,5 +172,18 @@ fn confirm(prompt: &str) -> Result<bool> {
     io::stdout().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim(), "y" | "Y"))
+    Ok(answer.ends_with('\n') && matches!(answer.trim(), "y" | "Y"))
+}
+
+fn git_run(repo: &Path, args: &[&str], failure: &str) -> Result<()> {
+    if !Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .status()?
+        .success()
+    {
+        return Err(failure.to_owned().into());
+    }
+    Ok(())
 }
