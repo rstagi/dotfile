@@ -56,6 +56,7 @@ pub fn router(sessions: Sessions) -> Router {
 
 pub(crate) fn router_with_store(store: Store) -> Router {
     Router::new()
+        .merge(crate::import::backend::router())
         .merge(crate::bus::router())
         .merge(crate::edges::router())
         .merge(crate::triggers::router())

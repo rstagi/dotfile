@@ -31,20 +31,29 @@ NOTCH_HOME="$(mktemp -d /tmp/ws-notch.XXXXXX)"
 export WS_TMUX_SOCKET="ws-test-$$"
 export WS_ROOT="$TMP/worktrees"
 export WS_HOME="$TMP/wshome"
+mkdir -p "$WS_HOME"
+print -r -- zsh > "$WS_HOME/backend"
 export WS_NOTIFY=0
 export WS_NOTIFIER=auto
 export WS_BORINGNOTCH_SOCKET="$TMP/unavailable.sock"
 export WS_AGENT_SHELL="zsh -fc"
+# Concurrent callers wait for the lock event. Thirty seconds is the failure bound.
+export WS_LOCK_SCALE=10
 export LOOP_REPO_REGISTRY="$TMP/repos.json"
 export GROK_HOME="$TMP/grokhome"
 # Cap input-readiness waits (default 60s): a send stuck on a TUI that never readies fails fast.
 export WS_READY_TIMEOUT=15
 socket_listener_pid=""
+ws_rust_daemon_pid=""
 trap ws_tests_cleanup EXIT
 # ws_tests_cleanup — EXIT trap: stop this suite's background jobs and tmux server, drop the hook
 # locks ws keeps in ${TMPDIR:-/tmp}, then fail if the real agent hooks/config changed.
 # Detached retries (setsid) exit on their own once their tmux server is gone.
 ws_tests_cleanup() {
+  if [[ -n "$ws_rust_daemon_pid" ]]; then
+    kill "$ws_rust_daemon_pid" 2>/dev/null
+    wait "$ws_rust_daemon_pid" 2>/dev/null
+  fi
   [[ -n "$socket_listener_pid" ]] && kill "$socket_listener_pid" 2>/dev/null
   local -a pids=(${(s.:.)${(j.:.)${(v)jobstates#*:*:}}})
   (( $#pids )) && kill ${pids%%=*} 2>/dev/null

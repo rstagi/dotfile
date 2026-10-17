@@ -12,6 +12,101 @@ use tower::ServiceExt;
 use super::from_zsh_with_root;
 use crate::{api, sessions::Sessions};
 
+#[test]
+fn incremental_resume_imports_changes_after_the_interrupted_snapshot() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    capture(&source, root.path());
+    let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
+    fs::write(
+        source.join("sessions/2/inbox"),
+        "{\"message\":\"before crash\"}\n",
+    )
+    .unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    let target = sessions.get("#2", None).unwrap().id;
+    let mut journal: Value =
+        serde_json::from_slice(&fs::read(state.join(super::JOURNAL)).unwrap()).unwrap();
+    journal["complete"] = json!(false);
+    fs::write(state.join(super::JOURNAL), journal.to_string()).unwrap();
+    fs::write(
+        source.join("sessions/2/inbox"),
+        "{\"message\":\"after crash\"}\n",
+    )
+    .unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    let inbox = sessions.inbox(target).unwrap();
+    assert_eq!(inbox.len(), 2);
+    assert_eq!(inbox[1].content.body, "after crash");
+}
+
+#[test]
+fn incremental_import_distinguishes_identical_messages_after_zsh_consumes_an_inbox() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    capture(&source, root.path());
+    let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
+    for expected in 1..=2 {
+        let output = Command::new("zsh")
+            .args([
+                "-fc",
+                r#"
+            source "$1/ws/ws.sh"
+            : > "$WS_SESSIONS/2/inbox"
+            with_lock "$WS_SESSIONS/2/inbox" ws_bus_enqueue 2 'same message'
+        "#,
+                "enqueue",
+            ])
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.."))
+            .env("HOME", root.path())
+            .env("WS_HOME", &source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+        let target = sessions.get("#2", None).unwrap().id;
+        assert_eq!(sessions.inbox(target).unwrap().len(), expected);
+    }
+}
+
+#[test]
+fn incremental_import_keeps_ids_and_imports_replaced_inboxes_and_new_triggers() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    capture(&source, root.path());
+    from_zsh_with_root(&source, &state, &source.join("worktrees"), false).unwrap();
+    let mut sessions = Sessions::open_with_home(&state, 1, &source).unwrap();
+    let target = sessions.get("#2", None).unwrap().id;
+    fs::write(
+        source.join("sessions/2/inbox"),
+        "{\"message\":\"first import\"}\n",
+    )
+    .unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(sessions.inbox(target).unwrap().len(), 1);
+    fs::write(
+        source.join("sessions/2/inbox"),
+        "{\"message\":\"second import\"}\n",
+    )
+    .unwrap();
+    let mut trigger: Value =
+        serde_json::from_slice(&fs::read(source.join("triggers/1.json")).unwrap()).unwrap();
+    trigger["template"] = json!("new action {id}");
+    fs::write(source.join("triggers/3.json"), trigger.to_string()).unwrap();
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(sessions.get("#2", None).unwrap().id, target);
+    let inbox = sessions.inbox(target).unwrap();
+    assert_eq!(inbox.len(), 2);
+    assert_eq!(inbox[1].content.body, "second import");
+    assert_eq!(sessions.triggers.len(), 2);
+    super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
+    assert_eq!(sessions.inbox(target).unwrap().len(), 2);
+    assert_eq!(sessions.triggers.len(), 2);
+}
+
 #[tokio::test]
 async fn imported_exit_trigger_ignores_exits_before_registration() {
     let root = tempfile::tempdir_in("/tmp").unwrap();

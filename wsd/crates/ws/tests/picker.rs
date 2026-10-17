@@ -668,6 +668,8 @@ impl Sandbox {
     }
 
     fn zsh(&self, args: &[&str]) -> Vec<u8> {
+        let selector = self.home.path().join(".ws/backend");
+        std::fs::write(&selector, "zsh\n").unwrap();
         let output = Command::new("zsh")
             .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ws/ws.sh"))
             .args(args)
@@ -679,6 +681,7 @@ impl Sandbox {
             .env_remove("TMUX_PANE")
             .output()
             .unwrap();
+        std::fs::write(&selector, "rust\n").unwrap();
         assert!(output.status.success(), "zsh {args:?}: {output:?}");
         output.stdout
     }

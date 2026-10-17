@@ -2,6 +2,7 @@ pub mod ack;
 pub mod add;
 pub mod agent;
 pub mod attach;
+pub mod backend;
 pub mod build_notifier;
 pub mod claude;
 pub mod codex;

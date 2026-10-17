@@ -32,10 +32,19 @@ pub async fn run(socket: &Path, state: &str) {
         ("idle", "StopCancelled" | "stop_cancelled" | "Interrupt") => "cancel",
         _ => state,
     };
-    let (reply, receipt) = deliver(socket, state, payload, observed_at_us)
+    let (mut reply, mut receipt) = deliver(socket, state, payload, observed_at_us)
         .await
         .unwrap_or_else(|_| (json!({}), None));
     if state == "stop" {
+        let _backend = ws_daemon::import::backend::home().ok().and_then(|home| {
+            ws_daemon::import::backend::delivery_guard(&home)
+                .ok()
+                .flatten()
+        });
+        if _backend.is_none() {
+            reply = json!({});
+            receipt = None;
+        }
         let written = {
             let mut stdout = io::stdout().lock();
             writeln!(stdout, "{reply}")

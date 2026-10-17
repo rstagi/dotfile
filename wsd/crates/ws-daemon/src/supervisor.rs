@@ -535,7 +535,7 @@ impl Sessions {
         output.set_len(0)?;
         errors.set_len(0)?;
         let mut body = json!({
-            "alias": self.registry.next_alias()?, "kind": "headless",
+            "alias": self.next_alias()?, "kind": "headless",
             "command": request.command, "cwd": cwd, "stdout": stdout, "stderr": stderr,
             "parent_session_id": request.parent_session_id,
         });

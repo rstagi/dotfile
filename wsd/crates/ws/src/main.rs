@@ -18,6 +18,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Select the active local backend.
+    Backend { backend: String },
     /// Select a workspace or tab with fzf.
     Pick,
     #[command(name = "_pick_focus", hide = true)]
@@ -266,6 +268,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         return cmd::attach::run(&socket_path()?).await;
     };
     match command {
+        Command::Backend { backend } => cmd::backend::run(&socket_path()?, &backend).await?,
         Command::Pick => return cmd::pick::run(),
         Command::PickFocus { window } => cmd::pick::focus(&window)?,
         Command::PickerPreview { workspace, window } => {

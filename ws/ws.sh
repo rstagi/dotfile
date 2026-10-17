@@ -55,6 +55,19 @@ zmodload zsh/system # zsystem flock (sessions file)
 WS_BIN="${0:A}"
 WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
 WS_HOME="${WS_HOME:-$HOME/.ws}"
+# The selector is durable, so child shells need no backend environment variable.
+if [[ "$ZSH_EVAL_CONTEXT" != *:file ]]; then
+  backend=zsh
+  [[ ! -f "$WS_HOME/backend" ]] || backend="$(<"$WS_HOME/backend")"
+  case "$backend" in
+    rust|zsh) ;;
+    *) print -u2 'ws: the backend selector must contain rust or zsh'; exit 1 ;;
+  esac
+  if [[ "$backend" == rust || "${1:-}" == backend ]]; then
+    export WS_HOME WS_ROOT
+    exec "${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}" "$@"
+  fi
+fi
 WS_NOTIFY="${WS_NOTIFY:-1}"
 WS_NOTIFIER="${WS_NOTIFIER:-auto}" # auto | osascript | terminal-notifier | boringnotch | executable path
 WS_BORINGNOTCH_SOCKET="${WS_BORINGNOTCH_SOCKET:-$HOME/Library/Application Support/boringNotch/notify.sock}"

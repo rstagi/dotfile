@@ -7,7 +7,8 @@
 echo "ws hook: notifies via terminal-notifier (sound, click focuses the tab) when unfocused"
 cat > "$TMP/bin/afplay" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$@" > "$FAKE_AFPLAY_OUT"
+printf '%s\n' "$@" > "$FAKE_AFPLAY_OUT.$$"
+/bin/mv "$FAKE_AFPLAY_OUT.$$" "$FAKE_AFPLAY_OUT"
 printf '%s\n' "$@" >> "$FAKE_AFPLAY_LOG"
 [ -n "${FAKE_AFPLAY_SLEEP:-}" ] && sleep "$FAKE_AFPLAY_SLEEP" && : > "$FAKE_AFPLAY_OUT.done"
 exit "${FAKE_AFPLAY_EXIT:-0}"
@@ -17,7 +18,8 @@ export FAKE_AFPLAY_OUT="$TMP/afplay.out"
 export FAKE_AFPLAY_LOG="$TMP/afplay.log"
 cat > "$TMP/bin/terminal-notifier" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$@" > "$FAKE_NOTIFIER_OUT"
+printf '%s\n' "$@" > "$FAKE_NOTIFIER_OUT.$$"
+/bin/mv "$FAKE_NOTIFIER_OUT.$$" "$FAKE_NOTIFIER_OUT"
 EOF
 chmod +x "$TMP/bin/terminal-notifier"
 export FAKE_NOTIFIER_OUT="$TMP/notifier.out"
@@ -307,7 +309,8 @@ hook api/feat-login "$NWIN" waiting </dev/null
 echo "ws hook: explicit osascript selection bypasses terminal-notifier"
 cat > "$TMP/bin/osascript" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$@" > "$FAKE_OSASCRIPT_OUT"
+printf '%s\n' "$@" > "$FAKE_OSASCRIPT_OUT.$$"
+/bin/mv "$FAKE_OSASCRIPT_OUT.$$" "$FAKE_OSASCRIPT_OUT"
 EOF
 chmod +x "$TMP/bin/osascript"
 export FAKE_OSASCRIPT_OUT="$TMP/osascript.out"

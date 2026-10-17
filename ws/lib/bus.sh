@@ -250,7 +250,12 @@ ws_bus_send_enqueue() {
 ws_bus_enqueue() {
   ws_bus_reclaim "$1" || return 1
   ws_bus_paste_expire "$1" || return 1
-  print -rn -- "$2" | jq -Rsc '{message:.}' >> "$WS_SESSIONS/$1/inbox"
+  local counter="$WS_SESSIONS/$1/inbox.counter" seq=0
+  [[ ! -f "$counter" ]] || read -r seq < "$counter"
+  [[ "$seq" == <-> ]] || { print -u2 'ws: invalid inbox counter'; return 1; }
+  (( seq += 1 ))
+  print -r -- "$seq" > "$counter.tmp" && mv "$counter.tmp" "$counter" || return 1
+  print -rn -- "$2" | jq -Rsc --arg id "$seq" '{message:., zsh_message_id:$id}' >> "$WS_SESSIONS/$1/inbox"
 }
 
 # Under the inbox lock: a Stop killed before its reply landed left inbox.inflight; requeue it first.

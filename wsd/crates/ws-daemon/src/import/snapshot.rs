@@ -21,6 +21,8 @@ pub struct LegacySession {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LegacyLine {
+    #[serde(default)]
+    pub import_key: Option<String>,
     pub artifact: String,
     pub line: usize,
     pub raw: String,
@@ -161,6 +163,7 @@ fn lines(path: &Path, artifact: &str, field: &str) -> io::Result<Vec<LegacyLine>
                 )));
             }
             Ok(LegacyLine {
+                import_key: None,
                 artifact: artifact.into(),
                 line: index + 1,
                 raw: raw.into(),

@@ -239,9 +239,13 @@ fn imports_all_artifacts_and_requeues_interrupted_stop_and_unconfirmed_paste() {
             .iter()
             .any(|event| event.event_type == "message.delivered")
     );
-    // Import may create lock files. Every pre-existing source artifact must stay unchanged.
+    // Import reserves the human alias. Other source artifacts stay unchanged.
     let after = tree(&source);
     for (path, bytes) in before {
+        if path == "sessions/counter" {
+            assert_eq!(after[&path], b"13\n");
+            continue;
+        }
         assert_eq!(after[&path], bytes, "{path}");
     }
     drop(sessions);

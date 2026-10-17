@@ -586,7 +586,7 @@ impl Sessions {
                 )?;
             }
         } else {
-            let alias = self.registry.next_alias()?;
+            let alias = self.next_alias()?;
             let mut body = json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)});
             if let Some(origin) = &spawn {
                 body["spawned"] = json!(true);
