@@ -283,10 +283,11 @@ async fn terminate_group(process: &Process) -> io::Result<()> {
             "The process identity changed. The group was not signalled.",
         ));
     }
+    let grace_deadline = tokio::time::Instant::now() + TERM_GRACE;
     signal_group(process.pgid, libc::SIGTERM)?;
     tokio::select! {
         result = wait_group_gone(process.pgid) => return result,
-        _ = tokio::time::sleep(TERM_GRACE) => {}
+        _ = tokio::time::sleep_until(grace_deadline) => {}
     }
     signal_group(process.pgid, libc::SIGKILL)?;
     wait_group_gone(process.pgid).await
