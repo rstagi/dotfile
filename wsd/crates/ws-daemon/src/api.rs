@@ -135,11 +135,9 @@ async fn stop(
         })?
     };
     Ok(Json(
-        call(store, move |sessions| {
-            sessions.stop(&id, context.parent_session_id)
-        })
-        .await?
-        .into(),
+        crate::supervisor::stop(store, id, context.parent_session_id)
+            .await?
+            .into(),
     ))
 }
 
@@ -383,6 +381,14 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/v1/sessions/missing/stop",
+            json!({"parent_session_id": parent}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         let calls = SessionLog::new(sandbox.path(), parent.parse().unwrap(), Ulid::new())
             .read()
             .unwrap()
@@ -401,7 +407,8 @@ mod tests {
                 "session.list",
                 "session.get",
                 "session.stop",
-                "session.get"
+                "session.get",
+                "session.stop"
             ]
         );
         assert!(

@@ -30,7 +30,7 @@ use crate::{
     sessions::{Error, Result, Sessions},
 };
 
-const TERM_GRACE: Duration = Duration::from_secs(2);
+const TERM_GRACE: Duration = Duration::from_secs(10);
 const TIMEOUT_REASON: &str = "The phase exceeded its maximum runtime.";
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -67,6 +67,63 @@ pub(crate) async fn create(
     request: CreateHeadless,
 ) -> std::result::Result<Session, ApiError> {
     launch(store, request, serde_json::Value::Null).await
+}
+
+pub(crate) async fn stop(
+    store: Store,
+    input: String,
+    caller: Option<SessionId>,
+) -> std::result::Result<Session, ApiError> {
+    let (session, process) = api::call(store.clone(), move |sessions| {
+        let session = match sessions.get_record(&input) {
+            Ok(session) => session,
+            Err(error) => {
+                sessions.record_call(caller, "session.stop", Some(&input))?;
+                return Err(error);
+            }
+        };
+        if session.body["kind"] != "headless" {
+            return sessions.stop(&input, caller).map(|session| (session, None));
+        }
+        sessions.record_call(caller, "session.stop", Some(&input))?;
+        if ["finished", "failed"].contains(&session.state.as_str()) {
+            return Ok((session, None));
+        }
+        let entries = SessionLog::new(&sessions.state, session.id, session.device_id)
+            .read()?
+            .entries;
+        let process = entries
+            .iter()
+            .rev()
+            .find(|entry| entry.event_type == "session.running")
+            .and_then(|entry| serde_json::from_value::<Process>(entry.body["process"].clone()).ok())
+            .ok_or(Error::InvalidRequest(
+                "The headless session has no process record.",
+            ))?;
+        Ok((session, Some(process)))
+    })
+    .await?;
+    let Some(process) = process else {
+        return Ok(session);
+    };
+    // The stop must continue if the HTTP client disconnects.
+    tokio::spawn(async move {
+        terminate_group(&process)
+            .await
+            .map_err(Error::from)
+            .map_err(ApiError)?;
+        loop {
+            let id = session.id.to_string();
+            let current =
+                api::call(store.clone(), move |sessions| sessions.get_record(&id)).await?;
+            if ["finished", "failed"].contains(&current.state.as_str()) {
+                return Ok(current);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|error| ApiError(Error::Io(io::Error::other(error))))?
 }
 
 pub(crate) async fn launch(
@@ -192,10 +249,14 @@ async fn wait_child(
 ) -> io::Result<(ExitStatus, bool)> {
     tokio::select! {
         biased;
-        status = child.wait() => Ok((status?, false)),
+        status = async {
+            let status = child.wait().await?;
+            wait_group_gone(process.pgid).await?;
+            Ok::<_, io::Error>(status)
+        } => Ok((status?, false)),
         _ = expiry => {
-            terminate_group(&process).await?;
-            Ok((child.wait().await?, true))
+            let (_, status) = tokio::try_join!(terminate_group(&process), child.wait())?;
+            Ok((status, true))
         }
     }
 }
@@ -214,14 +275,65 @@ fn deadline(at_ms: Option<u64>) -> impl Future<Output = ()> + Send {
 }
 
 async fn terminate_group(process: &Process) -> io::Result<()> {
-    // Check the birth identity before sending a signal to a persisted pid.
-    if !process.is_alive()? {
-        return Ok(());
+    // A living leader must still match the persisted birth identity.
+    if let Some(current) = snapshot(process.pid)?
+        && (current.pgid != process.pgid || process.start.as_ref() != Some(&current.start))
+    {
+        return Err(io::Error::other(
+            "The process identity changed. The group was not signalled.",
+        ));
     }
     signal_group(process.pgid, libc::SIGTERM)?;
-    tokio::time::sleep(TERM_GRACE).await;
-    // The leader can exit after SIGTERM while descendants remain in its process group.
-    signal_group(process.pgid, libc::SIGKILL)
+    tokio::select! {
+        result = wait_group_gone(process.pgid) => return result,
+        _ = tokio::time::sleep(TERM_GRACE) => {}
+    }
+    signal_group(process.pgid, libc::SIGKILL)?;
+    wait_group_gone(process.pgid).await
+}
+
+async fn wait_group_gone(pgid: u32) -> io::Result<()> {
+    while group_exists(pgid)? {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+fn group_exists(pgid: u32) -> io::Result<bool> {
+    if pgid <= 1 || pgid > i32::MAX as u32 {
+        return Err(io::Error::other("The process group id is invalid."));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // kill(-pgid, 0) can return EPERM for a group during process teardown.
+        // Inspect group membership instead. One pid is enough to prove membership.
+        let mut pid: libc::pid_t = 0;
+        // SAFETY: The buffer is valid and has the specified size.
+        let count = unsafe {
+            libc::proc_listpgrppids(
+                pgid as i32,
+                (&mut pid as *mut libc::pid_t).cast(),
+                std::mem::size_of_val(&pid) as i32,
+            )
+        };
+        if count < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(count > 0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // SAFETY: A negative, validated pid checks only this child's process group.
+        if unsafe { libc::kill(-(pgid as i32), 0) } == 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
 }
 
 fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, process: Process) {

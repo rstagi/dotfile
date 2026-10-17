@@ -105,6 +105,9 @@ Explicit output files replace their previous contents. I/O files must refer to s
 With `--follow`, it streams new bytes until the process exits, then reads the final bytes.
 The daemon records an `exit` event and `session.finished` for code 0, or `session.failed` for another code.
 Signal exits use code `128 + signal`. `GET /v1/sessions/{id}` returns `exit_code`, which is null before exit.
+`POST /v1/sessions/{id}/stop` sends SIGTERM to the headless process group.
+After a 10-second grace period, it sends SIGKILL if the group still exists.
+The response waits for the entire group to disappear and for the daemon to record the exit.
 The daemon persists the process id, process group and process start identity in `session.running`.
 After a restart, it adopts each matching live headless process and polls its liveness.
 A missing process or a changed identity produces `session.failed` with a reason.
