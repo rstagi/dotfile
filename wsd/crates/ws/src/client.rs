@@ -80,7 +80,7 @@ pub(crate) async fn request(
     {
         return send_request(socket, method, path, body).await;
     }
-    let seconds = if path.starts_with("/v1/workspaces") {
+    let seconds = if path.starts_with("/v1/workspaces") || path == "/v1/phases/worktree" {
         120
     } else {
         2

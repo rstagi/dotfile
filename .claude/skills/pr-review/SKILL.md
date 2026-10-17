@@ -13,16 +13,34 @@ Don't skip the worktree step because the change "looks trivial." Trivial-looking
 
 ## Step 1 — Check it out and run it (do this first)
 
-Get the branch into an isolated git worktree so you can build and run it without disturbing the user's working tree, then confirm it actually behaves as expected.
+Create a detached worktree before you build or test the branch.
+Run this block and all review commands in one persistent shell.
+Exit that shell only after the review ends.
 
 ```bash
-# GitHub PR by number:
-gh pr checkout <number>            # or note the branch name it checks out
+# Fetch a PR. For a branch review, use: git fetch origin <branch>
+git fetch origin pull/<number>/head
+REVIEW_REPO=$(git rev-parse --show-toplevel)
+REVIEW_REF=FETCH_HEAD
 
-# Then put it in its own worktree (run from the repo root):
-git fetch origin
-git worktree add ../<repo>-review-<branch> <branch>
-cd ../<repo>-review-<branch>
+if command -v ws >/dev/null 2>&1 && ws ping >/dev/null 2>&1; then
+  if REVIEW_SESSION=$(ws whoami 2>/dev/null); then
+    : # The daemon collects the worktree when this session finishes or fails.
+  else
+    REVIEW_SESSION=$(ws session create) || exit 1
+    trap 'cd "$REVIEW_REPO"; ws session stop "$REVIEW_SESSION" >/dev/null' EXIT
+  fi
+  REVIEW_WORKTREE=$(ws phase worktree --session "$REVIEW_SESSION" "$REVIEW_REPO" "$REVIEW_REF") || exit 1
+else
+  REVIEW_ROOT="${TMPDIR:-/tmp}/pr-review"
+  mkdir -p "$REVIEW_ROOT" || exit 1
+  REVIEW_ROOT=$(cd "$REVIEW_ROOT" && pwd -P) || exit 1
+  REVIEW_TMP=$(mktemp -d "$REVIEW_ROOT/review.XXXXXX") || exit 1
+  REVIEW_WORKTREE="$REVIEW_TMP/worktree"
+  trap 'cd "$REVIEW_REPO"; git worktree remove --force "$REVIEW_WORKTREE"; git worktree prune; rmdir "$REVIEW_TMP"' EXIT
+  git worktree add --detach "$REVIEW_WORKTREE" "$REVIEW_REF" || exit 1
+fi
+cd "$REVIEW_WORKTREE" || exit 1
 ```
 
 In the worktree, use the project's own commands (check the README / CLAUDE.md / package manifests) to:
@@ -31,7 +49,8 @@ In the worktree, use the project's own commands (check the README / CLAUDE.md / 
 - run the test suite,
 - and exercise the actual change — run the app, hit the endpoint, call the function, whatever path this PR touches.
 
-Note anything that doesn't build, doesn't pass, or doesn't behave as the PR claims. **That** is the most valuable thing a review produces — surface it before moving on. When you're done, clean up with `git worktree remove`.
+Note anything that doesn't build, doesn't pass, or doesn't behave as the PR claims. **That** is the most valuable thing a review produces — surface it before moving on. The daemon removes managed worktrees when their sessions finish or fail.
+The exit trap removes fallback worktrees.
 
 ## Step 2 — Review across these lenses
 
@@ -170,12 +189,12 @@ Finish by printing the absolute paths of `index.html` and `video.mp4`.
 
 ## Headless mode
 
-When invoked with `--headless` (the loop-execute orchestrator runs this after opening the effort PR): never pause to ask anything, and never mutate the checkout you were started in. Skip `gh pr checkout` entirely. Instead, from a clone of the repo:
+In `--headless` mode, do not ask questions.
+Do not change the starting checkout.
+Do not run `gh pr checkout`.
+Use the Step 1 block with `git fetch origin pull/<number>/head` and `REVIEW_REF=FETCH_HEAD`.
+Use `ws phase worktree` when `ws ping` succeeds.
+Otherwise, use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
+Keep the same shell active until the review ends.
 
-```bash
-git fetch origin pull/<number>/head
-git worktree remove --force ../<repo>-review-<number> 2>/dev/null || true   # leftover from a crashed run
-git worktree add --detach ../<repo>-review-<number> FETCH_HEAD
-```
-
-The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as described above: findings inline, concise overall body, stacked-PR split proposal included, and `:)` at the end. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Clean up the worktree when done.
+The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as described above: findings inline, concise overall body, stacked-PR split proposal included, and `:)` at the end. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the session cleanup or the exit trap remove the worktree.

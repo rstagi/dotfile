@@ -19,6 +19,263 @@ struct Sandbox {
 }
 
 #[test]
+fn phase_worktree_is_detached_hidden_from_list_and_removed_on_stop() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let session = sandbox.request("POST", "/v1/sessions", json!({}));
+    let id = session["id"].as_str().unwrap();
+    let output = common::ws(sandbox.home.path(), &sandbox.socket)
+        .env_remove("WS_SESSION_ID")
+        .env_remove("WS_SESSION")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .current_dir(sandbox.home.path())
+        .args(["phase", "worktree", "--session", id, "repo", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let path = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+    assert_eq!(
+        path,
+        sandbox
+            .home
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("phases")
+            .join(id)
+    );
+    assert_eq!(
+        git(&path, &["rev-parse", "HEAD"]),
+        git(&repo, &["rev-parse", "HEAD"])
+    );
+    assert!(
+        !Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(["symbolic-ref", "-q", "HEAD"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sandbox
+            .entries(id)
+            .iter()
+            .any(|entry| entry.event_type == "phase.worktree"
+                && entry.body["path"] == path.to_str().unwrap())
+    );
+    let list = common::ws(sandbox.home.path(), &sandbox.socket)
+        .env("WS_SESSION_ID", id)
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        json!([])
+    );
+    fs::write(path.join("untracked"), "review output").unwrap();
+    sandbox.request("POST", &format!("/v1/sessions/{id}/stop"), json!({}));
+    assert!(!path.exists());
+    assert!(!git(&repo, &["worktree", "list", "--porcelain"]).contains(path.to_str().unwrap()));
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn invalid_phase_repository_does_not_prevent_daemon_restart() {
+    let mut sandbox = Sandbox::new();
+    let session = sandbox.request("POST", "/v1/sessions", json!({}));
+    let id = session["id"].as_str().unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/phases/worktree",
+        &json!({
+            "session": id, "repo": sandbox.home.path(), "reference": "HEAD",
+        })
+        .to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 500"), "{response}");
+    sandbox.request("POST", &format!("/v1/sessions/{id}/stop"), json!({}));
+    sandbox.daemon.child.kill().unwrap();
+    sandbox.daemon.child.wait().unwrap();
+    sandbox.daemon = common::Daemon::start(
+        common::ws(sandbox.home.path(), &sandbox.socket),
+        &sandbox.socket,
+    );
+    assert_eq!(sandbox.get(id)["state"], "finished");
+}
+
+#[test]
+fn phase_worktree_uses_current_session_and_cleans_up_after_process_exit() {
+    for code in [0, 3] {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.repo();
+        let session = sandbox.request("POST", "/v1/sessions", json!({
+            "headless": true,
+            "command": ["/bin/sh", "-c", format!("printf ready; while [ ! -e release ]; do sleep 0.02; done; exit {code}")],
+            "cwd": sandbox.home.path(),
+        }));
+        let id = session["id"].as_str().unwrap();
+        sandbox.wait_output(id, "ready");
+        let output = common::ws(sandbox.home.path(), &sandbox.socket)
+            .env("WS_SESSION_ID", id)
+            .args(["phase", "worktree", repo.to_str().unwrap(), "HEAD"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let path = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+        fs::write(path.join("untracked"), "review output").unwrap();
+        fs::write(sandbox.home.path().join("release"), "release").unwrap();
+        let session = sandbox.wait(id);
+        assert_eq!(
+            session["state"],
+            if code == 0 { "finished" } else { "failed" }
+        );
+        assert!(!path.exists());
+        assert!(!git(&repo, &["worktree", "list", "--porcelain"]).contains(path.to_str().unwrap()));
+    }
+}
+
+#[test]
+fn restart_collects_a_phase_worktree_after_an_interrupted_terminal_event() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let session = sandbox.request("POST", "/v1/sessions", json!({}));
+    let id = session["id"].as_str().unwrap();
+    let path = sandbox.request(
+        "POST",
+        "/v1/phases/worktree",
+        json!({
+            "session": id, "repo": repo, "reference": "HEAD",
+        }),
+    );
+    let path = PathBuf::from(path.as_str().unwrap());
+    sandbox.daemon.child.kill().unwrap();
+    sandbox.daemon.child.wait().unwrap();
+    // Simulate a crash after the terminal event reaches the log, before cleanup.
+    SessionLog::new(
+        &sandbox.home.path().join("state"),
+        id.parse().unwrap(),
+        session["device_id"].as_str().unwrap().parse().unwrap(),
+    )
+    .writer()
+    .append_current("session.finished", json!({}))
+    .unwrap();
+    assert!(path.exists());
+    sandbox.daemon = common::Daemon::start(
+        common::ws(sandbox.home.path(), &sandbox.socket),
+        &sandbox.socket,
+    );
+    assert_eq!(sandbox.get(id)["state"], "finished");
+    assert!(!path.exists());
+    assert!(!git(&repo, &["worktree", "list", "--porcelain"]).contains(path.to_str().unwrap()));
+}
+
+#[test]
+fn cleanup_failure_does_not_block_startup_and_a_later_restart_retries_it() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let session = sandbox.request("POST", "/v1/sessions", json!({}));
+    let id = session["id"].as_str().unwrap();
+    let path = sandbox.request(
+        "POST",
+        "/v1/phases/worktree",
+        json!({
+            "session": id, "repo": repo, "reference": "HEAD",
+        }),
+    );
+    let path = PathBuf::from(path.as_str().unwrap());
+    let moved = sandbox.home.path().join("repo-unavailable");
+    fs::rename(&repo, &moved).unwrap();
+    sandbox.request("POST", &format!("/v1/sessions/{id}/stop"), json!({}));
+    sandbox.daemon.child.kill().unwrap();
+    sandbox.daemon.child.wait().unwrap();
+    sandbox.daemon = common::Daemon::start(
+        common::ws(sandbox.home.path(), &sandbox.socket),
+        &sandbox.socket,
+    );
+    assert_eq!(sandbox.get(id)["state"], "finished");
+    assert!(path.exists());
+    assert!(
+        sandbox
+            .daemon
+            .stderr()
+            .contains("Cannot remove the phase worktree")
+    );
+    fs::rename(&moved, &repo).unwrap();
+    sandbox.daemon.child.kill().unwrap();
+    sandbox.daemon.child.wait().unwrap();
+    sandbox.daemon = common::Daemon::start(
+        common::ws(sandbox.home.path(), &sandbox.socket),
+        &sandbox.socket,
+    );
+    assert!(!path.exists());
+    assert!(!git(&repo, &["worktree", "list", "--porcelain"]).contains(path.to_str().unwrap()));
+}
+
+#[test]
+fn a_reused_phase_path_does_not_leave_a_registration_in_the_previous_repo() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let other = sandbox.home.path().join("other-repo");
+    git(
+        sandbox.home.path(),
+        &["clone", repo.to_str().unwrap(), other.to_str().unwrap()],
+    );
+    let session = sandbox.request("POST", "/v1/sessions", json!({}));
+    let id = session["id"].as_str().unwrap();
+    let path = sandbox.request(
+        "POST",
+        "/v1/phases/worktree",
+        json!({
+            "session": id, "repo": repo, "reference": "HEAD",
+        }),
+    );
+    let path = PathBuf::from(path.as_str().unwrap());
+    // Represent a lost directory after an interrupted checkout or external removal.
+    fs::remove_dir_all(&path).unwrap();
+    let reused = sandbox.request(
+        "POST",
+        "/v1/phases/worktree",
+        json!({
+            "session": id, "repo": other, "reference": "HEAD",
+        }),
+    );
+    assert_eq!(reused, path.to_str().unwrap());
+    assert!(!git(&repo, &["worktree", "list", "--porcelain"]).contains(path.to_str().unwrap()));
+    sandbox.request("POST", &format!("/v1/sessions/{id}/stop"), json!({}));
+    assert!(!path.exists());
+}
+
+#[test]
 fn phase_spawn_runs_a_local_child_and_records_its_parent_and_phase_context() {
     let sandbox = Sandbox::new();
     let parent = sandbox.request("POST", "/v1/sessions", json!({}));
@@ -208,6 +465,26 @@ impl Sandbox {
             home,
             socket,
         }
+    }
+
+    fn repo(&self) -> PathBuf {
+        let repo = self.home.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        repo
     }
 
     fn headless(&self, name: &str) -> String {
