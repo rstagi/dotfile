@@ -45,13 +45,34 @@ pub(crate) async fn create(
     store: Store,
     request: CreateHeadless,
 ) -> std::result::Result<Session, ApiError> {
+    launch(store, request, serde_json::Value::Null).await
+}
+
+pub(crate) async fn launch(
+    store: Store,
+    request: CreateHeadless,
+    metadata: serde_json::Value,
+) -> std::result::Result<Session, ApiError> {
     let monitor_store = store.clone();
     api::call(store, move |sessions| {
-        let (session, mut child) = sessions.spawn_headless(request)?;
+        let (session, mut child) = sessions.spawn_headless(request, metadata)?;
         let id = session.id;
         let parent = session.body["parent_session_id"]
             .as_str()
             .and_then(|id| id.parse().ok());
+        if session.body.get("phase").is_some()
+            && let Some(parent) = parent
+        {
+            sessions.append(
+                parent,
+                "phase.spawned",
+                json!({
+                    "parent_session_id": parent, "session_id": id,
+                    "phase": session.body["phase"], "repo": session.body["repo"],
+                    "base": session.body["base"],
+                }),
+            )?;
+        }
         tokio::spawn(async move {
             let status = child.wait().await;
             let result = api::call(monitor_store, move |sessions| {
@@ -89,6 +110,7 @@ impl Sessions {
     fn spawn_headless(
         &mut self,
         request: CreateHeadless,
+        metadata: serde_json::Value,
     ) -> Result<(Session, tokio::process::Child)> {
         if !request.headless || request.command.first().is_none_or(|s| s.is_empty()) {
             return Err(Error::InvalidRequest(
@@ -151,15 +173,15 @@ impl Sessions {
         }
         output.set_len(0)?;
         errors.set_len(0)?;
-        self.append(
-            id,
-            "session.created",
-            json!({
-                "alias": self.registry.next_alias()?, "kind": "headless",
-                "command": request.command, "cwd": cwd, "stdout": stdout, "stderr": stderr,
-                "parent_session_id": request.parent_session_id,
-            }),
-        )?;
+        let mut body = json!({
+            "alias": self.registry.next_alias()?, "kind": "headless",
+            "command": request.command, "cwd": cwd, "stdout": stdout, "stderr": stderr,
+            "parent_session_id": request.parent_session_id,
+        });
+        if let Some(metadata) = metadata.as_object() {
+            body.as_object_mut().unwrap().extend(metadata.clone());
+        }
+        self.append(id, "session.created", body)?;
         command
             .current_dir(cwd)
             .envs(&request.env)
@@ -181,12 +203,16 @@ impl Sessions {
                 return Err(error.into());
             }
         };
-        let session = self.transition(
-            &id.to_string(),
-            SessionState::Running,
-            request.parent_session_id,
+        let pid = child.id().expect("A newly spawned child has a pid.");
+        self.append(
+            id,
+            "session.running",
+            json!({
+                "parent_session_id": request.parent_session_id,
+                "process": {"pid": pid, "pgid": pid},
+            }),
         )?;
-        Ok((session, child))
+        Ok((self.get_record(&id.to_string())?, child))
     }
 }
 

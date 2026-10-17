@@ -20,6 +20,7 @@ pub mod agents;
 pub mod api;
 pub mod hooks;
 pub mod notify;
+pub mod phases;
 pub mod sessions;
 pub mod supervisor;
 pub mod tmux;
