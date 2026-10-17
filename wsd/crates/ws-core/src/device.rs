@@ -1,9 +1,8 @@
 //! Persistent identity for the local device.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Write},
-    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
@@ -23,12 +22,7 @@ impl Device {
     pub fn init(state: &Path, hostname: &str) -> io::Result<Self> {
         crate::create_state_directory(state)?;
         // Keep the lock inode stable across initializations.
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .mode(0o600)
-            .open(state.join("device.lock"))?;
+        let lock = crate::lockfile::open_lock_file(&state.join("device.lock"))?;
         lock.lock()?;
         match Self::load(state) {
             Ok(device) => return Ok(device),

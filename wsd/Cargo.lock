@@ -1343,6 +1343,7 @@ dependencies = [
 name = "ws-core"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "proptest",
  "rusqlite",
  "serde",
