@@ -13,7 +13,7 @@ use std::{
     env,
     path::{Path, PathBuf},
 };
-use ws_core::{ids::SessionId, registry::Session};
+use ws_core::{ids::SessionId, log::SessionLog, registry::Session};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +82,65 @@ async fn exited(
 }
 
 impl Sessions {
+    pub(crate) fn reopen_for_message(
+        &mut self,
+        session: &Session,
+        caller: Option<SessionId>,
+    ) -> Result<()> {
+        let directory = self.agent_directory(session)?;
+        let workspace = session
+            .workspace_id
+            .as_deref()
+            .ok_or(Error::InvalidRequest("The agent session has no workspace."))?;
+        let old_windows: Vec<_> = self
+            .registry
+            .workspaces()?
+            .into_iter()
+            .filter(|record| record.id == workspace)
+            .flat_map(|record| {
+                record.body["windows"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter(|window| window["session_id"] == session.id.to_string())
+            .filter_map(|window| window["window_id"].as_str().map(str::to_owned))
+            .collect();
+        let launched = self.start_workspace_session(
+            workspace,
+            &directory,
+            session.body["agent"].as_str().unwrap_or("claude"),
+            caller,
+            Some(session),
+            None,
+        )?;
+        let tmux = Tmux::from_env();
+        for window in old_windows {
+            if launched["window_id"] == window
+                || tmux
+                    .window_option(&window, "@ws_session")
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    != Some(&session.id.to_string())
+            {
+                continue;
+            }
+            // A finished agent can still own a live pane. Retire that launch generation.
+            for key in [
+                "@ws_session",
+                "@ws_pane",
+                "@ws_slot",
+                "@ws_agent",
+                "@ws_state",
+                "@ws_main",
+            ] {
+                let _ = tmux.unset_window_option(&window, key);
+            }
+        }
+        Ok(())
+    }
+
     fn run_agent(&mut self, request: RunAgent) -> Result<Value> {
         self.record_call(
             request.parent_session_id,
@@ -165,8 +224,7 @@ impl Sessions {
             prompt: None,
             arguments,
         };
-        let resume = slots::resume(&directory, &session.id.to_string())?
-            .or_else(|| session.body["resume_id"].as_str().map(str::to_owned));
+        let resume = self.agent_resume_id(&directory, &session)?;
         let mut prepared = prepare(
             session.body["agent"].as_str().unwrap_or("claude"),
             Mode::Interactive,
@@ -186,6 +244,32 @@ impl Sessions {
             prepared,
             directory,
         })
+    }
+
+    fn agent_resume_id(&self, directory: &Path, session: &Session) -> Result<Option<String>> {
+        // A clean exit removes the slot row. The hook log retains the conversation id.
+        let entries = SessionLog::new(&self.state, session.id, session.device_id)
+            .read()?
+            .entries;
+        let resume = entries.iter().rev().find_map(|entry| {
+            if entry.event_type != "hook.received"
+                || !entry.body["payload"]["agent_id"].is_null()
+                || entry.body["payload"]["hook_event_name"]
+                    .as_str()
+                    .is_some_and(|event| event.starts_with("Subagent"))
+            {
+                return None;
+            }
+            entry.body["payload"]["session_id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        });
+        if resume.is_some() {
+            return Ok(resume);
+        }
+        Ok(slots::resume(directory, &session.id.to_string())?
+            .or_else(|| session.body["resume_id"].as_str().map(str::to_owned)))
     }
 
     fn agent_exited(&mut self, request: ExitRequest) -> Result<()> {

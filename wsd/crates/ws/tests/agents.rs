@@ -22,6 +22,174 @@ struct Sandbox {
 }
 
 #[test]
+fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    assert!(
+        sandbox
+            .output(&[
+                "new",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--branch",
+                "feature",
+                "--detach",
+            ])
+            .status
+            .success()
+    );
+    let (initial, _running) = sandbox.capture();
+    let id = initial["id"].as_str().unwrap();
+    let old_window = sandbox.window(id);
+    let pane = sandbox.tmux(&["display-message", "-p", "-t", &old_window, "#{pane_id}"]);
+    let stop = || {
+        common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &json!({
+                "session_id": id, "callback_id": ws_core::ids::Ulid::new(),
+                "observed_at_us": ws_daemon::hooks::receipt_time_us().unwrap(),
+                "state": "stop", "pane": pane, "tmux_socket": sandbox.server,
+                "payload": {"hook_event_name":"Stop", "session_id":"retained-conversation"}
+            })
+            .to_string(),
+        )
+    };
+    assert!(stop().starts_with("HTTP/1.1 201"));
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{id}/stop"),
+        "{}",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(
+        sandbox
+            .output(&["send", id, "only for the new window"])
+            .status
+            .code(),
+        Some(75)
+    );
+    let (resumed, _resumed) = sandbox.capture();
+    assert_eq!(resumed["id"], id);
+    let new_window = sandbox.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        resumed["pane"].as_str().unwrap(),
+        "#{window_id}",
+    ]);
+    assert_ne!(new_window, old_window);
+    let response = stop();
+    let reply: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert!(reply.get("decision").is_none(), "{reply}");
+    assert!(sandbox.events(id, "hook.delivery").is_empty());
+    assert_eq!(sandbox.window(id), new_window);
+    assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+}
+
+#[test]
+fn a_message_reopens_a_finished_agent_before_delivery() {
+    for agent in ["claude", "codex"] {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.repo();
+        let output = sandbox.output(&[
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "feature",
+            "--agent",
+            agent,
+            "--detach",
+        ]);
+        assert!(output.status.success(), "{output:?}");
+        let (first, mut connection) = sandbox.capture();
+        let id = first["id"].as_str().unwrap();
+        let old_window = sandbox.window(id);
+        let pane = sandbox.tmux(&["display-message", "-p", "-t", &old_window, "#{pane_id}"]);
+        let response = common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &json!({
+                "session_id": id, "callback_id": ws_core::ids::Ulid::new(),
+                "observed_at_us": ws_daemon::hooks::receipt_time_us().unwrap(),
+                "state": "stop", "pane": pane, "tmux_socket": sandbox.server,
+                "payload": {"hook_event_name":"Stop", "session_id":format!("resume-{agent}")}
+            })
+            .to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        connection.write_all(b"0").unwrap();
+        sandbox.wait_for(|| sandbox.json(&["show", id, "--json"])["state"] == "finished");
+        assert!(!fs::read_to_string(sandbox.slots()).unwrap().contains(id));
+
+        let output = if agent == "codex" {
+            sandbox.output(&["send", id, "continue the task", "--force"])
+        } else {
+            sandbox.output(&["send", id, "continue the task"])
+        };
+        assert_eq!(output.status.code(), Some(75), "{output:?}");
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        let (resumed, mut running) = sandbox.capture();
+        assert_eq!(resumed["id"], id);
+        assert_ne!(sandbox.window(id), old_window);
+        assert!(
+            resumed["argv"]
+                .as_array()
+                .unwrap()
+                .windows(2)
+                .any(|args| args
+                    == [
+                        json!(if agent == "codex" {
+                            "resume"
+                        } else {
+                            "--resume"
+                        }),
+                        json!(format!("resume-{agent}")),
+                    ])
+        );
+        assert!(sandbox.events(id, "message.delivered").is_empty());
+        let reopened = sandbox.events(id, "session.reopened");
+        assert_eq!(reopened.len(), 1);
+        let sent = sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|session| sandbox.events(session["id"].as_str().unwrap(), "message.sent"))
+            .find(|event| event.body["to_session"] == id)
+            .unwrap();
+        assert!(sent.ts_ms <= reopened[0].ts_ms);
+        running.write_all(b"d").unwrap();
+        let mut reader = std::io::BufReader::new(running.try_clone().unwrap());
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+        assert_eq!(
+            line.trim_end(),
+            "[ws #2]\ncontinue the task".escape_debug().to_string()
+        );
+        assert!(sandbox.events(id, "message.delivered").is_empty());
+        running.write_all(b"a").unwrap();
+        sandbox.wait_for(|| sandbox.events(id, "message.delivered").len() == 1);
+        let delivered = sandbox.events(id, "message.delivered");
+        assert_eq!(delivered[0].body["message_id"], sent.event_id.to_string());
+        let entries = sandbox.log(id);
+        let reopen = entries
+            .iter()
+            .position(|e| e.event_type == "session.reopened")
+            .unwrap();
+        let deliver = entries
+            .iter()
+            .position(|e| e.event_type == "message.delivered")
+            .unwrap();
+        assert!(reopen < deliver);
+    }
+}
+
+#[test]
 fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo();
@@ -372,11 +540,24 @@ impl Sandbox {
         for agent in ["claude", "codex", "grok"] {
             let script = format!(
                 r#"#!/usr/bin/python3
-import json, os, socket, sys
+import json, os, socket, subprocess, sys, tty
 s = socket.socket(socket.AF_UNIX)
 s.connect({:?})
-s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL')))+'\n').encode())
-sys.exit(int(s.recv(1) or b'0'))
+s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE')))+'\n').encode())
+control = s.recv(1)
+if control == b'd':
+    tty.setraw(0)
+    os.write(1, b'\x1b[?2004h')
+    data = b''
+    while not data.endswith(b'\r'):
+        data += os.read(0, 4096)
+    text = data.removeprefix(b'\x1b[200~').removesuffix(b'\r').removesuffix(b'\x1b[201~').decode()
+    s.sendall((text.encode('unicode_escape').decode()+'\n').encode())
+    if s.recv(1) == b'a':
+        subprocess.run([os.environ['WS_BIN'], 'hook', 'working'], input=json.dumps(dict(hook_event_name='UserPromptSubmit', turn_id='next-turn', session_id='resume-{agent}')).encode(), check=True)
+    s.recv(1)
+    sys.exit(0)
+sys.exit(int(control or b'0'))
 "#,
                 home.path().join("agent.sock").to_str().unwrap()
             );
@@ -450,13 +631,13 @@ sys.exit(int(s.recv(1) or b'0'))
         String::from_utf8(out.stdout).unwrap().trim_end().into()
     }
     fn capture(&self) -> (Value, UnixStream) {
-        let end = Instant::now() + Duration::from_secs(10);
+        let end = Instant::now() + Duration::from_secs(30);
         loop {
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
                     stream.set_nonblocking(false).unwrap();
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .set_read_timeout(Some(Duration::from_secs(30)))
                         .unwrap();
                     let mut bytes = vec![];
                     loop {
@@ -476,6 +657,32 @@ sys.exit(int(s.recv(1) or b'0'))
                 Err(e) => panic!("{e}"),
             }
         }
+    }
+    fn wait_for(&self, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !ready() {
+            assert!(
+                Instant::now() < deadline,
+                "The expected event did not occur."
+            );
+            std::thread::yield_now();
+        }
+    }
+    fn log(&self, id: &str) -> Vec<ws_core::log::LogEntry> {
+        ws_core::log::SessionLog::new(
+            &self.home.path().join("state"),
+            id.parse().unwrap(),
+            ws_core::ids::Ulid::nil(),
+        )
+        .read()
+        .unwrap()
+        .entries
+    }
+    fn events(&self, id: &str, event: &str) -> Vec<ws_core::log::LogEntry> {
+        self.log(id)
+            .into_iter()
+            .filter(|entry| entry.event_type == event)
+            .collect()
     }
     fn repo(&self) -> PathBuf {
         let repo = self.home.path().join("api");

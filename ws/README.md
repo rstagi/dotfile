@@ -159,6 +159,13 @@ One daemon worker retries queued messages and requeues unconfirmed batches after
 Pending batches survive daemon restart. The worker replaces the detached zsh retry and paste timeout processes for the Rust backend.
 `ws send` still returns exit 75 after it durably queues a message.
 
+A message to a finished local agent session appends `session.reopened` and starts a new tmux window before delivery.
+Claude uses `--resume <id>`. Codex uses `resume <id>`.
+Durable hook records retain the conversation ID after a clean exit removes its slot.
+A previous live window loses its session tags, so its hooks cannot consume the new messages.
+The Rust backend accepts `--force` before the target or after the message. The flag has no effect.
+If the agent cannot resume, the message stays queued. Sessions on other devices do not launch locally.
+
 The next accepted Stop or matching cancellation writes `message.read` with `implicit: true` for delivered messages that lack an explicit acknowledgement.
 Hook spool replay does not inject a new batch. Only the session's local device can inject messages.
 
