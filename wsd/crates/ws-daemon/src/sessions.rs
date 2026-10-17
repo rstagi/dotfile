@@ -44,6 +44,7 @@ pub enum Error {
     InvalidRequest(&'static str),
     Transition(TransitionError),
     NameTaken(String),
+    DependencyCycle(Vec<SessionId>),
     Json(serde_json::Error),
 }
 
@@ -252,6 +253,15 @@ impl Sessions {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DependencyCycle(cycle) => write!(
+                formatter,
+                "Dependency cycle: {}.",
+                cycle
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            ),
             Self::Io(error) => error.fmt(formatter),
             Self::Registry(error) => error.fmt(formatter),
             Self::InvalidRequest(message) => formatter.write_str(message),

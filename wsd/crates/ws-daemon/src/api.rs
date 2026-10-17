@@ -57,6 +57,7 @@ pub fn router(sessions: Sessions) -> Router {
 pub(crate) fn router_with_store(store: Store) -> Router {
     Router::new()
         .merge(crate::bus::router())
+        .merge(crate::edges::router())
         .merge(crate::hooks::router())
         .merge(crate::notify::router())
         .merge(crate::workspaces::router())
@@ -186,6 +187,7 @@ impl IntoResponse for ApiError {
             Error::Registry(registry::Error::Ambiguous(_)) => {
                 (StatusCode::CONFLICT, "ambiguous_session")
             }
+            Error::DependencyCycle(_) => (StatusCode::CONFLICT, "dependency_cycle"),
             Error::NameTaken(_) => (StatusCode::CONFLICT, "name_taken"),
             Error::Transition(_) => (StatusCode::CONFLICT, "invalid_transition"),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
@@ -211,6 +213,75 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::sessions::Sessions;
+
+    #[tokio::test]
+    async fn dependency_edges_reject_a_named_cycle_and_survive_index_rebuild() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let mut ids = Vec::new();
+        for name in ["build", "test", "ship"] {
+            let (_, session) = request(&app, "POST", "/v1/sessions", json!({"name": name})).await;
+            ids.push(session["id"].as_str().unwrap().to_owned());
+        }
+        for (source, target, kind) in [(0, 1, "depends_on"), (1, 2, "block_on")] {
+            let (status, edge) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{}/{kind}", ids[source]),
+                json!({"target": ids[target]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{edge}");
+            assert_eq!(edge["source"], ids[source]);
+            assert_eq!(edge["target"], ids[target]);
+            assert_eq!(edge["kind"], kind);
+        }
+        for (source, target) in [(2, 0), (0, 0)] {
+            let (status, error) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{}/depends_on", ids[source]),
+                json!({"target": ids[target]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(error["error"]["code"], "dependency_cycle");
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&ids[source])
+            );
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&ids[target])
+            );
+        }
+        let (status, edges) = request(&app, "GET", "/v1/edges", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(edges.as_array().unwrap().len(), 2);
+        drop(app);
+        std::fs::remove_file(sandbox.path().join("registry.sqlite")).unwrap();
+        let app = super::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, rebuilt) = request(&app, "GET", "/v1/edges", Value::Null).await;
+        assert_eq!(rebuilt, edges);
+        let log = ws_core::log::SessionLog::new(
+            sandbox.path(),
+            ids[0].parse().unwrap(),
+            ws_core::ids::Ulid::nil(),
+        )
+        .read()
+        .unwrap();
+        assert_eq!(
+            log.entries
+                .iter()
+                .filter(|entry| entry.event_type == "session.depends_on")
+                .count(),
+            1
+        );
+    }
 
     #[tokio::test]
     async fn a_disconnected_hook_request_still_records_its_callback() {

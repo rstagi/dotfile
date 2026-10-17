@@ -93,6 +93,10 @@ JSON returns the registry session fields, including the ULID `id`, numeric `alia
 Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
 The TSV state column reports the live tmux state or `stopped` when no tagged window exists.
 
+Dependency edges use `POST /v1/sessions/{id}/depends_on` or `/block_on` with `{"target":"<id|name>"}`.
+`GET /v1/edges` returns the projected graph. A cycle returns HTTP 409 and the cycle's session IDs.
+The source log records `session.depends_on` or `session.block_on`. The registry rebuild restores these edges.
+
 `ws session create --headless [--parent <id>] [--cwd <dir>] [--env K=V]... [--stdin <file>] [--stdout <file>] [--stderr <file>] -- <cmd>`
 starts a process under the daemon and prints its session ULID. The process leads its own process group.
 The working directory defaults to the CLI's current directory. Relative I/O paths use that same CLI directory, independent of `--cwd`.

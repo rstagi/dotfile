@@ -8,6 +8,7 @@
 //! - `workspace.created|updated|removed`: `workspace_id`. Other fields form workspace data.
 //!   Updates merge top-level fields. All mutations use the creator session's log.
 //!   Removed workspace ids retain that log owner.
+//! - `session.depends_on|block_on`: `target` (ULID). The event id identifies the edge.
 //! - `edge.added`: `target` (ULID), `kind` (`depends_on`, `block_on`, or `parent`).
 //!   The event id identifies the edge. `edge.removed` contains `edge_id`.
 //! - `message.sent`: `from_session` (the log owner), `to_session`, positive `pair_seq`, and `body`.
