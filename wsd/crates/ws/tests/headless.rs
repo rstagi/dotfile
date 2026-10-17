@@ -73,7 +73,8 @@ fn headless_command_has_a_process_group_separate_logs_and_a_durable_successful_e
             "session.created",
             "session.running",
             "exit",
-            "session.finished"
+            "session.finished",
+            "process.exited"
         ]
     );
     assert_eq!(entries[2].body["code"], 0);

@@ -32,6 +32,8 @@ use crate::{
 
 const TERM_GRACE: Duration = Duration::from_secs(10);
 const TIMEOUT_REASON: &str = "The phase exceeded its maximum runtime.";
+/// The supervisor appends this event after the process group of a headless session disappears.
+pub const PROCESS_EXITED: &str = "process.exited";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -219,7 +221,7 @@ pub(crate) async fn adopt(store: Store) -> std::result::Result<(), ApiError> {
                 )?;
                 continue;
             };
-            if !process.is_alive()? {
+            if !process.group_alive()? {
                 finish(
                     sessions,
                     session.id,
@@ -354,7 +356,7 @@ fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, proce
             }
             let process = process.clone();
             let result = api::call(store.clone(), move |sessions| {
-                if !timed_out && process.is_alive()? {
+                if !timed_out && process.group_alive()? {
                     return Ok(true);
                 }
                 finish(
@@ -415,19 +417,40 @@ fn finish(
             "code": code, "signal": signal, "reason": reason, "parent_session_id": parent,
         }),
     )?;
-    if ["finished", "failed"].contains(&session.state.as_str()) {
-        return Ok(());
+    // `ws done` can finish the session before the process exits.
+    if !["finished", "failed"].contains(&session.state.as_str()) {
+        sessions.append(
+            id,
+            state.event_type(),
+            json!({
+                "parent_session_id": parent, "reason": reason,
+            }),
+        )?;
     }
+    // Foreground waits, tail and process-exit cleanup bind to this marker.
     sessions.append(
         id,
-        state.event_type(),
+        PROCESS_EXITED,
         json!({
-            "parent_session_id": parent, "reason": reason,
+            "code": code, "signal": signal, "parent_session_id": parent,
         }),
     )
 }
 
 impl Process {
+    /// Reports whether the owned process group still has members.
+    /// A living leader must match the persisted birth identity. A group outlives
+    /// its leader, and the system does not reuse its pid while the group exists.
+    fn group_alive(&self) -> io::Result<bool> {
+        if self.pid <= 1 || self.pgid != self.pid || self.pid > i32::MAX as u32 {
+            return Ok(false);
+        }
+        match snapshot(self.pid)? {
+            Some(current) if current.alive => self.is_alive(),
+            _ => group_exists(self.pgid),
+        }
+    }
+
     fn is_alive(&self) -> io::Result<bool> {
         if self.pid <= 1 || self.pgid != self.pid || self.pid > i32::MAX as u32 {
             return Ok(false);

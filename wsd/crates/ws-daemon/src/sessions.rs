@@ -252,7 +252,7 @@ impl Sessions {
         self.registry.apply(&entry)?;
         self.needs_rebuild = false;
         self.apply_trigger_entry(&entry);
-        if ["session.finished", "session.failed"].contains(&event_type)
+        if self.process_complete(id, event_type)?
             && let Err(error) = self.cleanup_phase_worktree(id)
         {
             // Preserve the terminal event. A restart retries the cleanup.
@@ -261,6 +261,20 @@ impl Sessions {
         self.changes.send_replace(());
         self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
         Ok(entry)
+    }
+
+    /// Reports whether this event completes both the session and its supervised process.
+    /// A headless process can outlive `ws done`. Its worktree stays until the process exits.
+    fn process_complete(&self, id: SessionId, event_type: &str) -> Result<bool> {
+        let terminal = ["session.finished", "session.failed"].contains(&event_type);
+        if !terminal && event_type != crate::supervisor::PROCESS_EXITED {
+            return Ok(false);
+        }
+        let session = self.get_record(&id.to_string())?;
+        if !terminal {
+            return Ok(["finished", "failed"].contains(&session.state.as_str()));
+        }
+        Ok(session.body["kind"] != "headless" || self.process_exited(id)?)
     }
 
     fn change_state(

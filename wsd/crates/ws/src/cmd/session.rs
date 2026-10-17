@@ -284,16 +284,17 @@ async fn wait(
     signals: &mut Signals,
 ) -> Result<ExitCode> {
     let id = id.to_string();
+    let exited = process_exit(socket, &id);
+    tokio::pin!(exited);
     loop {
-        let session = client::session(socket, &id).await?;
-        if ["finished", "failed"].contains(&session.state.as_str()) {
-            return Ok(ExitCode::from(session.exit_code.unwrap_or(1) as u8));
-        }
         tokio::select! {
+            event = &mut exited => {
+                let code = event?["body"]["code"].as_i64().unwrap_or(1);
+                return Ok(ExitCode::from(code as u8));
+            }
             _ = signals.terminate.recv() => {},
             _ = signals.interrupt.recv() => {},
             _ = signals.hangup.recv() => {},
-            _ = tokio::time::sleep(Duration::from_millis(50)) => continue,
         }
         client::request(
             socket,
@@ -303,6 +304,20 @@ async fn wait(
         )
         .await?;
     }
+}
+
+/// Waits for the process exit. `ws done` can finish the session earlier.
+async fn process_exit(socket: &Path, id: &str) -> Result<serde_json::Value> {
+    let condition = format!("event={}", ws_daemon::supervisor::PROCESS_EXITED);
+    let bytes = client::request(
+        socket,
+        Method::POST,
+        &format!("/v1/sessions/{id}/wait"),
+        serde_json::to_vec(&serde_json::json!({"for": condition}))?,
+    )
+    .await?;
+    let mut result: serde_json::Value = serde_json::from_slice(&bytes)?;
+    Ok(result["event"].take())
 }
 
 async fn tail(socket: &Path, id: &str, follow: bool, stream: Stream) -> Result<()> {
@@ -316,19 +331,24 @@ async fn tail(socket: &Path, id: &str, follow: bool, stream: Stream) -> Result<(
         .ok_or("The session has no output file for this stream.")?;
     let mut file = File::open(PathBuf::from(path))?;
     let mut output = io::stdout();
+    let id = session.id.to_string();
+    let exited = process_exit(socket, &id);
+    tokio::pin!(exited);
     loop {
         io::copy(&mut file, &mut output)?;
         output.flush()?;
         if !follow {
-            break;
+            return Ok(());
         }
-        let session = client::session(socket, &session.id.to_string()).await?;
-        if ["finished", "failed"].contains(&session.state.as_str()) {
-            io::copy(&mut file, &mut output)?;
-            output.flush()?;
-            break;
+        tokio::select! {
+            event = &mut exited => {
+                event?;
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    io::copy(&mut file, &mut output)?;
+    output.flush()?;
     Ok(())
 }
