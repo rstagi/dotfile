@@ -3,6 +3,7 @@
 pub mod device;
 pub mod ids;
 pub mod log;
+pub mod registry;
 
 use std::{fs, io, os::unix::fs::DirBuilderExt, path::Path};
 
