@@ -134,6 +134,16 @@ impl Sessions {
             "message.sent",
             serde_json::to_value(&content).map_err(Error::Json)?,
         )?;
+        if to.device_id == self.device_id
+            && matches!(to.state.as_str(), "finished" | "failed")
+            && let Err(error) = self.reopen_for_message(&to, Some(from.id))
+        {
+            // The message is durable even when its recipient cannot resume yet.
+            eprintln!(
+                "Cannot reopen session {} for message delivery: {error}",
+                to.id
+            );
+        }
         Ok(Message {
             event_id: entry.event_id,
             content,
