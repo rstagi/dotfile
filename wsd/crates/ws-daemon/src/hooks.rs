@@ -203,8 +203,10 @@ async fn record(
     State(store): State<Store>,
     Json(callback): Json<Callback>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let reply = ingest(store, callback, StopDecision::Accept)
+    // The hook client has a short deadline. Its disconnect must not cancel ingest.
+    let reply = tokio::spawn(ingest(store, callback, StopDecision::Accept))
         .await
+        .map_err(|error| ApiError(io::Error::other(error).into()))?
         .map_err(ApiError)?;
     Ok((StatusCode::CREATED, Json(reply)))
 }
