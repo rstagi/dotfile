@@ -45,6 +45,16 @@ zsh ws/tests/run.sh
 
 # Loop Observatory (loop-web) tests + build
 cd loop-web && npm test && npm run build && cd ..
+
+# Rust daemon and CLI tests + lint
+(cd wsd && cargo test && cargo clippy --all-targets -- -D warnings)
+
+# S1 transcript relocation tests
+python3 -I docs/ws-v6/spikes/s1/relocate-claude.test.py
+python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
+
+# S2 telemetry capture tests
+python3 -I -B -m unittest discover -s docs/ws-v6/spikes/s2 -p 'test_*.py'
 ```
 
 ## Architecture
@@ -75,6 +85,8 @@ loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React grap
 ws/ws.sh                Terminal workspaces entry: env/config, sources ws/lib/*, command dispatch (see ws/README.md)
 ws/lib/                 ws modules: core, workspace, tabs, hooks, notify, picker, bus (registry + send/inbox), triggers (done/on)
 ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh, sourced in order per parallel group by run.sh
+wsd/                    Rust workspace: ws-core types, ws-daemon runtime, and ws CLI
+docs/ws-v6/             WS v6 architecture and spike reports, scripts, tests, and samples
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)

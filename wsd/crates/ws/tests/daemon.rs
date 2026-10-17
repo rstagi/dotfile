@@ -1,22 +1,19 @@
 use std::{
-    io::{Read, Write},
-    os::unix::{
-        fs::PermissionsExt,
-        net::{UnixListener, UnixStream},
-    },
-    path::Path,
-    process::{Child, Command, Stdio},
+    os::unix::fs::PermissionsExt,
+    process::Command,
+    sync::Barrier,
     thread,
     time::{Duration, Instant},
 };
 
-struct Daemon(Child);
+mod common;
+use common::{Daemon, create_stale_socket, get, request, ws};
 
 #[test]
 fn daemon_serves_versioned_json_and_ping_shows_version_and_uptime() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
-    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
+    let _daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
 
     let response = get(&socket, "/v1/ping");
     let (headers, body) = response.split_once("\r\n\r\n").unwrap();
@@ -64,7 +61,7 @@ fn daemon_creates_the_default_socket_and_removes_it_on_shutdown() {
     let socket = sandbox.path().join(".ws/wsd.sock");
     let mut command = ws(sandbox.path(), &socket);
     command.env_remove("WS_SOCK");
-    let mut daemon = start_daemon(command, &socket);
+    let mut daemon = Daemon::start(command, &socket);
 
     let output = ws(sandbox.path(), &socket)
         .env_remove("WS_SOCK")
@@ -79,14 +76,14 @@ fn daemon_creates_the_default_socket_and_removes_it_on_shutdown() {
 
     assert!(
         Command::new("kill")
-            .args(["-TERM", &daemon.0.id().to_string()])
+            .args(["-TERM", &daemon.child.id().to_string()])
             .status()
             .unwrap()
             .success()
     );
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
-        if let Some(status) = daemon.0.try_wait().unwrap() {
+        if let Some(status) = daemon.child.try_wait().unwrap() {
             break status;
         }
         assert!(Instant::now() < deadline, "The daemon did not stop.");
@@ -95,7 +92,7 @@ fn daemon_creates_the_default_socket_and_removes_it_on_shutdown() {
     assert!(status.success(), "{status}");
     assert!(!socket.exists());
 
-    let _restarted = start_daemon(ws(sandbox.path(), &socket), &socket);
+    let _restarted = Daemon::start(ws(sandbox.path(), &socket), &socket);
     assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
 }
 
@@ -103,7 +100,7 @@ fn daemon_creates_the_default_socket_and_removes_it_on_shutdown() {
 fn another_daemon_cannot_replace_a_live_socket_or_an_existing_file() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
-    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
+    let _daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
     let output = ws(sandbox.path(), &socket).arg("daemon").output().unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
@@ -116,13 +113,102 @@ fn another_daemon_cannot_replace_a_live_socket_or_an_existing_file() {
 }
 
 #[test]
+fn daemon_refuses_a_held_socket_lock_before_binding() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let lock = std::fs::File::create(socket.with_extension("sock.lock")).unwrap();
+    lock.try_lock().unwrap();
+
+    let mut daemon = Daemon::spawn(ws(sandbox.path(), &socket));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = daemon.child.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(1));
+            let error = daemon.stderr();
+            assert!(
+                error.contains("Another daemon holds the socket lock"),
+                "{error}"
+            );
+            assert!(!socket.exists());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The daemon ignored the socket lock."
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn daemon_replaces_a_stale_socket() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
-    drop(UnixListener::bind(&socket).unwrap());
+    create_stale_socket(&socket);
     assert!(socket.exists());
 
-    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
+    let _daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
+}
+
+#[test]
+fn simultaneous_daemons_on_a_stale_socket_leave_exactly_one_server() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    create_stale_socket(&socket);
+    let barrier = Barrier::new(2);
+    let [mut first, mut second] = thread::scope(|scope| {
+        let starts = [0, 1].map(|_| {
+            scope.spawn(|| {
+                barrier.wait();
+                Daemon::spawn(ws(sandbox.path(), &socket))
+            })
+        });
+        starts.map(|start| start.join().unwrap())
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (winner, loser, status) = loop {
+        match (
+            first.child.try_wait().unwrap(),
+            second.child.try_wait().unwrap(),
+        ) {
+            (None, Some(status)) => break (&mut first, &second, status),
+            (Some(status), None) => break (&mut second, &first, status),
+            (Some(_), Some(_)) => panic!("Both daemons exited."),
+            (None, None) => {}
+        }
+        assert!(Instant::now() < deadline, "Both daemons remained alive.");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(1), "{}", loser.stderr());
+    assert!(
+        loser
+            .stderr()
+            .contains("Another daemon holds the socket lock"),
+        "{}",
+        loser.stderr()
+    );
+    winner.wait_ready(&socket);
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
+    assert!(winner.child.try_wait().unwrap().is_none());
+}
+
+#[test]
+fn daemon_releases_its_lock_after_an_abrupt_exit() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    let lock = std::fs::File::open(socket.with_extension("sock.lock")).unwrap();
+    assert!(matches!(
+        lock.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+
+    daemon.child.kill().unwrap();
+    daemon.child.wait().unwrap();
+    assert!(socket.exists());
+    let _restarted = Daemon::start(ws(sandbox.path(), &socket), &socket);
     assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200 OK"));
 }
 
@@ -130,7 +216,7 @@ fn daemon_replaces_a_stale_socket() {
 fn ping_to_a_stale_socket_exits_one() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("stale.sock");
-    drop(UnixListener::bind(&socket).unwrap());
+    create_stale_socket(&socket);
     let output = ws(sandbox.path(), &socket).arg("ping").output().unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error = String::from_utf8(output.stderr).unwrap();
@@ -162,7 +248,7 @@ fn hook_without_a_tmux_pane_reports_the_required_context() {
 fn hook_api_rejects_invalid_records_and_exposes_accepted_events() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
-    let _daemon = start_daemon(ws(sandbox.path(), &socket), &socket);
+    let _daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
     for window in ["@", "@-1", "%1", "spike:1"] {
         let body = serde_json::json!({"event": "stop", "window_id": window}).to_string();
         let response = request(&socket, "POST", "/v1/hooks", &body);
@@ -190,74 +276,4 @@ fn hook_api_rejects_invalid_records_and_exposes_accepted_events() {
         records,
         serde_json::json!([{"event":"stop", "window_id":"@7"}])
     );
-}
-
-fn start_daemon(mut command: Command, socket: &Path) -> Daemon {
-    let mut daemon = Daemon(
-        command
-            .arg("daemon")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if UnixStream::connect(socket).is_ok() {
-            return daemon;
-        }
-        if let Some(status) = daemon.0.try_wait().unwrap() {
-            let mut error = String::new();
-            daemon
-                .0
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_string(&mut error)
-                .unwrap();
-            panic!("The daemon exited with {status}: {error}");
-        }
-        assert!(
-            Instant::now() < deadline,
-            "The daemon did not create the socket."
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn ws(home: &Path, socket: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ws"));
-    command
-        .env("HOME", home)
-        .env("WS_HOME", home.join(".ws"))
-        .env("WS_STATE", home.join("state"))
-        .env("WS_SOCK", socket);
-    command
-}
-
-fn get(socket: &Path, path: &str) -> String {
-    request(socket, "GET", path, "")
-}
-
-fn request(socket: &Path, method: &str, path: &str, body: &str) -> String {
-    let mut stream = UnixStream::connect(socket).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    response
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }

@@ -1,15 +1,16 @@
 use std::{
     fs,
-    io::{Read, Write},
-    os::unix::{fs::PermissionsExt, net::UnixStream},
-    path::Path,
-    process::{Child, Command, Output, Stdio},
+    os::unix::fs::PermissionsExt,
+    process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use ws_daemon::tmux::Tmux;
+
+mod common;
+use common::{Daemon, get, ws};
 
 static NEXT_SERVER: AtomicU64 = AtomicU64::new(0);
 
@@ -18,14 +19,12 @@ struct Sandbox {
     server: String,
 }
 
-struct Daemon(Child);
-
 #[test]
 fn sandbox_tmux_driver_and_stop_hook_round_trip() {
     let sandbox = Sandbox::new();
     let tmux = Tmux::named(&sandbox.server);
     let socket = sandbox.home.path().join("wsd.sock");
-    let _daemon = Daemon::start(&sandbox, &socket);
+    let _daemon = Daemon::start(ws(sandbox.home.path(), &socket), &socket);
     let captured = sandbox.home.path().join("paste.bin");
     let measurements = sandbox.home.path().join("latency.json");
     let script = r#"
@@ -178,40 +177,8 @@ impl Sandbox {
     }
 }
 
-impl Daemon {
-    fn start(sandbox: &Sandbox, socket: &Path) -> Self {
-        let mut daemon = Self(
-            Command::new(env!("CARGO_BIN_EXE_ws"))
-                .arg("daemon")
-                .env("HOME", sandbox.home.path())
-                .env("WS_HOME", sandbox.home.path().join(".ws"))
-                .env("WS_STATE", sandbox.home.path().join("state"))
-                .env("WS_SOCK", socket)
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .unwrap(),
-        );
-        wait_until(|| {
-            assert!(daemon.0.try_wait().unwrap().is_none(), "The daemon exited.");
-            UnixStream::connect(socket).is_ok()
-        });
-        daemon
-    }
-}
-
-fn get_hooks(socket: &Path) -> serde_json::Value {
-    let mut stream = UnixStream::connect(socket).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    write!(
-        stream,
-        "GET /v1/hooks HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    )
-    .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
+fn get_hooks(socket: &std::path::Path) -> serde_json::Value {
+    let response = get(socket, "/v1/hooks");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
 }
@@ -233,12 +200,5 @@ impl Drop for Sandbox {
             .args(["-L", &self.server, "kill-server"])
             .env("HOME", self.home.path())
             .output();
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
     }
 }
