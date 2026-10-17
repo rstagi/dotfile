@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 mod client;
 mod cmd;
 mod init;
+mod mcp;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -17,6 +18,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start a local phase.
+    Phase {
+        #[command(subcommand)]
+        command: cmd::phase::Command,
+    },
+    /// Serve MCP tools through standard input and output.
+    Mcp,
     /// Import the legacy zsh session state.
     Migrate {
         #[arg(long, required = true)]
@@ -48,6 +56,8 @@ enum Command {
         condition: String,
         #[arg(long)]
         timeout: Option<u32>,
+        #[arg(long)]
+        json: bool,
     },
     /// Mark selected messages, or all unread messages, as read.
     Ack {
@@ -57,6 +67,8 @@ enum Command {
     Send {
         target: String,
         message: String,
+        #[arg(long)]
+        json: bool,
         /// Accept the legacy flag. Finished sessions reopen without this flag.
         #[arg(long)]
         force: bool,
@@ -212,6 +224,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS);
     };
     match command {
+        Command::Phase { command } => return cmd::phase::run(&socket_path()?, command).await,
+        Command::Mcp => cmd::mcp::run(&socket_path()?).await?,
         Command::Migrate { dry_run, .. } => cmd::migrate::run(dry_run)?,
         Command::On { arguments } => cmd::on::run(&socket_path()?, arguments).await?,
         Command::Triggers { json } => cmd::triggers::run(&socket_path()?, json).await?,
@@ -222,12 +236,27 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             target,
             condition,
             timeout,
-        } => cmd::wait::run(&socket_path()?, &target, &condition, timeout).await?,
+            json,
+        } => {
+            if json {
+                cmd::mcp::print(
+                    &socket_path()?,
+                    "wait",
+                    serde_json::json!({"target":target,"condition":condition,"timeout":timeout}),
+                )
+                .await?;
+            } else {
+                cmd::wait::run(&socket_path()?, &target, &condition, timeout).await?;
+            }
+        }
         Command::Ack { event_ids } => cmd::ack::run(&socket_path()?, event_ids).await?,
         Command::Send {
-            target, message, ..
+            target,
+            message,
+            json,
+            ..
         } => {
-            return cmd::send::run(&socket_path()?, &target, &message).await;
+            return cmd::send::run(&socket_path()?, &target, &message, json).await;
         }
         Command::Inbox { json } => cmd::inbox::run(&socket_path()?, json).await?,
         Command::Claude { arguments } => {

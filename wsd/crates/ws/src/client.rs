@@ -12,6 +12,7 @@ use crate::Result;
 struct ApiError {
     code: String,
     message: String,
+    response: serde_json::Value,
 }
 
 pub async fn ping(socket: &Path) -> Result<PingResponse> {
@@ -50,6 +51,15 @@ pub async fn rename(socket: &Path, id: &str, name: &str) -> Result<ws_core::regi
     )
     .await?;
     Ok(serde_json::from_slice(&body)?)
+}
+
+pub(crate) fn error_json(
+    error: &(dyn std::error::Error + Send + Sync + 'static),
+) -> serde_json::Value {
+    error
+        .downcast_ref::<ApiError>()
+        .map(|error| error.response.clone())
+        .unwrap_or_else(|| serde_json::json!({"error":{"message":error.to_string()}}))
 }
 
 pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -111,6 +121,7 @@ async fn send_request(socket: &Path, method: Method, path: &str, body: Vec<u8>) 
     if !status.is_success() {
         let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
         return Err(Box::new(ApiError {
+            response: error.clone(),
             code: error["error"]["code"].as_str().unwrap_or("").into(),
             message: error["error"]["message"]
                 .as_str()
@@ -121,7 +132,7 @@ async fn send_request(socket: &Path, method: Method, path: &str, body: Vec<u8>) 
     Ok(body)
 }
 
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     value
         .bytes()
         .map(|byte| {

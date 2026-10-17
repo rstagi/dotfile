@@ -219,6 +219,31 @@ Run `cd wsd && cargo test -p ws --test messages` to check persistence, ordering,
 Run `cd wsd && cargo test -p ws-daemon bus::delivery::tests` to check Stop replies, paste, timeout recovery and restart.
 Run `zsh wsd/crates/ws/tests/golden/message-capture.zsh` to regenerate the zsh error fixtures.
 
+`ws mcp` serves a local stdio MCP connection through `rmcp`. It calls the daemon at `$WS_SOCK`.
+Standard output contains MCP messages. Diagnostics use standard error.
+Each call supplies `$WS_SESSION_ID` as `parent_session_id`. Tool arguments cannot replace the caller.
+The tools return the daemon JSON in both text and structured content.
+
+| MCP tool | JSON CLI command |
+|---|---|
+| `session_create` | `ws session create [--name <name>] [--headless … -- <cmd>] --json` |
+| `session_list` | `ws session list --json` |
+| `session_get` | `ws session get <target> --json` |
+| `session_send` | `ws send <target> <message> --json` |
+| `session_tail` | `ws session tail <target> --json [--stream stdout|stderr] [--max-bytes <n>]` |
+| `session_stop` | `ws session stop <target> --json` |
+| `session_depends_on` | `ws session depends-on <target> <dependency> --json` |
+| `session_block_on` | `ws session block-on <target> <dependency> --json` |
+| `wait` | `ws wait <target> --for <condition> [--timeout <seconds>] --json` |
+| `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
+
+Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
+It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.
+It replaces invalid UTF-8 bytes and enforces the limit after decoding. JSON tail does not support `--follow`.
+`GET /v1/sessions/{id}/tail` accepts `stream`, `max_bytes`, and `parent_session_id` as query parameters.
+Phase spawn requires `$WS_SESSION_ID`. Repeat `--caps-required <capability>` to record required capabilities.
+Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox daemon.
+
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 
 ```json

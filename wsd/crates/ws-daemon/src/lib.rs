@@ -26,6 +26,7 @@ pub mod notify;
 pub mod phases;
 pub mod sessions;
 pub mod supervisor;
+pub mod tail;
 pub mod tmux;
 pub mod triggers;
 pub mod wait;
