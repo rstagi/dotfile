@@ -40,6 +40,13 @@ pub struct AddWorkspace {
     pub parent_session_id: Option<SessionId>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTarget {
+    pub target: String,
+    pub parent_session_id: Option<SessionId>,
+}
+
 #[derive(Default, Deserialize)]
 struct RepoSettings {
     file_include_globs: Option<String>,
@@ -56,6 +63,22 @@ pub(crate) fn router() -> Router<Store> {
     Router::new()
         .route("/v1/workspaces", get(list).post(create))
         .route("/v1/workspaces/add", axum::routing::post(add))
+        .route("/v1/workspaces/pin", axum::routing::post(pin))
+}
+
+async fn pin(
+    State(store): State<Store>,
+    Json(request): Json<WorkspaceTarget>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(api::call(store, move |sessions| {
+        sessions.record_call(request.parent_session_id, "workspace.pin", Some(&request.target))?;
+        let workspace = sessions.workspace(&request.target)?;
+        let pinned = !workspace.body["pinned"].as_bool().unwrap_or(false);
+        sessions.append(workspace.owner_session_id, "workspace.updated", json!({
+            "workspace_id": workspace.id, "pinned": pinned, "parent_session_id": request.parent_session_id
+        }))?;
+        Ok(json!({"pinned": pinned}))
+    }).await?))
 }
 
 async fn list(
@@ -90,6 +113,28 @@ async fn add(
 }
 
 impl Sessions {
+    fn workspace(&self, target: &str) -> Result<Workspace> {
+        let path = if Path::new(target).is_absolute() {
+            PathBuf::from(target)
+        } else {
+            workspace_root()?.join(target)
+        };
+        let path = path.canonicalize().ok();
+        self.registry
+            .workspaces()?
+            .into_iter()
+            .find(|workspace| {
+                path.as_ref().is_some_and(|path| {
+                    workspace.body["path"]
+                        .as_str()
+                        .and_then(|stored| Path::new(stored).canonicalize().ok())
+                        .as_ref()
+                        == Some(path)
+                })
+            })
+            .ok_or_else(|| failure(format!("no such workspace: {target}")))
+    }
+
     fn create_workspace(&mut self, request: CreateWorkspace) -> Result<Value> {
         self.record_call(request.parent_session_id, "workspace.create", None)?;
         check_agent(&request.agent)?;

@@ -2,6 +2,7 @@ pub mod add;
 pub mod list;
 pub mod name;
 pub mod new;
+pub mod pin;
 pub mod sessions;
 pub mod show;
 pub mod whoami;

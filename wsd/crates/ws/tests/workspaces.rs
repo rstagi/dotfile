@@ -14,6 +14,50 @@ struct Sandbox {
 }
 
 #[test]
+fn pin_toggles_persists_and_survives_a_registry_rebuild() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feat/login",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let output = sandbox.output(&["pin", "api/feat-login"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        sandbox.normalized_list("list"),
+        include_str!("golden/workspace-pinned.txt")
+    );
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    std::fs::remove_file(sandbox.home.path().join("state/registry.sqlite")).unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["list", "--json"])[0]["body"]["pinned"], true);
+    let path = sandbox.home.path().join("worktrees/api/feat-login");
+    assert!(
+        sandbox
+            .output(&["pin", path.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert_eq!(
+        sandbox.json(&["list", "--json"])[0]["body"]["pinned"],
+        false
+    );
+    let output = sandbox.output(&["pin", "missing"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        include_str!("golden/workspace-missing.txt")
+    );
+}
+
+#[test]
 fn new_creates_a_worktree_a_registered_workspace_and_a_tagged_tmux_session() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo("api");

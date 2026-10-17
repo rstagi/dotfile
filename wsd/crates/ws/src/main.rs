@@ -18,6 +18,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Toggle the workspace pin.
+    Pin {
+        #[arg(default_value = "")]
+        target: String,
+    },
     /// Initialize the local device identity.
     Init,
     /// Serve the local API on the Unix socket.
@@ -98,6 +103,7 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
         Command::Init => init::run()?,
         Command::Daemon => {
             let socket = socket_path()?;
