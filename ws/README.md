@@ -111,6 +111,27 @@ A missing process or a changed identity produces `session.failed` with a reason.
 An adopted process has no waitable exit status. Its eventual exit produces a failure with a null `exit_code` and a reason.
 Run `cd wsd && cargo test -p ws --test headless` to check the I/O contract with sandbox processes.
 
+`POST /v1/phases/spawn` starts a local phase as a headless child:
+
+```json
+{
+  "parent_session_id": "<session ULID>",
+  "phase": {"command": ["/path/to/runner", "argument"]},
+  "repo": "/path/to/local/checkout",
+  "base": "main",
+  "caps_required": [],
+  "max_runtime": 1800
+}
+```
+
+The command uses `repo` as its working directory. `base` and `caps_required` remain in the phase metadata.
+The daemon records `phase.spawned` in the parent log and returns the child session.
+`max_runtime` is a positive number of seconds. The daemon persists its absolute deadline with the process details.
+At that deadline, the daemon sends SIGTERM to the process group, then SIGKILL after two seconds.
+A runtime limit produces a failure even if the command handles SIGTERM and exits with code 0.
+An adopted child keeps its original deadline after a daemon restart.
+Run `cd wsd && cargo test -p ws --test phases` to check phase launches and restart recovery.
+
 The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,
 `add [repo/branch|path] [--agent <agent>] [--detach]`, and `list|ls [--json]`.
 `new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.

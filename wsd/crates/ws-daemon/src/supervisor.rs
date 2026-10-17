@@ -9,8 +9,8 @@ use std::{
         process::ExitStatusExt,
     },
     path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
+    process::{ExitStatus, Stdio},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,9 @@ use crate::{
     api::{self, ApiError, Store},
     sessions::{Error, Result, Sessions},
 };
+
+const TERM_GRACE: Duration = Duration::from_secs(2);
+const TIMEOUT_REASON: &str = "The phase exceeded its maximum runtime.";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +51,8 @@ struct Process {
     pid: u32,
     pgid: u32,
     start: Option<String>,
+    #[serde(default)]
+    deadline_ms: Option<u64>,
 }
 
 struct Snapshot {
@@ -70,7 +75,7 @@ pub(crate) async fn launch(
 ) -> std::result::Result<Session, ApiError> {
     let monitor_store = store.clone();
     api::call(store, move |sessions| {
-        let (session, mut child) = sessions.spawn_headless(request, metadata)?;
+        let (session, child, process) = sessions.spawn_headless(request, metadata)?;
         let id = session.id;
         let parent = session.body["parent_session_id"]
             .as_str()
@@ -93,13 +98,20 @@ pub(crate) async fn launch(
             }
         }
         tokio::spawn(async move {
-            let status = child.wait().await;
+            let status = wait_child(child, process).await;
             let result = api::call(monitor_store, move |sessions| {
-                let status = status?;
+                let (status, timed_out) = status?;
                 let code = status
                     .code()
                     .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
-                finish(sessions, id, parent, Some(code), status.signal(), None)?;
+                finish(
+                    sessions,
+                    id,
+                    parent,
+                    Some(code),
+                    status.signal(),
+                    timed_out.then_some(TIMEOUT_REASON),
+                )?;
                 Ok(())
             })
             .await;
@@ -171,12 +183,56 @@ pub(crate) async fn adopt(store: Store) -> std::result::Result<(), ApiError> {
     .await
 }
 
+async fn wait_child(
+    mut child: tokio::process::Child,
+    process: Process,
+) -> io::Result<(ExitStatus, bool)> {
+    tokio::select! {
+        biased;
+        status = child.wait() => Ok((status?, false)),
+        _ = deadline(process.deadline_ms) => {
+            terminate_group(&process).await?;
+            Ok((child.wait().await?, true))
+        }
+    }
+}
+
+async fn deadline(at_ms: Option<u64>) {
+    match at_ms {
+        Some(at_ms) => {
+            tokio::time::sleep(Duration::from_millis(at_ms.saturating_sub(unix_ms()))).await
+        }
+        None => std::future::pending().await,
+    }
+}
+
+async fn terminate_group(process: &Process) -> io::Result<()> {
+    // Check the birth identity before sending a signal to a persisted pid.
+    if !process.is_alive()? {
+        return Ok(());
+    }
+    signal_group(process.pgid, libc::SIGTERM)?;
+    tokio::time::sleep(TERM_GRACE).await;
+    // The leader can exit after SIGTERM while descendants remain in its process group.
+    signal_group(process.pgid, libc::SIGKILL)
+}
+
 fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, process: Process) {
     tokio::spawn(async move {
+        let expiry = deadline(process.deadline_ms);
+        tokio::pin!(expiry);
         loop {
+            let timed_out = tokio::select! {
+                _ = &mut expiry => true,
+                _ = tokio::time::sleep(Duration::from_millis(200)) => false,
+            };
+            if timed_out && let Err(error) = terminate_group(&process).await {
+                eprintln!("Cannot stop session {id}: {error}");
+                return;
+            }
             let process = process.clone();
             let result = api::call(store.clone(), move |sessions| {
-                if process.is_alive()? {
+                if !timed_out && process.is_alive()? {
                     return Ok(true);
                 }
                 finish(
@@ -185,13 +241,17 @@ fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, proce
                     parent,
                     None,
                     None,
-                    Some("The adopted process exited. Its exit status is unavailable."),
+                    Some(if timed_out {
+                        TIMEOUT_REASON
+                    } else {
+                        "The adopted process exited. Its exit status is unavailable."
+                    }),
                 )?;
                 Ok(false)
             })
             .await;
             match result {
-                Ok(true) => tokio::time::sleep(Duration::from_millis(200)).await,
+                Ok(true) => {}
                 Ok(false) => return,
                 Err(error) => {
                     eprintln!("Cannot monitor session {id}: {}", error.0);
@@ -200,6 +260,13 @@ fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, proce
             }
         }
     });
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn finish(
@@ -253,7 +320,7 @@ impl Sessions {
         &mut self,
         request: CreateHeadless,
         metadata: serde_json::Value,
-    ) -> Result<(Session, tokio::process::Child)> {
+    ) -> Result<(Session, tokio::process::Child, Process)> {
         if !request.headless || request.command.first().is_none_or(|s| s.is_empty()) {
             return Err(Error::InvalidRequest(
                 "Specify a command for the headless session.",
@@ -266,6 +333,20 @@ impl Sessions {
                 ));
             }
         }
+        let deadline_ms = metadata
+            .get("max_runtime")
+            .and_then(|value| value.as_u64())
+            .map(|seconds| {
+                let duration = Duration::from_secs(seconds);
+                if tokio::time::Instant::now().checked_add(duration).is_none() {
+                    return Err(Error::InvalidRequest("The maximum runtime is too large."));
+                }
+                seconds
+                    .checked_mul(1000)
+                    .and_then(|ms| unix_ms().checked_add(ms))
+                    .ok_or(Error::InvalidRequest("The maximum runtime is too large."))
+            })
+            .transpose()?;
         let cwd = request.cwd.canonicalize()?;
         if !cwd.is_dir() {
             return Err(Error::InvalidRequest(
@@ -351,6 +432,7 @@ impl Sessions {
                 pid,
                 pgid: pid,
                 start: snapshot(pid)?.map(|snapshot| snapshot.start),
+                deadline_ms,
             };
             self.append(
                 id,
@@ -359,10 +441,10 @@ impl Sessions {
                     "parent_session_id": request.parent_session_id, "process": process,
                 }),
             )?;
-            self.get_record(&id.to_string())
+            Ok((self.get_record(&id.to_string())?, process))
         })();
         match persisted {
-            Ok(session) => Ok((session, child)),
+            Ok((session, process)) => Ok((session, child, process)),
             Err(error) => {
                 let _ = signal_group(pid, libc::SIGKILL);
                 Err(error)

@@ -116,6 +116,50 @@ fn restart_adopts_a_running_child_and_fails_a_child_that_disappeared() {
     );
 }
 
+#[test]
+fn restart_enforces_a_persisted_phase_deadline_that_already_expired() {
+    let mut sandbox = Sandbox::new();
+    let parent = sandbox.request("POST", "/v1/sessions", json!({}));
+    let child = sandbox.request("POST", "/v1/phases/spawn", json!({
+        "parent_session_id": parent["id"],
+        "phase": {"command": ["/bin/sh", "-c", "trap 'printf term' TERM; printf ready; while :; do sleep 1; done"]},
+        "repo": sandbox.home.path(), "base": "main", "caps_required": [], "max_runtime": 3600,
+    }));
+    let id = child["id"].as_str().unwrap();
+    sandbox.wait_output(id, "ready");
+    let mut process = sandbox.process(id);
+    assert!(process["deadline_ms"].as_u64().unwrap() > 1);
+    sandbox.daemon.child.kill().unwrap();
+    sandbox.daemon.child.wait().unwrap();
+    // Represent a restart after the original deadline. The command still has a long runtime in its creation metadata.
+    process["deadline_ms"] = json!(1);
+    let log = SessionLog::new(
+        &sandbox.home.path().join("state"),
+        id.parse().unwrap(),
+        child["device_id"].as_str().unwrap().parse().unwrap(),
+    );
+    log.writer()
+        .append_current(
+            "session.running",
+            json!({"process": process, "parent_session_id": parent["id"]}),
+        )
+        .unwrap();
+    sandbox.daemon = common::Daemon::start(
+        common::ws(sandbox.home.path(), &sandbox.socket),
+        &sandbox.socket,
+    );
+    assert_eq!(sandbox.wait(id)["state"], "failed");
+    sandbox.wait_output(id, "term");
+    sandbox.wait_gone(process["pid"].as_u64().unwrap());
+    assert!(
+        sandbox
+            .entries(id)
+            .iter()
+            .any(|entry| entry.event_type == "session.failed"
+                && entry.body["reason"] == "The phase exceeded its maximum runtime.")
+    );
+}
+
 fn kill_group(pid: u64) {
     let _ = Command::new("/bin/kill")
         .args(["-KILL", &format!("-{pid}")])
