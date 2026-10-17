@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
+    future::Future,
     io,
     os::unix::{
         fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -97,8 +98,9 @@ pub(crate) async fn launch(
                 return Err(error);
             }
         }
+        let expiry = deadline(process.deadline_ms);
         tokio::spawn(async move {
-            let status = wait_child(child, process).await;
+            let status = wait_child(child, process, expiry).await;
             let result = api::call(monitor_store, move |sessions| {
                 let (status, timed_out) = status?;
                 let code = status
@@ -186,23 +188,28 @@ pub(crate) async fn adopt(store: Store) -> std::result::Result<(), ApiError> {
 async fn wait_child(
     mut child: tokio::process::Child,
     process: Process,
+    expiry: impl Future<Output = ()> + Send,
 ) -> io::Result<(ExitStatus, bool)> {
     tokio::select! {
         biased;
         status = child.wait() => Ok((status?, false)),
-        _ = deadline(process.deadline_ms) => {
+        _ = expiry => {
             terminate_group(&process).await?;
             Ok((child.wait().await?, true))
         }
     }
 }
 
-async fn deadline(at_ms: Option<u64>) {
-    match at_ms {
-        Some(at_ms) => {
-            tokio::time::sleep(Duration::from_millis(at_ms.saturating_sub(unix_ms()))).await
+fn deadline(at_ms: Option<u64>) -> impl Future<Output = ()> + Send {
+    // Anchor the monotonic timer before the monitor task can be delayed by scheduling.
+    let at = at_ms.map(|at_ms| {
+        tokio::time::Instant::now() + Duration::from_millis(at_ms.saturating_sub(unix_ms()))
+    });
+    async move {
+        match at {
+            Some(at) => tokio::time::sleep_until(at).await,
+            None => std::future::pending().await,
         }
-        None => std::future::pending().await,
     }
 }
 
@@ -218,8 +225,8 @@ async fn terminate_group(process: &Process) -> io::Result<()> {
 }
 
 fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, process: Process) {
+    let expiry = deadline(process.deadline_ms);
     tokio::spawn(async move {
-        let expiry = deadline(process.deadline_ms);
         tokio::pin!(expiry);
         loop {
             let timed_out = tokio::select! {
