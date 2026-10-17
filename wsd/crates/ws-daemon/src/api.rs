@@ -19,7 +19,7 @@ use crate::sessions::{CreateSession, Error, Sessions};
 pub(crate) type Store = Arc<Mutex<Sessions>>;
 
 #[derive(Serialize)]
-struct SessionResponse {
+pub(crate) struct SessionResponse {
     #[serde(flatten)]
     session: Session,
     parent_session_id: Option<SessionId>,
@@ -60,6 +60,7 @@ pub(crate) fn router_with_store(store: Store) -> Router {
         .merge(crate::notify::router())
         .merge(crate::workspaces::router())
         .merge(crate::agents::router())
+        .merge(crate::phases::router())
         .route("/v1/sessions", get(list).post(create))
         .route("/v1/sessions/{id}", get(fetch))
         .route("/v1/sessions/{id}/stop", axum::routing::post(stop))
