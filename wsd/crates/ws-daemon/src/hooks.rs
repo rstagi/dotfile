@@ -17,7 +17,10 @@ use std::{
 };
 use ws_core::ids::{SessionId, Ulid};
 
-const TMUX_DEADLINE: Duration = Duration::from_millis(100);
+/// Guards the daemon against a hung tmux server. The hook client has its own transport
+/// deadline, so this bound never delays the agent. It must stay above the tmux latency
+/// that ordinary scheduling load causes, because a timeout drops the window update.
+const TMUX_DEADLINE: Duration = Duration::from_secs(2);
 pub(crate) static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
