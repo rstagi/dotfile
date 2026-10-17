@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ids::{DeviceId, SessionId},
+    ids::{DeviceId, EventId, SessionId},
     log::LogEntry,
 };
 
@@ -29,6 +29,32 @@ pub struct Session {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub body: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Workspace {
+    pub id: String,
+    pub body: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Edge {
+    pub id: EventId,
+    pub source: SessionId,
+    pub target: SessionId,
+    pub kind: String,
+    pub body: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Message {
+    pub id: EventId,
+    pub sender: Option<SessionId>,
+    pub recipient: SessionId,
+    pub body: Option<Value>,
+    pub sent_at_ms: Option<i64>,
+    pub delivered_at_ms: Option<i64>,
+    pub read_at_ms: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -136,6 +162,77 @@ impl Registry {
             }
         }
         Err(Error::NotFound(input.into()))
+    }
+
+    pub fn messages(&self) -> Result<Vec<Message>> {
+        let mut statement = self.connection.prepare("SELECT id, sender, recipient, body, sent_at_ms, delivered_at_ms, read_at_ms FROM messages ORDER BY id")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, sender, recipient, body, sent_at_ms, delivered_at_ms, read_at_ms) = row?;
+            Ok(Message {
+                id: parse_id(&id)?,
+                sender: sender.as_deref().map(parse_id).transpose()?,
+                recipient: parse_id(&recipient)?,
+                body: body.as_deref().map(serde_json::from_str).transpose()?,
+                sent_at_ms,
+                delivered_at_ms,
+                read_at_ms,
+            })
+        })
+        .collect()
+    }
+
+    pub fn edges(&self) -> Result<Vec<Edge>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, source, target, kind, body FROM edges ORDER BY id")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, source, target, kind, body) = row?;
+            Ok(Edge {
+                id: parse_id(&id)?,
+                source: parse_id(&source)?,
+                target: parse_id(&target)?,
+                kind,
+                body: serde_json::from_str(&body)?,
+            })
+        })
+        .collect()
+    }
+
+    pub fn workspaces(&self) -> Result<Vec<Workspace>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, body FROM workspaces ORDER BY id")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (id, body) = row?;
+            Ok(Workspace {
+                id,
+                body: serde_json::from_str(&body)?,
+            })
+        })
+        .collect()
     }
 
     pub fn sessions(&self) -> Result<Vec<Session>> {
@@ -248,6 +345,110 @@ fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<()> {
             params![alias, entry.session_id.to_string()],
         )?;
     }
+    match entry.event_type.as_str() {
+        "message.sent" => {
+            let recipient = parse_id(required_str(entry, "recipient")?)?;
+            check_recipient(connection, entry.event_id, recipient)?;
+            connection.execute(
+                "INSERT INTO messages (id, sender, recipient, body, sent_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET sender = excluded.sender, body = excluded.body, sent_at_ms = excluded.sent_at_ms",
+                params![entry.event_id.to_string(), entry.session_id.to_string(), recipient.to_string(), entry.body.to_string(), sql_number(entry.ts_ms)?])?;
+        }
+        "message.delivered" | "message.read" => {
+            let id = parse_id(required_str(entry, "message_id")?)?;
+            check_recipient(connection, id, entry.session_id)?;
+            let column = if entry.event_type == "message.delivered" {
+                "delivered_at_ms"
+            } else {
+                "read_at_ms"
+            };
+            connection.execute(&format!(
+                "INSERT INTO messages (id, recipient, {column}) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET {column} = MIN(COALESCE({column}, excluded.{column}), excluded.{column})"),
+                params![id.to_string(), entry.session_id.to_string(), sql_number(entry.ts_ms)?])?;
+        }
+        "edge.added" => {
+            let target = parse_id(required_str(entry, "target")?)?;
+            let kind = required_str(entry, "kind")?;
+            if !["depends_on", "block_on", "parent"].contains(&kind) {
+                return Err(Error::InvalidEvent(format!("Invalid edge kind: {kind}.")));
+            }
+            connection.execute(
+                "INSERT INTO edges (id, source, target, kind, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    entry.event_id.to_string(),
+                    entry.session_id.to_string(),
+                    target.to_string(),
+                    kind,
+                    entry.body.to_string()
+                ],
+            )?;
+        }
+        "edge.removed" => {
+            let id = parse_id(required_str(entry, "edge_id")?)?;
+            connection.execute(
+                "DELETE FROM edges WHERE id = ?1 AND source = ?2",
+                params![id.to_string(), entry.session_id.to_string()],
+            )?;
+        }
+        "workspace.created" => {
+            let id = required_str(entry, "workspace_id")?;
+            connection.execute(
+                "INSERT INTO workspaces (id, body) VALUES (?1, ?2)",
+                params![id, entry.body.to_string()],
+            )?;
+        }
+        "workspace.updated" => {
+            let id = required_str(entry, "workspace_id")?;
+            let stored: Option<String> = connection
+                .query_row("SELECT body FROM workspaces WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            let Some(stored) = stored else {
+                return Err(Error::InvalidEvent(format!(
+                    "Workspace {id} does not exist."
+                )));
+            };
+            let mut body: Value = serde_json::from_str(&stored)?;
+            body.as_object_mut()
+                .unwrap()
+                .extend(entry.body.as_object().unwrap().clone());
+            connection.execute(
+                "UPDATE workspaces SET body = ?1 WHERE id = ?2",
+                params![body.to_string(), id],
+            )?;
+        }
+        "workspace.removed" => {
+            connection.execute(
+                "DELETE FROM workspaces WHERE id = ?1",
+                [required_str(entry, "workspace_id")?],
+            )?;
+        }
+        "session.renamed" => {
+            let name = required_str(entry, "name")?;
+            let changed = connection.execute(
+                "UPDATE sessions SET name = ?1, updated_at_ms = ?2 WHERE id = ?3",
+                params![name, sql_number(entry.ts_ms)?, entry.session_id.to_string()],
+            )?;
+            require_session(changed, entry)?;
+        }
+        "session.running" | "session.blocked" | "session.finished" | "session.failed"
+        | "session.reopened" => {
+            let state = entry.event_type.strip_prefix("session.").unwrap();
+            let changed = connection.execute(
+                "UPDATE sessions SET state = ?1, device_id = ?2, updated_at_ms = ?3 WHERE id = ?4",
+                params![
+                    state,
+                    entry.device_id.to_string(),
+                    sql_number(entry.ts_ms)?,
+                    entry.session_id.to_string()
+                ],
+            )?;
+            require_session(changed, entry)?;
+        }
+        _ => {}
+    }
     connection.execute(
         "INSERT INTO applied_events (event_id, session_id, seq, entry) VALUES (?1, ?2, ?3, ?4)",
         params![
@@ -257,6 +458,46 @@ fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<()> {
             serialized
         ],
     )?;
+    Ok(())
+}
+
+fn check_recipient(connection: &Connection, id: EventId, recipient: SessionId) -> Result<()> {
+    let stored: Option<String> = connection
+        .query_row(
+            "SELECT recipient FROM messages WHERE id = ?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if stored.is_some_and(|stored| stored != recipient.to_string()) {
+        return Err(Error::InvalidEvent(format!(
+            "The recipient does not match message {id}."
+        )));
+    }
+    Ok(())
+}
+
+fn required_str<'a>(entry: &'a LogEntry, field: &str) -> Result<&'a str> {
+    entry
+        .body
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            Error::InvalidEvent(format!(
+                "The {} event requires {field} as a nonempty string.",
+                entry.event_type
+            ))
+        })
+}
+
+fn require_session(changed: usize, entry: &LogEntry) -> Result<()> {
+    if changed == 0 {
+        return Err(Error::InvalidEvent(format!(
+            "Session {} does not exist.",
+            entry.session_id
+        )));
+    }
     Ok(())
 }
 
