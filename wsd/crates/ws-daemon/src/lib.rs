@@ -2,11 +2,9 @@
 
 use std::{
     collections::VecDeque,
-    fs, io,
-    os::unix::{
-        fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
-        net::UnixStream,
-    },
+    fs::{self, File, OpenOptions, TryLockError},
+    io,
+    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
@@ -45,6 +43,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
             .mode(0o700)
             .create(parent)?;
     }
+    let _lock = lock_socket(socket)?;
     let listener = bind(socket)?;
     let metadata = fs::symlink_metadata(socket)?;
     let _socket_file = SocketFile {
@@ -70,21 +69,42 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .await
 }
 
-/// Binds the socket. Replaces a stale socket file, but never a live socket or another file.
+fn lock_socket(socket: &Path) -> io::Result<File> {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".lock");
+    // Keep this file after shutdown so every contender locks the same inode.
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "Another daemon holds the socket lock for {}.",
+                socket.display()
+            ),
+        )),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// Replaces stale socket files while the caller holds the daemon lock. Preserves other files.
 fn bind(socket: &Path) -> io::Result<UnixListener> {
     match UnixListener::bind(socket) {
-        Err(error) if error.kind() == io::ErrorKind::AddrInUse && is_stale_socket(socket) => {
+        Err(error)
+            if error.kind() == io::ErrorKind::AddrInUse
+                && fs::symlink_metadata(socket)
+                    .is_ok_and(|metadata| metadata.file_type().is_socket()) =>
+        {
             fs::remove_file(socket)?;
             UnixListener::bind(socket)
         }
         result => result,
     }
-}
-
-fn is_stale_socket(socket: &Path) -> bool {
-    fs::symlink_metadata(socket).is_ok_and(|metadata| metadata.file_type().is_socket())
-        && UnixStream::connect(socket)
-            .is_err_and(|error| error.kind() == io::ErrorKind::ConnectionRefused)
 }
 
 async fn ping(State(state): State<AppState>) -> Json<PingResponse> {

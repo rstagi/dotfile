@@ -116,6 +116,47 @@ fn another_daemon_cannot_replace_a_live_socket_or_an_existing_file() {
 }
 
 #[test]
+fn daemon_refuses_a_held_socket_lock_before_binding() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let lock = std::fs::File::create(socket.with_extension("sock.lock")).unwrap();
+    lock.try_lock().unwrap();
+
+    let mut daemon = Daemon(
+        ws(sandbox.path(), &socket)
+            .arg("daemon")
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = daemon.0.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(1));
+            let mut error = String::new();
+            daemon
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut error)
+                .unwrap();
+            assert!(
+                error.contains("Another daemon holds the socket lock"),
+                "{error}"
+            );
+            assert!(!socket.exists());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The daemon ignored the socket lock."
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn daemon_replaces_a_stale_socket() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
