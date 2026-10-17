@@ -153,7 +153,7 @@ pub fn delivery_guard(home: &Path) -> io::Result<Option<File>> {
     match fs::read_to_string(home.join("backend")) {
         Ok(value) if value.trim() == "zsh" => Ok(None),
         Ok(value) if value.trim() == "rust" => Ok(Some(lock)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some(lock)),
         Ok(_) => Err(io::Error::other(
             "The backend selector must contain rust or zsh.",
         )),

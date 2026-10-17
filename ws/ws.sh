@@ -57,7 +57,7 @@ WS_ROOT="${WS_ROOT:-$HOME/.ws/worktrees}"
 WS_HOME="${WS_HOME:-$HOME/.ws}"
 # The selector is durable, so child shells need no backend environment variable.
 if [[ "$ZSH_EVAL_CONTEXT" != *:file ]]; then
-  backend=zsh
+  backend=rust
   [[ ! -f "$WS_HOME/backend" ]] || backend="$(<"$WS_HOME/backend")"
   case "$backend" in
     rust|zsh) ;;

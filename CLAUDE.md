@@ -82,16 +82,35 @@ loop-models.conf        Loop engineering: model chains, budgets, timeouts
 loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model controls)
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
-ws/ws.sh                Terminal workspaces entry: env/config, sources ws/lib/*, command dispatch (see ws/README.md)
-ws/lib/                 ws modules: core, workspace, tabs, hooks, notify, picker, bus (registry + send/inbox), triggers (done/on)
+ws/ws.sh                Terminal workspace dispatcher: Rust by default, explicit zsh fallback (see ws/README.md)
+ws/lib/                 Embedded fzf picker UI and legacy zsh backend modules
 ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh, sourced in order per parallel group by run.sh
-wsd/                    Rust workspace: ws-core types, ws-daemon runtime, and ws CLI
+wsd/                    Default ws implementation: ws-core durable data, ws-daemon runtime, ws CLI + MCP
 docs/ws-v6/             WS v6 architecture and spike reports, scripts, tests, and samples
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
 ```
+
+**Terminal workspaces (`ws`):** `ws/ws.sh` selects Rust when `$WS_HOME/backend` is absent.
+It executes `${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}`. Rust state uses `$WS_STATE` (default `~/.ws/state`).
+The daemon socket uses `$WS_SOCK` (default `~/.ws/wsd.sock`).
+The first daemon start imports existing `$WS_HOME/sessions` when Rust has no session logs.
+The journal resumes interrupted imports. A completed startup import does not repeat.
+The import includes pending messages, pending triggers, listed branch workspaces and pins.
+
+Sessions use ULIDs and local `#N` aliases. Quote aliases in shell commands, for example `ws show '#123'`.
+Agents receive the same ULID in `WS_SESSION_ID` and the compatibility variable `WS_SESSION`.
+`ws whoami` checks these variables in that order, then the tmux window identity.
+`ws sessions`, `ws show` and `ws list` support `--json`.
+`ws send` queues durable messages and returns 75. A message to a finished session reopens it.
+`ws inbox` lists unread messages. `ws ack [<event_id>...]` marks selected messages, or all visible messages, as read.
+`ws done [--output <file>|-]` publishes completion. `ws wait <target> --for done|exit` waits through the daemon.
+`ws mcp` serves local stdio MCP tools. `ws session create --headless … -- <cmd>` starts a supervised process.
+`ws backend zsh` restores the legacy implementation and reports unreachable Rust-only sessions.
+`ws backend rust` returns to Rust and imports new legacy records. Both backends share the alias counter.
+The zsh suite selects zsh in each sandbox. `cargo test -p ws --test backend` also tests Rust through the dispatcher.
 
 **Extension system:** install.sh appends `source ~/dotfile/.zshrc_<tool>_ext` lines to `~/.zshrc_ext`. Main `.zshrc` sources that file if it exists.
 

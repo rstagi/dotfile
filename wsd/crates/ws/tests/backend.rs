@@ -25,7 +25,341 @@ fn dispatcher(home: &Path, socket: &Path) -> Command {
         command.env_remove(key);
     }
     command.env("WS_RUST_BIN", env!("CARGO_BIN_EXE_ws"));
+    command.env(
+        "WS_TMUX_SOCKET",
+        format!("ws-cutover-{}", std::process::id()),
+    );
     command
+}
+
+#[tokio::test]
+async fn dispatcher_smoke_covers_rust_sessions_messages_wait_mcp_and_rollback() {
+    use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+    use std::time::Duration;
+
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("ws.sock");
+    let mut command = common::ws(home.path(), &socket);
+    command.env(
+        "WS_TMUX_SOCKET",
+        format!("ws-cutover-{}", std::process::id()),
+    );
+    let _daemon = common::Daemon::start(command, &socket);
+    let output = dispatcher(home.path(), &socket)
+        .args(["backend", "rust"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = dispatcher(home.path(), &socket)
+        .args(["ping"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = dispatcher(home.path(), &socket)
+        .args(["session", "create", "--name", "reader", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let session: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = session["id"].as_str().unwrap();
+    for variable in ["WS_SESSION_ID", "WS_SESSION"] {
+        let output = dispatcher(home.path(), &socket)
+            .env(variable, id)
+            .args(["whoami", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["id"],
+            id
+        );
+    }
+    let output = dispatcher(home.path(), &socket)
+        .env("WS_SESSION_ID", id)
+        .args(["name", "renamed"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    for target in ["#1", "renamed", id] {
+        let output = dispatcher(home.path(), &socket)
+            .args(["show", target, "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["id"],
+            id
+        );
+    }
+    let output = dispatcher(home.path(), &socket)
+        .args(["send", "renamed", "smoke message"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(75), "{output:?}");
+    let output = dispatcher(home.path(), &socket)
+        .env("WS_SESSION_ID", id)
+        .args(["inbox", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let inbox: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(inbox[0]["body"], "smoke message");
+    let event_id = inbox[0]["event_id"].as_str().unwrap();
+    let output = dispatcher(home.path(), &socket)
+        .env("WS_SESSION_ID", id)
+        .args(["ack", event_id])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = dispatcher(home.path(), &socket)
+        .env("WS_SESSION_ID", id)
+        .args(["inbox", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!([])
+    );
+    let output = dispatcher(home.path(), &socket)
+        .env("WS_SESSION_ID", id)
+        .args(["done"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = dispatcher(home.path(), &socket)
+        .args(["wait", id, "--for", "done", "--timeout", "30"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = dispatcher(home.path(), &socket)
+        .args(["sessions", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let sessions: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sessions.as_array().unwrap().len(), 2);
+    let mut command = tokio::process::Command::from(dispatcher(home.path(), &socket));
+    command.arg("mcp").env("WS_SESSION_ID", id);
+    let client = tokio::time::timeout(
+        Duration::from_secs(30),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("session_list")
+                .with_arguments(json!({}).as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let text = result.content[0].as_text().unwrap();
+    let listed: Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    assert_eq!(listed[0]["id"], id);
+    assert_eq!(listed[0]["state"], "finished");
+    client.cancel().await.unwrap();
+    let output = dispatcher(home.path(), &socket)
+        .args(["backend", "zsh"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = dispatcher(home.path(), &socket)
+        .args(["help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("terminal Conductor"));
+}
+
+#[test]
+fn absent_selector_dispatches_to_rust() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("ws.sock");
+    let mut command = dispatcher(home.path(), &socket);
+    fs::remove_file(home.path().join(".ws/backend")).unwrap();
+    let output = command.args(["--help"]).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("daemon"),
+        "{output:?}"
+    );
+    assert!(!home.path().join(".ws/backend").exists());
+}
+
+#[test]
+fn existing_rust_sessions_prevent_an_automatic_legacy_import() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("ws.sock");
+    let state = home.path().join("state");
+    let mut sessions = ws_daemon::sessions::Sessions::open(&state, 1).unwrap();
+    let session = sessions.create(Default::default()).unwrap();
+    drop(sessions);
+    let legacy = home.path().join(".ws/sessions/2");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(legacy.join("meta"), "invalid legacy metadata").unwrap();
+    let mut command = common::ws(home.path(), &socket);
+    command.env(
+        "WS_TMUX_SOCKET",
+        format!("ws-cutover-{}", std::process::id()),
+    );
+    let _daemon = common::Daemon::start(command, &socket);
+    let output = dispatcher(home.path(), &socket)
+        .args(["sessions", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let sessions: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sessions.as_array().unwrap().len(), 1);
+    assert_eq!(sessions[0]["id"], session.id.to_string());
+    assert!(!state.join("import-zsh.json").exists());
+}
+
+#[test]
+fn first_start_imports_legacy_state_once_before_serving_commands() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("ws.sock");
+    let legacy = home.path().join(".ws");
+    let mut command = common::ws(home.path(), &socket);
+    command.env(
+        "WS_TMUX_SOCKET",
+        format!("ws-cutover-{}", std::process::id()),
+    );
+    fs::remove_file(legacy.join("backend")).unwrap();
+    let output = Command::new("zsh")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ws-daemon/src/import/fixtures/triggers.zsh"
+        ))
+        .arg(&legacy)
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    fs::write(
+        legacy.join("sessions/2/inbox"),
+        "{\"message\":\"legacy message\"}\n",
+    )
+    .unwrap();
+    let workspace = legacy.join("worktrees/project/main");
+    fs::create_dir_all(&workspace).unwrap();
+    for args in [
+        vec!["init", "-qb", "main"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+            "--allow-empty",
+        ],
+    ] {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    fs::write(legacy.join("pins"), "project/main\n").unwrap();
+    let original = fs::read(legacy.join("sessions/2/inbox")).unwrap();
+    let daemon = common::Daemon::start(command, &socket);
+    let output = dispatcher(home.path(), &socket)
+        .args(["show", "#2", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let session: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(session["alias"], 2);
+    let id = session["id"].as_str().unwrap();
+    let output = dispatcher(home.path(), &socket)
+        .env("WS_SESSION_ID", id)
+        .args(["inbox", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let inbox: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(inbox.as_array().unwrap().len(), 1);
+    assert_eq!(inbox[0]["body"], "legacy message");
+    let output = dispatcher(home.path(), &socket)
+        .args(["triggers", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let triggers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(triggers.as_array().unwrap().len(), 1);
+    let output = dispatcher(home.path(), &socket)
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let workspaces: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(workspaces[0]["id"], "project/main");
+    assert_eq!(workspaces[0]["body"]["pinned"], true);
+    assert_eq!(fs::read(legacy.join("sessions/2/inbox")).unwrap(), original);
+    let journal = fs::read(home.path().join("state/import-zsh.json")).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&journal).unwrap()["complete"],
+        true
+    );
+    drop(daemon);
+    // A crash after the appends but before the completion marker must not duplicate messages.
+    let mut incomplete: Value = serde_json::from_slice(&journal).unwrap();
+    incomplete["complete"] = json!(false);
+    fs::write(
+        home.path().join("state/import-zsh.json"),
+        incomplete.to_string(),
+    )
+    .unwrap();
+    let mut command = common::ws(home.path(), &socket);
+    command.env(
+        "WS_TMUX_SOCKET",
+        format!("ws-cutover-{}", std::process::id()),
+    );
+    let daemon = common::Daemon::start(command, &socket);
+    let output = dispatcher(home.path(), &socket)
+        .env("WS_SESSION_ID", id)
+        .args(["inbox", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        inbox
+    );
+    let resumed = fs::read(home.path().join("state/import-zsh.json")).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&resumed).unwrap()["complete"],
+        true
+    );
+    drop(daemon);
+    // A completed startup import does not read the source again.
+    fs::write(legacy.join("sessions/2/meta"), "invalid after import").unwrap();
+    let mut command = common::ws(home.path(), &socket);
+    command.env(
+        "WS_TMUX_SOCKET",
+        format!("ws-cutover-{}", std::process::id()),
+    );
+    let _daemon = common::Daemon::start(command, &socket);
+    let output = dispatcher(home.path(), &socket)
+        .args(["show", "#2", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let restored: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(restored["id"], session["id"]);
+    assert_eq!(
+        fs::read(home.path().join("state/import-zsh.json")).unwrap(),
+        resumed
+    );
 }
 
 #[test]

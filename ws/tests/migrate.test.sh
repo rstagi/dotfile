@@ -15,6 +15,8 @@ migrate() { WS_HOME="$MIG_HOME" GROK_HOME="$MIG_GROK" "$WS" "$@"; }
 
 echo "ws migrate: stale hook files are re-pointed at the current ws"
 MIG_HOME="$TMP/mig-home" MIG_GROK="$TMP/mig-grok" MIG_GROK_HOOKS="$TMP/mig-grok/hooks/ws.json"
+mkdir -p "$MIG_HOME"
+print -r -- zsh > "$MIG_HOME/backend"
 stale_hooks "/old/dotfile/ws.sh"
 migrate _migrate-hooks
 assert_exit "$?" "0" "_migrate-hooks succeeds"
