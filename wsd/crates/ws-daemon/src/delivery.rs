@@ -195,6 +195,12 @@ async fn paste_idle(
     timeout: Duration,
     clock: &Clock,
 ) -> Result<()> {
+    let Some(_backend) = api::call(store.clone(), |sessions| Ok(sessions.delivery_guard()?))
+        .await
+        .map_err(|e| e.0)?
+    else {
+        return Ok(());
+    };
     let snapshot = server
         .run(&[
             "display-message",
@@ -504,6 +510,9 @@ impl Sessions {
         callback: &Callback,
         live: bool,
     ) -> Result<StopDecision> {
+        let Some(_backend) = self.delivery_guard()? else {
+            return Ok(StopDecision::Accept);
+        };
         let session = self.get_record(&callback.session_id.to_string())?;
         // Local sessions have permanent leases until the hub lease protocol exists.
         if session.device_id != self.device_id {
@@ -571,6 +580,9 @@ impl Sessions {
         callback: Ulid,
         reply: Value,
     ) -> Result<Value> {
+        let Some(_backend) = self.delivery_guard()? else {
+            return Ok(json!({}));
+        };
         if self.get_record(&session.to_string())?.device_id != self.device_id {
             return Ok(json!({}));
         }
@@ -1495,6 +1507,66 @@ mod tests {
         sandbox.wait(|| observed.exists()).await;
         assert!(sandbox.sandbox.events("api.called").is_empty());
         assert!(sandbox.sandbox.events("paste.started").is_empty());
+    }
+
+    #[tokio::test]
+    async fn zsh_selection_suppresses_idle_paste_and_retains_its_messages() {
+        use std::time::Duration;
+        let sandbox = PasteSandbox::new().await;
+        sandbox.sandbox.store.lock().unwrap().legacy_home =
+            Some(sandbox.sandbox.home.path().into());
+        std::fs::write(sandbox.sandbox.home.path().join("backend"), "zsh\n").unwrap();
+        sandbox.sandbox.send("wait for Rust");
+        let server = super::Server {
+            socket: Some(sandbox.server.clone()),
+            path: None,
+        };
+        let clock: super::Clock = Arc::new(crate::hooks::receipt_time_us);
+        super::retry(
+            sandbox.sandbox.store.clone(),
+            &server,
+            Duration::from_secs(30),
+            &clock,
+        )
+        .await
+        .unwrap();
+        assert!(sandbox.sandbox.events("paste.started").is_empty());
+        std::fs::write(sandbox.sandbox.home.path().join("backend"), "rust\n").unwrap();
+        super::retry(
+            sandbox.sandbox.store.clone(),
+            &server,
+            Duration::from_secs(30),
+            &clock,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sandbox.sandbox.events("paste.submitted").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn zsh_selection_suppresses_stop_delivery_and_cached_replies() {
+        let sandbox = Sandbox::new();
+        sandbox.store.lock().unwrap().legacy_home = Some(sandbox.home.path().into());
+        std::fs::write(sandbox.home.path().join("backend"), "rust\n").unwrap();
+        sandbox.send("retained while zsh owns delivery");
+        let callback = sandbox.callback(100);
+        let first = ingest(
+            sandbox.store.clone(),
+            callback.clone(),
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["decision"], "block");
+        std::fs::write(sandbox.home.path().join("backend"), "zsh\n").unwrap();
+        let cached = ingest(sandbox.store.clone(), callback, StopDecision::Accept)
+            .await
+            .unwrap();
+        assert_eq!(cached, json!({}));
+        assert_eq!(sandbox.stop(101).await, json!({}));
+        assert!(sandbox.events("message.delivered").is_empty());
+        std::fs::write(sandbox.home.path().join("backend"), "rust\n").unwrap();
+        assert_eq!(sandbox.stop(102).await["decision"], "block");
     }
 
     #[tokio::test]

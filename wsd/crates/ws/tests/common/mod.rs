@@ -80,6 +80,11 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
     }
+    std::fs::create_dir_all(home.join(".ws")).unwrap();
+    let selector = home.join(".ws/backend");
+    if !selector.exists() {
+        std::fs::write(selector, "rust\n").unwrap();
+    }
     let mut command = Command::new(env!("CARGO_BIN_EXE_ws"));
     command
         .env(
@@ -93,6 +98,7 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
     command
         .env("HOME", home)
         .env("WS_HOME", home.join(".ws"))
+        .env("WS_ROOT", home.join(".ws/worktrees"))
         .env("WS_NOTIFY", "0")
         .env("WS_STATE", home.join("state"))
         .env("WS_SOCK", socket);

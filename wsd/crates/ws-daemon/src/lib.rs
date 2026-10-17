@@ -73,7 +73,8 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         })?)
         .join(".ws/state"),
     };
-    let sessions = sessions::Sessions::open(&state, 1).map_err(io::Error::other)?;
+    let sessions = sessions::Sessions::open_with_home(&state, 1, &import::backend::home()?)
+        .map_err(io::Error::other)?;
     let store = Arc::new(Mutex::new(sessions));
     supervisor::adopt(store.clone())
         .await

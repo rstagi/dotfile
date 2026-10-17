@@ -93,6 +93,14 @@ A Rust CLI request starts a background daemon when its socket is missing and lau
 Concurrent starts share a startup lock. A failed start reports the log path beside the socket.
 Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
 
+`ws backend rust` selects Rust through `$WS_HOME/backend`. The dispatcher uses `$WS_HOME/bin/ws-rs`.
+`WS_RUST_BIN` overrides the binary path for tests. An absent selector selects zsh during this migration stage.
+`ws backend zsh` restores zsh and reports how many Rust-only sessions it cannot reach.
+Both commands hold a switch lock. Rust suppresses message injection and automatic trigger actions while zsh is selected.
+Returning to Rust imports new zsh sessions, pending messages and triggers without changing existing Rust session IDs.
+Both backends reserve aliases through `sessions/counter` under the zsh-compatible `counter.lock`.
+The zsh suite writes its selector inside its sandbox. `zsh ws/tests/run.sh rust` runs the Rust dispatcher smoke test.
+
 The Rust `ws pick` command and bare `ws` use the fzf UI in `ws/lib/picker.sh`.
 Rows, summaries, previews, pins, session expansion and unread changes use Rust commands.
 The binary embeds the shell UI. It does not need the source checkout at runtime.

@@ -16,6 +16,7 @@ use ws_core::{
 
 use crate::sessions::Sessions;
 
+pub mod backend;
 mod locks;
 mod snapshot;
 mod triggers;
@@ -77,7 +78,8 @@ pub fn from_zsh_with_root(
     if dry_run {
         return Ok(plan);
     }
-    let mut sessions = Sessions::open(state, plan.alias_floor).map_err(io::Error::other)?;
+    let mut sessions =
+        Sessions::open_with_home(state, plan.alias_floor, &source).map_err(io::Error::other)?;
     // Another importer can finish after the first journal read and before this lock.
     if let Some(current) = load(state)? {
         if current.source != source {
@@ -117,6 +119,74 @@ pub fn from_zsh_with_root(
     )?;
     plan.complete = true;
     save(state, &plan)?;
+    Ok(plan)
+}
+
+/// Imports the next zsh snapshot while the daemon owns its session writer.
+pub fn incremental(sessions: &mut Sessions, source: &Path, root: &Path) -> io::Result<Plan> {
+    let source = source.canonicalize()?;
+    let previous = load(&sessions.state)?;
+    if previous.as_ref().is_some_and(|plan| plan.source != source) {
+        return Err(io::Error::other(
+            "The state contains an import from another zsh directory.",
+        ));
+    }
+    let resumed = previous.as_ref().is_some_and(|plan| !plan.complete);
+    let mut plan = if let Some(previous) = previous.as_ref().filter(|plan| !plan.complete) {
+        serde_json::from_slice(&serde_json::to_vec(previous)?)?
+    } else {
+        let mut next = snapshot(&source, root, false)?;
+        for session in &mut next.sessions {
+            if let Some(old) = previous
+                .as_ref()
+                .and_then(|p| p.sessions.iter().find(|s| s.alias == session.alias))
+            {
+                session.id = old.id;
+                let mut available: Vec<_> = old.messages.iter().collect();
+                for message in &mut session.messages {
+                    if let Some(index) = available.iter().position(|old| old.raw == message.raw) {
+                        let old = available.remove(index);
+                        message.import_key = Some(old.import_key.clone().unwrap_or_else(|| {
+                            format!("{}:{}:{}", session.alias, old.artifact, old.line)
+                        }));
+                    } else {
+                        message.import_key = Some(format!("message:{}", Ulid::new()));
+                    }
+                }
+            } else if sessions
+                .registry
+                .resolve(&format!("#{}", session.alias))
+                .is_ok()
+            {
+                return Err(io::Error::other(format!(
+                    "The alias #{} already exists in the Rust state.",
+                    session.alias
+                )));
+            }
+        }
+        for trigger in &mut next.triggers {
+            if let Some(old) = previous
+                .as_ref()
+                .and_then(|p| p.triggers.iter().find(|t| t.legacy_id == trigger.legacy_id))
+            {
+                trigger.id = old.id;
+            }
+        }
+        next
+    };
+    save(&sessions.state, &plan)?;
+    for session in &mut plan.sessions {
+        import_session(sessions, session)?;
+    }
+    workspaces::import(sessions, &plan.workspaces)?;
+    triggers::import(sessions, &plan.sessions, &plan.triggers, &plan.workspaces)?;
+    plan.complete = true;
+    save(&sessions.state, &plan)?;
+    sessions.restore_triggers().map_err(io::Error::other)?;
+    sessions.trigger_events_pending = true;
+    if resumed {
+        return incremental(sessions, &source, root);
+    }
     Ok(plan)
 }
 
@@ -231,7 +301,9 @@ fn import_session(sessions: &mut Sessions, session: &mut LegacySession) -> io::R
             append_once(
                 sessions,
                 human.id,
-                &format!("{}:{}:{}", session.alias, message.artifact, message.line),
+                &message.import_key.clone().unwrap_or_else(|| {
+                    format!("{}:{}:{}", session.alias, message.artifact, message.line)
+                }),
                 "message.sent",
                 json!({"from_session":human.id, "to_session":session.id, "pair_seq":pair_seq, "body":message.record["message"], "zsh_artifact":message.artifact, "zsh_record":message.record}),
             )?;

@@ -156,7 +156,9 @@ impl Sessions {
             payload["trigger_id"] = json!(id);
         }
         let entry = self.append_entry(from.id, "message.sent", payload)?;
-        if to.device_id == self.device_id
+        let backend = self.delivery_guard()?;
+        if backend.is_some()
+            && to.device_id == self.device_id
             && matches!(to.state.as_str(), "finished" | "failed")
             && let Err(error) = self.reopen_for_message(&to, Some(from.id))
         {
@@ -272,7 +274,7 @@ impl Sessions {
             return Ok(human);
         }
         let id = ws_core::ids::Ulid::new();
-        let alias = self.registry.next_alias()?;
+        let alias = self.next_alias()?;
         self.append(
             id,
             "session.created",

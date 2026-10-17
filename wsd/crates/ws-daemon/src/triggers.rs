@@ -277,6 +277,10 @@ impl Sessions {
     }
 
     pub(crate) fn evaluate_triggers(&mut self) -> Result<()> {
+        let Some(_backend) = self.delivery_guard()? else {
+            self.trigger_events_pending = true;
+            return Ok(());
+        };
         let pending: Vec<_> = self.triggers.values().cloned().collect();
         for trigger in pending {
             if let Err(error) = self.evaluate_trigger(&trigger) {

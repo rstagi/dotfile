@@ -20,6 +20,7 @@ use ws_core::{
 };
 
 pub struct Sessions {
+    pub(crate) legacy_home: Option<PathBuf>,
     pub(crate) config: ws_core::config::Config,
     pub(crate) trigger_events_pending: bool,
     pub(crate) triggers: std::collections::BTreeMap<Ulid, crate::triggers::Trigger>,
@@ -81,6 +82,7 @@ impl Sessions {
         let mut registry = Registry::open(&state.join("registry.sqlite"), alias_floor)?;
         registry.rebuild(state)?;
         let mut sessions = Self {
+            legacy_home: None,
             config,
             triggers: Default::default(),
             trigger_events_pending: false,
@@ -121,7 +123,7 @@ impl Sessions {
             return Err(Error::InvalidRequest("The workspace id is empty."));
         }
         self.check_spawn_limits(request.parent_session_id)?;
-        let alias = self.registry.next_alias()?;
+        let alias = self.next_alias()?;
         let body = json!({"alias": alias, "name": request.name, "workspace_id": request.workspace_id,
             "parent_session_id": request.parent_session_id});
         self.append(id, "session.created", body)?;
