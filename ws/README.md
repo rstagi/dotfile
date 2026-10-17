@@ -105,6 +105,7 @@ When the target is absent, it uses the current directory or tmux workspace.
 `list` selects workspaces from the registry. A worktree directory without a registry entry does not appear.
 Workspace tabs start the selected agent through one preparation contract in `ws-daemon`.
 `ws claude`, `ws codex` and `ws grok` run tracked agents in the current workspace tab and forward their arguments.
+Agent launches use `WS_AGENT_SHELL` (default `zsh -ic`) to load shell configuration.
 Each agent receives the same ULID in `WS_SESSION` and `WS_SESSION_ID`.
 Claude receives a private settings file for each launch. Codex receives per-launch `-c hooks.*` flags and `--dangerously-bypass-hook-trust`.
 Grok receives `${GROK_HOME:-$HOME/.grok}/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.

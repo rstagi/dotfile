@@ -44,6 +44,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         assert!(output.status.success(), "{output:?}");
         let (capture, _running) = sandbox.capture();
         assert_eq!(capture["agent"], agent);
+        assert_eq!(capture["shell"], "ready");
         assert_eq!(capture["id"], capture["legacy_id"]);
         assert_eq!(
             capture["cwd"],
@@ -354,6 +355,18 @@ impl Sandbox {
         let mut command = common::ws(home.path(), &socket);
         let listener = UnixListener::bind(home.path().join("agent.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
+        fs::write(
+            home.path().join("agent shell.sh"),
+            "export WS_TEST_AGENT_SHELL=ready\nexec /bin/sh -c \"$1\"\n",
+        )
+        .unwrap();
+        command.env(
+            "WS_AGENT_SHELL",
+            format!(
+                "/bin/sh {}",
+                shell_words::quote(&home.path().join("agent shell.sh").to_string_lossy())
+            ),
+        );
         let bin = home.path().join("fake-agents");
         fs::create_dir_all(&bin).unwrap();
         for agent in ["claude", "codex", "grok"] {
@@ -362,7 +375,7 @@ impl Sandbox {
 import json, os, socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.connect({:?})
-s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE')))+'\n').encode())
+s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL')))+'\n').encode())
 sys.exit(int(s.recv(1) or b'0'))
 "#,
                 home.path().join("agent.sock").to_str().unwrap()
@@ -404,6 +417,13 @@ sys.exit(int(s.recv(1) or b'0'))
     fn command(&self) -> Command {
         let mut command = common::ws(self.home.path(), &self.socket);
         command
+            .env(
+                "WS_AGENT_SHELL",
+                format!(
+                    "/bin/sh {}",
+                    shell_words::quote(&self.home.path().join("agent shell.sh").to_string_lossy())
+                ),
+            )
             .env("WS_ROOT", self.home.path().join("worktrees"))
             .env("WS_TMUX_SOCKET", &self.server)
             .env_remove("TMUX")

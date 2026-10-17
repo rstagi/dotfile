@@ -1,4 +1,5 @@
 pub mod add;
+pub mod agent;
 pub mod attach;
 pub mod claude;
 pub mod codex;

@@ -150,11 +150,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     };
     match command {
         Command::Claude { arguments } => {
-            return cmd::claude::run(&socket_path()?, "claude", arguments).await;
+            return cmd::claude::run(&socket_path()?, arguments).await;
         }
         Command::Codex { arguments } => return cmd::codex::run(&socket_path()?, arguments).await,
         Command::Grok { arguments } => return cmd::grok::run(&socket_path()?, arguments).await,
-        Command::Agent { id } => return cmd::claude::execute(&socket_path()?, &id, false).await,
+        Command::Agent { id } => return cmd::agent::execute(&socket_path()?, &id, false).await,
         Command::Merge => cmd::merge::run(&socket_path()?).await?,
         Command::MergePopup => return cmd::merge::popup(&socket_path()?).await,
         Command::Open { target, detach } => {

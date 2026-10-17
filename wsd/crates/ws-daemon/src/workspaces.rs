@@ -596,6 +596,7 @@ impl Sessions {
             "GROK_HOME",
             "CODEX_HOME",
             "CLAUDE_CONFIG_DIR",
+            "WS_AGENT_SHELL",
         ] {
             if let Ok(value) = env::var(key) {
                 args.extend(["-e".into(), format!("{key}={value}")]);

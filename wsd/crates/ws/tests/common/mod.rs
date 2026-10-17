@@ -78,6 +78,7 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
             "PATH",
             format!("{}:{}", agents.display(), std::env::var("PATH").unwrap()),
         )
+        .env("WS_AGENT_SHELL", "zsh -fc")
         .env("GROK_HOME", home.join(".grok"))
         .env("CODEX_HOME", home.join(".codex"))
         .env("CLAUDE_CONFIG_DIR", home.join(".claude"));
