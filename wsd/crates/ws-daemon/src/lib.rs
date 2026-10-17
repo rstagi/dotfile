@@ -72,6 +72,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .await
         .map_err(|error| io::Error::other(error.0))?;
     hooks::replay(store.clone(), &state).await?;
+    let _delivery = bus::delivery::start(store.clone());
     let app = Router::new()
         .route("/v1/ping", get(ping))
         .with_state(AppState {

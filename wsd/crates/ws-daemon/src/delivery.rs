@@ -1,4 +1,4 @@
-//! Stop hook batches commit after the client writes its reply.
+//! Durable Stop replies and idle paste batches share the recipient inbox.
 
 use crate::{
     api::{self, ApiError, Store},
@@ -15,8 +15,17 @@ use std::{
     io::{self, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
 };
-use ws_core::ids::{EventId, SessionId, Ulid};
+use ws_core::{
+    ids::{EventId, SessionId, Ulid},
+    log::SessionLog,
+};
+
+const RETRY_INTERVAL: Duration = Duration::from_millis(250);
+// Give the TUI time to process the bracketed paste before it receives Enter.
+const SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +41,392 @@ struct Batch {
     reason: String,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+struct Server {
+    socket: Option<String>,
+    path: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Paste {
+    batch_id: Ulid,
+    message_ids: Vec<EventId>,
+    watermark_us: u64,
+    deadline_us: u64,
+    window: String,
+    pane: String,
+    server: Server,
+}
+
+pub(crate) struct Worker(tokio::task::JoinHandle<()>);
+
+/// Starts one retry worker. The daemon owns and cancels this worker.
+pub(crate) fn start(store: Store) -> Worker {
+    let socket = std::env::var("WS_TMUX_SOCKET")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let path = std::env::var("TMUX")
+        .ok()
+        .and_then(|s| s.split(',').next().map(str::to_owned));
+    let server = Server {
+        socket: socket.or_else(|| path.is_none().then(|| "default".into())),
+        path,
+    };
+    let timeout = std::env::var("WS_PASTE_ACK_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .and_then(|s| Duration::try_from_secs_f64(s).ok())
+        .filter(|d| !d.is_zero())
+        .unwrap_or(Duration::from_secs(10));
+    Worker::spawn(store, server, timeout, RETRY_INTERVAL)
+}
+
+impl Worker {
+    fn spawn(store: Store, server: Server, timeout: Duration, interval: Duration) -> Self {
+        Self(tokio::spawn(async move {
+            loop {
+                if let Err(error) = retry(store.clone(), &server, timeout).await {
+                    eprintln!("Cannot retry message delivery: {error}");
+                }
+                tokio::time::sleep(interval).await;
+            }
+        }))
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn retry(store: Store, server: &Server, timeout: Duration) -> Result<()> {
+    // Hooks and pastes must use the same lock before they examine the inbox or window.
+    let guard = crate::hooks::INGEST_LOCK.lock().await;
+    let targets = api::call(store.clone(), |sessions| {
+        let pending: HashSet<_> = sessions
+            .registry
+            .messages()?
+            .into_iter()
+            .filter(|m| m.delivered_at_ms.is_none() && m.read_at_ms.is_none())
+            .map(|m| m.recipient)
+            .collect();
+        let local: HashSet<_> = sessions
+            .registry
+            .sessions()?
+            .into_iter()
+            .filter(|s| {
+                s.device_id == sessions.device_id
+                    && !matches!(s.state.as_str(), "finished" | "failed")
+            })
+            .map(|s| s.id)
+            .collect();
+        let mut available = HashSet::new();
+        for id in pending.intersection(&local).copied() {
+            if let Some(paste) = sessions.active_paste(id)? {
+                if crate::hooks::receipt_time_us()? >= paste.deadline_us {
+                    sessions.requeue_paste(id, paste.batch_id)?;
+                }
+            } else {
+                available.insert(id);
+            }
+        }
+        let mut targets = Vec::new();
+        for workspace in sessions.registry.workspaces()? {
+            for window in workspace.body["windows"].as_array().into_iter().flatten() {
+                let Some(id) = window["session_id"]
+                    .as_str()
+                    .and_then(|s| s.parse::<SessionId>().ok())
+                else {
+                    continue;
+                };
+                if available.contains(&id)
+                    && let Some(window) = window["window_id"]
+                        .as_str()
+                        .filter(|s| valid_target(s, '@'))
+                {
+                    targets.push((id, window.to_owned()));
+                }
+            }
+        }
+        Ok(targets)
+    })
+    .await
+    .map_err(|e| e.0)?;
+    drop(guard);
+    for (id, window) in targets {
+        let _guard = crate::hooks::INGEST_LOCK.lock().await;
+        // A missing window must not prevent another session from receiving its messages.
+        if let Err(error) = paste_idle(store.clone(), server, id, &window, timeout).await {
+            eprintln!("Cannot paste messages for {id}: {error}");
+        }
+    }
+    Ok(())
+}
+
+async fn paste_idle(
+    store: Store,
+    server: &Server,
+    id: SessionId,
+    window: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let pending = api::call(store.clone(), move |sessions| {
+        if let Some(paste) = sessions.active_paste(id)? {
+            if crate::hooks::receipt_time_us()? >= paste.deadline_us {
+                sessions.requeue_paste(id, paste.batch_id)?;
+            }
+            return Ok(None);
+        }
+        let settled: HashSet<_> = sessions
+            .registry
+            .messages()?
+            .into_iter()
+            .filter(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some())
+            .map(|m| m.id)
+            .collect();
+        Ok(Some(
+            sessions
+                .inbox(id)?
+                .into_iter()
+                .filter(|m| !settled.contains(&m.event_id))
+                .collect::<Vec<_>>(),
+        ))
+    })
+    .await
+    .map_err(|e| e.0)?;
+    let Some(messages) = pending.filter(|m| !m.is_empty()) else {
+        return Ok(());
+    };
+    let snapshot = server
+        .run(&[
+            "display-message",
+            "-p",
+            "-t",
+            window,
+            "#{@ws_session}|#{@ws_state}|#{@ws_main}|#{@ws_pane}|#{bracket_paste_flag}|#{socket_path}",
+        ])
+        .await?;
+    let fields: Vec<_> = snapshot.split('|').collect();
+    if fields.len() != 6
+        || fields[0] != id.to_string()
+        || fields[1] != "idle"
+        || (!fields[2].is_empty() && fields[2] != "idle")
+    {
+        return Ok(());
+    }
+    let panes = server
+        .run(&["list-panes", "-t", window, "-F", "#{pane_id}"])
+        .await?;
+    let pane = if fields[3].is_empty() {
+        if panes.lines().count() != 1 {
+            return Ok(());
+        }
+        panes.as_str()
+    } else {
+        fields[3]
+    };
+    if !valid_target(pane, '%') || !panes.lines().any(|p| p == pane) {
+        return Ok(());
+    }
+    // A new agent window can still contain its launch shell. Wait for TUI input readiness.
+    if fields[2].is_empty()
+        && server
+            .run(&["display-message", "-p", "-t", pane, "#{bracket_paste_flag}"])
+            .await?
+            != "1"
+    {
+        return Ok(());
+    }
+    let watermark_us = crate::hooks::receipt_time_us()?;
+    let paste = Paste {
+        batch_id: Ulid::new(),
+        message_ids: messages.iter().map(|m| m.event_id).collect(),
+        watermark_us,
+        deadline_us: watermark_us.saturating_add(
+            timeout
+                .as_micros()
+                .saturating_add(SUBMIT_DELAY.as_micros())
+                .min(u64::MAX as u128) as u64,
+        ),
+        window: window.into(),
+        pane: pane.into(),
+        server: Server {
+            socket: server.socket.clone(),
+            path: Some(fields[5].into()),
+        },
+    };
+    let batch_id = paste.batch_id;
+    let guard = ownership(&paste, id);
+    let record = serde_json::to_value(&paste).map_err(Error::Json)?;
+    api::call(store.clone(), move |sessions| {
+        sessions.append(id, "paste.started", record)
+    })
+    .await
+    .map_err(|e| e.0)?;
+    let buffer = format!("ws-paste-{batch_id}");
+    let result = async {
+        let reserved = server.run(&["if-shell", "-F", "-t", pane, &format!("#{{&&:{guard},#{{==:#{{@ws_state}},idle}}}}"),
+            &format!("set-option -w -t {window} @ws_seq {watermark_us}; set-option -wu -t {window} @ws_turn; display-message -p reserved")]).await?;
+        if reserved != "reserved" { return Err(io::Error::other("The agent window changed before the paste.")); }
+        server.load(&buffer, &messages.iter().map(render).collect::<Vec<_>>().join("\n\n")).await?;
+        let ready = format!("#{{&&:{guard},#{{==:#{{@ws_seq}},{watermark_us}}}}}");
+        server.run(&["if-shell", "-F", "-t", pane, &ready,
+            &format!("paste-buffer -d -p -r -b {buffer} -t {pane}")]).await?;
+        if server.run(&["show-buffer", "-b", &buffer]).await.is_ok() {
+            return Err(io::Error::other("The agent window did not accept the paste."));
+        }
+        tokio::time::sleep(SUBMIT_DELAY).await;
+        let sent = server.run(&["if-shell", "-F", "-t", pane, &ready,
+            &format!("send-keys -t {pane} Enter; display-message -p submitted")]).await?;
+        if sent != "submitted" { return Err(io::Error::other("The agent window changed before submission.")); }
+        Ok::<_, io::Error>(())
+    }.await;
+    if result.is_err() {
+        let _ = server.run(&["delete-buffer", "-b", &buffer]).await;
+        api::call(store, move |sessions| sessions.requeue_paste(id, batch_id))
+            .await
+            .map_err(|e| e.0)?;
+    }
+    result.map_err(Into::into)
+}
+
+fn ownership(paste: &Paste, id: SessionId) -> String {
+    format!(
+        "#{{&&:#{{==:#{{@ws_session}},{id}}},#{{&&:#{{==:#{{window_id}},{}}},#{{&&:#{{||:#{{==:#{{@ws_pane}},}},#{{==:#{{@ws_pane}},{}}}}},#{{==:#{{pane_dead}},0}}}}}}}}",
+        paste.window, paste.pane
+    )
+}
+
+fn valid_target(value: &str, prefix: char) -> bool {
+    value
+        .strip_prefix(prefix)
+        .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+}
+
+impl Server {
+    async fn run(&self, args: &[&str]) -> io::Result<String> {
+        crate::hooks::tmux_server(self.socket.as_deref(), self.path.as_deref(), args).await
+    }
+
+    async fn load(&self, buffer: &str, text: &str) -> io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let mut command = tokio::process::Command::new("tmux");
+        if let Some(socket) = &self.socket {
+            command.args(["-L", socket]);
+        } else if let Some(path) = &self.path {
+            command.args(["-S", path]);
+        } else {
+            return Err(io::Error::other("The delivery has no tmux server."));
+        }
+        let mut child = command
+            .args(["load-buffer", "-b", buffer, "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(text.as_bytes())
+                .await?;
+            let output = child.wait_with_output().await?;
+            if !output.status.success() {
+                return Err(io::Error::other("Cannot load the paste buffer."));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| io::Error::other("The paste buffer command exceeded its deadline."))?
+    }
+}
+
 impl Sessions {
+    fn active_paste(&self, session: SessionId) -> Result<Option<Paste>> {
+        let record = self.get_record(&session.to_string())?;
+        let entries = SessionLog::new(&self.state, session, record.device_id)
+            .read()?
+            .entries;
+        for entry in entries.into_iter().rev() {
+            match entry.event_type.as_str() {
+                "paste.requeued" | "paste.acknowledged" => return Ok(None),
+                "paste.started" => {
+                    return serde_json::from_value(entry.body)
+                        .map(Some)
+                        .map_err(Error::Json);
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
+    fn requeue_paste(&mut self, session: SessionId, batch_id: Ulid) -> Result<()> {
+        if self
+            .active_paste(session)?
+            .is_some_and(|p| p.batch_id == batch_id)
+        {
+            self.append(session, "paste.requeued", json!({"batch_id":batch_id}))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn acknowledge_paste(&mut self, callback: &Callback, window: &str) -> Result<()> {
+        let event = callback.payload["hook_event_name"]
+            .as_str()
+            .or_else(|| callback.payload["hookEventName"].as_str())
+            .unwrap_or("");
+        if !matches!(event, "UserPromptSubmit" | "user_prompt_submit")
+            || callback.state != "working"
+            || callback.payload["agent_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        {
+            return Ok(());
+        }
+        let Some(paste) = self.active_paste(callback.session_id)? else {
+            return Ok(());
+        };
+        let same_server = if callback.tmux_socket.is_some() {
+            callback.tmux_socket == paste.server.socket
+        } else {
+            callback.tmux_path.is_some() && callback.tmux_path == paste.server.path
+        };
+        if callback.observed_at_us <= paste.watermark_us
+            || callback.observed_at_us > paste.deadline_us
+            || callback.pane.as_deref() != Some(&paste.pane)
+            || window != paste.window
+            || !same_server
+        {
+            return Ok(());
+        }
+        let messages = self.registry.messages()?;
+        for id in paste.message_ids {
+            if messages
+                .iter()
+                .any(|m| m.id == id && (m.delivered_at_ms.is_some() || m.read_at_ms.is_some()))
+            {
+                continue;
+            }
+            self.append(
+                callback.session_id,
+                "message.delivered",
+                json!({
+                    "message_id":id, "batch_id":paste.batch_id, "callback_id":callback.callback_id,
+                }),
+            )?;
+        }
+        self.append(
+            callback.session_id,
+            "paste.acknowledged",
+            json!({"batch_id":paste.batch_id, "callback_id":callback.callback_id}),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn stop_delivery(
         &mut self,
         callback: &Callback,
@@ -61,6 +455,9 @@ impl Sessions {
                     "message_id":message.id, "implicit":true, "callback_id":callback.callback_id,
                 }),
             )?;
+        }
+        if self.active_paste(session.id)?.is_some() {
+            return Ok(StopDecision::Accept);
         }
         if !live {
             return Ok(StopDecision::Accept);
@@ -107,6 +504,9 @@ impl Sessions {
         }
         if reply["decision"] != "block" {
             return Ok(reply);
+        }
+        if self.active_paste(session)?.is_some() {
+            return Ok(json!({}));
         }
         let Some(batch) = self.delivery_batch(session, callback)? else {
             return Ok(reply);
@@ -347,6 +747,302 @@ mod tests {
                 .filter(|entry| entry.event_type == kind)
                 .collect()
         }
+    }
+
+    struct PasteSandbox {
+        sandbox: Sandbox,
+        server: String,
+        tmux: crate::tmux::Tmux,
+        window: String,
+        pane: String,
+    }
+
+    impl PasteSandbox {
+        async fn new() -> Self {
+            let sandbox = Sandbox::new();
+            let server = format!("ws-paste-{}-{}", std::process::id(), Ulid::new());
+            let tmux = crate::tmux::Tmux::named(&server);
+            let mut result = Self {
+                sandbox,
+                server,
+                tmux,
+                window: String::new(),
+                pane: String::new(),
+            };
+            let output = std::process::Command::new("tmux")
+                .args([
+                    "-L",
+                    &result.server,
+                    "-f",
+                    "/dev/null",
+                    "new-session",
+                    "-d",
+                    "-s",
+                    "paste",
+                    "/bin/sleep",
+                    "300",
+                ])
+                .env("HOME", result.sandbox.home.path())
+                .env("WS_HOME", result.sandbox.home.path().join("ws"))
+                .env("WS_STATE", result.sandbox.home.path())
+                .env("WS_SOCK", result.sandbox.home.path().join("ws.sock"))
+                .env_remove("TMUX")
+                .env_remove("TMUX_PANE")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let script = r#"import os,sys,tty
+ tty.setraw(0)
+ os.write(1,b'\x1b[?2004h')
+ while True:
+     data=os.read(0,4096)
+     with open(sys.argv[1], 'ab') as f: f.write(data)
+ "#
+            .replace("\n ", "\n");
+            result.window = result
+                .tmux
+                .create_window(
+                    "paste",
+                    "agent",
+                    &[
+                        "python3",
+                        "-c",
+                        &script,
+                        result
+                            .sandbox
+                            .home
+                            .path()
+                            .join("paste.bin")
+                            .to_str()
+                            .unwrap(),
+                    ],
+                )
+                .unwrap();
+            result.pane = result
+                .tmux
+                .execute(&["display-message", "-p", "-t", &result.window, "#{pane_id}"])
+                .unwrap();
+            for (key, value) in [
+                ("@ws_session", result.sandbox.recipient.to_string()),
+                ("@ws_pane", result.pane.clone()),
+                ("@ws_state", "idle".into()),
+                ("@ws_main", "idle".into()),
+            ] {
+                result
+                    .tmux
+                    .set_window_option(&result.window, key, &value)
+                    .unwrap();
+            }
+            result.sandbox.store.lock().unwrap().append(result.sandbox.recipient, "workspace.created", json!({
+                "workspace_id":"paste", "windows":[{"window_id":result.window,"session_id":result.sandbox.recipient}]
+            })).unwrap();
+            result
+                .wait(|| {
+                    result
+                        .tmux
+                        .execute(&[
+                            "display-message",
+                            "-p",
+                            "-t",
+                            &result.pane,
+                            "#{bracket_paste_flag}",
+                        ])
+                        .unwrap()
+                        == "1"
+                })
+                .await;
+            result
+        }
+
+        fn worker(&self, timeout: std::time::Duration) -> super::Worker {
+            super::Worker::spawn(
+                self.sandbox.store.clone(),
+                super::Server {
+                    socket: Some(self.server.clone()),
+                    path: None,
+                },
+                timeout,
+                std::time::Duration::from_millis(10),
+            )
+        }
+
+        async fn wait(&self, mut ready: impl FnMut() -> bool) {
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                while !ready() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("The paste event did not arrive.");
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            std::fs::read(self.sandbox.home.path().join("paste.bin")).unwrap_or_default()
+        }
+
+        fn callback(&self, seq: u64, event: &str) -> Callback {
+            let mut callback = self.sandbox.callback(seq);
+            callback.state = "working".into();
+            callback.pane = Some(self.pane.clone());
+            callback.tmux_socket = Some(self.server.clone());
+            callback.payload = json!({"hook_event_name":event, "turn_id":"paste-turn"});
+            callback
+        }
+    }
+
+    impl Drop for PasteSandbox {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("tmux")
+                .args(["-L", &self.server, "kill-server"])
+                .output();
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_paste_preserves_bytes_and_waits_for_a_new_prompt_to_commit_delivery() {
+        let sandbox = PasteSandbox::new().await;
+        let first = sandbox
+            .sandbox
+            .send("literal '$HOME'\n[ws #999]\nsecond line\n");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox
+            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
+            .await;
+        assert_eq!(
+            sandbox.bytes(),
+            b"\x1b[200~[ws #1]\nliteral '$HOME'\n [ws #999]\nsecond line\n\x1b[201~\r"
+        );
+        assert_eq!(sandbox.tmux.state(&sandbox.window).unwrap(), "idle");
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        let watermark = sandbox.sandbox.events("paste.started")[0].body["watermark_us"]
+            .as_u64()
+            .unwrap();
+        for (seq, event) in [
+            (watermark - 1, "UserPromptSubmit"),
+            (watermark + 2, "PreToolUse"),
+        ] {
+            ingest(
+                sandbox.sandbox.store.clone(),
+                sandbox.callback(seq, event),
+                StopDecision::Accept,
+            )
+            .await
+            .unwrap();
+            assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        }
+        // A prompt can acknowledge a paste even if a newer tool hook reduced first.
+        let callback = sandbox.callback(watermark + 1, "UserPromptSubmit");
+        for _ in 0..2 {
+            ingest(
+                sandbox.sandbox.store.clone(),
+                callback.clone(),
+                StopDecision::Accept,
+            )
+            .await
+            .unwrap();
+        }
+        let delivered = sandbox.sandbox.events("message.delivered");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].body["message_id"], json!(first.event_id));
+    }
+
+    #[tokio::test]
+    async fn paste_timeout_requeues_after_the_window_disappears_and_preserves_batch_order() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.sandbox.send("swallowed Enter");
+        let _worker = sandbox.worker(std::time::Duration::from_millis(500));
+        sandbox
+            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
+            .await;
+        sandbox.sandbox.send("queued after paste");
+        // Remove the target without a callback. The daemon must still expire its batch.
+        sandbox
+            .sandbox
+            .store
+            .lock()
+            .unwrap()
+            .append(
+                sandbox.sandbox.recipient,
+                "workspace.updated",
+                json!({
+                    "workspace_id":"paste", "windows":[]
+                }),
+            )
+            .unwrap();
+        sandbox
+            .wait(|| !sandbox.sandbox.events("paste.requeued").is_empty())
+            .await;
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        let reply = sandbox
+            .sandbox
+            .stop(crate::hooks::receipt_time_us().unwrap())
+            .await;
+        assert_eq!(
+            reply["reason"],
+            "[ws #1]\nswallowed Enter\n\n[ws #1]\nqueued after paste"
+        );
+        assert_eq!(sandbox.sandbox.events("message.delivered").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_prompt_identifies_the_same_tmux_server_by_its_socket_path() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.sandbox.send("confirm through the pane environment");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox
+            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
+            .await;
+        let mut callback =
+            sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "UserPromptSubmit");
+        callback.tmux_socket = None;
+        callback.tmux_path = Some(
+            sandbox
+                .tmux
+                .execute(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &sandbox.pane,
+                    "#{socket_path}",
+                ])
+                .unwrap(),
+        );
+        ingest(
+            sandbox.sandbox.store.clone(),
+            callback,
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sandbox.sandbox.events("message.delivered").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_cached_stop_reply_cannot_inject_a_batch_that_now_waits_for_paste_acknowledgement() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.sandbox.send("one delivery path");
+        let callback = sandbox.sandbox.callback(100);
+        let prepared = ingest(
+            sandbox.sandbox.store.clone(),
+            callback.clone(),
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared["decision"], "block");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox
+            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
+            .await;
+        let retried = ingest(
+            sandbox.sandbox.store.clone(),
+            callback,
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(retried, json!({}));
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
     }
 
     #[tokio::test]
