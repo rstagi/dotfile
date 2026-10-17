@@ -67,7 +67,10 @@ async fn deliver(
         .ok()
         .filter(|id| !id.is_empty())
         .or_else(|| env::var("WS_SESSION").ok().filter(|id| !id.is_empty()));
-    let Some(session) = session.and_then(|id| id.parse().ok()) else {
+    let Some(session) = session else {
+        return Ok((json!({}), None));
+    };
+    let Some(session) = resolve(socket, &session).await else {
         return Ok((json!({}), None));
     };
     if ![
@@ -123,6 +126,24 @@ async fn deliver(
     }
     hooks::spool(&state_path()?, &callback)?;
     Ok((json!({}), None))
+}
+
+/// Legacy zsh agents export a numeric `WS_SESSION`. Only the daemon maps it to
+/// the imported ULID, so an unreachable daemon drops that callback.
+async fn resolve(socket: &Path, identity: &str) -> Option<Ulid> {
+    if let Ok(id) = identity.parse() {
+        return Some(id);
+    }
+    let target = if identity.bytes().all(|byte| byte.is_ascii_digit()) {
+        format!("#{identity}")
+    } else {
+        identity.to_owned()
+    };
+    tokio::time::timeout(TRANSPORT_DEADLINE, client::session(socket, &target))
+        .await
+        .ok()?
+        .ok()
+        .map(|session| session.id)
 }
 
 async fn confirm(socket: &Path, receipt: &Receipt) -> Result<()> {

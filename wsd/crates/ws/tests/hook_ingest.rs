@@ -647,3 +647,58 @@ fn a_cached_delivery_reply_does_not_reach_a_reused_pane() {
             .all(|entry| entry["type"] != "message.delivered")
     );
 }
+
+#[test]
+fn a_numeric_legacy_ws_session_reaches_the_imported_session() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("wsd.sock");
+    let legacy = home.path().join(".ws/sessions");
+    fs::create_dir_all(legacy.join("7")).unwrap();
+    fs::write(legacy.join("counter"), "7\n").unwrap();
+    fs::write(
+        legacy.join("7/meta"),
+        json!({"id":"7", "name":"worker", "agent":"claude", "status":"active"}).to_string(),
+    )
+    .unwrap();
+    let _daemon = Daemon::start(ws(home.path(), &socket), &socket);
+    let imported = common::get(&socket, "/v1/sessions/%237");
+    let imported: Value = serde_json::from_str(imported.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let id = imported["id"].as_str().unwrap();
+    let mut child = ws(home.path(), &socket)
+        .env_remove("WS_SESSION_ID")
+        .env("WS_SESSION", "7")
+        .env("TMUX_PANE", "%1")
+        .env_remove("TMUX")
+        .env_remove("WS_TMUX_SOCKET")
+        .args(["hook", "working"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            json!({"hook_event_name":"UserPromptSubmit"})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let log = fs::read_to_string(
+        home.path()
+            .join("state/sessions")
+            .join(id)
+            .join("log.jsonl"),
+    )
+    .unwrap();
+    assert!(
+        log.lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .any(|entry| entry["type"] == "hook.received"),
+        "{log}"
+    );
+}
