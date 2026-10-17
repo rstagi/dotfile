@@ -166,7 +166,12 @@ Run `cd wsd && cargo test -p ws --test headless` to check the I/O contract with 
 
 `ws agent prepare --agent claude|codex|grok --mode headless --session <ULID> [--resume <id>] --format json|sh`
 prepares an agent command for an external runner. It uses the same builder as interactive sessions.
-It writes private hook files without contacting the daemon or starting an agent.
+It writes private launch files without contacting the daemon or starting an agent.
+Claude and Codex receive the `ws` MCP server in fresh and resumed launches, in both modes.
+Claude receives an extra `--mcp-config` file. Codex receives `-c mcp_servers.ws.*` overrides.
+These additions preserve other MCP servers and do not edit the agent configuration files.
+The MCP child runs the same Rust binary with `mcp`. Its caller is the prepared session.
+Codex forwards `WS_SOCK` to the MCP child when that variable is set.
 JSON contains `program`, `argv`, `env`, and `files` (each file has `path` and `contents`).
 The arguments include `-p` for Claude and `exec` for Codex, plus any resume arguments.
 The caller supplies its prompt and other flags. Put a Claude positional prompt before variadic flags such as `--allowedTools`.
@@ -243,6 +248,26 @@ It replaces invalid UTF-8 bytes and enforces the limit after decoding. JSON tail
 `GET /v1/sessions/{id}/tail` accepts `stream`, `max_bytes`, and `parent_session_id` as query parameters.
 Phase spawn requires `$WS_SESSION_ID`. Repeat `--caps-required <capability>` to record required capabilities.
 Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox daemon.
+
+The daemon reads spawn limits from `$WS_STATE/config.toml` when it starts:
+
+```toml
+[limits]
+max_children = 8
+max_depth = 3
+```
+
+Missing fields use these defaults. Zero prevents child creation. Restart the daemon after a configuration change.
+The child count includes finished and failed children. The count survives daemon restarts.
+
+Each root has depth zero. A child adds one to its parent's depth.
+The daemon checks limits before it creates an interactive session, a headless session, or a phase.
+A resume keeps the existing session and does not consume another child slot.
+
+A violation returns HTTP 429 with `error.code`, `error.message`, `error.parent_session_id`, and `error.limit`.
+The codes are `max_children_exceeded` and `max_depth_exceeded`.
+The CLI exits with code 1 and writes this JSON error to standard error.
+MCP returns the same error as structured content with `isError: true`.
 
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 

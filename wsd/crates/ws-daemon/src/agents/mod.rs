@@ -87,7 +87,18 @@ pub fn prepare(
                 path: path.clone(),
                 contents: serde_json::to_vec(&hooks("claude", &hook))?,
             });
+            let mcp_path = path.with_file_name("claude-mcp.json");
+            prepared.files.push(GeneratedFile {
+                path: mcp_path.clone(),
+                contents: serde_json::to_vec(&json!({"mcpServers": {"ws": {
+                    "command": session.ws_bin,
+                    "args": ["mcp"],
+                    "env": {"WS_SESSION_ID": session.id}
+                }}}))?,
+            });
             prepared.argv.extend([
+                "--mcp-config".into(),
+                mcp_path.to_string_lossy().into_owned(),
                 "--dangerously-skip-permissions".into(),
                 "--settings".into(),
                 path.to_string_lossy().into_owned(),
@@ -122,6 +133,20 @@ pub fn prepare(
                     serde_json::to_string(&preamble)?
                 ),
             ]);
+            for setting in [
+                format!(
+                    "mcp_servers.ws.command={}",
+                    serde_json::to_string(&session.ws_bin)?
+                ),
+                "mcp_servers.ws.args=[\"mcp\"]".into(),
+                format!(
+                    "mcp_servers.ws.env.WS_SESSION_ID={}",
+                    serde_json::to_string(&session.id)?
+                ),
+                "mcp_servers.ws.env_vars=[\"WS_SOCK\"]".into(),
+            ] {
+                prepared.argv.extend(["-c".into(), setting]);
+            }
             for (event, state) in [
                 ("UserPromptSubmit", "working"),
                 ("PreToolUse", "working"),

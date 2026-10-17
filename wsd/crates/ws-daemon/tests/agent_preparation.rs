@@ -47,6 +47,19 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
         assert_eq!(expected.remove(0), agent);
         let mut actual = prepared.argv.clone();
         if agent == "claude" {
+            let index = actual.iter().position(|arg| arg == "--mcp-config").unwrap();
+            actual.drain(index..index + 2);
+        } else if agent == "codex" {
+            let mut index = 0;
+            while index + 1 < actual.len() {
+                if actual[index] == "-c" && actual[index + 1].starts_with("mcp_servers.ws.") {
+                    actual.drain(index..index + 2);
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        if agent == "claude" {
             let i = actual.iter().position(|v| v == "--settings").unwrap() + 1;
             let expected_i = expected.iter().position(|v| v == "--settings").unwrap() + 1;
             actual[i] = expected[expected_i].clone();
@@ -188,4 +201,84 @@ fn grok_hooks_follow_the_configured_home_inside_the_sandbox() {
     prepared.write_files().unwrap();
     assert!(home.path().join("custom-grok/hooks/ws.json").is_file());
     assert!(!home.path().join(".grok/hooks/ws.json").exists());
+}
+
+#[test]
+fn mcp_registration_extends_each_launch_mode_and_preserves_user_configuration() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".codex")).unwrap();
+    let claude_config = home.path().join(".claude.json");
+    let codex_config = home.path().join(".codex/config.toml");
+    let claude_contents = r#"{"mcpServers":{"own":{"command":"own-server"}}}"#;
+    let codex_contents = "[mcp_servers.own]\ncommand = 'own-server'\n";
+    std::fs::write(&claude_config, claude_contents).unwrap();
+    std::fs::write(&codex_config, codex_contents).unwrap();
+    let session = AgentSession {
+        id: "01K7Q0K5M00000000000000001".into(),
+        home: home.path().into(),
+        grok_home: None,
+        ws_home: home.path().join(".ws"),
+        ws_bin: PathBuf::from("/test/ws rs'bin"),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    for mode in [Mode::Interactive, Mode::Headless] {
+        for resume in [None, Some("resume-123")] {
+            for agent in ["claude", "codex"] {
+                let prepared = prepare(agent, mode, &session, resume).unwrap();
+                prepared.write_files().unwrap();
+                if agent == "claude" {
+                    let flag = prepared
+                        .argv
+                        .iter()
+                        .position(|arg| arg == "--mcp-config")
+                        .expect("Claude must receive the ws MCP configuration.");
+                    let config: Value =
+                        serde_json::from_slice(&std::fs::read(&prepared.argv[flag + 1]).unwrap())
+                            .unwrap();
+                    assert_eq!(config["mcpServers"]["ws"]["command"], "/test/ws rs'bin");
+                    assert_eq!(
+                        config["mcpServers"]["ws"]["args"],
+                        serde_json::json!(["mcp"])
+                    );
+                    assert_eq!(
+                        config["mcpServers"]["ws"]["env"]["WS_SESSION_ID"],
+                        session.id
+                    );
+                    assert_eq!(config["mcpServers"].as_object().unwrap().len(), 1);
+                    assert!(!prepared.argv.iter().any(|arg| arg == "--strict-mcp-config"));
+                } else {
+                    for setting in [
+                        "mcp_servers.ws.command=\"/test/ws rs'bin\"".to_owned(),
+                        "mcp_servers.ws.args=[\"mcp\"]".to_owned(),
+                        format!("mcp_servers.ws.env.WS_SESSION_ID=\"{}\"", session.id),
+                        "mcp_servers.ws.env_vars=[\"WS_SOCK\"]".to_owned(),
+                    ] {
+                        assert!(
+                            prepared
+                                .argv
+                                .windows(2)
+                                .any(|pair| pair == ["-c", &setting]),
+                            "{setting}"
+                        );
+                    }
+                    assert!(
+                        !prepared
+                            .argv
+                            .iter()
+                            .any(|arg| arg.starts_with("mcp_servers="))
+                    );
+                }
+                assert_eq!(
+                    std::fs::read_to_string(&claude_config).unwrap(),
+                    claude_contents
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&codex_config).unwrap(),
+                    codex_contents
+                );
+            }
+        }
+    }
 }

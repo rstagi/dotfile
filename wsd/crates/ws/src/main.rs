@@ -211,7 +211,15 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("ws: {error}");
+            let diagnostic = client::error_json(error.as_ref());
+            if matches!(
+                diagnostic["error"]["code"].as_str(),
+                Some("max_children_exceeded" | "max_depth_exceeded")
+            ) {
+                eprintln!("{diagnostic}");
+            } else {
+                eprintln!("ws: {error}");
+            }
             ExitCode::FAILURE
         }
     }

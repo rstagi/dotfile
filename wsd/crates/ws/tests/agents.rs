@@ -506,6 +506,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
             assert!(sandbox.home.path().join(".grok/hooks/ws.json").is_file());
         }
         let id = session["id"].as_str().unwrap();
+        assert_mcp_registration(&args, agent, id);
         let rows = rows.replace(
             &format!("\t{agent}\t\t{id}"),
             &format!("\t{agent}\tresume-{agent}\t{id}"),
@@ -518,6 +519,8 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         let (resumed, running) = sandbox.capture();
         agents.push(running);
         assert_eq!(resumed["id"], id);
+        let resumed_args: Vec<String> = serde_json::from_value(resumed["argv"].clone()).unwrap();
+        assert_mcp_registration(&resumed_args, agent, id);
         let args = resumed["argv"].as_array().unwrap();
         assert!(args.windows(2).any(|p| p
             == [
@@ -773,9 +776,71 @@ fn split_panes_cannot_prepare_or_finish_the_windows_agent() {
     assert!(fs::read_to_string(sandbox.slots()).unwrap().contains(id));
 }
 
+#[test]
+fn interactive_spawn_limits_preserve_slots_and_allow_existing_sessions_to_resume() {
+    for (setting, message) in [
+        ("max_children", "child limit"),
+        ("max_depth", "depth limit"),
+    ] {
+        let sandbox = Sandbox::with_config(&format!("[limits]\n{setting} = 0\n"));
+        let repo = sandbox.repo();
+        assert!(
+            sandbox
+                .output(&[
+                    "new",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--branch",
+                    "feature",
+                    "--detach"
+                ])
+                .status
+                .success()
+        );
+        let (owner, _running) = sandbox.capture();
+        let id = owner["id"].as_str().unwrap();
+        let slots = fs::read_to_string(sandbox.slots()).unwrap();
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .args(["add", "api/feature", "--detach"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(message),
+            "{output:?}"
+        );
+        assert_eq!(fs::read_to_string(sandbox.slots()).unwrap(), slots);
+        assert_eq!(
+            sandbox
+                .json(&["sessions", "--json"])
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        sandbox.tmux(&["kill-window", "-t", &sandbox.window(id)]);
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .args(["open", id, "--detach"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let (resumed, _running) = sandbox.capture();
+        assert_eq!(resumed["id"], id);
+    }
+}
+
 impl Sandbox {
     fn new() -> Self {
+        Self::with_config("")
+    }
+    fn with_config(config: &str) -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
+        fs::create_dir(home.path().join("state")).unwrap();
+        fs::write(home.path().join("state/config.toml"), config).unwrap();
         let socket = home.path().join("wsd.sock");
         let server = format!(
             "ws-agents-{}-{}",
@@ -999,4 +1064,26 @@ fn git(path: &Path, args: &[&str]) -> String {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     String::from_utf8(out.stdout).unwrap().trim_end().into()
+}
+
+fn assert_mcp_registration(args: &[String], agent: &str, id: &str) {
+    if agent == "claude" {
+        let index = args.iter().position(|arg| arg == "--mcp-config").unwrap();
+        let config: Value = serde_json::from_slice(&fs::read(&args[index + 1]).unwrap()).unwrap();
+        assert_eq!(
+            config["mcpServers"]["ws"]["command"],
+            env!("CARGO_BIN_EXE_ws")
+        );
+        assert_eq!(config["mcpServers"]["ws"]["args"], json!(["mcp"]));
+        assert_eq!(config["mcpServers"]["ws"]["env"]["WS_SESSION_ID"], id);
+    } else if agent == "codex" {
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-c", "mcp_servers.ws.args=[\"mcp\"]"])
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == &format!("mcp_servers.ws.env.WS_SESSION_ID=\"{id}\""))
+        );
+    }
 }

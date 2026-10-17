@@ -44,6 +44,16 @@ fn prepare_prints_the_shared_contract_and_materializes_private_files_without_a_d
             }
             if agent == "claude" {
                 assert_eq!(prepared.argv[0], "-p");
+                let index = prepared
+                    .argv
+                    .iter()
+                    .position(|arg| arg == "--mcp-config")
+                    .unwrap();
+                let mcp: Value =
+                    serde_json::from_slice(&fs::read(&prepared.argv[index + 1]).unwrap()).unwrap();
+                assert_eq!(mcp["mcpServers"]["ws"]["command"], env!("CARGO_BIN_EXE_ws"));
+                assert_eq!(mcp["mcpServers"]["ws"]["args"], serde_json::json!(["mcp"]));
+                assert_eq!(mcp["mcpServers"]["ws"]["env"]["WS_SESSION_ID"], id);
                 let settings = &prepared.argv[prepared
                     .argv
                     .iter()
@@ -60,6 +70,18 @@ fn prepare_prints_the_shared_contract_and_materializes_private_files_without_a_d
                 );
             } else if agent == "codex" {
                 assert_eq!(prepared.argv[0], "exec");
+                assert!(
+                    prepared
+                        .argv
+                        .windows(2)
+                        .any(|pair| pair == ["-c", "mcp_servers.ws.args=[\"mcp\"]"])
+                );
+                assert!(
+                    prepared
+                        .argv
+                        .iter()
+                        .any(|arg| arg == &format!("mcp_servers.ws.env.WS_SESSION_ID=\"{id}\""))
+                );
             } else {
                 assert!(home.path().join(".grok/hooks/ws.json").is_file());
             }
@@ -122,7 +144,7 @@ fn shell_output_preserves_quoting_and_the_claude_print_prompt_order() {
         let args = captured["argv"].as_array().unwrap();
         assert_eq!(args[0], "claude");
         let files = shell_words::split(args[1].as_str().unwrap()).unwrap();
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 2);
         assert!(std::path::Path::new(&files[0]).is_file());
         assert_eq!(args[2], "-p");
         assert_eq!(args[3], "Return 'READY'\nThen stop. $(false)");

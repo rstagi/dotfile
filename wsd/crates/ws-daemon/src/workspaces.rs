@@ -529,6 +529,9 @@ impl Sessions {
         context: LaunchContext<'_>,
     ) -> Result<Value> {
         let LaunchContext { resume, run, spawn } = context;
+        if resume.is_none() {
+            self.check_spawn_limits(parent_session_id)?;
+        }
         let existing = self
             .registry
             .workspaces()?
