@@ -32,6 +32,8 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
     assert_eq!(
         names,
         [
+            "loop_start",
+            "loop_stop",
             "phase_spawn",
             "session_block_on",
             "session_create",
@@ -692,4 +694,36 @@ async fn spawn_limit_errors_match_in_the_cli_and_mcp_without_starting_children()
         );
         server.finish().await;
     }
+}
+
+#[tokio::test]
+async fn loop_stop_matches_the_json_cli_and_rejects_a_forged_caller() {
+    let server = TestServer::start().await;
+    let directory = server.home.path().join("coordinator/.loop");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("state.json"), r#"{"runId":"mcp-loop"}"#).unwrap();
+    let result = server
+        .call("loop_stop", json!({"loop_dir":directory}))
+        .await;
+    assert_eq!(result["paused"], true);
+    assert_eq!(result["run_id"], "mcp-loop");
+    assert_eq!(
+        result,
+        server.cli(&["loop", "stop", directory.to_str().unwrap(), "--json"])
+    );
+    let forged = server
+        .client
+        .call_tool(
+            CallToolRequestParams::new("loop_stop").with_arguments(
+                json!({"loop_dir":directory,"parent_session_id":server.parent})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forged.is_error, Some(true));
+    server.assert_audit("loop.stop");
+    server.finish().await;
 }

@@ -91,3 +91,10 @@ pub struct Spawn {
     /// Maximum process runtime in seconds.
     pub max_runtime: u64,
 }
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Loop {
+    /// Directory that contains the Loop state.json file.
+    pub loop_dir: PathBuf,
+}

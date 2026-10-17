@@ -240,6 +240,8 @@ The tools return the daemon JSON in both text and structured content.
 | `session_depends_on` | `ws session depends-on <target> <dependency> --json` |
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
 | `wait` | `ws wait <target> --for <condition> [--timeout <seconds>] --json` |
+| `loop_start` | `ws loop start <loop_dir> --json` |
+| `loop_stop` | `ws loop stop <loop_dir> --json` |
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
@@ -248,6 +250,20 @@ It replaces invalid UTF-8 bytes and enforces the limit after decoding. JSON tail
 `GET /v1/sessions/{id}/tail` accepts `stream`, `max_bytes`, and `parent_session_id` as query parameters.
 Phase spawn requires `$WS_SESSION_ID`. Repeat `--caps-required <capability>` to record required capabilities.
 Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox daemon.
+
+`ws top` opens `loop-top.mjs` for the current session. It checks the live loop state's
+`wsSession` against the session and its parents. It uses the session's worktree when no link matches.
+`--once`, `--worktrees`, and `--graph` pass to the dashboard.
+
+`POST /v1/loops/start` and `POST /v1/loops/stop` accept `loop_dir` and optional `parent_session_id`.
+The API requires an absolute directory with a `state.json` file and a nonempty `runId`.
+The CLI and MCP resolve relative directories from their current directory.
+Start runs `loop-orchestrator.sh` as a detached headless session, with the existing `sub/prompt-seed.md` when present.
+It records `wsSession` and `sub/orch.pid`. It rejects an active orchestrator or a pending milestone merge.
+Stop writes `control/pause`, which pauses the orchestrator and its phase runners.
+Use the dashboard's `X` control to resume the loop.
+Loop scripts default to `~/dotfile/`. `LOOP_ORCHESTRATOR_SH` and `LOOP_TOP_MJS` override the script paths.
+Set the orchestrator override in the daemon environment. Set the dashboard override in the CLI environment.
 
 The daemon reads spawn limits from `$WS_STATE/config.toml` when it starts:
 

@@ -23,6 +23,7 @@ pub mod edges;
 pub mod hooks;
 pub mod import;
 pub mod limits;
+pub mod loops;
 pub mod notify;
 pub mod phases;
 pub mod sessions;
