@@ -93,7 +93,7 @@ docs/ws-v6/             WS v6 architecture and spike reports, scripts, tests, an
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
 ```
 
-**Terminal workspaces (`ws`):** `ws/ws.sh` selects Rust when `$WS_HOME/backend` is absent.
+**Terminal workspaces (`ws`):** `ws/ws.sh` selects Rust when `$WS_HOME/backend` is absent and the Rust binary exists. Without the binary, it selects zsh.
 It executes `${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}`. Rust state uses `$WS_STATE` (default `~/.ws/state`).
 The daemon socket uses `$WS_SOCK` (default `~/.ws/wsd.sock`).
 The first daemon start imports existing `$WS_HOME/sessions` when Rust has no session logs.

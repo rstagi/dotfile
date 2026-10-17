@@ -22,7 +22,14 @@ export WS_NOTIFY=0 WS_TMUX_SOCKET="loop-ws-test-$$"
 export LOOP_WS_SESSIONS=1
 export LOOP_JEV_MODE=off LOOP_JEV_KEY_FILE="$TMP/no-key"
 mkdir -p "$TMP/bin" "$TMP/work tree"
-start_ws_test_daemon || exit 1
+# A fake launchctl records any daemon autostart during the readiness probe.
+cat > "$TMP/bin/launchctl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> ${(q)TMP}/launchctl.calls
+EOF
+chmod +x "$TMP/bin/launchctl"
+PATH="$TMP/bin:$PATH" start_ws_test_daemon || exit 1
+assert_eq "$([[ -e "$TMP/launchctl.calls" ]] && print called)" "" "the readiness probe does not autostart a daemon"
 ln -s "$WS_RUST_BIN" "$TMP/bin/ws"
 export PATH="$TMP/bin:$HERE/fake:$PATH"
 export FAKE_CODEX_OUTCOME=done FAKE_CODEX_SESSION=engine-session

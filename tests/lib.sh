@@ -61,14 +61,16 @@ test_summary() {
   exit 1
 }
 
-# Start a private Rust daemon. The caller must stop WS_TEST_DAEMON_PID on exit.
+# Start a private Rust daemon on $WS_SOCK. The caller must stop WS_TEST_DAEMON_PID on exit.
+# The probe pings only after the socket exists: `ws ping` autostarts a daemon when the socket is missing.
 start_ws_test_daemon() {
   WS_RUST_BIN="$ROOT/wsd/target/debug/ws"
   [[ -x "$WS_RUST_BIN" ]] || { print -u2 -- "Missing Rust binary: $WS_RUST_BIN. Run cargo build in wsd."; return 1; }
+  [[ -n "${WS_SOCK:-}" ]] || { print -u2 -- "Set WS_SOCK to a private socket before the test daemon starts."; return 1; }
   "$WS_RUST_BIN" daemon > "$TMP/ws-daemon.log" 2>&1 &
   WS_TEST_DAEMON_PID=$!
   local deadline=$(( SECONDS + 30 ))
-  until "$WS_RUST_BIN" ping >/dev/null 2>&1; do
+  until [[ -S "$WS_SOCK" ]] && "$WS_RUST_BIN" ping >/dev/null 2>&1; do
     if ! kill -0 "$WS_TEST_DAEMON_PID" 2>/dev/null || (( SECONDS >= deadline )); then
       cat "$TMP/ws-daemon.log" >&2
       return 1

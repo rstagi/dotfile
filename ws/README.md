@@ -109,7 +109,8 @@ Run `zsh ws/tests/run.sh`, or select `core`, `send`, `triggers` or `misc`.
 It builds `wsd/` with `cargo build --release` and copies the binary to `$WS_HOME/bin/ws-rs` (default `~/.ws/bin/ws-rs`).
 Both `$WS_HOME/bin/ws` and `~/.local/bin/ws` point to the shell dispatcher.
 The installer registers `~/Library/LaunchAgents/com.rstagi.wsd.plist` with `RunAtLoad` and `KeepAlive`.
-The agent runs `$WS_HOME/bin/ws-rs daemon`. It retains the installer's `HOME`, `PATH`, `WS_HOME`, `WS_STATE` and `WS_SOCK`.
+The agent runs `$WS_HOME/bin/ws-rs daemon`. It retains the installer's `HOME`, `PATH`, `WS_HOME`, `WS_STATE`, `WS_SOCK`, `WS_ROOT` and `WS_TMUX_SOCKET`.
+`WS_ROOT` defaults to `~/.ws/worktrees`. An empty `WS_TMUX_SOCKET` selects the default tmux server.
 Its output goes to `$WS_HOME/daemon.log`. Run `./install.sh --dry-run ws` to preview each step without changes.
 
 A Rust CLI request starts a background daemon when its socket is missing and launchd does not own `com.rstagi.wsd`.
@@ -117,7 +118,8 @@ Concurrent starts share a startup lock. A failed start reports the log path besi
 Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
 
 `ws backend rust` selects Rust through `$WS_HOME/backend`. The dispatcher uses `$WS_HOME/bin/ws-rs`.
-`WS_RUST_BIN` overrides the binary path for tests. An absent selector selects Rust.
+`WS_RUST_BIN` overrides the binary path for tests. An absent selector selects Rust when `WS_RUST_BIN` is set or `$WS_HOME/bin/ws-rs` is executable.
+An absent selector without the Rust binary selects zsh. In this state `ws backend zsh` writes the selector, and `ws backend rust` fails until `./install.sh ws` installs the binary.
 `ws backend zsh` restores zsh and reports how many Rust-only sessions it cannot reach.
 Both commands hold a switch lock. Rust suppresses message injection and automatic trigger actions while zsh is selected.
 Returning to Rust imports new zsh sessions, pending messages and triggers without changing existing Rust session IDs.
@@ -394,7 +396,7 @@ It retains prompt, turn and tool identifiers. Receipt times remain separate from
 The daemon records callbacks before it reduces the window state. Repeated `working` callbacks stay separate log events.
 The window options retain the zsh sequence, turn and background subagent rules. A blocked Stop keeps its turn active.
 A failed transport writes the callback to `$WS_STATE/spool/`. The daemon replays pending callbacks at startup.
-Every hook exits 0. Stop returns its decision as JSON. Each tmux command has a 100 ms deadline.
+Every hook exits 0. Stop returns its decision as JSON. Each tmux command that the daemon runs for a hook has a 2 s deadline.
 The Rust daemon sends the same desktop notification events through terminal-notifier, osascript, boringnotch, or a custom adapter.
 Hooks retain their notification settings, including `WS_NOTIFY=0`, when the daemon replays their spool records.
 Built-in banners and sounds require an unfocused tab in `idle` or `waiting`. Custom adapters and boringnotch receive every state transition.
@@ -402,8 +404,10 @@ Built-in banners and sounds require an unfocused tab in `idle` or `waiting`. Cus
 `ws _build-notifier` creates the branded `$WS_HOME/ws.app` from `WS_NOTIFIER_SOURCE`.
 Run `cd wsd && cargo test -p ws --test notifications` to check adapters with fake commands in a private HOME.
 Run `zsh wsd/crates/ws/tests/golden/notify-capture.zsh` to regenerate the zsh notification fixture.
-Run `cd wsd && cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to check hooks and latency.
-The tests check p95 below 50 ms for the full ingest path and the daemon-down spool path.
+Run `cd wsd && cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to check hooks and measure latency.
+This run prints the p95 values of the full ingest path and the daemon-down spool path. It does not assert them.
+Run `cd wsd && WS_ASSERT_LATENCY=1 cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to assert both p95 values below 50 ms.
+Use the assertion only on an idle machine. Parallel loads increase scheduler latency above the limit.
 Run `zsh wsd/crates/ws/tests/golden/hook-capture.zsh` to regenerate the zsh hook state fixture.
 Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.
 The tests use fake agents and private tmux servers. Preparation tests also compare the existing zsh builders.

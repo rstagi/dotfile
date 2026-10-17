@@ -447,7 +447,8 @@ install_ws() {
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$HOME/dotfile/ws/ws.sh" "$HOME/.local/bin/ws"
   # Upgrades: re-point existing agent hook files (Claude settings, global Grok hooks) at this ws
-  "$HOME/dotfile/ws/ws.sh" _migrate-hooks || echo "ws: could not re-point agent hooks (run: ws _migrate-hooks)"
+  # Sourced: the zsh hooks_migrate runs even when the selector execs the Rust backend.
+  zsh -c 'source "$1" && hooks_migrate --force' ws "$HOME/dotfile/ws/ws.sh" || echo "ws: could not re-point agent hooks (run: ws _migrate-hooks)"
   # Grok Build: optional third agent, never a hard dep (it sends repo content to xAI)
   if ! command -v grok &> /dev/null && read_yes "Install Grok Build (optional ws agent; sends code to xAI)?"; then
     install_grok
@@ -460,9 +461,12 @@ install_ws_daemon() {
   local plist="$HOME/Library/LaunchAgents/$label.plist" uid content key value escaped
   uid="$(id -u)"
   content="$(cat "$HOME/dotfile/wsd/launchd/$label.plist")" || return 1
-  for key in WS_HOME WS_STATE WS_SOCK HOME PATH; do
+  # WS_ROOT locates workspaces. An empty WS_TMUX_SOCKET selects the default tmux server.
+  for key in WS_HOME WS_STATE WS_SOCK WS_ROOT WS_TMUX_SOCKET HOME PATH; do
     case "$key" in
       WS_HOME) value="$ws_home" ;;
+      WS_ROOT) value="${WS_ROOT:-$HOME/.ws/worktrees}" ;;
+      WS_TMUX_SOCKET) value="${WS_TMUX_SOCKET:-}" ;;
       WS_STATE) value="${WS_STATE:-$HOME/.ws/state}" ;;
       WS_SOCK) value="${WS_SOCK:-$HOME/.ws/wsd.sock}" ;;
       HOME) value="$HOME" ;;
