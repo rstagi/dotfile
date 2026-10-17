@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
@@ -21,10 +21,7 @@ pub struct Device {
 impl Device {
     /// Creates the identity atomically, or returns the existing identity.
     pub fn init(state: &Path, hostname: &str) -> io::Result<Self> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(state)?;
+        crate::create_state_directory(state)?;
         // Keep the lock inode stable across initializations.
         let lock = OpenOptions::new()
             .create(true)

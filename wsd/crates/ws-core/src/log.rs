@@ -1,9 +1,9 @@
 //! Durable JSON Lines storage for one session.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{File, OpenOptions},
     io::{self, BufRead, BufReader, Seek, SeekFrom, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -64,10 +64,8 @@ impl SessionLog {
     /// A crash tail is removed under the writer lock before the next append.
     /// Hashes use RFC 8785. Store integers outside the exact JSON range as strings.
     pub fn append(&self, epoch: u64, event_type: &str, body: Value) -> io::Result<LogEntry> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(self.path.parent().unwrap())?;
+        let directory = self.path.parent().unwrap();
+        crate::create_state_directory(directory)?;
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -114,6 +112,7 @@ impl SessionLog {
         file.seek(SeekFrom::Start(previous.valid_bytes))?;
         file.write_all(&bytes)?;
         file.sync_all()?;
+        File::open(directory)?.sync_all()?;
         Ok(entry)
     }
 
@@ -223,6 +222,7 @@ mod tests {
     use super::*;
     use crate::ids::Ulid;
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn preserves_float_bodies_and_their_hashes_after_reopening() {
@@ -441,6 +441,7 @@ mod tests {
 mod chain_tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn detects_changes_to_the_stored_identifier_spelling() {
