@@ -38,6 +38,7 @@ pub struct LogRead {
     /// The one-based line number of an incomplete final record.
     pub truncated_line: Option<usize>,
     valid_bytes: u64,
+    head_hash: String,
 }
 
 #[derive(Clone, Debug)]
@@ -92,12 +93,7 @@ impl SessionLog {
             session_id: self.session_id,
             epoch,
             seq: previous.entries.len() as u64 + 1,
-            prev_hash: previous
-                .entries
-                .last()
-                .map(entry_hash)
-                .transpose()?
-                .unwrap_or_default(),
+            prev_hash: previous.head_hash,
             ts_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(io::Error::other)?
@@ -137,7 +133,6 @@ impl SessionLog {
 
 fn read_file(file: &mut File, session_id: SessionId) -> io::Result<LogRead> {
     let mut result = LogRead::default();
-    let mut expected_hash = String::new();
     let mut epoch = 0;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
@@ -161,7 +156,7 @@ fn read_file(file: &mut File, session_id: SessionId) -> io::Result<LogRead> {
             Some("session_id does not match the log")
         } else if entry.seq != number as u64 {
             Some("seq is not consecutive")
-        } else if entry.prev_hash != expected_hash {
+        } else if entry.prev_hash != result.head_hash {
             Some("prev_hash does not match the previous entry")
         } else if entry.epoch < epoch {
             Some("epoch decreased")
@@ -174,7 +169,9 @@ fn read_file(file: &mut File, session_id: SessionId) -> io::Result<LogRead> {
                 format!("Invalid log entry {number} ({}): {reason}.", entry.event_id),
             ));
         }
-        expected_hash = entry_hash(&entry).map_err(|error| {
+        // Hash the stored JSON. Typed ULIDs normalize their spelling during serialization.
+        let value: Value = serde_json::from_slice(&line)?;
+        result.head_hash = entry_hash(&value).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Invalid log entry {number} ({}): {error}", entry.event_id),
@@ -187,8 +184,8 @@ fn read_file(file: &mut File, session_id: SessionId) -> io::Result<LogRead> {
     Ok(result)
 }
 
-fn entry_hash(entry: &LogEntry) -> io::Result<String> {
-    validate_numbers(&serde_json::to_value(entry)?)?;
+fn entry_hash(entry: &Value) -> io::Result<String> {
+    validate_numbers(entry)?;
     let canonical = serde_json_canonicalizer::to_vec(entry)?;
     Ok(format!("{:x}", Sha256::digest(canonical)))
 }
@@ -444,6 +441,27 @@ mod tests {
 mod chain_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn detects_changes_to_the_stored_identifier_spelling() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let session: SessionId = "01ARZ3NDEKTSV4RRFFQ69G5FAX".parse().unwrap();
+        let log = SessionLog::new(sandbox.path(), session, Ulid::new());
+        log.append(0, "session.created", json!({})).unwrap();
+        log.append(0, "session.started", json!({})).unwrap();
+        let path = sandbox
+            .path()
+            .join("sessions")
+            .join(session.to_string())
+            .join("log.jsonl");
+        let text = fs::read_to_string(&path)
+            .unwrap()
+            .replace(&session.to_string(), &session.to_string().to_lowercase());
+        fs::write(path, text).unwrap();
+        let error = log.read().unwrap_err().to_string();
+        assert!(error.contains("entry 2"), "{error}");
+        assert!(error.contains("prev_hash"), "{error}");
+    }
 
     #[test]
     fn hashes_canonical_json_and_reports_the_first_broken_link() {
