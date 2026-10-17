@@ -16,6 +16,7 @@ use ws_core::{
 
 use crate::sessions::Sessions;
 
+mod locks;
 mod snapshot;
 
 use snapshot::snapshot;
@@ -48,7 +49,7 @@ pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> 
     }
     let mut plan = match stored {
         Some(plan) => plan,
-        None => snapshot(&source)?,
+        None => snapshot(&source, dry_run)?,
     };
     if dry_run {
         return Ok(plan);

@@ -1,6 +1,6 @@
 //! Reads legacy artifacts before the destination changes.
 
-use super::Plan;
+use super::{Plan, locks::Locks};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fs, io, path::Path};
@@ -34,8 +34,27 @@ pub struct EventMapping {
     pub seq: u64,
 }
 
-pub(super) fn snapshot(source: &Path) -> io::Result<Plan> {
+pub(super) fn snapshot(source: &Path, dry_run: bool) -> io::Result<Plan> {
     let directory = source.join("sessions");
+    let mut locks = Locks::default();
+    locks.acquire(&directory.join("counter.lock"), dry_run)?;
+    locks.acquire(&directory.join("names.lock"), dry_run)?;
+    let mut directories = fs::read_dir(&directory)?.collect::<io::Result<Vec<_>>>()?;
+    directories.retain(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .parse::<i64>()
+            .is_ok_and(|alias| alias > 0)
+            && entry.file_type().is_ok_and(|kind| kind.is_dir())
+    });
+    directories.sort_by_key(|entry| entry.file_name());
+    // zsh completion takes output, then inbox, then meta. Names precede meta.
+    for artifact in ["output", "inbox", "meta", "events"] {
+        for entry in &directories {
+            locks.acquire(&entry.path().join(format!("{artifact}.lock")), dry_run)?;
+        }
+    }
     let counter = match optional(&directory.join("counter"))? {
         Some(bytes) => std::str::from_utf8(&bytes)
             .map_err(io::Error::other)?
@@ -49,8 +68,7 @@ pub(super) fn snapshot(source: &Path) -> io::Result<Plan> {
         .filter(|floor| *floor > 0 && *floor < (1 << 53))
         .ok_or_else(|| io::Error::other("The zsh session counter is invalid."))?;
     let mut sessions = Vec::new();
-    for entry in fs::read_dir(&directory)? {
-        let entry = entry?;
+    for entry in directories {
         let Ok(alias) = entry.file_name().to_string_lossy().parse::<i64>() else {
             continue;
         };
@@ -109,6 +127,7 @@ pub(super) fn snapshot(source: &Path) -> io::Result<Plan> {
         });
     }
     sessions.sort_by_key(|session| session.alias);
+    locks.finish()?;
     Ok(Plan {
         source: source.into(),
         alias_floor,

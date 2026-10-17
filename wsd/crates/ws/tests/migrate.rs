@@ -4,6 +4,72 @@ use serde_json::json;
 use ws_core::{device::Device, log::SessionLog};
 use ws_daemon::sessions::{CreateSession, Sessions};
 
+struct LockHolder(std::process::Child);
+
+#[test]
+fn respects_zsh_fcntl_locks_before_reading_the_snapshot() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let source = root.path().join("legacy");
+    let state = root.path().join("state");
+    fs::create_dir_all(source.join("sessions/1")).unwrap();
+    fs::write(source.join("sessions/counter"), "1\n").unwrap();
+    fs::write(
+        source.join("sessions/1/meta"),
+        json!({"id":"1", "status":"active"}).to_string(),
+    )
+    .unwrap();
+    for name in [
+        "counter", "names", "1/output", "1/inbox", "1/meta", "1/events",
+    ] {
+        let path = source.join(format!("sessions/{name}.lock"));
+        fs::write(&path, "").unwrap();
+        let _holder = LockHolder::new(&path);
+        let output = migrate(root.path(), &source, &state);
+        assert!(
+            !output.status.success(),
+            "The import ignored {name}: {output:?}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("zsh state is busy"), "{error}");
+        assert!(error.contains(&format!("{name}.lock")), "{error}");
+        assert!(!state.exists());
+    }
+    let output = migrate(root.path(), &source, &state);
+    assert!(output.status.success(), "{output:?}");
+}
+
+impl LockHolder {
+    fn new(path: &Path) -> Self {
+        use std::{
+            io::{BufRead, BufReader},
+            process::Stdio,
+            time::Duration,
+        };
+        let mut child = Command::new("zsh").args(["-fc", "zmodload zsh/system; zsystem flock -t 0 \"$1\" || exit 1; print ready; read -r release", "lock-holder"])
+            .arg(path).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let holder = Self(child);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).unwrap();
+            let _ = sender.send(line);
+        });
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(30)).unwrap(),
+            "ready\n"
+        );
+        holder
+    }
+}
+
+impl Drop for LockHolder {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn imports_all_artifacts_and_requeues_interrupted_stop_and_unconfirmed_paste() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
