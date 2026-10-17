@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -7,6 +7,8 @@ import path from "node:path";
 
 const SKILL = path.join(import.meta.dirname, "..", ".claude", "skills", "visual-explainer");
 const CLI = path.join(SKILL, "scripts", "render.mjs");
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "visual-explainer-"));
+after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 const shipProps = (over = {}) => ({
   mode: "ship",
@@ -62,7 +64,7 @@ const planProps = (over = {}) => ({
 });
 
 function render(props, { args = [] } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "visual-explainer-"));
+  const dir = fs.mkdtempSync(path.join(TMP, "case-"));
   const propsFile = path.join(dir, "props.json");
   fs.writeFileSync(propsFile, typeof props === "string" ? props : JSON.stringify(props));
   const out = path.join(dir, "out");

@@ -73,13 +73,13 @@
       "reason": "`./install.sh ws` starts the daemon (`install.sh:483`), and the daemon imports the zsh state at its first start (`wsd/crates/ws-daemon/src/lib.rs:76`). After that, a dry run only returns the stored plan (`import/mod.rs:84`)."
     },
     {
-      "planned": "Phase 19: a test keeps the hook-ingest p95 under 50 ms in every Verify run.",
-      "actual": "The p95 assertions run only with `WS_ASSERT_LATENCY` (Phases 21 and 32).",
+      "planned": "Phase 19: a test measures the hook-ingest latency, and its p95 stays under 50 ms.",
+      "actual": "The p95 assertions run only when `WS_ASSERT_LATENCY` is set (Phases 21 and 32).",
       "reason": "The repository Verify failed at random under load (Phase 21 HIL). The final review found the gates still inconsistent (F6, F7)."
     },
     {
-      "planned": "The review rounds fix every major finding before the merge gate.",
-      "actual": "F4 stays open. Phase 71 in milestone 3 fixes it.",
+      "planned": "Milestone 3 has no phase for the milestone 2 review findings.",
+      "actual": "Phase 71 joins milestone 3 to fix F4.",
       "reason": "`ws new --agent` can fail under load with `can't find window: @N`. A retry works, so the fix waits for milestone 3."
     }
   ],

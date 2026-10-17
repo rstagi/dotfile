@@ -564,7 +564,7 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    `.loop/explainers/m<N>-plan/`, where N is the new milestone.
    - Skip this step when `link.txt` already exists there.
    - Spawn one detached explainer runner after the respawn. Do not wait for it here.
-   - At each step-3b poll, look for its `meta.json`. Then render, publish and write
+   - At each later poll or tick, look for its `meta.json`. Then render, publish and write
      `link.txt`, as the skill tells you.
    - Notify once (`loop-notify.sh --level info --title "M<N> plan explainer"`) with the link
      (`--url`) or the failure.
