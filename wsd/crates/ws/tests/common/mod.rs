@@ -65,10 +65,18 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
     use std::os::unix::fs::PermissionsExt;
     let agents = home.join("fake-agents");
     std::fs::create_dir_all(&agents).unwrap();
-    for agent in ["claude", "codex", "grok"] {
+    for agent in ["claude", "codex", "grok", "launchctl"] {
         let path = agents.join(agent);
         if !path.exists() {
-            std::fs::write(&path, "#!/bin/sh\nexec /bin/cat\n").unwrap();
+            std::fs::write(
+                &path,
+                if agent == "launchctl" {
+                    "#!/bin/sh\nexit 0\n"
+                } else {
+                    "#!/bin/sh\nexec /bin/cat\n"
+                },
+            )
+            .unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
     }

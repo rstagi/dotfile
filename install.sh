@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws" "grok")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "rust" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws" "grok")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -16,7 +16,7 @@ get_dependencies() {
     "python") echo "pyenv pipx" ;;
     "ralph") echo "node" ;;
     "loop-web") echo "node" ;;
-    "ws") echo "tmux fzf neovim" ;;
+    "ws") echo "tmux fzf neovim rust" ;;
     "claude-config") echo "claude-code" ;;
     *) echo "" ;;
   esac
@@ -58,7 +58,7 @@ parse_arguments() {
   
   # Validate requested packages
   for package in "${REQUESTED_PACKAGES[@]}"; do
-    if [[ ! " ${AVAILABLE_PACKAGES[@]} " =~ " ${package} " ]]; then
+    if [[ ! " ${AVAILABLE_PACKAGES[*]} " == *" ${package} "* ]]; then
       echo "Error: Unknown package '$package'"
       echo "Use --list to see available packages"
       exit 1
@@ -76,8 +76,9 @@ install_prerequisites() {
     echo "brew could not be found"
     echo "Installing brew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    echo >> $HOME/.zprofile
-    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> $HOME/.zprofile
+    echo >> "$HOME"/.zprofile
+    # shellcheck disable=SC2016 # Write the command for the next shell.
+    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME"/.zprofile
     eval "$(/opt/homebrew/bin/brew shellenv)"
   else
     echo "brew is already installed"
@@ -98,17 +99,17 @@ setup_core() {
     echo "dotfile repo already exists"
   else
     echo "Cloning dotfile repo..."
-    git clone https://github.com/rstagi/dotfile.git $HOME/dotfile
+    git clone https://github.com/rstagi/dotfile.git "$HOME"/dotfile
   fi
 
   # Configuring git
   link_gitconfig() {
-    [ -f "$HOME/.gitconfig" ] && mv $HOME/.gitconfig $HOME/.gitconfig.bak
-    ln -s $HOME/dotfile/.gitconfig $HOME/.gitconfig
+    [ -f "$HOME/.gitconfig" ] && mv "$HOME"/.gitconfig "$HOME"/.gitconfig.bak
+    ln -s "$HOME"/dotfile/.gitconfig "$HOME"/.gitconfig
   }
   
   if [ "$INTERACTIVE_MODE" = true ]; then
-    read -p "Do you want to configure git with the proper dotfile? (y/n) " choice
+    read -r -p "Do you want to configure git with the proper dotfile? (y/n) " choice
     case "$choice" in
       y|Y|yes|YES ) link_gitconfig;;
       * ) echo "ok, skipping git configuration";;
@@ -122,15 +123,15 @@ setup_core() {
 
 # Utility functions
 is_already_installed() {
-  brew list | grep ^$1$ > /dev/null
+  brew list | grep -Fx "$1" > /dev/null
 }
 
 install_pkg() {
-  brew update && brew install $2 $1
+  brew update && brew install ${2:+"$2"} "$1"
 }
 
 read_yes() {
-  read -p "$1 (y/n) " choice
+  read -r -p "$1 (y/n) " choice
   case "$choice" in
     y|Y|yes|YES ) return 0;;
     * ) return 1;;
@@ -138,20 +139,20 @@ read_yes() {
 }
 
 install_pkg_if_needed() {
-  if is_already_installed $1; then
+  if is_already_installed "$1"; then
     echo "$1 is already installed"
     return 0
   else
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "$1 is not installed. Do you want to install it?"; then
-        install_pkg $1 $2
+        install_pkg "$1" "${2:-}" || return 1
         return 0
       else
         return 1
       fi
     else
       echo "Installing $1..."
-      install_pkg $1 $2
+      install_pkg "$1" "${2:-}" || return 1
       return 0
     fi
   fi
@@ -160,13 +161,14 @@ install_pkg_if_needed() {
 # Dependency resolution
 resolve_dependencies() {
   local package=$1
-  local deps=$(get_dependencies "$package")
+  local deps
+  deps=$(get_dependencies "$package")
   
   if [ -n "$deps" ]; then
     echo "Installing dependencies for $package: $deps"
     for dep in $deps; do
-      if [[ " ${AVAILABLE_PACKAGES[@]} " =~ " ${dep} " ]]; then
-        install_package $dep
+      if [[ " ${AVAILABLE_PACKAGES[*]} " == *" ${dep} "* ]]; then
+        install_package "$dep" || return 1
       else
         echo "Installing special dependency: $dep"
         case $dep in
@@ -184,7 +186,7 @@ install_package() {
   echo "=== Installing $package ==="
   
   # Resolve dependencies first
-  resolve_dependencies $package
+  resolve_dependencies "$package" || return 1
   
   case $package in
     "arc") install_pkg_if_needed "arc" "--cask" ;;
@@ -196,6 +198,7 @@ install_package() {
     "python") install_python ;;
     "gh") install_gh ;;
     "node") install_node ;;
+    "rust") install_rust ;;
     "terraform") install_terraform ;;
     "gcloud") install_gcloud ;;
     "kubectl") install_kubectl ;;
@@ -225,11 +228,11 @@ install_package() {
 install_fzf() {
   if [ "$INTERACTIVE_MODE" = true ]; then
     if read_yes "Do you want to setup fzf?"; then
-      $(brew --prefix)/opt/fzf/install
+      "$(brew --prefix)/opt/fzf/install"
     fi
   else
     echo "Configuring fzf..."
-    $(brew --prefix)/opt/fzf/install
+    "$(brew --prefix)/opt/fzf/install"
   fi
 }
 
@@ -245,8 +248,8 @@ install_zsh() {
     
     # Link .zshrc
     link_zshrc() {
-      [ -f "$HOME/.zshrc" ] && mv $HOME/.zshrc $HOME/.zshrc.bak
-      ln -s $HOME/dotfile/.zshrc $HOME/.zshrc
+      [ -f "$HOME/.zshrc" ] && mv "$HOME"/.zshrc "$HOME"/.zshrc.bak
+      ln -s "$HOME"/dotfile/.zshrc "$HOME"/.zshrc
     }
     
     if [ -f "$HOME/.zshrc" ]; then
@@ -272,7 +275,7 @@ install_python() {
     install_pkg_if_needed "pipx"
     configure_python() {
       brew update && brew upgrade pyenv
-      echo "source $HOME/dotfile/.zshrc_python_ext" >> $HOME/.zshrc_ext
+      echo "source $HOME/dotfile/.zshrc_python_ext" >> "$HOME"/.zshrc_ext
       export PYENV_ROOT="$HOME/.pyenv"
       command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
       eval "$(pyenv init -)"
@@ -293,7 +296,7 @@ install_gh() {
   if install_pkg_if_needed "gh"; then
     configure_gh() {
       TARGET_PATH="$(brew --prefix)/share/zsh/site-functions"
-      [ ! -f "$TARGET_PATH/_gh" ] && mkdir -p $TARGET_PATH && gh completion -s zsh > "$TARGET_PATH/_gh" && chmod +x "$TARGET_PATH/_gh"
+      [ ! -f "$TARGET_PATH/_gh" ] && mkdir -p "$TARGET_PATH" && gh completion -s zsh > "$TARGET_PATH/_gh" && chmod +x "$TARGET_PATH/_gh"
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure gh?"; then
@@ -310,9 +313,9 @@ install_node() {
   if install_pkg_if_needed "nvm"; then
     configure_node() {
       nvm install --latest 
-      echo "plugins+=(npm)" >> $HOME/.zshrc_additional_plugins
-      echo "plugins+=(node)" >> $HOME/.zshrc_additional_plugins
-      echo "source $HOME/dotfile/.zshrc_node_ext" >> $HOME/.zshrc_ext
+      echo "plugins+=(npm)" >> "$HOME"/.zshrc_additional_plugins
+      echo "plugins+=(node)" >> "$HOME"/.zshrc_additional_plugins
+      echo "source $HOME/dotfile/.zshrc_node_ext" >> "$HOME"/.zshrc_ext
       npm install --global yarn
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
@@ -326,12 +329,20 @@ install_node() {
   fi
 }
 
+install_rust() {
+  install_pkg_if_needed "rustup" || return 1
+  local rustup_bin
+  rustup_bin="$(brew --prefix rustup)/bin"
+  export PATH="$HOME/.cargo/bin:$rustup_bin:$PATH"
+  "$rustup_bin/rustup" default stable
+}
+
 install_terraform() {
   if install_pkg_if_needed "tfenv"; then
     configure_terraform() {
       tfenv install latest
       terraform -install-autocomplete
-      echo "source $HOME/dotfile/.zshrc_terraform_ext" >> $HOME/.zshrc_ext
+      echo "source $HOME/dotfile/.zshrc_terraform_ext" >> "$HOME"/.zshrc_ext
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure terraform?"; then
@@ -416,6 +427,15 @@ PLIST
 }
 
 install_ws() {
+  local ws_home="${WS_HOME:-$HOME/.ws}"
+  (cd "$HOME/dotfile/wsd" && cargo build --release) || return 1
+  mkdir -p "$ws_home/bin" || return 1
+  # Rename a fresh copy so an existing daemon can continue to use its executable.
+  cp "$HOME/dotfile/wsd/target/release/ws" "$ws_home/bin/ws-rs.new" || return 1
+  chmod +x "$ws_home/bin/ws-rs.new" || return 1
+  mv -f "$ws_home/bin/ws-rs.new" "$ws_home/bin/ws-rs" || return 1
+  ln -sfn "$HOME/dotfile/ws/ws.sh" "$ws_home/bin/ws" || return 1
+  install_ws_daemon || return 1
   install_pkg_if_needed "jq"
   install_pkg_if_needed "terminal-notifier"
   # Branded copy (own name + icon): allow "ws" in System Settings → Notifications
@@ -435,6 +455,31 @@ install_ws() {
   echo "ws installed — run 'ws' to open the workspace session"
 }
 
+install_ws_daemon() {
+  local ws_home="${WS_HOME:-$HOME/.ws}" label="com.rstagi.wsd"
+  local plist="$HOME/Library/LaunchAgents/$label.plist" uid content key value escaped
+  uid="$(id -u)"
+  content="$(cat "$HOME/dotfile/wsd/launchd/$label.plist")" || return 1
+  for key in WS_HOME WS_STATE WS_SOCK HOME PATH; do
+    case "$key" in
+      WS_HOME) value="$ws_home" ;;
+      WS_STATE) value="${WS_STATE:-$HOME/.ws/state}" ;;
+      WS_SOCK) value="${WS_SOCK:-$HOME/.ws/wsd.sock}" ;;
+      HOME) value="$HOME" ;;
+      PATH) value="$PATH" ;;
+    esac
+    escaped="$(printf '%s' "$value" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
+    content="${content//@$key@/$escaped}"
+  done
+  mkdir -p "$HOME/Library/LaunchAgents" "$ws_home" || return 1
+  printf '%s\n' "$content" > "$plist" || return 1
+  launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+  launchctl enable "gui/$uid/$label" || return 1
+  launchctl bootstrap "gui/$uid" "$plist" || return 1
+  launchctl kickstart "gui/$uid/$label" || return 1
+  echo "ws: installed $plist"
+}
+
 install_grok() {
   if command -v grok &> /dev/null; then
     echo "grok is already installed"
@@ -447,8 +492,8 @@ install_grok() {
 install_gcloud() {
   if install_pkg_if_needed "google-cloud-sdk"; then
     configure_gcloud() {
-      echo "plugins+=(gcloud)" >> $HOME/.zshrc_additional_plugins
-      echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> $HOME/.zshrc_ext
+      echo "plugins+=(gcloud)" >> "$HOME"/.zshrc_additional_plugins
+      echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> "$HOME"/.zshrc_ext
       gcloud auth login --update-adc --enable-gdrive-access
       gcloud auth application-default login
       gcloud_installed=true
@@ -470,7 +515,7 @@ install_kubectl() {
       brew update && brew install krew
       kubectl krew install ctx
       kubectl krew install ns
-      echo "source $HOME/dotfile/.zshrc_k8s_ext" >> $HOME/.zshrc_ext
+      echo "source $HOME/dotfile/.zshrc_k8s_ext" >> "$HOME"/.zshrc_ext
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure kubectl?"; then
@@ -489,10 +534,10 @@ install_docker() {
       # Install docker-buildx
       brew install docker-buildx
       mkdir -p ~/.docker/cli-plugins
-      ln -sfn $(which docker-buildx) ~/.docker/cli-plugins/docker-buildx
+      ln -sfn "$(command -v docker-buildx)" ~/.docker/cli-plugins/docker-buildx
 
       # Extend zshrc
-      echo "source $HOME/dotfile/.zshrc_docker_ext" >> $HOME/.zshrc_ext
+      echo "source $HOME/dotfile/.zshrc_docker_ext" >> "$HOME"/.zshrc_ext
 
       if [ "$gcloud_installed" = "true" ]; then
         gcloud auth configure-docker
@@ -513,7 +558,7 @@ install_tmux() {
   if install_pkg_if_needed "tmux"; then
     configure_tmux() {
       git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-      ln -s $HOME/dotfile/.tmux.conf $HOME/.tmux.conf
+      ln -s "$HOME"/dotfile/.tmux.conf "$HOME"/.tmux.conf
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure tmux?"; then
@@ -529,15 +574,15 @@ install_tmux() {
 install_neovim() {
   if install_pkg_if_needed "neovim"; then
     configure_neovim() {
-      echo "source $HOME/dotfile/.zshrc_vim_ext" >> $HOME/.zshrc_ext
+      echo "source $HOME/dotfile/.zshrc_vim_ext" >> "$HOME"/.zshrc_ext
 
       # Setup LazyVim config by symlinking from dotfile repo
-      mkdir -p $HOME/.config
+      mkdir -p "$HOME"/.config
       if [ -d "$HOME/.config/nvim" ] || [ -L "$HOME/.config/nvim" ]; then
         echo "Backing up existing nvim config..."
-        mv $HOME/.config/nvim $HOME/.config/nvim.bak
+        mv "$HOME"/.config/nvim "$HOME"/.config/nvim.bak
       fi
-      ln -s $HOME/dotfile/nvim $HOME/.config/nvim
+      ln -s "$HOME"/dotfile/nvim "$HOME"/.config/nvim
       echo "LazyVim config linked. Plugins will install on first nvim launch."
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
@@ -763,11 +808,7 @@ main() {
     if [ "$DRY_RUN" = true ]; then
       echo "=== DRY RUN: Would install requested packages ==="
       for package in "${REQUESTED_PACKAGES[@]}"; do
-        echo "Would install: $package"
-        deps=$(get_dependencies "$package")
-        if [ -n "$deps" ]; then
-          echo "  Dependencies: $deps"
-        fi
+        preview_package "$package"
       done
     else
       echo "=== Installing requested packages ==="
@@ -778,6 +819,34 @@ main() {
   fi
   
   echo "Done!"
+}
+
+preview_package() {
+  local package=$1 dep
+  echo "Would install: $package"
+  for dep in $(get_dependencies "$package"); do
+    preview_package "$dep"
+  done
+  case "$package" in
+    rust)
+      echo "  brew install rustup"
+      echo "  rustup default stable"
+      ;;
+    ws)
+      local ws_home="${WS_HOME:-$HOME/.ws}"
+      echo "  Install jq and terminal-notifier; build the notifier app"
+      echo "  Add .zshrc_ws_ext and link ~/.local/bin/ws to ws/ws.sh"
+      echo "  Migrate agent hooks; offer the optional Grok agent"
+      echo "  (cd $HOME/dotfile/wsd && cargo build --release)"
+      echo "  Copy $HOME/dotfile/wsd/target/release/ws to $ws_home/bin/ws-rs"
+      echo "  Link $ws_home/bin/ws to $HOME/dotfile/ws/ws.sh"
+      echo "  Render $HOME/Library/LaunchAgents/com.rstagi.wsd.plist (KeepAlive, $ws_home/bin/ws-rs daemon)"
+      echo "  launchctl bootout gui/$(id -u)/com.rstagi.wsd (if loaded)"
+      echo "  launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/com.rstagi.wsd.plist"
+      echo "  launchctl enable gui/$(id -u)/com.rstagi.wsd"
+      echo "  launchctl kickstart gui/$(id -u)/com.rstagi.wsd"
+      ;;
+  esac
 }
 
 # Run main function with all arguments
