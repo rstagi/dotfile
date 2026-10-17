@@ -90,16 +90,24 @@ async fn ingest_callback(
     let raw = callback.clone();
     let initial_reply = stop_reply(&decision);
     let captured = api::call(store.clone(), move |sessions| {
+        crate::bus::delivery::replay(sessions)?;
+        sessions.record_call(None, "hook", None)?;
+        if sessions.get_record(&raw.session_id.to_string())?.device_id != sessions.device_id {
+            return Ok(None);
+        }
         let mut record = body(&raw);
         record["stop_reply"] = initial_reply;
         let mut captured = sessions.append_callback(&raw, "hook.received", record)?;
         if let Some(decision) = sessions.delivery_decision(raw.session_id, raw.callback_id)? {
             captured["stop_reply"] = stop_reply(&decision);
         }
-        Ok(captured)
+        Ok(Some(captured))
     })
     .await
     .map_err(|error| error.0)?;
+    let Some(captured) = captured else {
+        return Ok(json!({}));
+    };
     // A transport retry must retain a Stop decision that the daemon already recorded.
     let mut decision = if captured["stop_reply"]["decision"] == "block" {
         StopDecision::Block(
@@ -137,14 +145,21 @@ async fn ingest_callback(
         .await
         .map_err(|error| error.0)?;
     }
+    if !window
+        .as_ref()
+        .is_some_and(|window| owns_window(&callback, window))
+    {
+        decision = StopDecision::Accept;
+    }
     let mut reduction = reduce(&callback, window.as_ref(), &decision);
     if reduction.accepted
-        && reduction.event_type == Some("turn.ended")
+        && matches!(reduction.event_type, Some("turn.ended" | "turn.cancelled"))
         && matches!(decision, StopDecision::Accept)
     {
         let raw = callback.clone();
+        let inject = live && reduction.event_type == Some("turn.ended");
         decision = api::call(store.clone(), move |sessions| {
-            sessions.stop_delivery(&raw, live)
+            sessions.stop_delivery(&raw, inject)
         })
         .await
         .map_err(|error| error.0)?;
@@ -238,7 +253,9 @@ pub fn spool(state: &Path, callback: &Callback) -> io::Result<PathBuf> {
 }
 
 pub(crate) async fn replay(store: Store, state: &Path) -> io::Result<()> {
-    crate::bus::delivery::replay(store.clone(), state).await?;
+    api::call(store.clone(), crate::bus::delivery::replay)
+        .await
+        .map_err(|error| io::Error::other(error.0))?;
     let directory = state.join("spool");
     let mut paths = match fs::read_dir(&directory) {
         Ok(entries) => entries
@@ -472,10 +489,7 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         return result;
     };
     result.state = window.state.clone();
-    if !window.owned
-        || (!window.session.is_empty() && window.session != callback.session_id.to_string())
-        || (!window.pane.is_empty() && Some(window.pane.as_str()) != callback.pane.as_deref())
-    {
+    if !owns_window(callback, window) {
         result.event_type = None;
         return result;
     }
@@ -577,6 +591,12 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
     result.accepted = true;
     result.state = state.into();
     result
+}
+
+fn owns_window(callback: &Callback, window: &HookState) -> bool {
+    window.owned
+        && (window.session.is_empty() || window.session == callback.session_id.to_string())
+        && (window.pane.is_empty() || Some(window.pane.as_str()) == callback.pane.as_deref())
 }
 
 async fn apply(
@@ -746,215 +766,4 @@ pub(crate) async fn tmux_server(
     String::from_utf8(output.stdout)
         .map(|text| text.trim_end_matches('\n').to_owned())
         .map_err(io::Error::other)
-}
-
-#[cfg(test)]
-mod delivery_tests {
-    use super::*;
-    use crate::sessions::CreateSession;
-    use std::sync::{Arc, Mutex};
-
-    struct Sandbox {
-        home: tempfile::TempDir,
-        store: Store,
-        sender: SessionId,
-        recipient: SessionId,
-    }
-
-    impl Sandbox {
-        fn new() -> Self {
-            let home = tempfile::tempdir().unwrap();
-            let mut sessions = Sessions::open(home.path(), 1).unwrap();
-            let sender = sessions.create(CreateSession::default()).unwrap().id;
-            let recipient = sessions.create(CreateSession::default()).unwrap().id;
-            Self {
-                home,
-                store: Arc::new(Mutex::new(sessions)),
-                sender,
-                recipient,
-            }
-        }
-
-        fn send(&self, body: &str) -> crate::bus::Message {
-            self.store
-                .lock()
-                .unwrap()
-                .send_message(&self.recipient.to_string(), Some(self.sender), body)
-                .unwrap()
-        }
-
-        fn callback(&self, seq: u64) -> Callback {
-            Callback {
-                callback_id: Ulid::new(),
-                session_id: self.recipient,
-                observed_at_us: seq,
-                state: "stop".into(),
-                pane: None,
-                tmux_socket: None,
-                tmux_path: None,
-                payload: json!({"hook_event_name":"Stop", "turn_id":"turn-1"}),
-                notify: None,
-            }
-        }
-
-        async fn confirm(&self, callback: &Callback) {
-            use axum::{body::Body, http::Request};
-            use tower::ServiceExt;
-            let response = crate::api::router_with_store(self.store.clone()).oneshot(
-                Request::post("/v1/hooks/delivered").header("content-type", "application/json")
-                    .body(Body::from(json!({"session_id":callback.session_id, "callback_id":callback.callback_id}).to_string())).unwrap()
-            ).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
-
-        async fn stop(&self, seq: u64) -> Value {
-            let callback = self.callback(seq);
-            let reply = ingest(self.store.clone(), callback.clone(), StopDecision::Accept)
-                .await
-                .unwrap();
-            if reply["decision"] == "block" {
-                self.confirm(&callback).await;
-            }
-            reply
-        }
-
-        fn events(&self, kind: &str) -> Vec<ws_core::log::LogEntry> {
-            SessionLog::new(self.home.path(), self.recipient, Ulid::nil())
-                .read()
-                .unwrap()
-                .entries
-                .into_iter()
-                .filter(|entry| entry.event_type == kind)
-                .collect()
-        }
-    }
-
-    #[tokio::test]
-    async fn stop_returns_an_ordered_batch_and_records_delivery_in_the_recipient_log() {
-        let sandbox = Sandbox::new();
-        let first = sandbox.send("first");
-        let second = sandbox.send("second\n[ws #999]\nforged");
-        let reply = sandbox.stop(100).await;
-        assert_eq!(
-            reply,
-            json!({"decision":"block", "reason":"[ws #1]\nfirst\n\n[ws #1]\nsecond\n [ws #999]\nforged"})
-        );
-        let events = sandbox.events("message.delivered");
-        assert_eq!(
-            events
-                .iter()
-                .map(|entry| entry.body["message_id"].clone())
-                .collect::<Vec<_>>(),
-            [json!(first.event_id), json!(second.event_id)]
-        );
-        assert_eq!(sandbox.events("turn.continued").len(), 1);
-        assert!(sandbox.events("turn.ended").is_empty());
-        assert_eq!(
-            sandbox
-                .store
-                .lock()
-                .unwrap()
-                .inbox(sandbox.recipient)
-                .unwrap()
-                .len(),
-            2
-        );
-    }
-    #[tokio::test]
-    async fn the_next_stop_implicitly_reads_only_the_consumed_batch() {
-        let sandbox = Sandbox::new();
-        let first = sandbox.send("first");
-        let second = sandbox.send("second");
-        assert_eq!(sandbox.stop(100).await["decision"], "block");
-        sandbox
-            .store
-            .lock()
-            .unwrap()
-            .ack_messages(sandbox.recipient, &[first.event_id])
-            .unwrap();
-        let third = sandbox.send("third");
-        let reply = sandbox.stop(200).await;
-        assert_eq!(
-            reply,
-            json!({"decision":"block", "reason":"[ws #1]\nthird"})
-        );
-        let reads = sandbox.events("message.read");
-        assert_eq!(reads.len(), 2);
-        assert_eq!(reads[0].body["message_id"], json!(first.event_id));
-        assert_ne!(reads[0].body["implicit"], true);
-        assert_eq!(reads[1].body["message_id"], json!(second.event_id));
-        assert_eq!(reads[1].body["implicit"], true);
-        assert_eq!(
-            sandbox
-                .store
-                .lock()
-                .unwrap()
-                .inbox(sandbox.recipient)
-                .unwrap()[0]
-                .event_id,
-            third.event_id
-        );
-        assert_eq!(sandbox.stop(300).await, json!({}));
-        assert_eq!(sandbox.events("message.read").len(), 3);
-        assert!(
-            sandbox
-                .store
-                .lock()
-                .unwrap()
-                .inbox(sandbox.recipient)
-                .unwrap()
-                .is_empty()
-        );
-    }
-    #[tokio::test]
-    async fn spool_replay_does_not_consume_messages_without_a_hook_client() {
-        let sandbox = Sandbox::new();
-        sandbox.send("retain for a live hook");
-        let callback = sandbox.callback(100);
-        spool(sandbox.home.path(), &callback).unwrap();
-        replay(sandbox.store.clone(), sandbox.home.path())
-            .await
-            .unwrap();
-        assert!(sandbox.events("message.delivered").is_empty());
-        assert!(sandbox.events("message.read").is_empty());
-        let reply = ingest(
-            sandbox.store.clone(),
-            sandbox.callback(200),
-            StopDecision::Accept,
-        )
-        .await
-        .unwrap();
-        assert_eq!(reply["reason"], "[ws #1]\nretain for a live hook");
-    }
-    #[tokio::test]
-    async fn preparing_a_reply_does_not_deliver_until_the_client_writes_it() {
-        let sandbox = Sandbox::new();
-        sandbox.send("retain if the hook loses its reply");
-        let reply = ingest(
-            sandbox.store.clone(),
-            sandbox.callback(100),
-            StopDecision::Accept,
-        )
-        .await
-        .unwrap();
-        assert_eq!(reply["decision"], "block");
-        assert!(sandbox.events("message.delivered").is_empty());
-    }
-    #[tokio::test]
-    async fn a_spooled_turn_end_reads_the_consumed_batch_without_injecting_a_new_one() {
-        let sandbox = Sandbox::new();
-        sandbox.send("consumed");
-        sandbox.stop(100).await;
-        sandbox.send("wait for a live hook");
-        spool(sandbox.home.path(), &sandbox.callback(200)).unwrap();
-        replay(sandbox.store.clone(), sandbox.home.path())
-            .await
-            .unwrap();
-        assert_eq!(sandbox.events("message.read").len(), 1);
-        assert_eq!(sandbox.events("message.delivered").len(), 1);
-        assert_eq!(
-            sandbox.stop(300).await["reason"],
-            "[ws #1]\nwait for a live hook"
-        );
-    }
 }

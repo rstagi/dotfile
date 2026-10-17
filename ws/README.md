@@ -146,12 +146,16 @@ Reading the inbox does not acknowledge messages. The text header uses event meta
 Repeated acknowledgements do not add read events. Unknown ids, foreign messages and messages behind a gap are rejected.
 These commands use `POST /v1/messages`, `GET /v1/inbox?session_id=<ULID>`, and `POST /v1/ack`.
 Omit `session_id` to use the human session. The send caller uses `parent_session_id`.
+
 The Rust bus returns exit 75 with a queue warning. A live Stop hook returns `{decision:"block", reason:<batch>}` for undelivered messages.
 The batch follows `pair_seq` order for each sender. Its headers use sender metadata.
+
 After the hook writes and flushes its reply, it confirms delivery through `POST /v1/hooks/delivered`.
-The daemon writes `message.delivered` in the recipient log. Failed confirmations remain in `$WS_STATE/delivery-spool/` for startup replay.
-The next accepted Stop writes `message.read` with `implicit: true` for delivered messages that lack an explicit acknowledgement.
+The daemon writes `message.delivered` in the recipient log. Failed confirmations remain in `$WS_STATE/delivery-spool/` for replay at startup or before the next hook.
+
+The next accepted Stop or matching cancellation writes `message.read` with `implicit: true` for delivered messages that lack an explicit acknowledgement.
 Startup replay never injects a new batch. Only the session's local device can inject messages.
+
 Run `cd wsd && cargo test -p ws --test messages` to check persistence, ordering, acknowledgements and stdin.
 Run `zsh wsd/crates/ws/tests/golden/message-capture.zsh` to regenerate the zsh error fixtures.
 

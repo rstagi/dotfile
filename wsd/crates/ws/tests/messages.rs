@@ -448,3 +448,56 @@ fn hook_stdout_commits_delivery_and_the_next_stop_reads_the_batch() {
     assert_eq!(reads.len(), 1);
     assert_eq!(reads[0].body["implicit"], true);
 }
+
+#[test]
+fn a_hook_with_closed_stdout_retains_the_batch_for_the_next_hook() {
+    use std::{
+        os::{fd::OwnedFd, unix::net::UnixStream},
+        process::Stdio,
+    };
+    let sandbox = Sandbox::new();
+    let recipient = sandbox.create("recipient");
+    let id = recipient["id"].as_str().unwrap();
+    let output = sandbox
+        .ws()
+        .args(["send", id, "retain after a failed write"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(75), "{output:?}");
+    let (writer, reader) = UnixStream::pair().unwrap();
+    drop(reader);
+    let output = sandbox
+        .ws()
+        .env("WS_SESSION_ID", id)
+        .args(["hook", "stop"])
+        .stdout(Stdio::from(OwnedFd::from(writer)))
+        .output()
+        .unwrap();
+    assert_ok(&output);
+    assert!(
+        sandbox
+            .log(id)
+            .iter()
+            .all(|entry| entry.event_type != "message.delivered")
+    );
+    assert_eq!(sandbox.inbox(id).as_array().unwrap().len(), 1);
+    let output = sandbox
+        .ws()
+        .env("WS_SESSION_ID", id)
+        .args(["hook", "stop"])
+        .output()
+        .unwrap();
+    assert_ok(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["reason"],
+        "[ws #2]\nretain after a failed write"
+    );
+    assert_eq!(
+        sandbox
+            .log(id)
+            .iter()
+            .filter(|entry| entry.event_type == "message.delivered")
+            .count(),
+        1
+    );
+}
