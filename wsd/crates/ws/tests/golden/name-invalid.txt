@@ -1,0 +1,1 @@
+ws: name: use a letter followed by letters, digits, dots, underscores or hyphens (me is reserved)

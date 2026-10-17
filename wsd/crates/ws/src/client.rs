@@ -13,6 +13,30 @@ pub async fn ping(socket: &Path) -> Result<PingResponse> {
     Ok(serde_json::from_slice(&body)?)
 }
 
+pub async fn sessions(socket: &Path) -> Result<Vec<ws_core::registry::Session>> {
+    let body = request(socket, Method::GET, "/v1/sessions", Vec::new()).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+pub async fn session(socket: &Path, target: &str) -> Result<ws_core::registry::Session> {
+    let path = format!("/v1/sessions/{}", encode(target));
+    let body = request(socket, Method::GET, &path, Vec::new()).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+fn encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
 pub async fn hook_stop(socket: &Path, window_id: String) -> Result<()> {
     let record = HookRecord {
         event: HookEvent::Stop,
@@ -60,8 +84,25 @@ async fn send_request(socket: &Path, method: Method, path: &str, body: Vec<u8>) 
         .header("Content-Type", "application/json")
         .body(Full::new(Bytes::from(body)))?;
     let response = sender.send_request(request).await?;
-    if !response.status().is_success() {
-        return Err(format!("The daemon returned HTTP {}.", response.status()).into());
+    let status = response.status();
+    let body = response.into_body().collect().await?.to_bytes();
+    if !status.is_success() {
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        if error["error"]["code"] == "session_not_found" {
+            // The URI contains the escaped target. The daemon message contains its literal value.
+            let message = error["error"]["message"].as_str().unwrap_or("");
+            if let Some(target) = message
+                .strip_prefix("No session matches ")
+                .and_then(|s| s.strip_suffix('.'))
+            {
+                return Err(format!("no such session: {target}").into());
+            }
+        }
+        return Err(error["error"]["message"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("The daemon returned HTTP {status}."))
+            .into());
     }
-    Ok(response.into_body().collect().await?.to_bytes())
+    Ok(body)
 }

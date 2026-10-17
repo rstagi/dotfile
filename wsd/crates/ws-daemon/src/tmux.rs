@@ -177,6 +177,19 @@ impl Tmux {
         result
     }
 
+    /// Returns the session identity and agent state for each tagged window.
+    pub fn session_states(&self) -> io::Result<Vec<(String, String)>> {
+        let windows =
+            self.execute(&["list-windows", "-a", "-F", "#{@ws_session}\t#{@ws_state}"])?;
+        Ok(windows
+            .lines()
+            .filter_map(|line| {
+                let (id, state) = line.split_once('\t')?;
+                (!id.is_empty()).then(|| (id.to_owned(), state.to_owned()))
+            })
+            .collect())
+    }
+
     pub fn window_for_pane(&self, pane: &str) -> io::Result<String> {
         self.execute(&["display-message", "-p", "-t", pane, "#{window_id}"])
     }

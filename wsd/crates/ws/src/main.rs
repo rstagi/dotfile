@@ -3,6 +3,7 @@ use std::{env, error::Error, path::PathBuf, process::ExitCode};
 use clap::{Parser, Subcommand};
 
 mod client;
+mod cmd;
 mod hook;
 mod init;
 
@@ -23,6 +24,12 @@ enum Command {
     Daemon,
     /// Show the daemon version and uptime.
     Ping,
+    /// List the registered sessions.
+    Sessions {
+        #[arg(long)]
+        json: bool,
+        target: Vec<String>,
+    },
     /// Send a hook event from the current tmux pane.
     Hook {
         #[command(subcommand)]
@@ -65,6 +72,9 @@ async fn run(cli: Cli) -> Result<()> {
                 "wsd {} (uptime: {}s)",
                 response.version, response.uptime_secs
             );
+        }
+        Command::Sessions { json, target } => {
+            cmd::sessions::run(&socket_path()?, &target, json).await?
         }
         Command::Hook {
             event: HookCommand::Stop,
