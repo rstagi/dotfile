@@ -393,15 +393,15 @@ rm -f "$WS_HOME/tui-delay"
 
 echo "ws send (F7): a message queued on a slow-starting idle tab is delivered without a re-send"
 F7_BEFORE="$(windows_of "$SEND_WT")"
-print 4 > "$WS_HOME/tui-delay"
+: > "$WS_HOME/tui-hold" # the TUI stays not ready until the test removes this gate
 "$WS" add api/delivery --agent claude --detach
 F7_WIN="$(windows_of "$SEND_WT" | grep -vxF -f <(print -r -- "$F7_BEFORE"))"
 F7_ID="$(T show -wqv -t "$F7_WIN" @ws_session)"
 WS_READY_TIMEOUT=1 WS_DELIVER_RETRY_INTERVAL=1 WS_SESSION=1 "$WS" send "$F7_ID" "f7 late" >/dev/null 2>&1
 assert_exit "$?" "75" "slow-start send reports queued"
+rm -f "$WS_HOME/tui-hold"
 wait_until pane_received "$F7_ID" "[ws #1]"$'\n'"f7 late"
 assert_exit "$?" "0" "bounded retry delivers once the TUI is ready"
-rm -f "$WS_HOME/tui-delay"
 
 # --- delivery robustness: readiness and lock diagnostics ---
 echo "ws send: readiness races release the inbox lock before waiting for input"
