@@ -16,7 +16,7 @@ use crate::{Result, client};
 
 mod params;
 
-use params::{Create, Empty, Target};
+use params::{Create, Dependency, Empty, Send, Target, Wait};
 use rmcp::schemars::{self, JsonSchema};
 
 #[derive(Clone)]
@@ -47,6 +47,43 @@ impl Control {
                 let request: Target = serde_json::from_value(arguments)?;
                 self.request(Method::GET, &self.session_path(&request.target)?, None)
                     .await
+            }
+            "session_depends_on" | "session_block_on" => {
+                let request: Dependency = serde_json::from_value(arguments)?;
+                let operation = name.strip_prefix("session_").unwrap();
+                self.request(
+                    Method::POST,
+                    &format!("{}/{operation}", self.session_path(&request.target)?),
+                    Some(json!({"target":request.dependency})),
+                )
+                .await
+            }
+            "wait" => {
+                let request: Wait = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::POST,
+                    &format!("{}/wait", self.session_path(&request.target)?),
+                    Some(json!({"for":request.condition, "timeout":request.timeout})),
+                )
+                .await
+            }
+            "session_send" => {
+                let request: Send = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::POST,
+                    "/v1/messages",
+                    Some(serde_json::to_value(request)?),
+                )
+                .await
+            }
+            "session_stop" => {
+                let request: Target = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::POST,
+                    &format!("{}/stop", self.session_path(&request.target)?),
+                    None,
+                )
+                .await
             }
             "session_create" => {
                 let request: Create = serde_json::from_value(arguments)?;
@@ -145,7 +182,18 @@ fn tools() -> Vec<Tool> {
     vec![
         tool::<Empty>("session_list", "List the registered sessions."),
         tool::<Target>("session_get", "Read one registered session."),
+        tool::<Target>(
+            "session_stop",
+            "Stop a session and wait for its process group to exit.",
+        ),
         tool::<Create>("session_create", "Create a registered session."),
+        tool::<Send>("session_send", "Queue a message for a session."),
+        tool::<Wait>("wait", "Wait for a session state or event."),
+        tool::<Dependency>(
+            "session_depends_on",
+            "Add a dependency between two sessions.",
+        ),
+        tool::<Dependency>("session_block_on", "Block a session on another session."),
     ]
 }
 

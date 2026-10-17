@@ -21,6 +21,26 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Add a dependency between two sessions.
+    DependsOn {
+        target: String,
+        dependency: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Block a session on another session.
+    BlockOn {
+        target: String,
+        dependency: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a registered session.
+    Stop {
+        target: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read a registered session.
     Get {
         target: String,
@@ -94,6 +114,29 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 .call("session_list", serde_json::json!({}))
                 .await?;
             println!("{value}");
+        }
+        Command::DependsOn {
+            target, dependency, ..
+        } => {
+            super::mcp::print(
+                socket,
+                "session_depends_on",
+                serde_json::json!({"target":target,"dependency":dependency}),
+            )
+            .await?;
+        }
+        Command::BlockOn {
+            target, dependency, ..
+        } => {
+            super::mcp::print(
+                socket,
+                "session_block_on",
+                serde_json::json!({"target":target,"dependency":dependency}),
+            )
+            .await?;
+        }
+        Command::Stop { target, .. } => {
+            super::mcp::print(socket, "session_stop", serde_json::json!({"target":target})).await?;
         }
         Command::Get { target, .. } => {
             super::mcp::print(socket, "session_get", serde_json::json!({"target":target})).await?;

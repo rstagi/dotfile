@@ -51,6 +51,8 @@ enum Command {
         condition: String,
         #[arg(long)]
         timeout: Option<u32>,
+        #[arg(long)]
+        json: bool,
     },
     /// Mark selected messages, or all unread messages, as read.
     Ack {
@@ -60,6 +62,8 @@ enum Command {
     Send {
         target: String,
         message: String,
+        #[arg(long)]
+        json: bool,
         /// Accept the legacy flag. Finished sessions reopen without this flag.
         #[arg(long)]
         force: bool,
@@ -226,12 +230,27 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             target,
             condition,
             timeout,
-        } => cmd::wait::run(&socket_path()?, &target, &condition, timeout).await?,
+            json,
+        } => {
+            if json {
+                cmd::mcp::print(
+                    &socket_path()?,
+                    "wait",
+                    serde_json::json!({"target":target,"condition":condition,"timeout":timeout}),
+                )
+                .await?;
+            } else {
+                cmd::wait::run(&socket_path()?, &target, &condition, timeout).await?;
+            }
+        }
         Command::Ack { event_ids } => cmd::ack::run(&socket_path()?, event_ids).await?,
         Command::Send {
-            target, message, ..
+            target,
+            message,
+            json,
+            ..
         } => {
-            return cmd::send::run(&socket_path()?, &target, &message).await;
+            return cmd::send::run(&socket_path()?, &target, &message, json).await;
         }
         Command::Inbox { json } => cmd::inbox::run(&socket_path()?, json).await?,
         Command::Claude { arguments } => {
