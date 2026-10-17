@@ -77,6 +77,24 @@ fn assert_ok(output: &Output) {
 }
 
 #[test]
+fn force_is_an_ignored_send_compatibility_flag() {
+    let sandbox = Sandbox::new();
+    let recipient = sandbox.create("reviewer");
+    let id = recipient["id"].as_str().unwrap();
+    for args in [
+        vec!["send", "--force", id, "before"],
+        vec!["send", id, "after", "--force"],
+    ] {
+        let output = sandbox.ws().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(75), "{output:?}");
+    }
+    let messages = sandbox.inbox(id);
+    assert_eq!(messages.as_array().unwrap().len(), 2);
+    assert_eq!(messages[0]["body"], "before");
+    assert_eq!(messages[1]["body"], "after");
+}
+
+#[test]
 fn send_records_the_sender_and_projects_the_inbox_without_reading_it() {
     let sandbox = Sandbox::new();
     let sender = sandbox.create("builder");

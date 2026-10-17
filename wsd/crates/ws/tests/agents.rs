@@ -58,7 +58,11 @@ fn a_message_reopens_a_finished_agent_before_delivery() {
         sandbox.wait_for(|| sandbox.json(&["show", id, "--json"])["state"] == "finished");
         assert!(!fs::read_to_string(sandbox.slots()).unwrap().contains(id));
 
-        let output = sandbox.output(&["send", id, "continue the task"]);
+        let output = if agent == "codex" {
+            sandbox.output(&["send", id, "continue the task", "--force"])
+        } else {
+            sandbox.output(&["send", id, "continue the task"])
+        };
         assert_eq!(output.status.code(), Some(75), "{output:?}");
         assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
         let (resumed, mut running) = sandbox.capture();

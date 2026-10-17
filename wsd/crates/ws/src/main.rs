@@ -22,7 +22,13 @@ enum Command {
         event_ids: Vec<ws_core::ids::EventId>,
     },
     /// Queue a message for a session.
-    Send { target: String, message: String },
+    Send {
+        target: String,
+        message: String,
+        /// Accept the legacy flag. Finished sessions reopen without this flag.
+        #[arg(long)]
+        force: bool,
+    },
     /// Show unread messages for the current session.
     Inbox {
         #[arg(long)]
@@ -175,7 +181,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     };
     match command {
         Command::Ack { event_ids } => cmd::ack::run(&socket_path()?, event_ids).await?,
-        Command::Send { target, message } => {
+        Command::Send {
+            target, message, ..
+        } => {
             return cmd::send::run(&socket_path()?, &target, &message).await;
         }
         Command::Inbox { json } => cmd::inbox::run(&socket_path()?, json).await?,
