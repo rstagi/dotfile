@@ -13,7 +13,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 #[command(version, about = "Control local WS sessions")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -122,7 +122,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    match cli.command {
+    let Some(command) = cli.command else {
+        return cmd::attach::run(&socket_path()?).await;
+    };
+    match command {
         Command::Open { target, detach } => {
             cmd::open::run(&socket_path()?, &target, detach).await?
         }

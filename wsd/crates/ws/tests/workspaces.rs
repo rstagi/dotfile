@@ -14,6 +14,135 @@ struct Sandbox {
 }
 
 #[test]
+fn bare_ws_creates_its_first_workspace_and_interactive_rm_accepts_cancel_or_branch_deletion() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let command = sandbox.focus_command();
+    let fzf = sandbox.home.path().join("bin/fzf");
+    std::fs::write(
+        &fzf,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' {}\n",
+            shell_words::quote(repo.to_str().unwrap())
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(fzf, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = sandbox.tty_output(command, &[], "branch (api): ", "first");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(sandbox.json(&["list", "--json"])[0]["id"], "api/first");
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", "--interactive", "api/first"],
+        "[y/N/b=also delete branch] ",
+        "n",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", "--interactive", "api/first"],
+        "[y/N/b=also delete branch] ",
+        "b",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    assert_eq!(git(&repo, &["branch", "--list", "first"]), "");
+}
+
+#[test]
+fn bare_ws_picks_registered_workspaces_with_pins_first_and_accepts_cancellation() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    for branch in ["alpha", "zeta"] {
+        assert!(
+            sandbox
+                .output(&[
+                    "new",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--branch",
+                    branch,
+                    "--detach"
+                ])
+                .status
+                .success()
+        );
+    }
+    assert!(sandbox.output(&["pin", "api/zeta"]).status.success());
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-qb",
+            "orphan",
+            sandbox
+                .home
+                .path()
+                .join("worktrees/api/orphan")
+                .to_str()
+                .unwrap(),
+        ],
+    );
+    let mut command = sandbox.focus_command();
+    let fzf = sandbox.home.path().join("bin/fzf");
+    std::fs::write(&fzf, "#!/bin/sh\ncat > \"$WS_TEST_ROWS\"\n[ -z \"$WS_TEST_CANCEL\" ] || exit 130\nhead -1 \"$WS_TEST_ROWS\"\n").unwrap();
+    std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let rows = sandbox.home.path().join("rows");
+    let output = command.env("WS_TEST_ROWS", &rows).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let rows = std::fs::read_to_string(rows).unwrap();
+    assert_eq!(rows.lines().count(), 2);
+    assert!(rows.lines().next().unwrap().contains("api/zeta"), "{rows}");
+    assert!(!rows.contains("orphan"));
+    let root = sandbox
+        .home
+        .path()
+        .join("worktrees")
+        .canonicalize()
+        .unwrap();
+    let order = rows
+        .lines()
+        .map(|row| {
+            row.split('\t')
+                .nth(1)
+                .unwrap()
+                .replace(root.to_str().unwrap(), "<ROOT>")
+                .replace(
+                    sandbox.home.path().join("worktrees").to_str().unwrap(),
+                    "<ROOT>",
+                )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(order, include_str!("golden/workspace-pick-order.txt"));
+    let expected = sandbox.tmux(&["display-message", "-p", "-t", "=api/zeta:", "#{session_id}"]);
+    let focus = std::fs::read_to_string(sandbox.home.path().join("focus")).unwrap();
+    assert!(
+        focus.ends_with(&format!("attach-session\n-t\n{expected}\n")),
+        "Expected {expected}: {focus}"
+    );
+    std::fs::remove_file(sandbox.home.path().join("focus")).unwrap();
+    let output = sandbox
+        .focus_command()
+        .env("WS_TEST_ROWS", sandbox.home.path().join("rows"))
+        .env("WS_TEST_CANCEL", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(!sandbox.home.path().join("focus").exists());
+}
+
+#[test]
 fn open_selects_the_target_tab_clears_unread_and_attaches_or_switches_its_session() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo("api");
@@ -122,7 +251,7 @@ fn open_restores_stopped_tabs_once_and_preserves_each_session_identity() {
     }
     assert_eq!(
         sandbox.normalized_list("list"),
-        include_str!("golden/workspace-added.txt")
+        include_str!("golden/workspace-reopened.txt")
     );
     let after = sandbox.json(&["sessions", "--json"]);
     assert_eq!(
@@ -736,6 +865,37 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
 }
 
 impl Sandbox {
+    fn tty_output(
+        &self,
+        environment: Command,
+        args: &[&str],
+        prompt: &str,
+        answer: &str,
+    ) -> Output {
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-I",
+                "-c",
+                include_str!("workspace-tty.py"),
+                env!("CARGO_BIN_EXE_ws"),
+                prompt,
+                answer,
+            ])
+            .args(args);
+        for (key, value) in environment.get_envs() {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
+        command.current_dir(self.home.path()).output().unwrap()
+    }
+
     fn focus_command(&self) -> Command {
         use std::os::unix::fs::PermissionsExt;
         let bin = self.home.path().join("bin");

@@ -8,6 +8,10 @@ repo="$(make_repo api)"
 "$WS" pin api/feat-login
 "$WS" list | sed -E -e "s|$WS_ROOT|<ROOT>|g" -e 's/@[0-9]+/<WINDOW>/g' > "$DEST/workspace-pinned.txt"
 "$WS" pin api/feat-login
+"$WS" add api/feat-login --agent codex --detach
+T kill-session -t api/feat-login
+"$WS" open api/feat-login --detach
+"$WS" list | sed -E -e "s|$WS_ROOT|<ROOT>|g" -e 's/@[0-9]+/<WINDOW>/g' > "$DEST/workspace-reopened.txt"
 "$WS" pin missing 2> "$TMP/error" && exit 1
 cp "$TMP/error" "$DEST/workspace-missing.txt"
 print dirty >> "$WS_ROOT/api/feat-login/file.txt"
@@ -16,3 +20,6 @@ sed "s|$WS_ROOT|<ROOT>|g" "$TMP/error" > "$DEST/workspace-dirty.txt"
 "$WS" open missing --detach 2> "$TMP/error" && exit 1
 cmp "$TMP/error" "$DEST/workspace-missing.txt"
 "$WS" rm api/feat-login --force --delete-branch
+for branch in alpha zeta; do "$WS" new --repo "$repo" --branch "$branch" --detach; done
+"$WS" pin api/zeta
+"$WS" _rows | cut -f2 | sed "s|$WS_ROOT|<ROOT>|g" > "$DEST/workspace-pick-order.txt"
