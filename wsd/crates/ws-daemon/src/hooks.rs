@@ -15,7 +15,10 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use ws_core::ids::{SessionId, Ulid};
+use ws_core::{
+    ids::{SessionId, Ulid},
+    log::SessionLog,
+};
 
 /// Guards the daemon against a hung tmux server. The hook client has its own transport
 /// deadline, so this bound never delays the agent. It must stay above the tmux latency
@@ -96,6 +99,16 @@ pub async fn ingest(
         StopDecision::Accept
     };
     let mut window = window(&callback).await?;
+    if callback.pane.is_none() {
+        let callback = callback.clone();
+        window = Some(
+            api::call(store.clone(), move |sessions| {
+                sessions.headless_hook_window(&callback)
+            })
+            .await
+            .map_err(|error| error.0)?,
+        );
+    }
     if let Some(window) = window.as_mut().filter(|window| window.session.is_empty()) {
         let session = callback.session_id.to_string();
         let id = window.id.clone();
@@ -118,7 +131,12 @@ pub async fn ingest(
         event.as_object_mut().unwrap().remove("payload");
         event["state_accepted"] = json!(reduction.accepted);
         event["window_state"] = json!(reduction.state);
-        event["window_id"] = json!(window.as_ref().map(|window| &window.id));
+        event["window_id"] = json!(
+            window
+                .as_ref()
+                .filter(|window| !window.id.is_empty())
+                .map(|window| &window.id)
+        );
         event["stop_reply"] = stop_reply(&decision);
         api::call(store, move |sessions| {
             sessions.append_callback(&callback, event_type, event)
@@ -126,7 +144,7 @@ pub async fn ingest(
         .await
         .map_err(|error| error.0)?;
     }
-    if let Some(window) = window {
+    if let Some(window) = window.filter(|window| !window.id.is_empty()) {
         apply(&callback, &window.id, &reduction.changes).await?;
         if reduction.accepted {
             crate::notify::transition(
@@ -229,6 +247,65 @@ fn stop_reply(decision: &StopDecision) -> Value {
 }
 
 impl Sessions {
+    fn headless_hook_window(&self, callback: &Callback) -> crate::sessions::Result<Window> {
+        let session = self.get_record(&callback.session_id.to_string())?;
+        let mut window = Window {
+            owned: true,
+            session: session.id.to_string(),
+            focused: true,
+            state: "idle".into(),
+            main: "idle".into(),
+            ..Window::default()
+        };
+        // Rebuild from durable receipts so restart and spool replay retain the same ordering.
+        // The current receipt is already durable but has not yet passed through reduction.
+        let entries = SessionLog::new(&self.state, session.id, session.device_id)
+            .read()?
+            .entries;
+        for entry in entries
+            .into_iter()
+            .filter(|entry| entry.event_type == "hook.received")
+        {
+            if entry.body["callback_id"] == callback.callback_id.to_string()
+                || !entry.body["pane"].is_null()
+            {
+                continue;
+            }
+            let decision = if entry.body["stop_reply"]["decision"] == "block" {
+                StopDecision::Block(
+                    entry.body["stop_reply"]["reason"]
+                        .as_str()
+                        .unwrap_or("")
+                        .into(),
+                )
+            } else {
+                StopDecision::Accept
+            };
+            let mut body = entry.body;
+            body["session_id"] = json!(session.id);
+            let previous: Callback = serde_json::from_value(body).map_err(Error::Json)?;
+            let reduction = reduce(&previous, Some(&window), &decision);
+            for (key, value) in reduction.changes {
+                let value = value.unwrap_or_default();
+                match key.as_str() {
+                    "@ws_seq" => window.seq = value.parse().unwrap_or(0),
+                    "@ws_state" => window.state = value,
+                    "@ws_main" => window.main = value,
+                    "@ws_turn" => window.turn = value,
+                    _ if key.starts_with("@ws_sub_") => {
+                        if value.is_empty() {
+                            window.subagents.remove(&key);
+                        } else {
+                            window.subagents.insert(key);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(window)
+    }
+
     fn append_callback(
         &mut self,
         callback: &Callback,

@@ -32,8 +32,13 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         arguments: Vec<String>,
     },
+    /// Prepare an agent launch for another tool.
+    Agent {
+        #[command(subcommand)]
+        command: cmd::agent::Command,
+    },
     #[command(name = "_agent", hide = true)]
-    Agent { id: String },
+    AgentLaunch { id: String },
     /// Merge the current workspace PR.
     Merge,
     #[command(name = "_merge_popup", hide = true)]
@@ -126,7 +131,7 @@ enum Command {
     BuildNotifier,
     #[command(name = "_dismiss", hide = true)]
     Dismiss { target: Option<String> },
-    /// Send a hook event from the current tmux pane.
+    /// Send a hook event for the current session.
     Hook { state: String },
 }
 
@@ -163,7 +168,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Codex { arguments } => return cmd::codex::run(&socket_path()?, arguments).await,
         Command::Grok { arguments } => return cmd::grok::run(&socket_path()?, arguments).await,
-        Command::Agent { id } => return cmd::agent::execute(&socket_path()?, &id, false).await,
+        Command::Agent { command } => cmd::agent::prepare(command)?,
+        Command::AgentLaunch { id } => {
+            return cmd::agent::execute(&socket_path()?, &id, false).await;
+        }
         Command::Merge => cmd::merge::run(&socket_path()?).await?,
         Command::MergePopup => return cmd::merge::popup(&socket_path()?).await,
         Command::Open { target, detach } => {
