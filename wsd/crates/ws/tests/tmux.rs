@@ -1,15 +1,16 @@
 use std::{
     fs,
-    io::{Read, Write},
-    os::unix::{fs::PermissionsExt, net::UnixStream},
-    path::Path,
-    process::{Child, Command, Output, Stdio},
+    os::unix::fs::PermissionsExt,
+    process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use ws_daemon::tmux::Tmux;
+
+mod common;
+use common::{Daemon, get, request, ws};
 
 static NEXT_SERVER: AtomicU64 = AtomicU64::new(0);
 
@@ -18,18 +19,22 @@ struct Sandbox {
     server: String,
 }
 
-struct Daemon(Child);
-
 #[test]
 fn sandbox_tmux_driver_and_stop_hook_round_trip() {
     let sandbox = Sandbox::new();
     let tmux = Tmux::named(&sandbox.server);
     let socket = sandbox.home.path().join("wsd.sock");
-    let _daemon = Daemon::start(&sandbox, &socket);
+    let _daemon = Daemon::start(ws(sandbox.home.path(), &socket), &socket);
+    assert!(get(&socket, "/v1/ping").starts_with("HTTP/1.1 200"));
+    let created = request(&socket, "POST", "/v1/sessions", "{}");
+    let created: serde_json::Value =
+        serde_json::from_str(created.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let id = created["id"].as_str().unwrap();
     let captured = sandbox.home.path().join("paste.bin");
     let measurements = sandbox.home.path().join("latency.json");
     let script = r#"
 import json, os, subprocess, sys, time, tty
+os.environ["WS_SESSION_ID"] = sys.argv[4]
 tty.setraw(0)
 sys.stdout.write('\x1b[?2004h')
 sys.stdout.flush()
@@ -63,10 +68,18 @@ os.replace(sys.argv[3] + '.tmp', sys.argv[3])
                 captured.to_str().unwrap(),
                 env!("CARGO_BIN_EXE_ws"),
                 measurements.to_str().unwrap(),
+                id,
             ],
         )
         .unwrap();
     assert!(window.starts_with('@'), "{window}");
+    tmux.set_window_option(&window, "remain-on-exit", "on")
+        .unwrap();
+    tmux.set_window_option(&window, "@ws_session", id).unwrap();
+    let pane = tmux
+        .execute(&["display-message", "-p", "-t", &window, "#{pane_id}"])
+        .unwrap();
+    tmux.set_window_option(&window, "@ws_pane", &pane).unwrap();
     tmux.set_state(&window, "working").unwrap();
     assert_eq!(tmux.state(&window).unwrap(), "working");
 
@@ -91,15 +104,76 @@ os.replace(sys.argv[3] + '.tmp', sys.argv[3])
     let measured: serde_json::Value =
         serde_json::from_slice(&fs::read(measurements).unwrap()).unwrap();
     assert_eq!(measured["errors"], serde_json::json!([]), "{measured}");
-    let records = get_hooks(&socket);
-    assert_eq!(records.as_array().unwrap().len(), 100, "{records}");
-    for record in records.as_array().unwrap() {
-        assert_eq!(record["event"], "stop");
-        assert_eq!(record["window_id"], window);
+    let log_path = sandbox
+        .home
+        .path()
+        .join("state/sessions")
+        .join(id)
+        .join("log.jsonl");
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    // A timed-out client can finish before the daemon records its callback.
+    wait_until(|| {
+        records = fs::read_to_string(&log_path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        ["hook.received", "turn.ended"].iter().all(|kind| {
+            records
+                .iter()
+                .filter(|record| record["type"] == *kind)
+                .count()
+                == 100
+        })
+    });
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["type"] == "hook.received")
+            .count(),
+        100
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["type"] == "turn.ended")
+            .count(),
+        100
+    );
+    assert_eq!(tmux.state(&window).unwrap(), "idle");
+    let spool = sandbox.home.path().join("state/spool");
+    if spool.exists() {
+        for file in fs::read_dir(&spool).unwrap() {
+            let path = file.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                let callback: serde_json::Value =
+                    serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                assert!(
+                    records
+                        .iter()
+                        .any(|record| record["type"] == "hook.received"
+                            && record["body"]["callback_id"] == callback["callback_id"])
+                );
+            }
+        }
     }
     let mut latencies: Vec<f64> = serde_json::from_value(measured["latencies"].clone()).unwrap();
     assert_eq!(latencies.len(), 100);
     latencies.sort_by(f64::total_cmp);
+    // The 50 ms p95 target holds on an idle machine. Under parallel loops the scheduler
+    // latency alone exceeds it, so the default run only measures and prints. Assert it with:
+    // `WS_ASSERT_LATENCY=1 cargo test -p ws --test tmux -- --nocapture`
+    if std::env::var_os("WS_ASSERT_LATENCY").is_some() {
+        assert!(!spool.exists() || fs::read_dir(&spool).unwrap().count() == 0);
+        assert!(
+            latencies[94] < 50.0,
+            "Full ingest p95 exceeded 50 ms: {}",
+            latencies[94]
+        );
+    }
     println!(
         "HOOK_ROUND_TRIP samples=100 p50_ms={:.3} p95_ms={:.3} max_ms={:.3}",
         latencies[49], latencies[94], latencies[99]
@@ -178,46 +252,8 @@ impl Sandbox {
     }
 }
 
-impl Daemon {
-    fn start(sandbox: &Sandbox, socket: &Path) -> Self {
-        let mut daemon = Self(
-            Command::new(env!("CARGO_BIN_EXE_ws"))
-                .arg("daemon")
-                .env("HOME", sandbox.home.path())
-                .env("WS_HOME", sandbox.home.path().join(".ws"))
-                .env("WS_STATE", sandbox.home.path().join("state"))
-                .env("WS_SOCK", socket)
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .unwrap(),
-        );
-        wait_until(|| {
-            assert!(daemon.0.try_wait().unwrap().is_none(), "The daemon exited.");
-            UnixStream::connect(socket).is_ok()
-        });
-        daemon
-    }
-}
-
-fn get_hooks(socket: &Path) -> serde_json::Value {
-    let mut stream = UnixStream::connect(socket).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    write!(
-        stream,
-        "GET /v1/hooks HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    )
-    .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
-}
-
 fn wait_until(mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !ready() {
         assert!(
             Instant::now() < deadline,
@@ -233,12 +269,5 @@ impl Drop for Sandbox {
             .args(["-L", &self.server, "kill-server"])
             .env("HOME", self.home.path())
             .output();
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
     }
 }

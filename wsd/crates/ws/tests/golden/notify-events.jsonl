@@ -1,0 +1,5 @@
+{"state":"working","prev":"idle","message":"api/feat-login is working","detail":"","agent":"claude","repo":"api","branch":"feat-login","focused":false,"sound":""}
+{"state":"waiting","prev":"working","message":"api/feat-login needs input","detail":"Need permission","agent":"claude","repo":"api","branch":"feat-login","focused":false,"sound":"waiting"}
+{"state":"working","prev":"waiting","message":"api/feat-login is working","detail":"","agent":"claude","repo":"api","branch":"feat-login","focused":false,"sound":""}
+{"state":"idle","prev":"working","message":"api/feat-login is idle","detail":"Done","agent":"claude","repo":"api","branch":"feat-login","focused":false,"sound":"done"}
+{"state":"closed","prev":"idle","message":"api/feat-login dismissed","detail":"","agent":"claude","repo":"api","branch":"feat-login","focused":false,"sound":""}

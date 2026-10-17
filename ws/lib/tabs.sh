@@ -33,6 +33,7 @@ open_session_locked() {
   run="PATH=${(q)WS_HOME}/bin:\$PATH; ${(q)WS_BIN} _agent $id ${(q)cmd}; s=\$?; ${(q)WS_BIN} _dismiss \"\$TMUX_PANE\"; if (( s == 0 )); then ${(q)WS_BIN} _end ${(q)wt} $slot $id \"\$TMUX_PANE\"; else print \"agent exited (\$s) — enter to close\"; read; fi"
   local -a spawn=(-d -P -F '#{window_id}' -n "$tab" -c "$wt" -e "WS_WORKSPACE=$name" -e "WS_SESSION=$id"
     -e "WS_HOME=$WS_HOME" -e "WS_ROOT=$WS_ROOT" -e "WS_TMUX_SOCKET=${WS_TMUX_SOCKET:-}" -e "WS_BIN=$WS_BIN"
+    -e "WS_RUST_BIN=${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}"
     -e "WS_AGENT_SHELL=$WS_AGENT_SHELL" ${(z)WS_AGENT_SHELL} "$run")
   sess="$(sessions_for "$wt" | head -1)"
   if [[ -n "$sess" ]]; then

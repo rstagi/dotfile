@@ -1,0 +1,5 @@
+merge PR #7 Ship it (https://github.com/acme/merge-me/pull/7) (squash)? [y/N] → merging PR for feat/ship (squash)
+→ updating main in <REPO>
+delete merge-me/feat-ship (worktree, tabs, local + remote feat/ship)? [y/N] can't delete merge-me/feat-ship: uncommitted/untracked files:
+  ?? stray.txt
+force delete anyway (these are lost)? [y/N] kept merge-me/feat-ship

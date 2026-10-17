@@ -311,6 +311,14 @@ STATUS="$RUN_DIR/status.json" LAST="$RUN_DIR/last.md"
 HEAD_BEFORE="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)"
 CUR_ENGINE="" CUR_MODEL="" TIMED_OUT=0
 ORIG_RESUME_SID="$RESUME_SID" PROMPT_IN="$RUN_DIR/prompt.md"
+WS_BIN=""
+if [[ "${LOOP_WS_SESSIONS:-1}" != 0 ]]; then
+  candidate="$(whence -p ws)"
+  if [[ -n "$candidate" ]] && "$candidate" --version 2>/dev/null | grep -q '^ws [0-9]' &&
+      "$candidate" ping >/dev/null 2>&1; then
+    WS_BIN="$candidate"
+  fi
+fi
 
 write_meta() { # $1 = engine exit code
   local sid model="$CUR_MODEL" init_model
@@ -326,9 +334,10 @@ write_meta() { # $1 = engine exit code
     --arg before "$HEAD_BEFORE" --arg after "$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)" \
     --arg proposedProfile "$ROUTE_PROPOSED_PROFILE" --arg actualProfile "$ROUTE_ACTUAL_PROFILE" \
     --arg routeFallbackReason "$ROUTE_FALLBACK_REASON" --arg modelOverride "$MODEL_OVERRIDE" \
+    --arg wsSession "$(cat "$RUN_DIR/ws-session" 2>/dev/null)" \
     --argjson rc "${1:-0}" --argjson timedOut "$TIMED_OUT" \
     '{engine: $engine, model: $model, effort:(if ($effort|length)>0 then $effort else null end),
-      sessionId: $sid, headBefore: $before,
+      sessionId: $sid, wsSession:(if ($wsSession|length)>0 then $wsSession else null end), headBefore: $before,
       headAfter: $after, engineExit: $rc, timedOut: ($timedOut == 1),
       proposedProfile:(if ($proposedProfile|length)>0 then $proposedProfile else null end),
       actualProfile:(if ($actualProfile|length)>0 then $actualProfile else null end),
@@ -348,6 +357,39 @@ write_leg() {
 
 # --- engine launchers (backgrounded by run_leg; cwd/-C = the worktree) ---
 
+# The child prepares its arguments after wsd assigns the session id.
+launch_engine() {
+  if [[ -z "$WS_BIN" ]]; then
+    command "$@"
+    return $?
+  fi
+  local key environment=()
+  for key in ${(k)parameters}; do
+    [[ "${parameters[$key]}" == *export* ]] && environment+=(--env "$key=${(P)key}")
+  done
+  "$WS_BIN" session run --headless --cwd "$WT" "${environment[@]}" \
+    --stdin "$PROMPT_IN" --stdout "$TRANSCRIPT" --stderr "$STDERR" -- \
+    zsh -c '
+      set -eu
+      ws_bin="$1"; agent="$2"; run_dir="$3"; shift 3
+      engine_argv=("$@")
+      print -r -- "$WS_SESSION_ID" > "$run_dir/ws-session"
+      jq -cn --arg id "$WS_SESSION_ID" --arg engine "$agent" \
+        "{wsSession:\$id,engine:\$engine}" >> "$run_dir/ws-sessions.jsonl"
+      jq --arg id "$WS_SESSION_ID" ".wsSession=\$id" "$run_dir/leg.json" > "$run_dir/leg.json.tmp"
+      mv "$run_dir/leg.json.tmp" "$run_dir/leg.json"
+      prepared="$("$ws_bin" agent prepare --agent "$agent" --mode headless --session "$WS_SESSION_ID" --format sh)"
+      eval "$prepared"
+      # Loop supplies the headless command and the engine resume arguments.
+      [[ "$agent" == (claude|codex) ]] && shift
+      additions=("$@")
+      # Loop already supplies these permission flags.
+      additions=("${(@)additions:#--dangerously-bypass-approvals-and-sandbox}")
+      additions=("${(@)additions:#--always-approve}")
+      exec "${engine_argv[@]}" "${additions[@]}"
+    ' loop-ws-agent "$WS_BIN" "$CUR_ENGINE" "$RUN_DIR" "$@"
+}
+
 # Effort actually passed for the current leg: claude has no `ultra` (clamps to max); grok tops
 # out at xhigh (max/ultra clamp to it).
 leg_effort() {
@@ -363,12 +405,12 @@ launch_claude() { # $1 model, $2 fallback (may be empty)
   effort="$(leg_effort)"
   [[ -n "$effort" ]] && effort_args=(--effort "$effort")
   if [[ -n "$RESUME_SID" ]]; then
-    ( cd "$WT" && command claude -p --resume "$RESUME_SID" "${fb_args[@]}" "${effort_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && launch_engine claude -p --resume "$RESUME_SID" "${fb_args[@]}" "${effort_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
         --max-budget-usd "$BUDGET" < "$PROMPT_IN" > "$TRANSCRIPT" 2> "$STDERR" )
   else
-    ( cd "$WT" && command claude -p --model "$1" "${fb_args[@]}" "${effort_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && launch_engine claude -p --model "$1" "${fb_args[@]}" "${effort_args[@]}" "${CLAUDE_EXTRA_ARGS[@]}" \
         --output-format stream-json --verbose \
         --allow-dangerously-skip-permissions --permission-mode bypassPermissions \
         --max-budget-usd "$BUDGET" < "$PROMPT_IN" > "$TRANSCRIPT" 2> "$STDERR" )
@@ -381,11 +423,11 @@ launch_codex() { # $1 model
   [[ -n "$effort" ]] && effort_args=(-c "model_reasoning_effort=\"$effort\"")
   # `codex exec resume` has no -C flag and filters sessions by cwd — cd is load-bearing
   if [[ -n "$RESUME_SID" ]]; then
-    ( cd "$WT" && codex exec resume "$RESUME_SID" --json "${effort_args[@]}" "${CODEX_EXTRA_ARGS[@]}" \
+    ( cd "$WT" && launch_engine codex exec resume "$RESUME_SID" --json "${effort_args[@]}" "${CODEX_EXTRA_ARGS[@]}" \
         --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
         -o "$LAST" "$(cat "$PROMPT_IN")" > "$TRANSCRIPT" 2> "$STDERR" )
   else
-    codex exec --json -C "$WT" -m "$1" "${effort_args[@]}" "${CODEX_EXTRA_ARGS[@]}" \
+    launch_engine codex exec --json -C "$WT" -m "$1" "${effort_args[@]}" "${CODEX_EXTRA_ARGS[@]}" \
       --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
       -o "$LAST" - < "$PROMPT_IN" > "$TRANSCRIPT" 2> "$STDERR"
   fi
@@ -400,7 +442,7 @@ launch_grok() { # $1 model
   [[ -n "$effort" ]] && effort_args=(--effort "$effort")
   [[ -n "$1" && "$1" != (default|resume) ]] && model_args=(-m "$1")
   [[ -n "$RESUME_SID" ]] && resume_args=(--resume "$RESUME_SID")
-  ( cd "$WT" && command grok --prompt-file "$PROMPT_IN" "${resume_args[@]}" "${model_args[@]}" "${effort_args[@]}" \
+  ( cd "$WT" && launch_engine grok --prompt-file "$PROMPT_IN" "${resume_args[@]}" "${model_args[@]}" "${effort_args[@]}" \
       "${GROK_EXTRA_ARGS[@]}" --always-approve --output-format streaming-messages-json \
       > "$TRANSCRIPT" 2> "$STDERR" )
 }
@@ -414,7 +456,7 @@ descendants() { # print pids of the full process tree under $1 (depth-first)
 }
 
 run_leg() { # runs current engine with watchdogs; returns engine exit code (200 = timeout, 201 = paused, 202 = note changed)
-  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims" "$RUN_DIR/.paused" "$RUN_DIR/.note-changed" "$RUN_DIR/.ctl-victims"
+  rm -f "$RUN_DIR/.timeout" "$RUN_DIR/.victims" "$RUN_DIR/.paused" "$RUN_DIR/.note-changed" "$RUN_DIR/.ctl-victims" "$RUN_DIR/.done-early" "$RUN_DIR/ws-session"
   local leg_timeout="$TIMEOUT"
   if (( CHECKPOINT_MODE )); then
     leg_timeout=$(( ATTEMPT_DEADLINE - $(date +%s) ))
@@ -429,40 +471,88 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
   *) launch_codex "$CUR_MODEL" & ;;
   esac
   local child=$!
-  # watchdog only marks + TERMs the whole tree; the KILL follow-through happens in the
-  # main flow after wait (the watchdog dies with its TERM'd parent otherwise)
-  ( sleep "$leg_timeout"
+  # On the ws path, wsd owns the engine group. The watcher must finish its stop and wait.
+  # Direct launches retain the descendant TERM/KILL path.
+  ( local timer=""
+    trap 'if [[ -n "$timer" ]]; then kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; fi; exit 0' TERM INT HUP
+    sleep "$leg_timeout" & timer=$!
+    wait "$timer"
+    timer=""
     kill -0 "$child" 2>/dev/null || exit 0
-    { echo "$child"; descendants "$child"; } > "$RUN_DIR/.victims"
     touch "$RUN_DIR/.timeout"
-    xargs kill -TERM 2>/dev/null < "$RUN_DIR/.victims"
+    stop_leg "$child" "$RUN_DIR/.victims"
   ) &
   local watchdog=$!
   # control watcher: a pause file or a note edit halts the engine within one poll
-  ( while kill -0 "$child" 2>/dev/null; do
-      sleep "$CONTROL_POLL"
+  ( local timer=""
+    trap 'if [[ -n "$timer" ]]; then kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; fi; exit 0' TERM INT HUP
+    while kill -0 "$child" 2>/dev/null; do
+      sleep "$CONTROL_POLL" & timer=$!
+      wait "$timer"
+      timer=""
       local marker=""
       if is_paused; then marker=.paused
       elif [[ "$(note_sig)" != "$NOTE_SIG" ]]; then marker=.note-changed
       fi
       if [[ -n "$marker" ]]; then
-        { echo "$child"; descendants "$child"; } > "$RUN_DIR/.ctl-victims"
         touch "$RUN_DIR/$marker"
-        xargs kill -TERM 2>/dev/null < "$RUN_DIR/.ctl-victims"
-        exit 0
+        stop_leg "$child" "$RUN_DIR/.ctl-victims"
+        exit $?
       fi
     done
   ) &
   local watcher=$!
+  # ws session run returns at the process exit, not at ws done. A done event stops the group.
+  local done_watcher=""
+  if [[ -n "$WS_BIN" ]]; then
+    ( local waiter="" sid=""
+      trap 'if [[ -n "$waiter" ]]; then kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null; fi; exit 0' TERM INT HUP
+      sid="$(leg_session "$child")"
+      [[ -n "$sid" ]] || exit 0
+      WS_SESSION_ID="${WS_SESSION_ID:-$sid}" "$WS_BIN" wait "$sid" --for done >/dev/null 2>&1 & waiter=$!
+      wait "$waiter" || exit 0
+      waiter=""
+      kill -0 "$child" 2>/dev/null || exit 0
+      touch "$RUN_DIR/.done-early"
+      stop_leg "$child" "$RUN_DIR/.victims"
+    ) &
+    done_watcher=$!
+  fi
   wait "$child"; local rc=$?
-  kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
-  { echo "$watcher"; descendants "$watcher"; } | xargs kill 2>/dev/null; wait "$watcher" 2>/dev/null
+  local stop_failed=0
+  if [[ -n "$done_watcher" && -f "$RUN_DIR/.done-early" ]]; then
+    # rc is the stop status. The attempt does not count as a clean engine exit.
+    wait "$done_watcher" || stop_failed=1
+  elif [[ -n "$done_watcher" ]]; then
+    kill "$done_watcher" 2>/dev/null; wait "$done_watcher" 2>/dev/null
+  fi
+  if [[ -n "$WS_BIN" && -f "$RUN_DIR/.timeout" ]]; then
+    wait "$watchdog" || stop_failed=1
+  else
+    kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+  fi
+  if [[ -n "$WS_BIN" && ( -f "$RUN_DIR/.paused" || -f "$RUN_DIR/.note-changed" ) ]]; then
+    wait "$watcher" || stop_failed=1
+  else
+    kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
+  fi
+  # The foreground client can exit before the process group (for example after ws done).
+  # Confirm cleanup even when neither watchdog requested a stop.
+  if [[ -n "$WS_BIN" ]] && (( ! stop_failed )); then
+    stop_leg "$child" "$RUN_DIR/.victims" || stop_failed=1
+  fi
+  if (( stop_failed )); then
+    write_meta "$rc"
+    jq -n '{outcome:"blocked",summary:"Cannot confirm the ws session exit. See ws-stop.log."}' > "$STATUS"
+    echo "loop-runner: cannot confirm the ws session exit. See ws-stop.log." >&2
+    exit 20
+  fi
   if [[ -f "$RUN_DIR/.paused" ]]; then
-    reap_victims "$RUN_DIR/.ctl-victims"
+    [[ -z "$WS_BIN" ]] && reap_victims "$RUN_DIR/.ctl-victims"
     return 201
   fi
   if [[ -f "$RUN_DIR/.note-changed" ]]; then
-    reap_victims "$RUN_DIR/.ctl-victims"
+    [[ -z "$WS_BIN" ]] && reap_victims "$RUN_DIR/.ctl-victims"
     return 202
   fi
   if [[ -f "$RUN_DIR/.timeout" ]]; then
@@ -471,6 +561,7 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
       rm -f "$RUN_DIR/.timeout"
     else
       TIMED_OUT=1
+      [[ -n "$WS_BIN" ]] && return 200
       local grace=0 survivors
       while [[ $grace -lt 30 ]]; do
         survivors="$(xargs -n1 sh -c 'kill -0 "$0" 2>/dev/null && echo "$0"' < "$RUN_DIR/.victims" 2>/dev/null)"
@@ -482,6 +573,36 @@ run_leg() { # runs current engine with watchdogs; returns engine exit code (200 
     fi
   fi
   return $rc
+}
+
+stop_leg() { # Stop the current engine and confirm its exit before another leg can start.
+  local child="$1" victims="$2" sid=""
+  if [[ -z "$WS_BIN" ]]; then
+    { echo "$child"; descendants "$child"; } > "$victims"
+    xargs kill -TERM 2>/dev/null < "$victims"
+    return 0
+  fi
+  sid="$(leg_session "$child")"
+  [[ -n "$sid" ]] || return 0
+  if "$WS_BIN" session stop "$sid" >> "$RUN_DIR/ws-stop.log" 2>&1 &&
+      WS_SESSION_ID="${WS_SESSION_ID:-$sid}" "$WS_BIN" wait "$sid" --for exit >> "$RUN_DIR/ws-stop.log" 2>&1; then
+    return 0
+  fi
+  # Release the foreground wait after an API failure. Never start another engine.
+  kill -TERM "$child" 2>/dev/null
+  return 1
+}
+
+leg_session() { # Print the ws session id of the current leg. Empty if the leg exits first.
+  local child="$1" sid=""
+  # A cancellation can arrive before the session wrapper publishes its id.
+  while kill -0 "$child" 2>/dev/null; do
+    sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+    [[ -n "$sid" ]] && break
+    sleep 0.05
+  done
+  [[ -n "$sid" ]] || sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+  print -r -- "$sid"
 }
 
 apply_note_change() { # resume the interrupted session with the new note (same attempt, no retry used)

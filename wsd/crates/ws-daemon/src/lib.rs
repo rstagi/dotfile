@@ -1,33 +1,42 @@
 //! The local WS daemon runtime.
 
 use std::{
-    collections::VecDeque,
-    fs, io,
-    os::unix::{
-        fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
-        net::UnixStream,
-    },
+    fs::{self, File, TryLockError},
+    io,
+    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{Json, Router, extract::State, routing::get};
 use tokio::{
     net::UnixListener,
     signal::unix::{SignalKind, signal},
 };
-use ws_core::{HookRecord, PingResponse, VERSION};
+use ws_core::{PingResponse, VERSION};
 
+pub mod agents;
+pub mod api;
+pub mod bus;
+pub mod edges;
+pub mod hooks;
+pub mod import;
+pub mod limits;
+pub mod loops;
+pub mod notify;
+pub mod phases;
+pub mod sessions;
+pub mod supervisor;
+pub mod tail;
 pub mod tmux;
-
-const HOOK_CAPACITY: usize = 256;
-type ApiError = (StatusCode, &'static str);
+pub mod triggers;
+pub mod wait;
+pub mod workspaces;
 
 #[derive(Clone)]
 struct AppState {
     started: Instant,
-    hooks: Arc<Mutex<VecDeque<HookRecord>>>,
 }
 
 struct SocketFile {
@@ -45,6 +54,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
             .mode(0o700)
             .create(parent)?;
     }
+    let _lock = lock_socket(socket)?;
     let listener = bind(socket)?;
     let metadata = fs::symlink_metadata(socket)?;
     let _socket_file = SocketFile {
@@ -53,27 +63,76 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         inode: metadata.ino(),
     };
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+    let state = match std::env::var_os("WS_STATE") {
+        Some(path) => PathBuf::from(path),
+        None => PathBuf::from(std::env::var_os("HOME").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Set HOME or WS_STATE to locate the session state.",
+            )
+        })?)
+        .join(".ws/state"),
+    };
+    let sessions = import::open_for_daemon(&state, &import::backend::home()?)?;
+    let store = Arc::new(Mutex::new(sessions));
+    supervisor::adopt(store.clone())
+        .await
+        .map_err(|error| io::Error::other(error.0))?;
+    hooks::replay(store.clone(), &state).await?;
+    api::call(store.clone(), |sessions| sessions.evaluate_triggers())
+        .await
+        .map_err(|error| io::Error::other(error.0))?;
+    let delivery = bus::delivery::start(store.clone());
     let app = Router::new()
         .route("/v1/ping", get(ping))
-        .route("/v1/hooks", get(hooks).post(record_hook))
         .with_state(AppState {
             started: Instant::now(),
-            hooks: Arc::new(Mutex::new(VecDeque::new())),
-        });
-    axum::serve(listener, app)
+        })
+        .merge(api::router_with_store(store.clone()));
+    let shutdown_store = store.clone();
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
                 _ = terminate.recv() => {}
                 _ = interrupt.recv() => {}
             }
+            let _ = api::call(shutdown_store, |sessions| {
+                sessions.shutdown.send_replace(true);
+                Ok(())
+            })
+            .await;
         })
-        .await
+        .await;
+    delivery.shutdown().await;
+    result
 }
 
-/// Binds the socket. Replaces a stale socket file, but never a live socket or another file.
+fn lock_socket(socket: &Path) -> io::Result<File> {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".lock");
+    // Keep this file after shutdown so every contender locks the same inode.
+    let lock = ws_core::lockfile::open_lock_file(Path::new(&path))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "Another daemon holds the socket lock for {}.",
+                socket.display()
+            ),
+        )),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// Replaces stale socket files while the caller holds the daemon lock. Preserves other files.
 fn bind(socket: &Path) -> io::Result<UnixListener> {
     match UnixListener::bind(socket) {
-        Err(error) if error.kind() == io::ErrorKind::AddrInUse && is_stale_socket(socket) => {
+        Err(error)
+            if error.kind() == io::ErrorKind::AddrInUse
+                && fs::symlink_metadata(socket)
+                    .is_ok_and(|metadata| metadata.file_type().is_socket()) =>
+        {
             fs::remove_file(socket)?;
             UnixListener::bind(socket)
         }
@@ -81,51 +140,11 @@ fn bind(socket: &Path) -> io::Result<UnixListener> {
     }
 }
 
-fn is_stale_socket(socket: &Path) -> bool {
-    fs::symlink_metadata(socket).is_ok_and(|metadata| metadata.file_type().is_socket())
-        && UnixStream::connect(socket)
-            .is_err_and(|error| error.kind() == io::ErrorKind::ConnectionRefused)
-}
-
 async fn ping(State(state): State<AppState>) -> Json<PingResponse> {
     Json(PingResponse {
         version: VERSION.to_owned(),
         uptime_secs: state.started.elapsed().as_secs(),
     })
-}
-
-async fn hooks(State(state): State<AppState>) -> Result<Json<Vec<HookRecord>>, ApiError> {
-    let hooks = state.hooks.lock().map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Cannot read the hook store.",
-        )
-    })?;
-    Ok(Json(hooks.iter().cloned().collect()))
-}
-
-async fn record_hook(
-    State(state): State<AppState>,
-    Json(record): Json<HookRecord>,
-) -> Result<(StatusCode, Json<HookRecord>), ApiError> {
-    if !record
-        .window_id
-        .strip_prefix('@')
-        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
-    {
-        return Err((StatusCode::BAD_REQUEST, "Use a tmux window id such as @1."));
-    }
-    let mut hooks = state.hooks.lock().map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Cannot write the hook store.",
-        )
-    })?;
-    if hooks.len() == HOOK_CAPACITY {
-        hooks.pop_front();
-    }
-    hooks.push_back(record.clone());
-    Ok((StatusCode::CREATED, Json(record)))
 }
 
 impl Drop for SocketFile {

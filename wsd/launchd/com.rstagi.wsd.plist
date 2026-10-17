@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.rstagi.wsd</string>
+  <key>ProgramArguments</key>
+  <array><string>@WS_HOME@/bin/ws-rs</string><string>daemon</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>@HOME@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@PATH@</string>
+    <key>WS_HOME</key><string>@WS_HOME@</string>
+    <key>WS_STATE</key><string>@WS_STATE@</string>
+    <key>WS_SOCK</key><string>@WS_SOCK@</string>
+    <key>WS_ROOT</key><string>@WS_ROOT@</string>
+    <key>WS_TMUX_SOCKET</key><string>@WS_TMUX_SOCKET@</string>
+  </dict>
+  <key>StandardOutPath</key><string>@WS_HOME@/daemon.log</string>
+  <key>StandardErrorPath</key><string>@WS_HOME@/daemon.log</string>
+</dict>
+</plist>

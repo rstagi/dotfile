@@ -1,0 +1,1 @@
+merge PR #7 Ship it (https://github.com/acme/merge-me/pull/7) (squash)? [y/N] not merged
