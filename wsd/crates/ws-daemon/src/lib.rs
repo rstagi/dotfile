@@ -72,21 +72,23 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .await
         .map_err(|error| io::Error::other(error.0))?;
     hooks::replay(store.clone(), &state).await?;
-    let _delivery = bus::delivery::start(store.clone());
+    let delivery = bus::delivery::start(store.clone());
     let app = Router::new()
         .route("/v1/ping", get(ping))
         .with_state(AppState {
             started: Instant::now(),
         })
         .merge(api::router_with_store(store));
-    axum::serve(listener, app)
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
                 _ = terminate.recv() => {}
                 _ = interrupt.recv() => {}
             }
         })
-        .await
+        .await;
+    delivery.shutdown().await;
+    result
 }
 
 fn lock_socket(socket: &Path) -> io::Result<File> {

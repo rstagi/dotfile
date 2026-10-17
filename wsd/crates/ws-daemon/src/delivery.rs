@@ -24,7 +24,7 @@ use ws_core::{
 };
 
 const RETRY_INTERVAL: Duration = Duration::from_millis(250);
-// Give the TUI time to process the bracketed paste before it receives Enter.
+// Separate the TUI paste handler from Enter, as ws_bus_paste does.
 const SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -50,6 +50,8 @@ struct Server {
 #[derive(Deserialize, Serialize)]
 struct Paste {
     batch_id: Ulid,
+    #[serde(skip)]
+    submitted: bool,
     message_ids: Vec<EventId>,
     watermark_us: u64,
     deadline_us: u64,
@@ -57,6 +59,8 @@ struct Paste {
     pane: String,
     server: Server,
 }
+
+type Clock = std::sync::Arc<dyn Fn() -> io::Result<u64> + Send + Sync>;
 
 pub(crate) struct Worker(tokio::task::JoinHandle<()>);
 
@@ -82,10 +86,31 @@ pub(crate) fn start(store: Store) -> Worker {
 }
 
 impl Worker {
+    pub(crate) async fn shutdown(mut self) {
+        self.0.abort();
+        let _ = (&mut self.0).await;
+    }
+
     fn spawn(store: Store, server: Server, timeout: Duration, interval: Duration) -> Self {
+        Self::with_clock(
+            store,
+            server,
+            timeout,
+            interval,
+            std::sync::Arc::new(crate::hooks::receipt_time_us),
+        )
+    }
+
+    fn with_clock(
+        store: Store,
+        server: Server,
+        timeout: Duration,
+        interval: Duration,
+        clock: Clock,
+    ) -> Self {
         Self(tokio::spawn(async move {
             loop {
-                if let Err(error) = retry(store.clone(), &server, timeout).await {
+                if let Err(error) = retry(store.clone(), &server, timeout, &clock).await {
                     eprintln!("Cannot retry message delivery: {error}");
                 }
                 tokio::time::sleep(interval).await;
@@ -100,10 +125,11 @@ impl Drop for Worker {
     }
 }
 
-async fn retry(store: Store, server: &Server, timeout: Duration) -> Result<()> {
+async fn retry(store: Store, server: &Server, timeout: Duration, clock: &Clock) -> Result<()> {
     // Hooks and pastes must use the same lock before they examine the inbox or window.
     let guard = crate::hooks::INGEST_LOCK.lock().await;
-    let targets = api::call(store.clone(), |sessions| {
+    let now = clock()?;
+    let targets = api::call(store.clone(), move |sessions| {
         let pending: HashSet<_> = sessions
             .registry
             .messages()?
@@ -111,23 +137,20 @@ async fn retry(store: Store, server: &Server, timeout: Duration) -> Result<()> {
             .filter(|m| m.delivered_at_ms.is_none() && m.read_at_ms.is_none())
             .map(|m| m.recipient)
             .collect();
-        let local: HashSet<_> = sessions
+        let local: Vec<_> = sessions
             .registry
             .sessions()?
             .into_iter()
-            .filter(|s| {
-                s.device_id == sessions.device_id
-                    && !matches!(s.state.as_str(), "finished" | "failed")
-            })
-            .map(|s| s.id)
+            .filter(|s| s.device_id == sessions.device_id && pending.contains(&s.id))
             .collect();
         let mut available = HashSet::new();
-        for id in pending.intersection(&local).copied() {
+        for session in local {
+            let id = session.id;
             if let Some(paste) = sessions.active_paste(id)? {
-                if crate::hooks::receipt_time_us()? >= paste.deadline_us {
+                if now >= paste.deadline_us {
                     sessions.requeue_paste(id, paste.batch_id)?;
                 }
-            } else {
+            } else if !matches!(session.state.as_str(), "finished" | "failed") {
                 available.insert(id);
             }
         }
@@ -157,7 +180,7 @@ async fn retry(store: Store, server: &Server, timeout: Duration) -> Result<()> {
     for (id, window) in targets {
         let _guard = crate::hooks::INGEST_LOCK.lock().await;
         // A missing window must not prevent another session from receiving its messages.
-        if let Err(error) = paste_idle(store.clone(), server, id, &window, timeout).await {
+        if let Err(error) = paste_idle(store.clone(), server, id, &window, timeout, clock).await {
             eprintln!("Cannot paste messages for {id}: {error}");
         }
     }
@@ -170,45 +193,19 @@ async fn paste_idle(
     id: SessionId,
     window: &str,
     timeout: Duration,
+    clock: &Clock,
 ) -> Result<()> {
-    let pending = api::call(store.clone(), move |sessions| {
-        if let Some(paste) = sessions.active_paste(id)? {
-            if crate::hooks::receipt_time_us()? >= paste.deadline_us {
-                sessions.requeue_paste(id, paste.batch_id)?;
-            }
-            return Ok(None);
-        }
-        let settled: HashSet<_> = sessions
-            .registry
-            .messages()?
-            .into_iter()
-            .filter(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some())
-            .map(|m| m.id)
-            .collect();
-        Ok(Some(
-            sessions
-                .inbox(id)?
-                .into_iter()
-                .filter(|m| !settled.contains(&m.event_id))
-                .collect::<Vec<_>>(),
-        ))
-    })
-    .await
-    .map_err(|e| e.0)?;
-    let Some(messages) = pending.filter(|m| !m.is_empty()) else {
-        return Ok(());
-    };
     let snapshot = server
         .run(&[
             "display-message",
             "-p",
             "-t",
             window,
-            "#{@ws_session}|#{@ws_state}|#{@ws_main}|#{@ws_pane}|#{bracket_paste_flag}|#{socket_path}",
+            "#{@ws_session}|#{@ws_state}|#{@ws_main}|#{@ws_pane}|#{socket_path}",
         ])
         .await?;
     let fields: Vec<_> = snapshot.split('|').collect();
-    if fields.len() != 6
+    if fields.len() != 5
         || fields[0] != id.to_string()
         || fields[1] != "idle"
         || (!fields[2].is_empty() && fields[2] != "idle")
@@ -238,9 +235,34 @@ async fn paste_idle(
     {
         return Ok(());
     }
-    let watermark_us = crate::hooks::receipt_time_us()?;
+    let pending = api::call(store.clone(), move |sessions| {
+        if sessions.active_paste(id)?.is_some() {
+            return Ok(None);
+        }
+        let settled: HashSet<_> = sessions
+            .registry
+            .messages()?
+            .into_iter()
+            .filter(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some())
+            .map(|m| m.id)
+            .collect();
+        Ok(Some(
+            sessions
+                .inbox(id)?
+                .into_iter()
+                .filter(|m| !settled.contains(&m.event_id))
+                .collect::<Vec<_>>(),
+        ))
+    })
+    .await
+    .map_err(|e| e.0)?;
+    let Some(messages) = pending.filter(|m| !m.is_empty()) else {
+        return Ok(());
+    };
+    let watermark_us = clock()?;
     let paste = Paste {
         batch_id: Ulid::new(),
+        submitted: false,
         message_ids: messages.iter().map(|m| m.event_id).collect(),
         watermark_us,
         deadline_us: watermark_us.saturating_add(
@@ -253,7 +275,7 @@ async fn paste_idle(
         pane: pane.into(),
         server: Server {
             socket: server.socket.clone(),
-            path: Some(fields[5].into()),
+            path: Some(fields[4].into()),
         },
     };
     let batch_id = paste.batch_id;
@@ -265,30 +287,71 @@ async fn paste_idle(
     .await
     .map_err(|e| e.0)?;
     let buffer = format!("ws-paste-{batch_id}");
-    let result = async {
-        let reserved = server.run(&["if-shell", "-F", "-t", pane, &format!("#{{&&:{guard},#{{==:#{{@ws_state}},idle}}}}"),
-            &format!("set-option -w -t {window} @ws_seq {watermark_us}; set-option -wu -t {window} @ws_turn; display-message -p reserved")]).await?;
-        if reserved != "reserved" { return Err(io::Error::other("The agent window changed before the paste.")); }
-        server.load(&buffer, &messages.iter().map(render).collect::<Vec<_>>().join("\n\n")).await?;
-        let ready = format!("#{{&&:{guard},#{{==:#{{@ws_seq}},{watermark_us}}}}}");
-        server.run(&["if-shell", "-F", "-t", pane, &ready,
-            &format!("paste-buffer -d -p -r -b {buffer} -t {pane}")]).await?;
-        if server.run(&["show-buffer", "-b", &buffer]).await.is_ok() {
-            return Err(io::Error::other("The agent window did not accept the paste."));
-        }
-        tokio::time::sleep(SUBMIT_DELAY).await;
-        let sent = server.run(&["if-shell", "-F", "-t", pane, &ready,
-            &format!("send-keys -t {pane} Enter; display-message -p submitted")]).await?;
-        if sent != "submitted" { return Err(io::Error::other("The agent window changed before submission.")); }
-        Ok::<_, io::Error>(())
-    }.await;
-    if result.is_err() {
+    let text = messages.iter().map(render).collect::<Vec<_>>().join("\n\n");
+    let result = submit(server, &paste, &guard, &buffer, &text).await;
+    if result.is_ok() {
+        api::call(store.clone(), move |sessions| {
+            sessions.append(id, "paste.submitted", json!({"batch_id":batch_id}))
+        })
+        .await
+        .map_err(|e| e.0)?;
+    } else {
         let _ = server.run(&["delete-buffer", "-b", &buffer]).await;
         api::call(store, move |sessions| sessions.requeue_paste(id, batch_id))
             .await
             .map_err(|e| e.0)?;
     }
     result.map_err(Into::into)
+}
+
+async fn submit(
+    server: &Server,
+    paste: &Paste,
+    guard: &str,
+    buffer: &str,
+    text: &str,
+) -> io::Result<()> {
+    let Paste {
+        pane,
+        window,
+        watermark_us,
+        ..
+    } = paste;
+    let idle = format!("#{{&&:{guard},#{{==:#{{@ws_state}},idle}}}}");
+    let reserve = format!(
+        "set-option -w -t {window} @ws_seq {watermark_us}; \
+         set-option -wu -t {window} @ws_turn; display-message -p reserved"
+    );
+    let reserved = server
+        .run(&["if-shell", "-F", "-t", pane, &idle, &reserve])
+        .await?;
+    if reserved != "reserved" {
+        return Err(io::Error::other(
+            "The agent window changed before the paste.",
+        ));
+    }
+    server.load(buffer, text).await?;
+    let ready = format!("#{{&&:{guard},#{{==:#{{@ws_seq}},{watermark_us}}}}}");
+    let paste = format!("paste-buffer -d -p -r -b {buffer} -t {pane}");
+    server
+        .run(&["if-shell", "-F", "-t", pane, &ready, &paste])
+        .await?;
+    if server.run(&["show-buffer", "-b", buffer]).await.is_ok() {
+        return Err(io::Error::other(
+            "The agent window did not accept the paste.",
+        ));
+    }
+    tokio::time::sleep(SUBMIT_DELAY).await;
+    let enter = format!("send-keys -t {pane} Enter; display-message -p submitted");
+    let sent = server
+        .run(&["if-shell", "-F", "-t", pane, &ready, &enter])
+        .await?;
+    if sent != "submitted" {
+        return Err(io::Error::other(
+            "The agent window changed before submission.",
+        ));
+    }
+    Ok(())
 }
 
 fn ownership(paste: &Paste, id: SessionId) -> String {
@@ -350,13 +413,21 @@ impl Sessions {
         let entries = SessionLog::new(&self.state, session, record.device_id)
             .read()?
             .entries;
+        let mut submitted = None;
         for entry in entries.into_iter().rev() {
             match entry.event_type.as_str() {
                 "paste.requeued" | "paste.acknowledged" => return Ok(None),
+                "paste.submitted" => {
+                    submitted = Some(
+                        serde_json::from_value::<Ulid>(entry.body["batch_id"].clone())
+                            .map_err(Error::Json)?,
+                    );
+                }
                 "paste.started" => {
-                    return serde_json::from_value(entry.body)
-                        .map(Some)
-                        .map_err(Error::Json);
+                    let mut paste: Paste =
+                        serde_json::from_value(entry.body).map_err(Error::Json)?;
+                    paste.submitted = submitted == Some(paste.batch_id);
+                    return Ok(Some(paste));
                 }
                 _ => {}
             }
@@ -395,7 +466,8 @@ impl Sessions {
         } else {
             callback.tmux_path.is_some() && callback.tmux_path == paste.server.path
         };
-        if callback.observed_at_us <= paste.watermark_us
+        if !paste.submitted
+            || callback.observed_at_us <= paste.watermark_us
             || callback.observed_at_us > paste.deadline_us
             || callback.pane.as_deref() != Some(&paste.pane)
             || window != paste.window
@@ -866,6 +938,31 @@ mod tests {
             )
         }
 
+        fn controlled_worker(&self) -> (super::Worker, Arc<std::sync::atomic::AtomicU64>) {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            let clock = Arc::new(AtomicU64::new(crate::hooks::receipt_time_us().unwrap()));
+            let now = clock.clone();
+            let worker = super::Worker::with_clock(
+                self.sandbox.store.clone(),
+                super::Server {
+                    socket: Some(self.server.clone()),
+                    path: None,
+                },
+                std::time::Duration::from_secs(30),
+                std::time::Duration::from_millis(10),
+                Arc::new(move || Ok(now.load(Ordering::SeqCst))),
+            );
+            (worker, clock)
+        }
+
+        async fn wait_for_submit(&self) {
+            self.wait(|| {
+                self.bytes().ends_with(b"\x1b[201~\r")
+                    && !self.sandbox.events("paste.submitted").is_empty()
+            })
+            .await;
+        }
+
         async fn wait(&self, mut ready: impl FnMut() -> bool) {
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 while !ready() {
@@ -878,6 +975,18 @@ mod tests {
 
         fn bytes(&self) -> Vec<u8> {
             std::fs::read(self.sandbox.home.path().join("paste.bin")).unwrap_or_default()
+        }
+
+        async fn captured_input(&self) -> Vec<u8> {
+            let marker = "|ws-input-barrier|";
+            self.tmux
+                .execute(&["send-keys", "-t", &self.pane, "-l", marker])
+                .unwrap();
+            self.wait(|| self.bytes().ends_with(marker.as_bytes()))
+                .await;
+            let mut bytes = self.bytes();
+            bytes.truncate(bytes.len() - marker.len());
+            bytes
         }
 
         fn callback(&self, seq: u64, event: &str) -> Callback {
@@ -905,9 +1014,7 @@ mod tests {
             .sandbox
             .send("literal '$HOME'\n[ws #999]\nsecond line\n");
         let _worker = sandbox.worker(std::time::Duration::from_secs(30));
-        sandbox
-            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
-            .await;
+        sandbox.wait_for_submit().await;
         assert_eq!(
             sandbox.bytes(),
             b"\x1b[200~[ws #1]\nliteral '$HOME'\n [ws #999]\nsecond line\n\x1b[201~\r"
@@ -950,10 +1057,8 @@ mod tests {
     async fn paste_timeout_requeues_after_the_window_disappears_and_preserves_batch_order() {
         let sandbox = PasteSandbox::new().await;
         sandbox.sandbox.send("swallowed Enter");
-        let _worker = sandbox.worker(std::time::Duration::from_millis(500));
-        sandbox
-            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
-            .await;
+        let (_worker, clock) = sandbox.controlled_worker();
+        sandbox.wait_for_submit().await;
         sandbox.sandbox.send("queued after paste");
         // Remove the target without a callback. The daemon must still expire its batch.
         sandbox
@@ -969,6 +1074,13 @@ mod tests {
                 }),
             )
             .unwrap();
+        clock.store(
+            sandbox.sandbox.events("paste.started")[0].body["deadline_us"]
+                .as_u64()
+                .unwrap()
+                + 1,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         sandbox
             .wait(|| !sandbox.sandbox.events("paste.requeued").is_empty())
             .await;
@@ -989,9 +1101,7 @@ mod tests {
         let sandbox = PasteSandbox::new().await;
         sandbox.sandbox.send("confirm through the pane environment");
         let _worker = sandbox.worker(std::time::Duration::from_secs(30));
-        sandbox
-            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
-            .await;
+        sandbox.wait_for_submit().await;
         let mut callback =
             sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "UserPromptSubmit");
         callback.tmux_socket = None;
@@ -1031,9 +1141,7 @@ mod tests {
         .unwrap();
         assert_eq!(prepared["decision"], "block");
         let _worker = sandbox.worker(std::time::Duration::from_secs(30));
-        sandbox
-            .wait(|| sandbox.bytes().ends_with(b"\x1b[201~\r"))
-            .await;
+        sandbox.wait_for_submit().await;
         let retried = ingest(
             sandbox.sandbox.store.clone(),
             callback,
@@ -1043,6 +1151,350 @@ mod tests {
         .unwrap();
         assert_eq!(retried, json!({}));
         assert!(sandbox.sandbox.events("message.delivered").is_empty());
+    }
+
+    // Golden scenarios: ws/tests/send.test.sh and ws/tests/inflight.test.sh.
+    #[tokio::test]
+    async fn an_idle_split_window_receives_input_only_in_its_recorded_agent_pane() {
+        let sandbox = PasteSandbox::new().await;
+        let other = sandbox
+            .tmux
+            .create_pane(&sandbox.window, &["/bin/cat"])
+            .unwrap();
+        sandbox
+            .tmux
+            .execute(&["select-pane", "-t", &other])
+            .unwrap();
+        sandbox.sandbox.send("only the agent pane");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox.wait_for_submit().await;
+        assert_eq!(
+            sandbox.bytes(),
+            b"\x1b[200~[ws #1]\nonly the agent pane\x1b[201~\r"
+        );
+        assert!(
+            !sandbox
+                .tmux
+                .capture_pane(&other)
+                .unwrap()
+                .contains("only the agent pane")
+        );
+    }
+
+    #[tokio::test]
+    async fn ownership_loss_after_paste_prevents_enter_and_requeues_the_batch() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox
+            .tmux
+            .execute(&[
+                "set-hook",
+                "-w",
+                "-t",
+                &sandbox.window,
+                "after-paste-buffer",
+                &format!("set-option -w -t {} @ws_session removed", sandbox.window),
+            ])
+            .unwrap();
+        sandbox.sandbox.send("retain after the agent exits");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox
+            .wait(|| !sandbox.sandbox.events("paste.requeued").is_empty())
+            .await;
+        assert_eq!(
+            sandbox.captured_input().await,
+            b"\x1b[200~[ws #1]\nretain after the agent exits\x1b[201~"
+        );
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        assert_eq!(
+            sandbox
+                .sandbox
+                .store
+                .lock()
+                .unwrap()
+                .inbox(sandbox.sandbox.recipient)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timeout_retries_the_ordered_batch_and_an_old_prompt_cannot_ack_the_retry() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.sandbox.send("first");
+        let (_worker, clock) = sandbox.controlled_worker();
+        sandbox.wait_for_submit().await;
+        let first = sandbox.sandbox.events("paste.started")[0].body.clone();
+        sandbox.sandbox.send("second");
+        clock.store(
+            first["deadline_us"].as_u64().unwrap() + 1,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        sandbox
+            .wait(|| {
+                sandbox.sandbox.events("paste.submitted").len() >= 2
+                    && sandbox.bytes().ends_with(b"second\x1b[201~\r")
+            })
+            .await;
+        let old = sandbox.callback(
+            first["watermark_us"].as_u64().unwrap() + 1,
+            "UserPromptSubmit",
+        );
+        ingest(sandbox.sandbox.store.clone(), old, StopDecision::Accept)
+            .await
+            .unwrap();
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        let callback = sandbox.callback(
+            sandbox.sandbox.events("paste.started")[1].body["watermark_us"]
+                .as_u64()
+                .unwrap()
+                + 1,
+            "UserPromptSubmit",
+        );
+        ingest(
+            sandbox.sandbox.store.clone(),
+            callback,
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sandbox.sandbox.events("message.delivered").len(), 2);
+        let batches = sandbox.sandbox.events("paste.started");
+        assert_eq!(
+            batches[1].body["message_ids"][0],
+            batches[0].body["message_ids"][0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_background_agent_postpones_paste_until_its_stop_makes_the_window_idle() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.tmux.set_state(&sandbox.window, "working").unwrap();
+        sandbox
+            .tmux
+            .set_window_option(&sandbox.window, "@ws_sub_background", "1")
+            .unwrap();
+        sandbox.sandbox.send("retry without another send");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        let mut callback =
+            sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "PostToolUse");
+        callback.payload["agent_id"] = json!("background");
+        ingest(
+            sandbox.sandbox.store.clone(),
+            callback,
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        assert!(sandbox.bytes().is_empty());
+        let mut callback =
+            sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "SubagentStop");
+        callback.state = "subagent-stop".into();
+        callback.payload["agent_id"] = json!("background");
+        ingest(
+            sandbox.sandbox.store.clone(),
+            callback,
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        sandbox.wait_for_submit().await;
+        assert_eq!(
+            sandbox.bytes(),
+            b"\x1b[200~[ws #1]\nretry without another send\x1b[201~\r"
+        );
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+    }
+
+    #[tokio::test]
+    async fn restart_restores_the_inflight_batch_and_a_spooled_prompt_confirms_it_once() {
+        let mut sandbox = PasteSandbox::new().await;
+        let message = sandbox.sandbox.send("retain across daemon restart");
+        let worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox.wait_for_submit().await;
+        worker.shutdown().await;
+        let captured = sandbox.bytes();
+        let callback =
+            sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "UserPromptSubmit");
+        spool(sandbox.sandbox.home.path(), &callback).unwrap();
+        let placeholder =
+            Sessions::open(&sandbox.sandbox.home.path().join("placeholder"), 1).unwrap();
+        let old = std::mem::replace(
+            &mut sandbox.sandbox.store,
+            Arc::new(Mutex::new(placeholder)),
+        );
+        drop(old);
+        sandbox.sandbox.store = Arc::new(Mutex::new(
+            Sessions::open(sandbox.sandbox.home.path(), 1).unwrap(),
+        ));
+        replay(sandbox.sandbox.store.clone(), sandbox.sandbox.home.path())
+            .await
+            .unwrap();
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        ingest(
+            sandbox.sandbox.store.clone(),
+            callback,
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        let delivered = sandbox.sandbox.events("message.delivered");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].body["message_id"], json!(message.event_id));
+        assert_eq!(sandbox.bytes(), captured);
+    }
+
+    #[tokio::test]
+    async fn sends_and_stops_wait_for_paste_acknowledgement_before_delivering_later_messages() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.sandbox.send("in flight");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox.wait_for_submit().await;
+        let captured = sandbox.bytes();
+        sandbox.sandbox.send("later");
+        let mut stop = sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "Stop");
+        stop.state = "stop".into();
+        assert_eq!(
+            ingest(sandbox.sandbox.store.clone(), stop, StopDecision::Accept)
+                .await
+                .unwrap(),
+            json!({})
+        );
+        assert_eq!(sandbox.bytes(), captured);
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        let prompt = sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "UserPromptSubmit");
+        ingest(sandbox.sandbox.store.clone(), prompt, StopDecision::Accept)
+            .await
+            .unwrap();
+        assert_eq!(sandbox.sandbox.events("message.delivered").len(), 1);
+        let mut stop = sandbox.callback(crate::hooks::receipt_time_us().unwrap(), "Stop");
+        stop.state = "stop".into();
+        let reply = ingest(
+            sandbox.sandbox.store.clone(),
+            stop.clone(),
+            StopDecision::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply["reason"], "[ws #1]\nlater");
+        assert_eq!(sandbox.sandbox.events("message.read").len(), 1);
+        assert_eq!(
+            sandbox.sandbox.events("message.read")[0].body["implicit"],
+            true
+        );
+        sandbox.sandbox.confirm(&stop).await;
+        assert_eq!(sandbox.sandbox.events("message.delivered").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn ownership_loss_before_paste_keeps_input_out_of_the_replacement_shell() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox
+            .tmux
+            .execute(&[
+                "set-hook",
+                "-g",
+                "after-load-buffer",
+                &format!("set-option -w -t {} @ws_session removed", sandbox.window),
+            ])
+            .unwrap();
+        sandbox.sandbox.send("retain without pane input");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox
+            .wait(|| !sandbox.sandbox.events("paste.requeued").is_empty())
+            .await;
+        assert!(sandbox.captured_input().await.is_empty());
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        assert!(
+            sandbox
+                .tmux
+                .execute(&["list-buffers", "-F", "#{buffer_name}"])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_cannot_confirm_a_batch_after_a_crash_before_pane_submission() {
+        let sandbox = PasteSandbox::new().await;
+        let message = sandbox
+            .sandbox
+            .send("retain if the daemon stops before input");
+        let watermark = crate::hooks::receipt_time_us().unwrap();
+        // Restore the durable record from the crash point before any tmux input.
+        sandbox
+            .sandbox
+            .store
+            .lock()
+            .unwrap()
+            .append(
+                sandbox.sandbox.recipient,
+                "paste.started",
+                json!({
+                    "batch_id":Ulid::new(), "message_ids":[message.event_id],
+                    "watermark_us":watermark, "deadline_us":watermark + 30_000_000,
+                    "window":sandbox.window, "pane":sandbox.pane,
+                    "server":{"socket":sandbox.server, "path":null}
+                }),
+            )
+            .unwrap();
+        let prompt = sandbox.callback(watermark + 1, "UserPromptSubmit");
+        ingest(sandbox.sandbox.store.clone(), prompt, StopDecision::Accept)
+            .await
+            .unwrap();
+        assert!(sandbox.bytes().is_empty());
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+    }
+
+    #[tokio::test]
+    async fn paste_timeout_requeues_even_if_the_session_finishes_before_acknowledgement() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.sandbox.send("retain after finish");
+        let (_worker, clock) = sandbox.controlled_worker();
+        sandbox.wait_for_submit().await;
+        {
+            let mut sessions = sandbox.sandbox.store.lock().unwrap();
+            let id = sandbox.sandbox.recipient.to_string();
+            sessions
+                .transition(&id, ws_core::state::SessionState::Running, None)
+                .unwrap();
+            sessions
+                .transition(&id, ws_core::state::SessionState::Finished, None)
+                .unwrap();
+        }
+        clock.store(
+            sandbox.sandbox.events("paste.started")[0].body["deadline_us"]
+                .as_u64()
+                .unwrap()
+                + 1,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        sandbox
+            .wait(|| !sandbox.sandbox.events("paste.requeued").is_empty())
+            .await;
+        assert!(sandbox.sandbox.events("message.delivered").is_empty());
+        assert_eq!(sandbox.sandbox.events("paste.started").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_does_not_write_inbox_audits_while_the_agent_is_busy() {
+        let sandbox = PasteSandbox::new().await;
+        sandbox.tmux.set_state(&sandbox.window, "working").unwrap();
+        let observed = sandbox.sandbox.home.path().join("busy-observed");
+        sandbox
+            .tmux
+            .execute(&[
+                "set-hook",
+                "-g",
+                "after-display-message",
+                &format!("run-shell 'touch {}'", observed.display()),
+            ])
+            .unwrap();
+        sandbox.sandbox.send("wait without audit churn");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox.wait(|| observed.exists()).await;
+        assert!(sandbox.sandbox.events("api.called").is_empty());
+        assert!(sandbox.sandbox.events("paste.started").is_empty());
     }
 
     #[tokio::test]

@@ -153,10 +153,17 @@ The batch follows `pair_seq` order for each sender. Its headers use sender metad
 After the hook writes and flushes its reply, it confirms delivery through `POST /v1/hooks/delivered`.
 The daemon writes `message.delivered` in the recipient log. Failed confirmations remain in `$WS_STATE/delivery-spool/` for replay at startup or before the next hook.
 
+For an idle agent window, the daemon pastes a durable batch into the recorded agent pane with bracketed paste and a separate Enter.
+A newer `UserPromptSubmit` confirms the batch and writes `message.delivered`. Tool hooks and older prompts do not confirm it.
+One daemon worker retries queued messages and requeues unconfirmed batches after `WS_PASTE_ACK_TIMEOUT` seconds (default 10).
+Pending batches survive daemon restart. The worker replaces the detached zsh retry and paste timeout processes for the Rust backend.
+`ws send` still returns exit 75 after it durably queues a message.
+
 The next accepted Stop or matching cancellation writes `message.read` with `implicit: true` for delivered messages that lack an explicit acknowledgement.
-Startup replay never injects a new batch. Only the session's local device can inject messages.
+Hook spool replay does not inject a new batch. Only the session's local device can inject messages.
 
 Run `cd wsd && cargo test -p ws --test messages` to check persistence, ordering, acknowledgements and stdin.
+Run `cd wsd && cargo test -p ws-daemon bus::delivery::tests` to check Stop replies, paste, timeout recovery and restart.
 Run `zsh wsd/crates/ws/tests/golden/message-capture.zsh` to regenerate the zsh error fixtures.
 
 `POST /v1/phases/spawn` starts a local phase as a headless child:
