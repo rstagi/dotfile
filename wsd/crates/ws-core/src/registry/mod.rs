@@ -1,6 +1,6 @@
 //! Rebuildable SQLite projections of session logs.
 
-use std::{fmt, io, path::Path, time::Duration};
+use std::{fmt, fs, io, path::Path, time::Duration};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     ids::{DeviceId, EventId, SessionId},
-    log::LogEntry,
+    log::{LogEntry, SessionLog},
 };
 
 const SCHEMA: &str = include_str!("schema.sql");
@@ -34,6 +34,7 @@ pub struct Session {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Workspace {
     pub id: String,
+    pub owner_session_id: SessionId,
     pub body: Value,
 }
 
@@ -55,6 +56,12 @@ pub struct Message {
     pub sent_at_ms: Option<i64>,
     pub delivered_at_ms: Option<i64>,
     pub read_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct RebuildReport {
+    pub events: usize,
+    pub truncated_logs: Vec<(SessionId, usize)>,
 }
 
 #[derive(Debug)]
@@ -94,6 +101,49 @@ impl Registry {
         apply_entry(&tx, entry)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Replaces the index from verified logs in `state/sessions`. Leaves logs unchanged.
+    /// A failed rebuild preserves the previous index. Reports incomplete final log lines.
+    pub fn rebuild(&mut self, state: &Path) -> Result<RebuildReport> {
+        let mut logs = match fs::read_dir(state.join("sessions")) {
+            Ok(entries) => entries.collect::<std::result::Result<Vec<_>, _>>()?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        logs.sort_by_key(|directory| directory.file_name());
+        let mut entries = Vec::new();
+        let mut report = RebuildReport::default();
+        for directory in logs {
+            if !directory.file_type()?.is_dir() {
+                continue;
+            }
+            let name = directory.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                Error::InvalidEvent("The session directory name is not UTF-8.".into())
+            })?;
+            let session = parse_id(name)?;
+            if session.to_string() != name {
+                return Err(Error::InvalidEvent(format!(
+                    "The session directory name is not canonical: {name}."
+                )));
+            }
+            let read = SessionLog::new(state, session, DeviceId::from(0_u128)).read()?;
+            if let Some(line) = read.truncated_line {
+                report.truncated_logs.push((session, line));
+            }
+            entries.extend(read.entries);
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch("DELETE FROM aliases; DELETE FROM sessions; DELETE FROM workspaces; DELETE FROM edges; DELETE FROM messages; DELETE FROM applied_events;")?;
+        for entry in &entries {
+            apply_entry(&tx, entry)?;
+        }
+        report.events = entries.len();
+        tx.commit()?;
+        Ok(report)
     }
 
     /// Returns the next alias. Persist it in `session.created.body.alias` before apply.
@@ -151,15 +201,15 @@ impl Registry {
             && upper
                 .bytes()
                 .all(|byte| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&byte));
-        if valid_prefix {
-            if let Some(id) = select_session(
+        if valid_prefix
+            && let Some(id) = select_session(
                 &self.connection,
                 "SELECT id FROM sessions WHERE substr(id, 1, length(?1)) = ?1 LIMIT 2",
                 &upper,
                 input,
-            )? {
-                return Ok(id);
-            }
+            )?
+        {
+            return Ok(id);
         }
         Err(Error::NotFound(input.into()))
     }
@@ -221,14 +271,19 @@ impl Registry {
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {
         let mut statement = self
             .connection
-            .prepare("SELECT id, body FROM workspaces ORDER BY id")?;
+            .prepare("SELECT id, owner_session_id, body FROM workspaces ORDER BY id")?;
         let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         rows.map(|row| {
-            let (id, body) = row?;
+            let (id, owner, body) = row?;
             Ok(Workspace {
                 id,
+                owner_session_id: parse_id(&owner)?,
                 body: serde_json::from_str(&body)?,
             })
         })
@@ -394,12 +449,13 @@ fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<()> {
         "workspace.created" => {
             let id = required_str(entry, "workspace_id")?;
             connection.execute(
-                "INSERT INTO workspaces (id, body) VALUES (?1, ?2)",
-                params![id, entry.body.to_string()],
+                "INSERT INTO workspaces (id, owner_session_id, body) VALUES (?1, ?2, ?3)",
+                params![id, entry.session_id.to_string(), entry.body.to_string()],
             )?;
         }
         "workspace.updated" => {
             let id = required_str(entry, "workspace_id")?;
+            check_workspace_owner(connection, id, entry.session_id)?;
             let stored: Option<String> = connection
                 .query_row("SELECT body FROM workspaces WHERE id = ?1", [id], |row| {
                     row.get(0)
@@ -420,10 +476,9 @@ fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<()> {
             )?;
         }
         "workspace.removed" => {
-            connection.execute(
-                "DELETE FROM workspaces WHERE id = ?1",
-                [required_str(entry, "workspace_id")?],
-            )?;
+            let id = required_str(entry, "workspace_id")?;
+            check_workspace_owner(connection, id, entry.session_id)?;
+            connection.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
         }
         "session.renamed" => {
             let name = required_str(entry, "name")?;
@@ -459,6 +514,25 @@ fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+fn check_workspace_owner(connection: &Connection, id: &str, session: SessionId) -> Result<()> {
+    let owner: Option<String> = connection
+        .query_row(
+            "SELECT owner_session_id FROM workspaces WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match owner {
+        Some(owner) if owner == session.to_string() => Ok(()),
+        Some(owner) => Err(Error::InvalidEvent(format!(
+            "Workspace {id} belongs to session {owner}."
+        ))),
+        None => Err(Error::InvalidEvent(format!(
+            "Workspace {id} does not exist."
+        ))),
+    }
 }
 
 fn check_recipient(connection: &Connection, id: EventId, recipient: SessionId) -> Result<()> {

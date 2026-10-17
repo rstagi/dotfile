@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS aliases (
 );
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
+    owner_session_id TEXT NOT NULL,
     body TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edges (

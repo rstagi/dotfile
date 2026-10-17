@@ -252,3 +252,285 @@ fn message_receipts_survive_projection_before_the_sender_log() {
     ));
     assert_eq!(registry.messages().unwrap(), messages);
 }
+
+#[test]
+fn rebuild_replaces_the_index_from_verified_logs_and_preserves_query_results() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let db = sandbox.path().join("registry.sqlite");
+    let mut registry = Registry::open(&db, 100).unwrap();
+    let sender: Ulid = "01BRZ3NDEKTSV4RRFFQ69G5FAX".parse().unwrap();
+    let recipient: Ulid = "01ARZ3NDEKTSV4RRFFQ69G5FAX".parse().unwrap();
+    let sender_log = SessionLog::new(sandbox.path(), sender, Ulid::new());
+    let recipient_log = SessionLog::new(sandbox.path(), recipient, Ulid::new());
+    for (log, name) in [(&sender_log, "sender"), (&recipient_log, "recipient")] {
+        registry
+            .apply(
+                &log.append(
+                    0,
+                    "session.created",
+                    json!({"alias": registry.next_alias().unwrap(), "name": name}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    registry
+        .apply(
+            &sender_log
+                .append(
+                    0,
+                    "workspace.created",
+                    json!({"workspace_id": "project/main", "path": "/sandbox/project"}),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    registry
+        .apply(
+            &sender_log
+                .append(
+                    0,
+                    "edge.added",
+                    json!({"target": recipient, "kind": "depends_on"}),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    let sent = sender_log
+        .append(
+            0,
+            "message.sent",
+            json!({"recipient": recipient, "text": "done"}),
+        )
+        .unwrap();
+    registry.apply(&sent).unwrap();
+    registry
+        .apply(
+            &recipient_log
+                .append(0, "message.read", json!({"message_id": sent.event_id}))
+                .unwrap(),
+        )
+        .unwrap();
+    registry
+        .apply(&sender_log.append(0, "session.finished", json!({})).unwrap())
+        .unwrap();
+    let expected = (
+        registry.sessions().unwrap(),
+        registry.workspaces().unwrap(),
+        registry.edges().unwrap(),
+        registry.messages().unwrap(),
+    );
+    let report = registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(report.events, 7);
+    assert!(report.truncated_logs.is_empty());
+    assert_eq!(
+        (
+            registry.sessions().unwrap(),
+            registry.workspaces().unwrap(),
+            registry.edges().unwrap(),
+            registry.messages().unwrap()
+        ),
+        expected
+    );
+    assert_eq!(registry.resolve("#100").unwrap(), sender);
+    assert_eq!(registry.next_alias().unwrap(), 102);
+    drop(registry);
+    std::fs::remove_file(&db).unwrap();
+    let mut registry = Registry::open(&db, 100).unwrap();
+    registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(
+        (
+            registry.sessions().unwrap(),
+            registry.workspaces().unwrap(),
+            registry.edges().unwrap(),
+            registry.messages().unwrap()
+        ),
+        expected
+    );
+}
+
+#[test]
+fn rebuild_reports_crash_tails_without_changing_the_logs_and_preserves_the_index_on_failure() {
+    use std::io::Write;
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let id = Ulid::new();
+    let log = SessionLog::new(sandbox.path(), id, Ulid::new());
+    registry
+        .apply(
+            &log.append(0, "session.created", json!({"alias": 1, "name": "valid"}))
+                .unwrap(),
+        )
+        .unwrap();
+    registry
+        .apply(&log.append(0, "session.running", json!({})).unwrap())
+        .unwrap();
+    let expected = registry.sessions().unwrap();
+    let path = sandbox
+        .path()
+        .join("sessions")
+        .join(id.to_string())
+        .join("log.jsonl");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"{crash")
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let report = registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(report.events, 2);
+    assert_eq!(report.truncated_logs, vec![(id, 3)]);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(registry.sessions().unwrap(), expected);
+    let bad = log
+        .append(0, "workspace.updated", json!({"workspace_id": "missing"}))
+        .unwrap();
+    assert!(matches!(
+        registry.rebuild(sandbox.path()),
+        Err(Error::InvalidEvent(_))
+    ));
+    assert_eq!(registry.sessions().unwrap(), expected);
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"valid\"", "\"tampered\"");
+    std::fs::write(&path, text).unwrap();
+    assert!(matches!(
+        registry.rebuild(sandbox.path()),
+        Err(Error::Io(_))
+    ));
+    assert_eq!(registry.sessions().unwrap(), expected);
+    assert!(registry.apply(&bad).is_err());
+}
+
+#[test]
+fn rebuild_removes_rows_that_have_no_source_log() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 50).unwrap();
+    let orphan = SessionLog::new(&sandbox.path().join("elsewhere"), Ulid::new(), Ulid::new());
+    registry
+        .apply(
+            &orphan
+                .append(0, "session.created", json!({"alias": 50}))
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(registry.sessions().unwrap().len(), 1);
+    assert_eq!(registry.rebuild(sandbox.path()).unwrap().events, 0);
+    assert!(registry.sessions().unwrap().is_empty());
+    assert_eq!(registry.next_alias().unwrap(), 50);
+}
+
+use proptest::prelude::*;
+use std::collections::VecDeque;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn incremental_apply_and_rebuild_have_identical_views(
+        floor in 1_i64..100_000,
+        actions in prop::collection::vec((0_usize..3, 0_u8..6, 0_usize..3), 0..40),
+        schedule in prop::collection::vec(0_usize..3, 1..30),
+    ) {
+        let sandbox = tempfile::tempdir().unwrap();
+        let db = sandbox.path().join("registry.sqlite");
+        let ids = [Ulid::from(3_u128), Ulid::from(1_u128), Ulid::from(2_u128)];
+        let logs: Vec<_> = ids.iter().map(|id| SessionLog::new(sandbox.path(), *id, Ulid::new())).collect();
+        for (actor, log) in logs.iter().enumerate() {
+            log.append(0, "session.created", json!({"alias": floor + actor as i64, "name": format!("session-{actor}")})).unwrap();
+            log.append(0, "workspace.created", json!({"workspace_id": format!("workspace-{actor}"), "path": format!("/sandbox/{actor}")})).unwrap();
+        }
+        for (index, (actor, action, target)) in actions.iter().enumerate() {
+            let log = &logs[*actor];
+            match action {
+                0 => { log.append(0, "session.running", json!({})).unwrap(); }
+                1 => { log.append(0, "session.renamed", json!({"name": format!("renamed-{actor}-{index}")})).unwrap(); }
+                2 => { log.append(0, "workspace.updated", json!({"workspace_id": format!("workspace-{actor}"), "pinned": target % 2 == 0})).unwrap(); }
+                3 => {
+                    let edge = log.append(0, "edge.added", json!({"target": ids[*target], "kind": "depends_on"})).unwrap();
+                    if target % 2 == 0 {
+                        log.append(0, "edge.removed", json!({"edge_id": edge.event_id})).unwrap();
+                    }
+                }
+                4 => {
+                    let recipient = (actor + target % 2 + 1) % 3;
+                    let sent = log.append(0, "message.sent", json!({"recipient": ids[recipient], "text": format!("message-{index}")})).unwrap();
+                    logs[recipient].append(0, "message.delivered", json!({"message_id": sent.event_id})).unwrap();
+                    logs[recipient].append(0, "message.read", json!({"message_id": sent.event_id})).unwrap();
+                }
+                _ => { log.append(0, "future.event", json!({"ignored": true})).unwrap(); }
+            }
+        }
+        for (actor, log) in logs.iter().enumerate() {
+            if schedule[0] == actor {
+                log.append(0, "workspace.removed", json!({"workspace_id": format!("workspace-{actor}")})).unwrap();
+            }
+        }
+        let mut queues: Vec<VecDeque<_>> = logs.iter().map(|log| log.read().unwrap().entries.into()).collect();
+        let count: usize = queues.iter().map(VecDeque::len).sum();
+        let mut registry = Registry::open(&db, floor).unwrap();
+        for index in 0..count {
+            let start = schedule[index % schedule.len()];
+            let actor = (0..3).map(|offset| (start + offset) % 3).find(|actor| !queues[*actor].is_empty()).unwrap();
+            let entry = queues[actor].pop_front().unwrap();
+            registry.apply(&entry).unwrap();
+            if index % 2 == 0 { registry.apply(&entry).unwrap(); }
+        }
+        let expected = query_views(&registry);
+        prop_assert_eq!(registry.next_alias().unwrap(), floor + 3);
+        drop(registry);
+        std::fs::remove_file(&db).unwrap();
+        let mut registry = Registry::open(&db, floor).unwrap();
+        let report = registry.rebuild(sandbox.path()).unwrap();
+        prop_assert_eq!(report.events, count);
+        prop_assert_eq!(query_views(&registry), expected);
+        prop_assert_eq!(registry.next_alias().unwrap(), floor + 3);
+        for (actor, id) in ids.iter().enumerate() {
+            prop_assert_eq!(registry.resolve(&format!("#{}", floor + actor as i64)).unwrap(), *id);
+        }
+    }
+}
+
+fn query_views(registry: &Registry) -> (Vec<Session>, Vec<Workspace>, Vec<Edge>, Vec<Message>) {
+    (
+        registry.sessions().unwrap(),
+        registry.workspaces().unwrap(),
+        registry.edges().unwrap(),
+        registry.messages().unwrap(),
+    )
+}
+
+#[test]
+fn workspace_mutations_use_the_creator_log_so_replay_order_cannot_change_the_result() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let owner = Ulid::new();
+    let log = SessionLog::new(sandbox.path(), owner, Ulid::new());
+    registry
+        .apply(
+            &log.append(
+                0,
+                "workspace.created",
+                json!({"workspace_id": "project", "pinned": false}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let expected = registry.workspaces().unwrap();
+    for event_type in ["workspace.updated", "workspace.removed"] {
+        let foreign = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        let entry = foreign
+            .append(
+                0,
+                event_type,
+                json!({"workspace_id": "project", "pinned": true}),
+            )
+            .unwrap();
+        assert!(matches!(
+            registry.apply(&entry),
+            Err(Error::InvalidEvent(_))
+        ));
+        assert_eq!(registry.workspaces().unwrap(), expected);
+    }
+}
