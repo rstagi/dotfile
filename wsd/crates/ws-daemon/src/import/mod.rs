@@ -18,9 +18,11 @@ use crate::sessions::Sessions;
 
 mod locks;
 mod snapshot;
+mod triggers;
 
 use snapshot::snapshot;
 pub use snapshot::{EventMapping, LegacySession};
+pub use triggers::LegacyTrigger;
 
 const JOURNAL: &str = "import-zsh.json";
 
@@ -29,6 +31,8 @@ pub struct Plan {
     pub source: PathBuf,
     pub alias_floor: i64,
     pub sessions: Vec<LegacySession>,
+    #[serde(default)]
+    pub triggers: Vec<LegacyTrigger>,
     #[serde(default)]
     pub complete: bool,
 }
@@ -85,6 +89,7 @@ pub fn from_zsh(source: &Path, state: &Path, dry_run: bool) -> io::Result<Plan> 
     for session in &mut plan.sessions {
         import_session(&mut sessions, session)?;
     }
+    triggers::import(&mut sessions, &plan.sessions, &plan.triggers)?;
     plan.complete = true;
     save(state, &plan)?;
     Ok(plan)
@@ -255,3 +260,6 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     result
 }
+
+#[cfg(test)]
+mod tests;

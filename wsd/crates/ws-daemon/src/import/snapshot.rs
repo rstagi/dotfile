@@ -39,6 +39,7 @@ pub(super) fn snapshot(source: &Path, dry_run: bool) -> io::Result<Plan> {
     let mut locks = Locks::default();
     locks.acquire(&directory.join("counter.lock"), dry_run)?;
     locks.acquire(&directory.join("names.lock"), dry_run)?;
+    let triggers = super::triggers::snapshot(source, &mut locks, dry_run)?;
     let mut directories = fs::read_dir(&directory)?.collect::<io::Result<Vec<_>>>()?;
     directories.retain(|entry| {
         entry
@@ -132,6 +133,7 @@ pub(super) fn snapshot(source: &Path, dry_run: bool) -> io::Result<Plan> {
         source: source.into(),
         alias_floor,
         sessions,
+        triggers,
         complete: false,
     })
 }
