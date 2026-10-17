@@ -599,3 +599,33 @@ fn rejects_malformed_session_fields_without_consuming_an_alias() {
         assert_eq!(registry.next_alias().unwrap(), 10);
     }
 }
+
+#[test]
+fn finds_a_callback_event_by_its_original_identifier_after_rebuild() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let id = Ulid::new();
+    let log = SessionLog::new(sandbox.path(), id, Ulid::new());
+    log.append(0, "session.created", json!({"alias":1}))
+        .unwrap();
+    let captured = log
+        .append(
+            0,
+            "hook.received",
+            json!({"callback_id":"callback-1", "payload":{"tool_use_id":"tool-1"}}),
+        )
+        .unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(
+        registry
+            .event_for_callback(id, "hook.received", "callback-1")
+            .unwrap(),
+        Some(captured)
+    );
+    assert!(
+        registry
+            .event_for_callback(id, "tool.pre", "callback-1")
+            .unwrap()
+            .is_none()
+    );
+}

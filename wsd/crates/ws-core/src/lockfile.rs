@@ -21,7 +21,12 @@ const O_CLOFORK: i32 = 0x0800_0000;
 /// every contender locks the same inode.
 pub fn open_lock_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.create(true).truncate(false).write(true).mode(0o600);
+    options
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600);
     #[cfg(target_vendor = "apple")]
     options.custom_flags(O_CLOFORK);
     options.open(path)

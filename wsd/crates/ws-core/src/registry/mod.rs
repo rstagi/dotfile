@@ -18,7 +18,7 @@
 
 use std::{fmt, fs, io, path::Path, time::Duration};
 
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -123,6 +123,22 @@ impl Registry {
         apply_entry(&tx, entry)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Finds a callback event in the rebuildable index.
+    pub fn event_for_callback(
+        &self,
+        session: SessionId,
+        event_type: &str,
+        callback_id: &str,
+    ) -> Result<Option<LogEntry>> {
+        let entry: Option<String> = self.connection.query_row(
+            "SELECT entry FROM applied_events WHERE session_id = ?1 AND json_extract(entry, '$.type') = ?2 AND json_extract(entry, '$.body.callback_id') = ?3 ORDER BY seq LIMIT 1",
+            params![session.to_string(), event_type, callback_id], |row| row.get(0),
+        ).optional()?;
+        entry
+            .map(|entry| serde_json::from_str(&entry).map_err(Error::Json))
+            .transpose()
     }
 
     /// Replaces the index from verified logs in `state/sessions`. Leaves logs unchanged.

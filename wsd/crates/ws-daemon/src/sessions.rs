@@ -1,6 +1,7 @@
 //! Durable session lifecycle operations.
 
 use std::{
+    collections::HashMap,
     fmt,
     fs::{File, TryLockError},
     io,
@@ -13,7 +14,7 @@ use ws_core::{
     device::Device,
     ids::{DeviceId, SessionId, Ulid},
     lockfile,
-    log::SessionLog,
+    log::{LogWriter, SessionLog},
     registry::{self, Registry, Session},
     state::{SessionState, TransitionError},
 };
@@ -23,6 +24,7 @@ pub struct Sessions {
     device_id: DeviceId,
     pub(crate) registry: Registry,
     needs_rebuild: bool,
+    writers: HashMap<SessionId, LogWriter>,
     _writer_lock: File,
 }
 
@@ -70,6 +72,7 @@ impl Sessions {
             device_id: device.device_id,
             registry,
             needs_rebuild: false,
+            writers: HashMap::new(),
             _writer_lock: writer_lock,
         })
     }
@@ -205,10 +208,12 @@ impl Sessions {
         event_type: &str,
         body: serde_json::Value,
     ) -> Result<()> {
-        let log = SessionLog::new(&self.state, id, self.device_id);
-        let epoch = log.read()?.entries.last().map_or(0, |entry| entry.epoch);
+        let writer = self
+            .writers
+            .entry(id)
+            .or_insert_with(|| SessionLog::new(&self.state, id, self.device_id).writer());
         self.needs_rebuild = true;
-        let entry = log.append(epoch, event_type, body)?;
+        let entry = writer.append_current(event_type, body)?;
         self.registry.apply(&entry)?;
         self.needs_rebuild = false;
         Ok(())

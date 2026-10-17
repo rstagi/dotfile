@@ -42,3 +42,6 @@ CREATE TABLE IF NOT EXISTS applied_events (
     entry TEXT NOT NULL,
     UNIQUE(session_id, seq)
 );
+CREATE INDEX IF NOT EXISTS applied_callback ON applied_events(
+    session_id, json_extract(entry, '$.type'), json_extract(entry, '$.body.callback_id')
+);
