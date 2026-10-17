@@ -30,7 +30,7 @@ better.
 rounds** (step 3) before it is registered: up to `LOOP_PLAN_REVIEW_ROUNDS` (default 2),
 stopping early on `clean`. If the argument starts with the word `light` (e.g.
 `/multiphase-plan light add a --json flag`), strip it from the goal and skip step 3 — use it
-for small or low-risk plans.
+for small or low-risk plans. A `light` plan also skips the visual explainer (step 5).
 
 **Front-load the interaction.** All questions go to the user in step 1, before drafting. From
 step 2 on, work autonomously through review and registration to the report; come back to the
@@ -236,11 +236,25 @@ the review phase starts: rewrite its `` `[review: …]` `` / `` `[rounds: …]` 
 `loop-plan.sh push`, or `m` on the review phase in `loop-top`.) Only if step 1 left it open —
 e.g. the user skipped it — ask it now, in one message.
 
-### 5. Report
+### 5. Explain the plan (skipped in `light` mode)
+
+Run the `visual-explainer` skill in `plan` mode for the whole plan. Step 4 must give the
+planId first. Use the output directory `.loop/explainers/plan/`.
+
+- Take the facts from `.loop/plan.md`: the Goal, the key decisions, the milestones, the
+  phases and the risks.
+- Use the step 3 dispositions for the rejected options and the risks.
+- Set `meta.planId` to the planId. Omit `meta.milestone`.
+- Publish the page as the skill tells you. The link goes to `.loop/explainers/plan/link.txt`.
+- A failed explainer does not block the report. State the failure in the report.
+
+### 6. Report
 
 State the shape honestly — do not imply parallelism that isn't there. Fill every `<…>` in
 the templates below with the real captured value (planId, phase & lane counts) — never print
-a literal placeholder. The pickup/execute argument is the **planId** (or effort name).
+a literal placeholder. The pickup/execute argument is the **planId** (or effort name). Add the
+step 5 explainer link, or its failure, on its own line after the first line. Omit that line
+for a `light` plan.
 
 **Single-lane (sequential) plan — the common case:**
 

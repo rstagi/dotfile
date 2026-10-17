@@ -150,42 +150,39 @@ gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input review.jso
 
 Use `APPROVE` or `REQUEST_CHANGES` only when the user says so; gating a merge is their call, not yours. Pin `commit_id` to the head SHA you actually reviewed. Afterwards, verify: re-read the posted comments and confirm the review state landed as intended.
 
-## Step 4: Visual report (HTML page + explainer video)
+## Step 4: Visual report (`visual-explainer` ship page)
 
-After the written report (and regardless of whether anything is posted to GitHub), produce a self-contained visual report. Keep every review behavior above unchanged; this is an extra deliverable.
+Make a visual report after the written report. Do this also when you post nothing to GitHub. This step adds one deliverable. It does not change the review behavior above.
 
-**Output location.** Write to `pr-review-output/<repo>-<pr>/` under the directory the session was started in (not inside the review worktree, and never inside the PR's tracked files):
+**Output location.** Use `pr-review-output/<repo>-<pr>/` under the directory where the session started. Do not use the review worktree or the tracked files of the PR.
 
 ```
 pr-review-output/<repo>-<pr>/
-  index.html   # full review report
-  video.mp4    # Remotion explainer, embedded in index.html
+  props.json   # the ship props that you write
+  index.html   # the page that visual-explainer renders
+  link.txt     # the artifact URL or the absolute path of index.html
 ```
 
-**Never commit, push, or add these outputs (or the Remotion project) to the PR branch.** If the session dir is a clone of the repo, make sure `pr-review-output/` stays untracked (add it to `.git/info/exclude`, not `.gitignore`).
+**Never commit, push or add these outputs to the PR branch.** When the session directory is a clone of the repository, keep `pr-review-output/` untracked. Add it to `.git/info/exclude`, not to `.gitignore`.
 
-### (a) index.html
+Run the `visual-explainer` skill in `ship` mode with this output directory. Write the props from this review:
 
-- One self-contained file: inline CSS (and any JS), no CDN or external assets other than the sibling `video.mp4`.
-- Contents: PR title, repo, number, link, head SHA reviewed; the verdict and Step 1 validation result (commands run, pass/fail, key output); every finding with its `[label]`, file:line, mechanism, evidence and fix/preventive change, ordered by severity; the stacked-PR split proposal or "no split recommended"; a short "what the PR does / how" summary.
-- Embed the video near the top: `<video src="video.mp4" controls playsinline width="100%"></video>`.
-- Same writing rules as the report: concise, no em-dashes or en-dashes.
+- `meta`: a title of 2 to 4 words, for example `PR 123 review`. Put the PR title and the repository in `subtitle`. Add the PR link to `links`.
+- `summary`: what the PR does and how it does it.
+- `changes`: the key files or modules, each with how and why. This field is optional.
+- `delivered`: one row for each claim of the PR description or of its linked issue. Use the Step 1 result as the evidence.
+- `deviations`: each difference between the PR description and the observed behavior. Use an empty array when there is none.
+- `reviews`: one entry with `repository`, `pr`, `head` (the reviewed SHA) and `verdict`. The verdict is the posted event, or `COMMENT` when you post nothing. Put the verdict sentence in `summary` and the Step 1 commands in `validation`.
+- `reviews[0].findings`: every finding. Put its label in `severity` and its file and line in `location`. Put the mechanism and evidence in `detail`, and the fix and preventive change in `fix`.
+- `reviews[0].split`: the stacked-PR split proposal, or `No split recommended.`
+- `handTest`: the commands that exercise the change, in order. Give each command a `path:line` reference in the PR head.
+- `rollback`: the steps that undo the merge, for example `git revert -m1 <merge-sha>`. Add any data or configuration undo.
 
-### (b) Remotion explainer video (remotion.dev, React)
+Use the writing rules of the report: be concise, and use no em-dashes or en-dashes.
 
-A short (about 60 to 90 s, 1920x1080 or 1280x720, 30 fps) video that explains, in this order:
-1. **What the PR does** (the problem and the user-visible change),
-2. **How it does it** (key files/modules, data or control flow, simple diagrams built from React/SVG boxes and arrows, short code snippets),
-3. **The issues found** (one scene per important finding with its severity label, or a summary card for nits; end on the verdict).
+When the render fails, keep the written report and any posted review. State the failure in the final message.
 
-Practical guidance:
-- Scaffold in a temp dir **outside** the repo, e.g. `D=$(mktemp -d /tmp/remotion-<repo>-<pr>-XXXX)`. Either `npx create-video@latest --yes --blank` there, or create a minimal project by hand: `npm init -y && npm i remotion @remotion/cli react react-dom`, `src/index.ts` calling `registerRoot`, `src/Root.tsx` with a `<Composition id="PRReview" ...>`.
-- Build scenes with `<Sequence>`/`<Series>`, `useCurrentFrame`, `interpolate`, `spring`. Keep text large and readable, few words per screen, a consistent color per severity. No external network assets (fonts, images) at render time; use system fonts.
-- Render: `npx remotion render src/index.ts PRReview <out>/video.mp4 --codec=h264`. If Chrome headless shell can't be downloaded, pass `--browser-executable=$(which google-chrome || which chromium)`.
-- Verify with `ffprobe` that the mp4 has the expected duration, then copy it next to `index.html` as `video.mp4`. Delete the temp Remotion dir when done (or leave it in /tmp; never in the repo).
-- If rendering fails after reasonable attempts, still ship `index.html`, state the failure in it and in the final message.
-
-Finish by printing the absolute paths of `index.html` and `video.mp4`.
+Finish with the artifact URL or the absolute path of `index.html`.
 
 ## Headless mode
 

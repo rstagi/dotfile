@@ -14,6 +14,7 @@ SHARED_SKILLS=(
   pr-review-fix-all
   ws-sessions
   asd-ste100
+  visual-explainer
 )
 
 usage() {
@@ -166,4 +167,4 @@ for skill in "${SHARED_SKILLS[@]}"; do
   link_skill "$SOURCE_ROOT/$skill" "$HOME/.codex/skills/$skill" "legacy Codex" || exit 1
 done
 
-echo "Shared Loop, ws and writing skills installed for Claude Code, Codex, and Ratel Local"
+echo "Shared Loop, ws, writing and explainer skills installed for Claude Code, Codex, and Ratel Local"

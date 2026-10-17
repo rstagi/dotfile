@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Shared Loop, ws + writing skill installer: Claude Code, current/legacy Codex, and Ratel Local.
+# Shared Loop, ws, writing + explainer skill installer: Claude Code, current/legacy Codex, and Ratel Local.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -10,7 +10,7 @@ trap 'rm -rf "$TMP"' EXIT
 SOURCE="$TMP/source"
 TEST_HOME="$TMP/home"
 FAKE_BIN="$TMP/bin"
-SKILLS=(checkpoint-30 multiphase-plan loop-execute loop-pickup loop-handoff pr-review pr-review-fix-all ws-sessions asd-ste100)
+SKILLS=(checkpoint-30 multiphase-plan loop-execute loop-pickup loop-handoff pr-review pr-review-fix-all ws-sessions asd-ste100 visual-explainer)
 mkdir -p "$SOURCE" "$TEST_HOME/.agents/skills/unrelated" "$FAKE_BIN"
 SOURCE="$(cd "$SOURCE" && pwd -P)"
 print -r -- keep > "$TEST_HOME/.agents/skills/unrelated/marker"
@@ -37,7 +37,7 @@ for skill in "${SKILLS[@]}"; do
   assert_eq "$(readlink "$TEST_HOME/.codex/skills/$skill")" "$SOURCE/$skill" "legacy Codex exposes $skill"
 done
 assert_eq "$(cat "$TEST_HOME/.agents/skills/unrelated/marker")" "keep" "preserves unrelated Codex skills"
-assert_eq "$(grep -c '^skill import ' "$FAKE_RATEL_LOG")" "9" "registers every shared skill with Ratel"
+assert_eq "$(grep -c '^skill import ' "$FAKE_RATEL_LOG")" "${#SKILLS[@]}" "registers every shared skill with Ratel"
 assert_contains "$(cat "$FAKE_RATEL_LOG")" \
   'skill import cand-pr-review-fix-all --scope user --mode reference --yes' \
   "registers pr-review-fix-all by stable candidate id"
@@ -48,7 +48,7 @@ HOME="$TEST_HOME" PATH="$FAKE_BIN:$PATH" bash "$ROOT/install-agent-skills.sh" \
   --source "$SOURCE" > "$TMP/reinstall.out" 2>&1
 RC=$?
 assert_exit "$RC" "0" "rerun succeeds"
-assert_eq "$(grep -c '^skill import ' "$FAKE_RATEL_LOG")" "9" "does not re-import configured Ratel skills"
+assert_eq "$(grep -c '^skill import ' "$FAKE_RATEL_LOG")" "${#SKILLS[@]}" "does not re-import configured Ratel skills"
 assert_eq "$(grep -c '^skill list --discovered' "$FAKE_RATEL_LOG")" "1" "does not rediscover fully configured skills"
 
 echo "skill install: recovers from native links left by an interrupted registration"

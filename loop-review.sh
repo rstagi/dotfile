@@ -189,8 +189,8 @@ FRAME
 ## Local-only review constraints
 Do not call any GitHub mutation endpoint, post a review/comment, commit, or push.
 Do not edit the frozen artifact, ledger, or any prior report. Write only RUN_DIR/report.md and
-RUN_DIR/status.json as specified by the AR adaptation. Do not produce the pr-review HTML/video
-outputs or invoke its posting workflow. Each run is fresh; never resume a provider session.
+RUN_DIR/status.json as specified by the AR adaptation. Do not produce the pr-review visual
+report or invoke its posting workflow. Each run is fresh; never resume a provider session.
 Read only the current exchange inlined below; do not read unrelated runs or existing GitHub
 reviews/comments. A critic/confirm audits the last reviewer against this same full PR context.
 LOCAL

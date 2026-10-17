@@ -40,6 +40,9 @@ zsh tests/plan-review.test.sh
 # loop-top only
 node --test tests/loop-top.test.mjs
 
+# visual-explainer renderer (schemas, escaping, both modes)
+node --test tests/visual-explainer.test.mjs
+
 # ws (terminal workspaces) tests: 4 groups in parallel; one group: zsh ws/tests/run.sh core|send|triggers|misc
 zsh ws/tests/run.sh
 
@@ -61,7 +64,7 @@ python3 -I -B -m unittest discover -s docs/ws-v6/spikes/s2 -p 'test_*.py'
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-install-agent-skills.sh Shares Loop, ws + asd-ste100 skills across Claude Code, Codex, and Ratel Local
+install-agent-skills.sh Shares Loop, ws, asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
 ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
 ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
@@ -88,6 +91,7 @@ ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh, sourced
 wsd/                    Default ws implementation: ws-core durable data, ws-daemon runtime, ws CLI + MCP
 docs/ws-v6/             WS v6 architecture and spike reports, scripts, tests, and samples
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
+.claude/skills/visual-explainer/ Props JSON → one fixed, animated, self-contained HTML page (plan|ship), zero-dep render.mjs + schemas
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
@@ -123,6 +127,8 @@ The zsh suite selects zsh in each sandbox. `cargo test -p ws --test backend` als
 GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. The central **Loop daemon** + `.loop/plan.md` are the only plan backend. On-disk coordinator state stays in flattened `.loop/`; review notes use `notes/<reviewPhase>.md` (legacy `notes/pr-review.*` aliases remain accepted). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`; vendored prompts: `references/ar-prompts.md` beside it. Two-tier mode keeps scheduling/merges in recyclable SUBs and review-phase pipelines in detached runners. Shell tests live in `tests/` (`zsh tests/run.sh`).
 
 **Milestones:** one Loop plan may carry several `## Milestone N — <outcome>` sections (plain `## Phases` = one implicit milestone 1). Each ships as its own PR per participating repository and ends with a `[kind: pr-review]` `[gate: merge]` phase. After that review's verdict is posted the loop parks in `awaiting-merge` (plan Status `awaiting merge`, typed `milestone.awaiting-merge` event, notification with the PR URLs); it never finishes or respawns. The human assesses and merges, then runs `/loop-execute resume`: `loop-milestone.sh check` confirms the gate PRs merged, `advance` prepares the next milestone's worktrees from a freshly fetched default branch, and the orchestrator respawns. Milestone ≥2 integration branches are declared in the plan; worktrees live at `…/<owner--repo>/integration-<branch-slug>-<hash8>` (8-char sha1 of the exact branch). `loop-pickup`/`loop-handoff` never touch phases of a later milestone than `state.milestone`. Format: `.claude/skills/multiphase-plan/references/plan-format.md` → Milestones. After pulling these changes, restart the Loop daemon (`awaiting-merge` status + milestone events are new): `launchctl kickstart -k gui/$(id -u)/com.rstagi.loop-web`; run `./loop-web.sh --daemon` only when no LaunchAgent is bound to :7717.
+
+**Visual explainers:** `.claude/skills/visual-explainer` renders one animated HTML page from a props JSON file. The agent writes only the props. `render.mjs` checks them against `schema/<plan|ship>.schema.json`, escapes all text, and fills the fixed template. Mode `plan` runs after `multiphase-plan` registers a plan, except for `light` plans. It also runs at each milestone resume. Mode `ship` runs at each milestone merge gate, before the notification, and in `pr-review` Step 4. Each `ship` hand-test command needs a `path:line` code reference. In a Loop run, a detached runner writes the props, and supervise renders, publishes and links the page. A failed explainer never blocks a park or a resume. Loop output goes to `.loop/explainers/plan/` and `.loop/explainers/m<n>-<plan|ship>/`.
 
 **AR rollout:** after pulling, restart the daemon with `launchctl kickstart -k gui/$(id -u)/com.rstagi.loop-web`, then check `curl -fsS http://localhost:7717/api/health`. Retag any active plan's review phase using a legacy tier to `[review: standard]` or `[review: max]` before execution. Legacy shallow and medium tiers are rejected by execution paths and the tier endpoint; the Observatory and `loop-top` still render them for historical loops.
 

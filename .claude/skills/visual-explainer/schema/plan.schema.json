@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "visual-explainer/plan.schema.json",
+  "title": "visual-explainer plan props",
+  "description": "What a plan will build: goal, architecture, milestone and phase timeline, decisions with rejected options, risks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode", "meta", "goal", "architecture", "milestones", "decisions", "risks"],
+  "properties": {
+    "mode": { "const": "plan" },
+    "meta": { "$ref": "#/$defs/meta" },
+    "goal": { "$ref": "#/$defs/text" },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "layers"],
+      "properties": {
+        "summary": { "$ref": "#/$defs/text" },
+        "layers": {
+          "description": "Layers from the top (user-facing) to the bottom (storage or platform).",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "components"],
+            "properties": {
+              "name": { "$ref": "#/$defs/label" },
+              "components": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "role"],
+                  "properties": {
+                    "name": { "$ref": "#/$defs/label" },
+                    "role": { "$ref": "#/$defs/text" },
+                    "status": { "enum": ["new", "changed", "existing", "removed"] }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "flows": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to", "label"],
+            "properties": {
+              "from": { "$ref": "#/$defs/label" },
+              "to": { "$ref": "#/$defs/label" },
+              "label": { "$ref": "#/$defs/text" }
+            }
+          }
+        }
+      }
+    },
+    "milestones": {
+      "description": "Milestones in plan order. A plan without milestones is one milestone with number 1.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "title", "phases"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "title": { "$ref": "#/$defs/text" },
+          "outcome": { "$ref": "#/$defs/text" },
+          "phases": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 80,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["number", "title", "kind"],
+              "properties": {
+                "number": { "type": "integer", "minimum": 0 },
+                "title": { "$ref": "#/$defs/text" },
+                "kind": { "enum": ["work", "pr-review"] },
+                "gate": { "type": "boolean" },
+                "lane": { "$ref": "#/$defs/label" },
+                "repository": { "$ref": "#/$defs/label" },
+                "dependsOn": { "type": "array", "maxItems": 20, "items": { "type": "integer", "minimum": 0 } },
+                "estimate": { "$ref": "#/$defs/label" },
+                "doneWhen": { "$ref": "#/$defs/text" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision", "why", "rejected"],
+        "properties": {
+          "decision": { "$ref": "#/$defs/text" },
+          "why": { "$ref": "#/$defs/text" },
+          "rejected": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["option", "reason"],
+              "properties": {
+                "option": { "$ref": "#/$defs/text" },
+                "reason": { "$ref": "#/$defs/text" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["risk", "impact", "mitigation"],
+        "properties": {
+          "risk": { "$ref": "#/$defs/text" },
+          "impact": { "enum": ["high", "medium", "low"] },
+          "likelihood": { "enum": ["high", "medium", "low"] },
+          "mitigation": { "$ref": "#/$defs/text" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "text": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "url": {
+      "type": "string",
+      "pattern": "^https?://[^\\s\"'<>]+$",
+      "description": "an absolute http or https URL"
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "subtitle", "date"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "^\\S+(?: \\S+){1,3}$",
+          "maxLength": 60,
+          "description": "2 to 4 words separated by single spaces"
+        },
+        "subtitle": { "$ref": "#/$defs/text" },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "YYYY-MM-DD" },
+        "planId": { "$ref": "#/$defs/label" },
+        "milestone": { "type": "integer", "minimum": 1 },
+        "links": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "url"],
+            "properties": { "label": { "$ref": "#/$defs/label" }, "url": { "$ref": "#/$defs/url" } }
+          }
+        }
+      }
+    }
+  }
+}

@@ -183,6 +183,21 @@ assert_contains "$PROTOCOL" 'a parked loop keeps `sub/REVIEW_READY`' "two-tier: 
 assert_contains "$PROTOCOL" '| Milestone gate (supervise, after the gate review aggregates) |' "backend mapping: parking"
 assert_contains "$PROTOCOL" 'Applies while `state.awaitingMerge` is set, whatever the plan or daemon status says.' "crash-resume: no respawn while parked"
 
+echo "review workflow: milestone explainers never block the park or the resume"
+assert_contains "$SKILL" '4. **Ship explainer (best-effort).**' "park runs the ship explainer"
+assert_contains "$SKILL" 'A failed explainer never blocks the park.' "ship explainer failure never blocks the park"
+assert_contains "$SKILL" 'explainer link (`--url`) or the explainer failure' "park notification carries the explainer link or failure"
+assert_contains "$SKILL" '6. **Plan explainer (best-effort).**' "resume runs the plan explainer"
+assert_contains "$SKILL" 'A failed explainer never stops the resume or the orchestrator.' "plan explainer failure never stops the resume"
+assert_contains "$SKILL" 'A runner writes explainer
+  props. Supervise only renders, publishes and links the page.' "supervise stays thin for explainers"
+assert_contains "$PROTOCOL" '### Milestone explainers' "protocol documents milestone explainers"
+assert_contains "$PROTOCOL" '`.loop/explainers/m<n>-ship/`' "ship output directory"
+assert_contains "$PROTOCOL" '`.loop/explainers/m<N>-plan/`' "plan output directory"
+assert_contains "$PROTOCOL" '--verify-cmd '"'"'node <RUNTIME_ROOT>/.claude/skills/visual-explainer/scripts/render.mjs --props <abs output dir>/props.json --check'"'"'' "explainer runner verifies its props"
+assert_contains "$PROTOCOL" 'explainers/                # visual-explainer pages (never committed)' "layout lists explainers"
+assert_contains "$PROTOCOL" '<!-- loop-explainer:m<n>-ship -->' "gate PR body marker"
+
 echo "review workflow: milestone resume after a merge"
 assert_contains "$SKILL" '**Milestone resume**' "step 9 documents the milestone resume"
 assert_contains "$SKILL" '`loop-milestone.sh check --state .loop/state.json`: exit 3 (open) → report each open' "open gate PR → report + stop"
@@ -213,7 +228,7 @@ assert_contains "$PROTOCOL" 'switches `RUNTIME_ROOT` to the patch'"'"'s `runtime
 assert_contains "$PROTOCOL" 'a null `runtimeRoot` keeps the installed runtime' "protocol: null runtimeRoot keeps installed runtime"
 assert_contains "$SKILL" 'patch `runtimeRoot` null (no host) → keep the installed runtime' "skill: null runtimeRoot keeps installed runtime"
 assert_contains "$SKILL" 'persist it with `loop-state.sh set '"'"'.awaitingMerge = …'"'"'`' "recovered park is persisted before check"
-assert_contains "$SKILL" 're-run step-8 park items 2-4 (idempotent)' "recovered park redoes Status/event/notify"
+assert_contains "$SKILL" 're-run step-8 park items 2-5 (idempotent)' "recovered park redoes Status/event/explainer/notify"
 assert_contains "$SKILL" 'run resume step 5 only' "skill: crash after apply → restart only"
 assert_contains "$PROTOCOL" '`state.resumePending` equals `state.milestone` (crash after the advance patch was applied, before restart)' "protocol: crash after apply keyed on resumePending"
 print -r -- "$PROTOCOL" | grep -qF '`milestones[N].prs` recorded for the previous milestone, `awaitingMerge` null and `sub/REVIEW_READY` present'

@@ -711,7 +711,7 @@ install_claude_config() {
     ln -sfn ~/dotfile/CLAUDE_GLOBAL.md ~/.claude/CLAUDE.md
     mkdir -p ~/.codex
     ln -sfn ~/dotfile/AGENTS_GLOBAL.md ~/.codex/AGENTS.md
-    # Share Loop, ws + asd-ste100 skills through current/legacy Codex discovery and Ratel Local.
+    # Share Loop, ws, asd-ste100 + visual-explainer skills through current/legacy Codex discovery and Ratel Local.
     if ! ~/dotfile/install-agent-skills.sh --source ~/dotfile/.claude/skills; then
       echo "Failed to install shared agent skills" >&2
       return 1
