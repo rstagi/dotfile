@@ -641,6 +641,7 @@ fn headless_command(request: &CreateHeadless, id: SessionId, state: &Path) -> io
             arguments.remove(0);
         }
         let context = AgentSession {
+            claude_config_dir: environment("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             agent_program: Some(request.command[0].clone().into()),
             state: state.into(),
             parent_session_id: request.parent_session_id,

@@ -51,6 +51,7 @@ pub fn prepare(command: Command) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".ws/state"));
     let context = AgentSession {
+        claude_config_dir: env::var_os("CLAUDE_CONFIG_DIR").map(|path| directory.join(path)),
         agent_program: None,
         state: directory.join(state),
         parent_session_id: None,

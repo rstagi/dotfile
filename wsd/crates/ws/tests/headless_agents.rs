@@ -9,8 +9,9 @@ fn prepare_prints_the_shared_contract_and_materializes_private_files_without_a_d
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::tempdir_in("/tmp").unwrap();
     let socket = home.path().join("absent.sock");
-    let id = "01K7Q0K5M00000000000000001";
     for agent in ["claude", "codex", "grok"] {
+        let session_id = ws_core::ids::Ulid::new().to_string();
+        let id = session_id.as_str();
         for resume in [None, Some("resume-123")] {
             let mut command = common::ws(home.path(), &socket);
             command.args([
@@ -144,8 +145,17 @@ fn shell_output_preserves_quoting_and_the_claude_print_prompt_order() {
         let args = captured["argv"].as_array().unwrap();
         assert_eq!(args[0], "claude");
         let files = shell_words::split(args[1].as_str().unwrap()).unwrap();
-        assert_eq!(files.len(), 2);
-        assert!(std::path::Path::new(&files[0]).is_file());
+        assert_eq!(files.len(), 3);
+        assert!(
+            files
+                .iter()
+                .any(|path| path.ends_with("quota-binding.json"))
+        );
+        assert!(
+            files
+                .iter()
+                .all(|path| std::path::Path::new(path).is_file())
+        );
         assert_eq!(args[2], "-p");
         assert_eq!(args[3], "Return 'READY'\nThen stop. $(false)");
         assert_eq!(&args[args.len() - 3..], ["--allowedTools", "Read", "Bash"]);
@@ -465,9 +475,10 @@ fn headless_preparation_exports_local_telemetry_identity_versions_and_privacy_de
                 .to_owned()
         };
         let parent = create(serde_json::json!({}));
-        let id =
-            create(serde_json::json!({"parent_session_id":parent,"workspace_id":"test-project"}));
         for (agent, version) in [("claude", "2.1.302"), ("codex", "0.159.2")] {
+            let id = create(
+                serde_json::json!({"parent_session_id":parent,"workspace_id":"test-project"}),
+            );
             let program = home.path().join("fake-agents").join(agent);
             fs::write(
                 &program,

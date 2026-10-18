@@ -434,13 +434,20 @@ Delivery can repeat after a lost response or a daemon crash.
 Log records keep their `event_id` attributes. A log without that attribute uses its durable telemetry event ID.
 Spans keep their span IDs. The sink must deduplicate repeated records.
 
-The daemon collects Codex quota every minute and at each phase boundary.
+The daemon collects Codex and Claude quota every minute and at each phase boundary.
 The shared launch preparation saves the account binding in a private `quota-binding.json` beside the session log.
 A resumed WS session retains that binding after an account change. The file contains no credential.
 The collector initializes `codex app-server`, then calls the read-only `account/rateLimits/read` method.
 It also reads `token_count` quota snapshots from the session's associated rollout.
 Rollout snapshots retain their original event time and a separate collection receipt time.
 Unrelated rollouts cannot supply an account binding.
+
+Claude launch settings install a status-line command that forwards JSON through `ws hook quota`.
+The hook transport spools callbacks when the daemon is unavailable. Quota callbacks do not change the session's work state.
+The reader also checks the headless session's stdout for optional `rate_limit_event` records.
+Status-line used percentages divide by 100. Stream utilization fractions already use the stored 0–1 ratio unit.
+The reader binds both sources to the launch account. Repeated callbacks do not refresh an unchanged reading.
+A stream without quota records leaves both windows unknown. Token estimation belongs to a separate collector.
 
 The collector writes durable `runner.usage.updated` events through the existing session writer and OTLP emitter.
 Each reading retains its account, bucket, window duration, reset time and `reported` source.

@@ -1,6 +1,11 @@
 //! Timer and phase-boundary collection through the session log writer.
 
-use super::{Clock, Reader, binding::Binding, codex::CodexReader};
+use super::{
+    Clock, Reader,
+    binding::Binding,
+    claude::{self, ClaudeReader},
+    codex::CodexReader,
+};
 use crate::{api, sessions::Sessions};
 use std::{
     collections::HashMap,
@@ -101,12 +106,29 @@ impl Collector {
                 .join("quota-binding.json");
             let binding = fs::read(path)
                 .ok()
-                .and_then(|bytes| serde_json::from_slice::<Binding>(&bytes).ok());
-            if let Some(binding) = binding.filter(|binding| binding.runner == "codex") {
-                self.register(
-                    session.id,
-                    Box::new(CodexReader::new(binding, state.clone(), session.id)),
-                );
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+            if let Some(binding) = binding {
+                let reader: Option<Box<dyn Reader>> =
+                    match binding["runner"].as_str() {
+                        Some("codex") => {
+                            serde_json::from_value::<Binding>(binding)
+                                .ok()
+                                .map(|binding| {
+                                    Box::new(CodexReader::new(binding, state.clone(), session.id))
+                                        as Box<dyn Reader>
+                                })
+                        }
+                        Some("claude") => serde_json::from_value::<claude::Binding>(binding)
+                            .ok()
+                            .map(|binding| {
+                                Box::new(ClaudeReader::new(binding, state.clone(), session.id))
+                                    as Box<dyn Reader>
+                            }),
+                        _ => None,
+                    };
+                if let Some(reader) = reader {
+                    self.register(session.id, reader);
+                }
             }
         }
         for (id, reader) in &mut self.readers {
@@ -129,8 +151,10 @@ impl Collector {
                 );
                 let mut snapshot = body.clone();
                 snapshot.as_object_mut().unwrap().remove("received_at_ms");
-                if reading.source_name == "rollout"
-                    && self.last_rollout.get(&key) == Some(&snapshot)
+                if matches!(
+                    reading.source_name.as_str(),
+                    "rollout" | "status-line" | "stream-json"
+                ) && self.last_rollout.get(&key) == Some(&snapshot)
                 {
                     continue;
                 }
@@ -140,7 +164,10 @@ impl Collector {
                 })
                 .await
                 .map_err(|error| io::Error::other(error.0))?;
-                if reading.source_name == "rollout" {
+                if matches!(
+                    reading.source_name.as_str(),
+                    "rollout" | "status-line" | "stream-json"
+                ) {
                     self.last_rollout.insert(key, snapshot);
                 }
             }
