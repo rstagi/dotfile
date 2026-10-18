@@ -36,28 +36,103 @@ fn an_agent_launch_waits_for_its_workspace_commit() {
         socket = shell_words::quote(&sandbox.server),
     )).unwrap();
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
-    let child = sandbox
-        .command()
-        .args([
+    let mut running = Vec::new();
+    for arguments in [
+        vec![
             "new",
             "--repo",
             repo.to_str().unwrap(),
             "--branch",
             "feature",
             "--detach",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    sandbox.wait_for(|| sandbox.home.path().join("launch-requested").exists());
-    sandbox.tmux(&["wait-for", "-S", "agent-commit"]);
-    let output = child.wait_with_output().unwrap();
+        ],
+        vec!["add", "api/feature", "--detach"],
+    ] {
+        let observed = sandbox.home.path().join("launch-requested");
+        let _ = fs::remove_file(&observed);
+        let child = sandbox
+            .command()
+            .args(arguments)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        sandbox.wait_for(|| observed.exists());
+        sandbox.tmux(&["wait-for", "-S", "agent-commit"]);
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let (agent, connection) = sandbox.capture();
+        let id = agent["id"].as_str().unwrap();
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert!(!sandbox.window(id).is_empty());
+        running.push(connection);
+    }
+}
+
+#[test]
+fn a_failed_workspace_commit_releases_the_session_and_slot() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feature",
+        "--detach",
+    ]);
     assert!(output.status.success(), "{output:?}");
-    let (agent, _running) = sandbox.capture();
+    let (owner, _running) = sandbox.capture();
+    let slots = fs::read_to_string(sandbox.slots()).unwrap();
+    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("tmux"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let wrapper = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(&wrapper, format!(
+        "#!/bin/sh\ncase \" $* \" in *' rename-window '*) echo 'synthetic commit failure' >&2; exit 1;; esac\nexec {} \"$@\"\n",
+        shell_words::quote(&real_tmux.to_string_lossy()),
+    )).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = sandbox.output(&["add", "api/feature", "--detach"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("synthetic commit failure"));
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let failed: Vec<_> = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|session| session["body"]["agent"] == "claude" && session["id"] != owner["id"])
+        .collect();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["state"], "failed");
+    let preparation = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/agents/launch",
+        &json!({"id": failed[0]["id"], "pane": owner["pane"]}).to_string(),
+    );
+    assert!(
+        preparation.contains("This pane does not own the agent session."),
+        "{preparation}"
+    );
+    assert_eq!(fs::read_to_string(sandbox.slots()).unwrap(), slots);
+    assert_eq!(
+        sandbox
+            .tmux(&["list-windows", "-t", "api/feature", "-F", "#{window_id}"])
+            .lines()
+            .count(),
+        1
+    );
+
+    // The next launch can reuse the released slot and complete its preparation.
+    fs::remove_file(wrapper).unwrap();
+    let output = sandbox.output(&["add", "api/feature", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let (agent, _new_running) = sandbox.capture();
     let id = agent["id"].as_str().unwrap();
-    assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
-    assert!(!sandbox.window(id).is_empty());
+    assert_ne!(agent["id"], failed[0]["id"]);
+    assert_eq!(sandbox.json(&["show", id, "--json"])["body"]["slot"], 2);
 }
 
 #[test]
