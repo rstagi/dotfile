@@ -9,7 +9,7 @@
 - **The agent transcript is an opaque, content-addressed artifact.** WS syncs and verifies it. WS does not rebuild the conversation.
 - **Telemetry comes from the agents.** Claude Code and Codex export their own OTel to a local `wsd` OTLP receiver, tagged with `ws.*` resource attributes. WS adds the `ws.session.*` semantics.
 - **tmux stays the PTY host.** `wsd` owns the metadata, the lifecycle and the logs.
-- **The Loop merges by becoming ws sessions.** The orchestrator and every phase runner are ws sessions linked by `depends_on`. The Loop scripts stay at first and call the ws API.
+- **The Loop becomes skills on ws tools (D19, D21).** A loop session in `wsd` holds the Loop state and has no process. The orchestrator and each phase runner are separate ws sessions. Skills hold policy, and tools record the work.
 - **Own PKI, no Tailscale.** A root key in 1Password signs short-lived device certificates. mTLS goes to the hub.
 - **Quota is per account, not per device.** The hub merges readings per account.
 - **Phase 0 (spikes)** de-risks the assumptions that no amount of design can settle.
@@ -26,7 +26,7 @@
 
 Non-goal: merging WS and TokenScope.
 
-## Decisions (2026-10-16)
+## Decisions (2026-10-16, amended at the milestone 2 gate on 2026-10-18)
 | # | Decision |
 |---|---|
 | D1 | We write `wsd` and `ws` in Rust: one cargo workspace and one binary with `daemon`, `hub` and CLI modes. |
@@ -40,12 +40,16 @@ Non-goal: merging WS and TokenScope.
 | D9 | The client encrypts checkpoints (tree bundles, transcripts). The hub stores ciphertext only. |
 | D10 | The hub runs on a cheap VPS (DigitalOcean or Hetzner). Cloudflare may front it with a tunnel. |
 | D11 | Heartbeat 10 s, lease TTL 60 s. A sleep hook releases headless leases before the device sleeps. |
-| D12 | The hub owns no plan state. The plan lives in the orchestrator session's log on the local `wsd`. Phase 2 retires the loop-web daemon, and the Observatory becomes a viewer over the `wsd` API. |
+| D12 | The hub owns no plan state. D21 amends this decision: the Loop state lives in a loop session on the local `wsd` that has no process. The plan does not live in the log of a recycling orchestrator. The Observatory UI is removed (D20). |
 | D13 | The partition default for headless sessions is `continue`. Headless phases restart from a checkpoint, and git push rejection limits duplicate pushes. `partition: freeze` stays as a per-session option. |
 | D14 | `ws device away` hands off every headless session to another device before planned offline time. Interactive sessions stay pinned. It ships in 4a. |
 | D15 | Telemetry retention is 30 days on each device and full history on the hub. A device pulls message content only when it has a local sink. |
 | D16 | A sink stores its own cursor per source device. When a sink has no cursor, `wsd` replays the full retention window. Dedup by `event_id` makes the replay safe. |
 | D17 | The hub runs at most 3 concurrent cloud workers by default (the current Loop lane cap). Config can change the limit. |
+| D18 | **Sessions without repos.** The place of a session (its cwd and its workspace) and the repos of a session are separate. Both are optional. A session can run in any directory or in a scratch directory. The registry gets the repos of a session from its events. The picker shows sessions that have no workspace. |
+| D19 | **General Loop phases.** Each work phase declares its output kind: PR, file, document or `output.md`. The model chooses the output kind. The review kind follows the output kind. A PR review is one kind of review. A work phase can have no repository. Then its Verify is optional. For output that is not a PR, a human-accept gate replaces the merge gate. |
+| D20 | **No Observatory UI.** `ws top` is the only Loop view. Phase 91 removes the loop-web UI. |
+| D21 | **The Loop as skills on ws tools.** Policy goes into skills. A script stays only when it is a mechanism (a tool). The orchestrator is an agent that decides which parts to run and when. It does not follow a fixed sequence of steps. The Loop state lives in a loop session in `wsd` that has no process. This amends D12: the plan does not live in the log of a recycling orchestrator. The skills keep the proven rules (AR rotation, inner cap, escalation ladder) as defaults. An agent that departs from a default logs the reason as a `loop.decision` event. The tools record what happens, not the agent: `wsd` and the Loop tools write the phase, attempt, review, merge and gate events. The agent writes only its judgment (`loop.note`, `loop.decision`). Code checks the hard rules after every event (Phases 110–117). A hard violation blocks new spawns of the loop until the human acknowledges it. A soft violation is a warning. |
 
 ## 1. Topology
 
@@ -84,6 +88,7 @@ flowchart LR
 - **Session kinds:**
   - `interactive`: an agent in a tmux pane. Claude Code/Codex hooks call `ws hook <event>`.
   - `headless`: a process that `wsd` supervises (e.g. a Loop runner `claude -p`), with its output in the session directory.
+  - `loop`: the durable Loop state, with no process (D21). The orchestrator runs in a separate session.
 - **Session state machine:** `created → running ⇄ blocked → finished | failed`, plus `reopened`.
 - **Modules:** registry (sessions, workspaces, aliases), log writer, message bus, trigger/edge engine, checkpointer. Also telemetry (OTLP receiver, telemetry log, forwarder), quota collector, notifier, sync client, MCP server.
 - **Migration:** `ws` keeps its current command names and flags. A one-time import reads `$WS_HOME/sessions/*`. We retire the zsh `ws/` scripts module by module. The picker can stay zsh + fzf over `ws … --json` until we port it.
@@ -98,13 +103,16 @@ flowchart LR
 - **Edges:** `depends_on`, `block_on` and `parent` are log events. `ws on … done|exit --send-to|--spawn` is sugar for "edge + action on satisfaction". Cycle checks run over the replicated edge graph.
 
 ## 4. The Loop inside WS
-- **Phase 1:** the Loop orchestrator and each phase runner become ws sessions.
-  - `loop-runner.sh` starts its runner through `ws session create --headless --parent <orch> --depends-on …`.
-  - `loop-emit.sh` stays unchanged in phase 1. Phase 2 moves the loop-web API into `wsd` (D12), so `loop-emit.sh` then talks to `wsd` at the same URL.
-- In phase 1, `ws top` finds the current session's loop and runs `loop-top` for it. From phase 2, `loop-top` reads the same API from `wsd`.
-- Phase worktrees: `ws phase worktree` returns `~/.ws/phases/<session>/`, which is GC'd when the session finishes and its lease ends. This fixes the review-worktree leak (v5 §13).
-- **Phase 2:** the plan registry and the event lattice move from the loop-web daemon into the orchestrator session's log on the local `wsd`. Phase 2 retires the loop-web daemon. The Observatory becomes a viewer over the `wsd` API (D12). The hub syncs that log like any other log and holds no plan state. A port of the shell orchestration into Rust is optional and not on the roadmap.
-- Milestones and merge gates keep their current semantics.
+- **Policy lives in skills (D21).** A script stays only when it is a mechanism (a tool). The orchestrator is an agent that decides which parts to run and when. It does not follow a fixed sequence of steps.
+- **State lives in a loop session.** This session in the local `wsd` has no process. The orchestrator and each phase runner run in separate ws sessions. A recycling orchestrator does not own the plan log. The hub syncs the loop session's log like any other log and holds no plan state. D21 amends D12.
+- **Tools record the work.** `wsd` and the Loop tools write the phase, attempt, review, merge and gate events. The agent writes only its judgment (`loop.note`, `loop.decision`).
+- **Defaults and hard rules differ.** Skills keep the AR rotation, inner cap and escalation ladder as defaults. An agent that departs from a default logs its reason as a `loop.decision` event. Code checks the hard rules after every event (implementation plan Phases 110–117). A hard violation blocks new spawns of the loop until the human acknowledges it. A soft violation is a warning.
+- **Work phases declare an output kind (D19).** The model chooses PR, file, document or `output.md`. The review kind follows the output kind. A PR review is one kind of review. A work phase can have no repository. Then its Verify is optional.
+- **Gates follow the output.** Milestones keep their current semantics. PR output uses a merge gate. For output that is not a PR, a human-accept gate replaces the merge gate. Every PR review phase uses `[review: max]` and `[rounds: 3]`.
+- **One Loop view (D20).** `ws top` is the only Loop view. The Observatory UI is removed in implementation plan Phase 91. There is no replacement web viewer.
+- **Phase worktrees:** `ws phase worktree` returns `~/.ws/phases/<session>/`. WS removes the worktree when the session finishes and its lease ends. This fixes the review-worktree leak (v5 §13).
+- **Transition:** roadmap phase 2 adds local telemetry and quota visibility without a Rust port of the loop-web daemon. Milestone 4 adds sessions without repos (D18). Milestone 5 adds the `wsd` Loop tools and the skills engine next to the old engine. The old engine runs milestone 5 and keeps using the loop-web daemon. No old-engine path requires a new `wsd` API.
+- **Switch and retirement:** the human tests the skills engine at the milestone 5 gate. Milestone 6 runs with `engine: skills`. The old engine remains the rollback for plans without that field. Retirement starts only after two milestones run on the skills engine with no hard violation and no manual rescue (§15).
 
 ## 5. Agent control surface
 - Local MCP + `ws … --json`, both thin layers over the daemon API.
@@ -117,6 +125,7 @@ flowchart LR
 
 ### 5.1 Remote MCP (on the hub)
 - **Read (phase 3):** `list_sessions`, `get_session`, `get_session_timeline`, `get_requirements_readiness` (capabilities per device).
+- **Issues (phase 3):** add `issue_file`, `issue_list` and `issue_update` to remote MCP. Connected assistants can file issues under the rules in §16.
 - **Control (phase 4):** `pause`, `resume`, `send`, `handoff`.
   - The hub writes the intent and routes it to the lease holder.
   - I approve through a notification action.
@@ -234,7 +243,7 @@ v5 §11 holds:
 - `repos: [{remote, base_sha, branch}]`.
 - A `change_id` groups the PRs.
 - Landing follows dependency order, with no atomic merge.
-- Each phase token has the scope of one repo.
+- A phase token limits repository access to its declared repository. A work phase can have no repository (D19).
 
 The Loop already runs multi-repo plans. WS adds the change-set events and telemetry with phase 4.
 
@@ -253,10 +262,27 @@ A phase completes only when I test its checkpoint by hand and it passes.
 **1. Local `wsd` + control surface.** Rust daemon and CLI, import from `$WS_HOME`, ULID + aliases, logs, messages as events, edges + `wait`, local MCP, Loop runners as ws sessions. Also `ws top`, `ws phase worktree`, and the picker from the registry.
 - *Checkpoint:* start a loop, kill the terminal, reattach. `ws top` shows it live. Drive a session end to end from Claude and from Codex through MCP. `ws on A done --spawn …` runs with no shell lock files. During a Loop plan, the picker shows no review worktrees.
 
-**2. Telemetry + quota visibility (local).** OTLP receiver, agent env injection, span synthesis from hooks, `ws.session.*` semconv v1, the telemetry log, a forwarder to the local TokenScope. Also the quota collector, `ws usage`, the `ws top` panel, the pre-flight warning. Phase 2 retires the loop-web daemon, and the Observatory reads from `wsd` (D12).
-- *Checkpoint:* two dependent sessions appear in TokenScope as linked, with the handoff message. Kill the sink, then restart it: no spans lost. With one runner near its 5h limit, a plan with an AR phase prints a warning that names the runner and suggests a reassignment.
+The remaining work follows this order. Roadmap phase numbers stay stable. The new items between phases 2 and 3 follow the milestone 2 gate decisions.
 
-**3. Hub, identity and sync + remote MCP read.** `wsd hub` on a VPS, root CA in 1Password, pairing, mTLS, log and telemetry sync, alias blocks, cloud TokenScope export. Also remote MCP read with tokens, audit and rate limits.
+**2. Telemetry + quota visibility (local, milestone 3).** OTLP receiver, agent env injection, span synthesis from hooks, `ws.session.*` semconv v1, the telemetry log and local OTLP export. Also the quota collector, `ws usage`, the `ws top` panel and the pre-flight warning. This phase fixes the milestone 2 findings and removes the zsh `ws`. It does not port or retire the loop-web daemon. TokenScope changes belong to a separate plan.
+- *Checkpoint:* a generic OTLP viewer shows two dependent sessions as linked, with the handoff message. Stop the sink, then restart it: no spans lost. With one runner near its 5h limit, a plan with an AR phase prints a warning that names the runner and suggests a reassignment.
+
+**D18. Sessions without repos (milestone 4).** Separate a session's place (cwd and workspace) from its repos. Both are optional. Sessions run in any directory or in a scratch directory. The registry derives their repos from events. The picker shows sessions that have no workspace.
+- *Checkpoint:* start a session outside a repo with no workspace. The picker shows it. Repo events update its registry repos without changing its cwd.
+
+**D19–D21. The Loop as skills on ws tools (milestone 5).** Add general work outputs and reviews, Loop tools in `wsd`, and the skills engine (§4). A loop session holds the state and has no process. Tools record work events, and code checks hard rules after every event. The Observatory UI is removed. The old engine and the loop-web daemon remain installed and run milestone 5. This addition does not change old-engine behavior or require new `wsd` APIs on old-engine paths.
+- *Checkpoint:* the human tests the skills engine at the milestone 5 gate. Check PR and non-PR output gates, a logged departure from a default, and a hard violation that blocks new spawns. `ws top` shows the Loop.
+
+**Switch the Loop to the skills engine (milestone 6, `engine: skills`).** Move every remaining reader to `wsd`: `loop-plan.sh`, `loop-emit.sh`, the plan reads in `loop-pickup`, `loop-handoff` and `multiphase-plan`, and the `daemon:` field of the plan header. `loop-retro.mjs` reads the `wsd` loop events. The old engine stays installed. It runs every plan without `engine: skills`, so it is the rollback.
+- *Checkpoint:* run a milestone on the skills engine with plan reads and retrospective facts from `wsd`. Check that a plan without `engine: skills` still runs on the old engine.
+
+**Retire the old stack.** Start this item only after 2 milestones ran on the skills engine with no hard violation (`ws loop check`) and no manual rescue. Move the milestone and AR sections of `loop-web/README.md` into `loop-protocol.md`. Change `tests/milestone-skills.test.sh` to read them there. Rewrite or remove `tests/jev-recovery.test.mjs`. Retire the loop-web daemon, its LaunchAgent and its install package. Delete the old engine: `loop-execute`, `loop-orchestrator.sh`, `loop-review.sh`, `loop-plan-review.sh`, `loop-pickup` and `loop-handoff`. Remove the file behavior of `loop_stop`. Keep the `~/.loop/loops` records as a read-only archive.
+- *Checkpoint:* `ws loop check` shows no hard violation for the two milestones. Run a new Loop with the old stack absent. Existing archived records remain readable.
+
+**ws issues v1 (local, picked up by hand).** ws issues replace ralph. Each issue holds a saved start prompt and its own log. A pickup starts a session and links it to the issue with an edge. §16 defines the fields and rules.
+- *Checkpoint:* file an issue, list similar open issues, and start a linked session by hand. Check the issue history, derived statuses, human-only closure and prompt protection.
+
+**3. Hub, identity and sync + remote MCP read.** `wsd hub` on a VPS, root CA in 1Password, pairing, mTLS, log and telemetry sync, alias blocks, cloud TokenScope export. Also remote MCP read with tokens, audit and rate limits. Add the `issue_*` tools so that connected assistants can file issues (§16).
 - *Checkpoint:* pair the laptop and the Mac mini, and each sees the other's sessions. The hub rejects an unregistered device. With the hub stopped for 1 h, both devices keep working, then catch up. Grok Bot reports a session that waits for input. Revoking its token cuts it off, and the call is in the audit log.
 
 **4. Resilience.** Three parts, each with its own hand-tested checkpoint, because each tests a different risk.
@@ -278,7 +304,25 @@ A phase completes only when I test its checkpoint by hand and it passes.
 **6. Cloud workers + quota-aware scheduling.** Starts with spike S4.
 - *Checkpoint:* a test phase runs in the cloud and merges back. With the provisioner off, it runs on the Mac mini. A plan that would exhaust Claude Code moves its implement phases to Codex and still runs the full review set.
 
-Phases 1–2 make WS useful on one machine. Phase 3 makes it useful across devices. Phase 4 makes it resilient.
+**Issue autonomy (not placed yet).** A switch enables autonomous pickup per issue. At most one autonomous session runs at a time. A quota cap uses the runner usage data. An autonomous session always stops at `waiting on human` and never merges. Place this item when the data from ws issues v1 shows that agents estimate work size correctly.
+
+Phases 1–2, D18, the Loop skills engine and ws issues v1 serve one machine. Phase 3 adds multiple devices. Phase 4 adds resilience.
+
+## 16. ws issues v1
+
+ws issues replace ralph. An issue is a saved start prompt with its own log and a row in an `issues` projection. A pickup starts a session and links it to the issue with an edge. The issue history is the list of its linked sessions.
+
+- **Fields:** title, prompt, optional repos and paths, filer, size estimate, status, approval.
+- A filer is the human, an agent in a session, or a connected assistant (Claude, Grok Bot).
+- The MCP tools are `issue_file`, `issue_list` and `issue_update`. The filer identity comes from the caller, never from a tool argument.
+- A new issue starts as `open`. Only the human sets `done` and `dropped`. The statuses `picked up`, `in review` and `waiting on human` come from the linked sessions.
+- An agent cannot change the prompt of an issue that the human filed.
+- An issue that an agent or an assistant files needs human approval before an autonomous pickup can take it.
+- `issue_file` returns similar open issues, so that the caller can find duplicates.
+- Each session records its depth decision (direct, plan or multiphase), the reason and the outcome.
+- Labels come later, when a need appears.
+
+The first version is local, with manual pickup. Roadmap phase 3 adds the `issue_*` tools to remote MCP. Connected assistants, for example Grok Bot, can then file issues. Issue autonomy remains unplaced until the size estimates prove reliable (§15).
 
 ## Risks
 - **Duplicate effects during a partition (D4):** accepted, and limited to headless sessions by the defaults. Mitigated by turn-level checkpoints, the sleep hook, `partition: freeze` and git push rejection.
