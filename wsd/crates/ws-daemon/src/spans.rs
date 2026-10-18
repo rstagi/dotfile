@@ -21,6 +21,7 @@ pub(crate) struct Spans {
     state: PathBuf,
     device: DeviceId,
     log: TelemetryLog,
+    emitter: crate::semconv_emit::Emitter,
     native_tracing: bool,
     written: HashSet<(String, String)>,
     sessions: HashMap<SessionId, SessionSpans>,
@@ -71,6 +72,7 @@ impl Spans {
                 .telemetry
                 .native_tracing,
             log,
+            emitter: crate::semconv_emit::Emitter::open(state, device)?,
             written,
             sessions: HashMap::new(),
         })
@@ -78,6 +80,7 @@ impl Spans {
 
     /// Consumes each durable entry once. Replay uses the same source-derived span ids.
     pub(crate) fn observe(&mut self, entry: &LogEntry) -> io::Result<()> {
+        self.emitter.observe(entry)?;
         let event = entry.event_type.as_str();
         if event == "hook.received" {
             if matches!(
