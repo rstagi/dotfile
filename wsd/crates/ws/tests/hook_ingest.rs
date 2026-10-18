@@ -204,6 +204,79 @@ impl HookSandbox {
 }
 
 #[test]
+fn missing_pane_exit_hooks_record_exit_fire_triggers_and_replay_once() {
+    for (spooled, server_present) in [(false, true), (true, true), (false, false), (true, false)] {
+        let mut sandbox = HookSandbox::new();
+        let tmux = ws_daemon::tmux::Tmux::named(&sandbox.server);
+        tmux.execute(&["new-window", "-d", "-t", "hooks:", "/bin/sleep", "300"])
+            .unwrap();
+        let registered = request(
+            &sandbox.socket,
+            "POST",
+            "/v1/triggers",
+            &json!({"sources":[sandbox.id], "event":"exit", "target":sandbox.id,
+                "parent_session_id":sandbox.id, "template":"The agent exited."})
+            .to_string(),
+        );
+        assert!(registered.starts_with("HTTP/1.1 201"), "{registered}");
+        let callback = sandbox.callback(
+            "exit",
+            json!({"hook_event_name":"SessionEnd", "exit_code":7}),
+            ws_daemon::hooks::receipt_time_us().unwrap(),
+        );
+        tmux.execute(&["kill-window", "-t", &sandbox.window])
+            .unwrap();
+        if !server_present {
+            tmux.execute(&["kill-server"]).unwrap();
+        }
+        if spooled {
+            sandbox.daemon.take();
+            ws_daemon::hooks::spool(&sandbox.home.path().join("state"), &callback).unwrap();
+            sandbox.daemon = Some(Daemon::start(
+                ws(sandbox.home.path(), &sandbox.socket),
+                &sandbox.socket,
+            ));
+            assert_eq!(
+                fs::read_dir(sandbox.home.path().join("state/spool"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        } else {
+            let reply = request(
+                &sandbox.socket,
+                "POST",
+                "/v1/hooks/ingest",
+                &serde_json::to_string(&callback).unwrap(),
+            );
+            assert!(reply.starts_with("HTTP/1.1 201"), "{reply}");
+        }
+        let retry = request(
+            &sandbox.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &serde_json::to_string(&callback).unwrap(),
+        );
+        assert!(retry.starts_with("HTTP/1.1 201"), "{retry}");
+        let log = sandbox.log();
+        let exits: Vec<_> = log.iter().filter(|entry| entry["type"] == "exit").collect();
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0]["body"]["code"], 7);
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry["type"] == "message.sent")
+                .count(),
+            1
+        );
+        let waited = ws(sandbox.home.path(), &sandbox.socket)
+            .args(["wait", &sandbox.id, "--for", "exit", "--timeout", "0"])
+            .output()
+            .unwrap();
+        assert!(waited.status.success(), "{waited:?}");
+    }
+}
+
+#[test]
 fn hook_window_options_match_the_zsh_hook_scenarios() {
     let sandbox = HookSandbox::new();
     let mut actual = String::new();
@@ -233,7 +306,7 @@ fn hook_window_options_match_the_zsh_hook_scenarios() {
             json!({"hook_event_name":"Interrupt", "turn_id":"t2"}),
         ),
     ] {
-        sandbox.hook(state, payload);
+        sandbox.post(state, payload, ws_daemon::hooks::receipt_time_us().unwrap());
         actual.push_str(&sandbox.options());
         actual.push('\n');
     }

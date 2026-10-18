@@ -119,7 +119,15 @@ async fn ingest_callback(
     } else {
         StopDecision::Accept
     };
-    let mut window = window(&callback).await?;
+    let mut window = match window(&callback).await {
+        Ok(window) => window,
+        Err(error) if event_type(&callback, &decision) == Some("exit") => {
+            // Exit recording must not depend on a pane that tmux can already have removed.
+            eprintln!("Cannot read the exiting agent window: {error}");
+            None
+        }
+        Err(error) => return Err(error.into()),
+    };
     if callback.pane.is_none() {
         let callback = callback.clone();
         window = Some(

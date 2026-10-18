@@ -4,7 +4,7 @@ use super::{AgentSession, Mode, Prepared, prepare, slots};
 use crate::{
     api::{self, ApiError, Store},
     sessions::{Error, Result, Sessions},
-    tmux::Tmux,
+    tmux::{PaneStatus, Tmux},
 };
 use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
@@ -161,6 +161,30 @@ impl Sessions {
             .filter(|window| window["session_id"] == session.id.to_string())
             .filter_map(|window| window["window_id"].as_str().map(str::to_owned))
             .collect();
+        let tmux = Tmux::from_env();
+        if !self.process_exited(session.id)? {
+            for window in &old_windows {
+                let Some(pane) = tmux.window_option(window, "@ws_pane").ok().flatten() else {
+                    continue;
+                };
+                if self.owns_agent_window(session, &pane)?
+                    && tmux.pane_status(&pane)? == PaneStatus::Running
+                {
+                    // Completion ends the task. The existing agent still owns its conversation.
+                    self.transition(
+                        &session.id.to_string(),
+                        ws_core::state::SessionState::Reopened,
+                        caller,
+                    )?;
+                    self.transition(
+                        &session.id.to_string(),
+                        ws_core::state::SessionState::Running,
+                        caller,
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
         let launched = self.start_workspace_session(
             workspace,
             &directory,
@@ -169,7 +193,6 @@ impl Sessions {
             Some(session),
             None,
         )?;
-        let tmux = Tmux::from_env();
         for window in old_windows {
             if launched["window_id"] == window
                 || tmux
@@ -181,7 +204,7 @@ impl Sessions {
             {
                 continue;
             }
-            // A finished agent can still own a live pane. Retire that launch generation.
+            // A wrapper can retain its pane after the agent exits.
             for key in [
                 "@ws_session",
                 "@ws_pane",
