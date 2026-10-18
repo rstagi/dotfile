@@ -452,7 +452,8 @@ A stream without quota records leaves both windows without a reported value.
 The Grok reader initializes `grok agent stdio`, then calls the read-only `_x.ai/billing` extension.
 It records the reported period type and dates. It does not invent a five-hour window.
 A missing `creditUsagePercent` stays unknown. Zero on-demand balances do not establish the included allowance.
-The launch binding keeps the user and principal context. The reader rejects a changed account.
+The launch binding keeps the OIDC user and principal context. Unverified authentication modes stay unknown.
+The reader checks the account before and after each billing request.
 
 For a window without a reported value, the collector sums completed canonical model spans from the local telemetry log.
 It deduplicates records by trace and span identity and adds normalized input and output tokens once.

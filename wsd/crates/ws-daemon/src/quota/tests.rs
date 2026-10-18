@@ -1165,7 +1165,7 @@ cat "$GROK_HOME/billing-response"
     .unwrap();
     fs::write(
         sandbox.path().join("auth.json"),
-        r#"{"issuer::client":{"user_id":"account-a"}}"#,
+        r#"{"issuer::client":{"user_id":"account-a","auth_mode":"oidc"}}"#,
     )
     .unwrap();
     let state = sandbox.path().join("state");
@@ -1283,4 +1283,75 @@ async fn unavailable_quota_sources_still_persist_token_estimates() {
             .iter()
             .all(|event| event.body.get(sc::RUNNER_USAGE_REMAINING_RATIO).is_none())
     );
+}
+
+#[tokio::test]
+async fn grok_rejects_an_account_change_during_the_billing_request() {
+    use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+    let sandbox = tempfile::tempdir().unwrap();
+    let program = sandbox.path().join("grok");
+    fs::write(&program, r#"#!/bin/sh
+IFS= read -r request || exit 1
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+IFS= read -r request || exit 1
+printf '%s\n' '{"issuer::client":{"user_id":"account-b","auth_mode":"oidc"}}' > "$GROK_HOME/auth.json"
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"config":{"creditUsagePercent":0}}}'
+"#).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(
+        sandbox.path().join("auth.json"),
+        r#"{"issuer::client":{"user_id":"account-a","auth_mode":"oidc"}}"#,
+    )
+    .unwrap();
+    let mut reader = grok::GrokReader::new(grok::Binding {
+        runner: "grok".into(),
+        account_id: Some("account-a".into()),
+        identity: Some(grok::Identity {
+            user_id: "account-a".into(),
+            principal_type: None,
+            principal_id: None,
+            team_id: None,
+        }),
+        grok_home: sandbox.path().into(),
+        program,
+    });
+    assert!(reader.read(Arc::new(|| 100)).await.is_err());
+}
+
+#[test]
+fn grok_keeps_unverified_or_ambiguous_authentication_unknown() {
+    use crate::agents::{AgentSession, Mode, prepare};
+    use std::fs;
+    let sandbox = tempfile::tempdir().unwrap();
+    for auth in [
+        json!({"issuer::client":{"user_id":"a","auth_mode":"unverified"}}),
+        json!({"issuer::client":{"user_id":"a"}}),
+        json!({"issuer::one":{"user_id":"a","auth_mode":"oidc"},"issuer::two":{"user_id":"b","auth_mode":"oidc"}}),
+    ] {
+        fs::write(sandbox.path().join("auth.json"), auth.to_string()).unwrap();
+        let context = AgentSession {
+            agent_program: None,
+            state: sandbox.path().join("state"),
+            parent_session_id: None,
+            project: "sandbox".into(),
+            id: ws_core::ids::Ulid::new().to_string(),
+            home: sandbox.path().into(),
+            grok_home: Some(sandbox.path().into()),
+            codex_home: None,
+            claude_config_dir: None,
+            ws_home: sandbox.path().join("ws"),
+            ws_bin: "/fake/ws".into(),
+            spawned: false,
+            prompt: None,
+            arguments: vec![],
+        };
+        let prepared = prepare("grok", Mode::Headless, &context, None).unwrap();
+        let file = prepared
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("quota-binding.json"))
+            .unwrap();
+        let binding: Value = serde_json::from_slice(&file.contents).unwrap();
+        assert!(binding["account_id"].is_null());
+    }
 }

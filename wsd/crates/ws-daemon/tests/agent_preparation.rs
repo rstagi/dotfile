@@ -130,7 +130,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
 fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::tempdir().unwrap();
-    let session = AgentSession {
+    let mut session = AgentSession {
         claude_config_dir: None,
         agent_program: None,
         state: home.path().join("state"),
@@ -173,6 +173,8 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
         .unwrap(),
         ["/test/ws rs'bin", "hook", "stop"]
     );
+    // Each agent uses a separate WS session and account binding.
+    session.id = ws_core::ids::Ulid::new().to_string();
     let grok = prepare("grok", Mode::Interactive, &session, None).unwrap();
     grok.write_files().unwrap();
     assert!(session.home.join(".grok/hooks/ws.json").is_file());

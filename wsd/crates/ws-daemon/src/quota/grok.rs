@@ -56,6 +56,11 @@ impl Reader for GrokReader {
                 ));
             }
             let result = read_billing(&self.binding).await?;
+            if identity(&self.binding.grok_home) != self.binding.identity {
+                return Err(io::Error::other(
+                    "The Grok account changed during the billing request.",
+                ));
+            }
             Ok(parse_billing(&result, account, clock()))
         })
     }
@@ -65,49 +70,6 @@ impl GrokReader {
     pub fn new(binding: Binding) -> Self {
         Self { binding }
     }
-}
-
-/// Keeps the original account and principal context when a session resumes.
-pub(crate) fn prepare_file(session: &AgentSession) -> io::Result<GeneratedFile> {
-    let path = session
-        .state
-        .join("sessions")
-        .join(&session.id)
-        .join("quota-binding.json");
-    let contents = match fs::read(&path) {
-        Ok(contents) => {
-            let binding: Binding = serde_json::from_slice(&contents)?;
-            if binding.runner != "grok" {
-                return Err(io::Error::other(
-                    "The launch quota binding belongs to another runner.",
-                ));
-            }
-            contents
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let grok_home = session
-                .grok_home
-                .clone()
-                .unwrap_or_else(|| session.home.join(".grok"));
-            let identity = identity(&grok_home);
-            let account_id = identity.as_ref().map(|identity| {
-                // The principal separates team allowances that share one login.
-                serde_json::to_string(identity).expect("Identity contains only strings.")
-            });
-            serde_json::to_vec(&Binding {
-                runner: "grok".into(),
-                account_id,
-                identity,
-                grok_home,
-                program: session
-                    .agent_program
-                    .clone()
-                    .unwrap_or_else(|| "grok".into()),
-            })?
-        }
-        Err(error) => return Err(error),
-    };
-    Ok(GeneratedFile { path, contents })
 }
 
 /// Parses the billing result. No missing field receives a default percentage.
@@ -154,6 +116,49 @@ pub fn parse_billing(result: &Value, account: &str, received: u64) -> Vec<Readin
     }]
 }
 
+/// Keeps the original account and principal context when a session resumes.
+pub(crate) fn prepare_file(session: &AgentSession) -> io::Result<GeneratedFile> {
+    let path = session
+        .state
+        .join("sessions")
+        .join(&session.id)
+        .join("quota-binding.json");
+    let contents = match fs::read(&path) {
+        Ok(contents) => {
+            let binding: Binding = serde_json::from_slice(&contents)?;
+            if binding.runner != "grok" {
+                return Err(io::Error::other(
+                    "The launch quota binding belongs to another runner.",
+                ));
+            }
+            contents
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let grok_home = session
+                .grok_home
+                .clone()
+                .unwrap_or_else(|| session.home.join(".grok"));
+            let identity = identity(&grok_home);
+            let account_id = identity.as_ref().map(|identity| {
+                // The principal separates team allowances that share one login.
+                serde_json::to_string(identity).expect("Identity contains only strings.")
+            });
+            serde_json::to_vec(&Binding {
+                runner: "grok".into(),
+                account_id,
+                identity,
+                grok_home,
+                program: session
+                    .agent_program
+                    .clone()
+                    .unwrap_or_else(|| "grok".into()),
+            })?
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(GeneratedFile { path, contents })
+}
+
 fn timestamp(value: &Value) -> Option<u64> {
     value
         .as_str()
@@ -165,6 +170,9 @@ fn timestamp(value: &Value) -> Option<u64> {
 fn identity(home: &Path) -> Option<Identity> {
     let auth: Value = serde_json::from_slice(&fs::read(home.join("auth.json")).ok()?).ok()?;
     let mut entries = auth.as_object()?.values().filter_map(|entry| {
+        if entry["auth_mode"] != "oidc" {
+            return None;
+        }
         let user_id = entry["user_id"].as_str().filter(|id| !id.is_empty())?;
         Some(Identity {
             user_id: user_id.into(),
