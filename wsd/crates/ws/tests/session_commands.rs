@@ -98,6 +98,61 @@ fn legacy_agents_create_children_with_their_resolved_parent() {
 }
 
 #[test]
+fn readme_session_create_examples_use_supported_name_and_headless_options() {
+    let sandbox = Sandbox::new();
+    let readme = include_str!("../../../../ws/README.md");
+    let row = readme
+        .lines()
+        .find(|line| line.starts_with("| `session_create` |"))
+        .unwrap();
+    for example in row
+        .split('`')
+        .filter(|example| example.starts_with("ws session create"))
+    {
+        // Exercise every optional flag in each documented command form.
+        let expanded = example
+            .replace(['[', ']'], "")
+            .replace("<name>", "doc-example")
+            .replace('…', "")
+            .replace("<cmd>", "/usr/bin/true");
+        let args: Vec<_> = expanded.split_whitespace().skip(1).collect();
+        let output = sandbox.run(&args);
+        assert!(output.status.success(), "{example}: {output:?}");
+        let child: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if args.contains(&"--headless") {
+            assert!(child["name"].is_null());
+            let exited = sandbox.run(&[
+                "wait",
+                child["id"].as_str().unwrap(),
+                "--for",
+                "event=process.exited",
+                "--timeout",
+                "30",
+            ]);
+            assert!(exited.status.success(), "{exited:?}");
+        } else {
+            assert_eq!(child["name"], "doc-example");
+        }
+    }
+    for option in ["--name", "--workspace-id"] {
+        let rejected = sandbox.run(&[
+            "session",
+            "create",
+            "--headless",
+            option,
+            "unused",
+            "--",
+            "/usr/bin/true",
+        ]);
+        assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr)
+                .contains("does not accept name or workspace_id")
+        );
+    }
+}
+
+#[test]
 fn whoami_uses_environment_precedence_then_the_tmux_window() {
     let sandbox = Sandbox::new();
     let output = sandbox

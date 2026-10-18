@@ -297,7 +297,7 @@ The tools return the daemon JSON in both text and structured content.
 
 | MCP tool | JSON CLI command |
 |---|---|
-| `session_create` | `ws session create [--name <name>] [--headless … -- <cmd>] --json` |
+| `session_create` | `ws session create [--name <name>] --json`<br>`ws session create --headless --json … -- <cmd>` |
 | `session_list` | `ws session list --json` |
 | `session_get` | `ws session get <target> --json` |
 | `session_send` | `ws send <target> <message> --json` |
@@ -309,6 +309,8 @@ The tools return the daemon JSON in both text and structured content.
 | `loop_start` | `ws loop start <loop_dir> --json` |
 | `loop_stop` | `ws loop stop <loop_dir> --json` |
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
+
+The record form accepts a name and a workspace ID. The headless form rejects both fields.
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.
