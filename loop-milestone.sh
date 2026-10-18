@@ -81,6 +81,8 @@ advance_milestone() {
   (( NEXT == old + 1 )) || die "next milestone $NEXT must be $(( old + 1 )) (parked at $old)"
   run_id="$(jq -er '.runId' "$STATE")" || die "state has no runId"
 
+  quota_preflight
+
   # Prepare everything before touching anything old: a failure leaves the runtime intact.
   local -A prepared
   for slug in ${(f)"$(jq -r 'keys[]' <<< "$BRANCHES")"}; do
@@ -95,6 +97,15 @@ advance_milestone() {
   host="$(runtime_host)"
   retire_old "$run_id" "$host"
   print_patch "$old" "$host"
+}
+
+# Quota failures must not stop an advance or corrupt its JSON patch.
+quota_preflight() {
+  if ! "${WS_BIN:-ws}" usage --preflight --plan "${STATE:A:h}/plan.md" \
+    --milestone "$NEXT" --models-conf "$HERE/loop-models.conf" >&2; then
+    print -u2 "loop-milestone: Warning: no quota data. Continue the milestone."
+  fi
+  return 0
 }
 
 # Repository hosting the Loop runtime: state.runtimeRepo, else state.runtimeRoot owner, else the
