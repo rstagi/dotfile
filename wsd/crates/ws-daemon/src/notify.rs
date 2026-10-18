@@ -212,6 +212,8 @@ async fn emit(
     };
     let bundle = terminal_bundle(context, &config).await;
     let mut click = shell_words::quote(&executable("tmux", &config).to_string_lossy()).into_owned();
+    // The click runs without a known locale. "-u" keeps the tmux client in UTF-8.
+    click.push_str(" -u");
     if let Some(socket) = &context.tmux_socket {
         click.push_str(&format!(" -L {}", shell_words::quote(socket)));
     } else if let Some(path) = &context.tmux_path {

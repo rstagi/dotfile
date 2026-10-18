@@ -136,6 +136,178 @@ fn pick_installs_rust_tmux_bindings_and_preserves_user_hooks() {
 }
 
 #[test]
+fn installed_tmux_bindings_parse_and_keep_the_workspace_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::seeded_live(&[("api/alpha", false)]);
+    let fzf = sandbox.home.path().join("fake-agents/fzf");
+    std::fs::write(&fzf, "#!/bin/sh\ncat >/dev/null\nexit 130\n").unwrap();
+    std::fs::set_permissions(fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = sandbox.command().arg("pick").output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    // A quote and a space in the directory check the tmux quoting and the sh quoting.
+    let directory = sandbox.home.path().join("worktrees/api/it's alpha");
+    std::fs::create_dir_all(&directory).unwrap();
+    let directory = directory.canonicalize().unwrap();
+    let directory = directory.to_str().unwrap();
+    let window = sandbox.server.tmux(
+        sandbox.home.path(),
+        &[
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id}",
+            "-t",
+            "fixture-0:",
+            "-c",
+            directory,
+            "/bin/cat",
+        ],
+    );
+    sandbox.server.tmux(
+        sandbox.home.path(),
+        &["set", "-w", "-t", &window, "@ws_path", directory],
+    );
+    let parser = Parser {
+        sandbox: &sandbox,
+        window: &window,
+    };
+    for (key, action) in [("w", "pick"), ("N", "new"), ("M", "_merge_popup")] {
+        let binding = parser.binding(key);
+        let (name, condition) = parser.parse(&binding);
+        assert_eq!(name, "if-shell", "{binding}");
+        assert_eq!(condition[0], "-F", "{binding}");
+        let (name, popup) = parser.parse(&condition[2]);
+        assert_eq!(name, "display-popup", "{binding}");
+        let start = popup.iter().position(|argument| argument == "-d");
+        let start = &popup[start.expect("The popup has no -d option.") + 1];
+        assert_eq!(parser.expand(start), directory, "{binding}");
+        let words = shell_words::split(popup.last().unwrap()).unwrap();
+        assert_eq!(words.last().unwrap(), action, "{binding}");
+        assert!(words.iter().any(|word| word == env!("CARGO_BIN_EXE_ws")));
+        if key == "w" {
+            assert_eq!(parser.parse(&condition[3]).0, "choose-tree", "{binding}");
+        }
+    }
+    for (key, agent) in [("a", None), ("A", Some("codex")), ("G", Some("grok"))] {
+        let binding = parser.binding(key);
+        let (name, condition) = parser.parse(&binding);
+        assert_eq!(name, "if-shell", "{binding}");
+        let (name, run) = parser.parse(&condition[2]);
+        assert_eq!(name, "run-shell", "{binding}");
+        let words = shell_words::split(&parser.expand(&run[0])).unwrap();
+        let add = words.iter().position(|word| word == "add").unwrap();
+        assert_eq!(words[add + 1], directory, "{binding}");
+        let options: Vec<_> = agent
+            .into_iter()
+            .flat_map(|agent| ["--agent", agent])
+            .collect();
+        assert_eq!(words[add + 2..], options, "{binding}");
+    }
+    let hooks = sandbox
+        .server
+        .tmux(sandbox.home.path(), &["show-hooks", "-g"]);
+    for hook in ["session-window-changed[78] ", "client-session-changed[78] "] {
+        let line = hooks.lines().find(|line| line.starts_with(hook)).unwrap();
+        let (name, condition) = parser.parse(&line[hook.len()..]);
+        assert_eq!(name, "if-shell", "{line}");
+        let (name, run) = parser.parse(&condition[2]);
+        assert_eq!(name, "run-shell", "{line}");
+        assert_eq!(run[0], "-b", "{line}");
+        let words = shell_words::split(&parser.expand(&run[1])).unwrap();
+        assert_eq!(
+            words[words.len() - 2..],
+            ["_dismiss", window.as_str()],
+            "{line}"
+        );
+    }
+}
+
+/// Uses the tmux parser to read the commands that the picker installs.
+struct Parser<'a> {
+    sandbox: &'a Sandbox,
+    window: &'a str,
+}
+
+impl Parser<'_> {
+    /// Returns the command of the `key` binding in the prefix table.
+    fn binding(&self, key: &str) -> String {
+        let line = self.tmux(&["list-keys", "-T", "prefix", key]);
+        // list-keys aligns its columns with spaces.
+        line.split_once(" prefix ")
+            .and_then(|(_, rest)| rest.trim_start().strip_prefix(key))
+            .map(|command| command.trim_start().to_owned())
+            .unwrap_or_else(|| panic!("The binding has an unknown format: {line}"))
+    }
+
+    /// Parses one tmux command. Returns its name and its arguments after the parser removes the quotes.
+    fn parse(&self, command: &str) -> (String, Vec<String>) {
+        let home = self.sandbox.home.path();
+        let file = home.join("parse.tmux");
+        std::fs::write(&file, command).unwrap();
+        let output = Command::new("tmux")
+            .args(["-L", &self.sandbox.server.0, "source-file", "-n"])
+            .arg(&file)
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "tmux cannot parse {command}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // new-window gives each parsed argument to the recorder as one argv word.
+        let recorder = home.join("record-arguments");
+        let record = home.join("record-arguments.out");
+        std::fs::write(
+            &recorder,
+            "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$0.tmp\" && mv \"$0.tmp\" \"$0.out\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &recorder,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let (name, arguments) = command.split_once(' ').unwrap_or((command, ""));
+        std::fs::write(
+            &file,
+            format!(
+                "new-window -d -t fixture-0: {} {arguments}\n",
+                recorder.display()
+            ),
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&record);
+        self.tmux(&["source-file", file.to_str().unwrap()]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !record.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "The recorder did not run."
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let record = std::fs::read_to_string(record).unwrap();
+        let arguments = record
+            .strip_suffix('\0')
+            .map(|record| record.split('\0').map(str::to_owned).collect())
+            .unwrap_or_default();
+        (name.to_owned(), arguments)
+    }
+
+    /// Expands a tmux format for the workspace window.
+    fn expand(&self, format: &str) -> String {
+        self.tmux(&["display-message", "-p", "-t", self.window, format])
+    }
+
+    fn tmux(&self, args: &[&str]) -> String {
+        self.sandbox.server.tmux(self.sandbox.home.path(), args)
+    }
+}
+
+#[test]
 fn zsh_picker_checks_run_against_rust_data_commands() {
     let sandbox = Sandbox::new();
     let binary = sandbox.home.path().join("CLI's bin/ws tool");

@@ -16,6 +16,18 @@ pub struct Tmux {
     socket: Option<OsString>,
 }
 
+/// Returns a tmux client command that always uses UTF-8.
+///
+/// Without `-u`, the tmux client reads the locale of the caller. launchd starts
+/// the daemon without `LANG` and without `LC_*` variables. In that locale, tmux
+/// prints control characters as `_`, and the daemon cannot parse a formatted reply.
+/// Start every tmux client through this function.
+pub fn client() -> Command {
+    let mut command = Command::new("tmux");
+    command.arg("-u");
+    command
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaneStatus {
     Running,
@@ -256,7 +268,7 @@ impl Tmux {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new("tmux");
+        let mut command = client();
         if let Some(socket) = &self.socket {
             command.arg("-L").arg(socket);
         }

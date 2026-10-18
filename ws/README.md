@@ -105,11 +105,15 @@ Run `zsh ws/tests/run.sh`, or select `core`, `send`, `triggers` or `misc`.
 
 ## Rust commands
 
-`./install.sh ws` installs Homebrew `rustup` and selects the stable Rust toolchain.
+`./install.sh ws` uses the `rustup` on `PATH`. When `PATH` has no `rustup`, the installer installs Homebrew `rustup`.
+Then it selects the stable Rust toolchain.
+A package install such as `./install.sh ws` does not run `brew upgrade`. Only the full interactive install (`./install.sh`) upgrades all brew formulae.
+The installer skips a step that it did before, such as the tpm clone. It keeps a different `~/.tmux.conf` and prints a warning.
 It builds `wsd/` with `cargo build --release` and copies the binary to `$WS_HOME/bin/ws-rs` (default `~/.ws/bin/ws-rs`).
 Both `$WS_HOME/bin/ws` and `~/.local/bin/ws` point to the shell dispatcher.
 The installer registers `~/Library/LaunchAgents/com.rstagi.wsd.plist` with `RunAtLoad` and `KeepAlive`.
-The agent runs `$WS_HOME/bin/ws-rs daemon`. It retains the installer's `HOME`, `PATH`, `WS_HOME`, `WS_STATE`, `WS_SOCK`, `WS_ROOT` and `WS_TMUX_SOCKET`.
+The agent runs `$WS_HOME/bin/ws-rs daemon`. It retains the installer's `HOME`, `PATH`, `LANG`, `WS_HOME`, `WS_STATE`, `WS_SOCK`, `WS_ROOT` and `WS_TMUX_SOCKET`.
+`LANG` defaults to `en_US.UTF-8`. The daemon also starts each tmux client with `-u`. Thus tmux replies use UTF-8 when the daemon has no locale.
 `WS_ROOT` defaults to `~/.ws/worktrees`. An empty `WS_TMUX_SOCKET` selects the default tmux server.
 Its output goes to `$WS_HOME/daemon.log`. Run `./install.sh --dry-run ws` to preview each step without changes.
 

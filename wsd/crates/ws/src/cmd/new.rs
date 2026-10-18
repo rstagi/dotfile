@@ -66,7 +66,7 @@ pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
         if std::env::var_os("TMUX").is_some_and(|tmux| !tmux.is_empty()) {
             tmux.execute(&["switch-client", "-t", &session])?;
         } else {
-            let mut command = std::process::Command::new("tmux");
+            let mut command = ws_daemon::tmux::client();
             if let Some(socket) =
                 std::env::var_os("WS_TMUX_SOCKET").filter(|socket| !socket.is_empty())
             {

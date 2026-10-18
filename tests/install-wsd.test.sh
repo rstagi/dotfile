@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="ws-install-", dir="/tmp") as directory:
     environment.update(PATH=str(commands) + ":" + os.environ["PATH"],
                        WS_HOME=str(home / "custom & ws"), WS_STATE=str(home / "state"),
                        WS_SOCK=str(home / "daemon.sock"), WS_ROOT=str(home / "work <trees>"),
-                       WS_TMUX_SOCKET="ws-private")
+                       WS_TMUX_SOCKET="ws-private", LANG="it_IT.UTF-8")
     definitions = (root / "install.sh").read_text().rsplit('main "$@"', 1)[0]
     script = definitions + '\nINTERACTIVE_MODE=false\ninstall_pkg_if_needed() { return 0; }\ninstall_ws\n'
     subprocess.run(["/bin/bash"], input=script, text=True, env=environment, check=True)
@@ -52,14 +52,17 @@ with tempfile.TemporaryDirectory(prefix="ws-install-", dir="/tmp") as directory:
     assert agent["Label"] == "com.rstagi.wsd"
     assert agent["ProgramArguments"] == [str(binary), "daemon"], agent
     assert agent["RunAtLoad"] is True and agent["KeepAlive"] is True
-    for key in ("HOME", "PATH", "WS_HOME", "WS_STATE", "WS_SOCK", "WS_ROOT", "WS_TMUX_SOCKET"):
+    for key in ("HOME", "PATH", "LANG", "WS_HOME", "WS_STATE", "WS_SOCK", "WS_ROOT", "WS_TMUX_SOCKET"):
         assert agent["EnvironmentVariables"][key] == environment[key]
-    defaults = {key: value for key, value in environment.items() if key not in ("WS_ROOT", "WS_TMUX_SOCKET")}
+    # launchd gives the daemon no locale. The installer writes a UTF-8 LANG when its own LANG is empty.
+    defaults = {key: value for key, value in environment.items()
+                if key not in ("WS_ROOT", "WS_TMUX_SOCKET", "LANG") and not key.startswith("LC_")}
     script = definitions + '\nINTERACTIVE_MODE=false\ninstall_ws_daemon\n'
     subprocess.run(["/bin/bash"], input=script, text=True, env=defaults, check=True, capture_output=True)
     agent = plistlib.loads((home / "Library/LaunchAgents/com.rstagi.wsd.plist").read_bytes())
     assert agent["EnvironmentVariables"]["WS_ROOT"] == str(home / ".ws/worktrees"), agent
     assert agent["EnvironmentVariables"]["WS_TMUX_SOCKET"] == "", agent
+    assert agent["EnvironmentVariables"]["LANG"] == "en_US.UTF-8", agent
     assert (home / "cargo.calls").read_text().splitlines() == ["build --release"]
     calls = (home / "launchctl.calls").read_text()
     for operation in ("bootout", "bootstrap", "enable", "kickstart"):

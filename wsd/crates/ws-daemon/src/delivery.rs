@@ -380,7 +380,7 @@ impl Server {
 
     async fn load(&self, buffer: &str, text: &str) -> io::Result<()> {
         use tokio::io::AsyncWriteExt;
-        let mut command = tokio::process::Command::new("tmux");
+        let mut command = tokio::process::Command::from(crate::tmux::client());
         if let Some(socket) = &self.socket {
             command.args(["-L", socket]);
         } else if let Some(path) = &self.path {

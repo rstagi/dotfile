@@ -121,7 +121,7 @@ pub async fn preview(socket: &Path, workspace: &str, window: &str) -> Result<Exi
         if !registered {
             return Ok(ExitCode::SUCCESS);
         }
-        let mut command = Command::new("tmux");
+        let mut command = ws_daemon::tmux::client();
         if let Some(socket) = std::env::var_os("WS_TMUX_SOCKET").filter(|socket| !socket.is_empty())
         {
             command.arg("-L").arg(socket);

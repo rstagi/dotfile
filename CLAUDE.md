@@ -12,7 +12,7 @@ macOS dotfile repo w/ automated dev environment setup. Installs shell config, CL
 # Full interactive install
 ./install.sh
 
-# Install specific packages
+# Install specific packages. Only the full install runs brew upgrade.
 ./install.sh <package1> <package2>
 
 # List available packages

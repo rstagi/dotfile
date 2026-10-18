@@ -1083,7 +1083,8 @@ impl Sandbox {
         assert!(real_tmux.status.success());
         let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
         let script = bin.join("tmux");
-        std::fs::write(&script, format!("#!/bin/sh\ncase \"$3\" in attach-session|switch-client) printf '%s\\n' \"$@\" > \"$WS_TEST_FOCUS\"; exit 0 ;; esac\nexec {} \"$@\"\n", shell_words::quote(real_tmux.trim()))).unwrap();
+        // Global options such as -u and -L come before the command name.
+        std::fs::write(&script, format!("#!/bin/sh\ncase \" $* \" in *' attach-session '*|*' switch-client '*) printf '%s\\n' \"$@\" > \"$WS_TEST_FOCUS\"; exit 0 ;; esac\nexec {} \"$@\"\n", shell_words::quote(real_tmux.trim()))).unwrap();
         std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut command = self.command();
         command
