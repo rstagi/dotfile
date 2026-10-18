@@ -10,7 +10,7 @@ for inherited in ${(k)parameters}; do
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-fail=0
+failed_suites=()
 # Every suite runs under a private HOME; the real agent hooks/config must stay byte-identical.
 TEST_HOME_DIR="$(mktemp -d)"
 ws_pid="" suite_pid=""
@@ -48,7 +48,7 @@ echo "== zsh -n (syntax) =="
 ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh ws/lib/*.sh(N) ws/tests/*.sh(N))"}) # relative to $ROOT
 for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh $ws_scripts; do
   [[ -f "$ROOT/$s" ]] || continue
-  if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; fail=1; fi
+  if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; failed_suites+=("zsh -n: $s"); fi
 done
 echo
 
@@ -61,29 +61,28 @@ fi
 
 for t in "$HERE"/*.test.sh; do
   echo "== ${t:t} =="
-  run_suite "$t" || fail=1
+  run_suite "$t" || failed_suites+=("${t:t}")
   echo
 done
 
 if [[ -n "$ws_pid" ]]; then
   echo "== ws/tests/run.sh =="
-  wait "$ws_pid" || fail=1
+  wait "$ws_pid" || failed_suites+=("ws/tests/run.sh")
   ws_pid=""
   cat "$TEST_HOME_DIR/ws.log"
-  if [[ -x "$ROOT/wsd/target/debug/ws" ]]; then
-    echo "== ws Rust smoke =="
-    run_suite "$ROOT/ws/tests/run.sh" rust || fail=1
-  fi
+  echo "== ws Rust smoke =="
+  source "$HERE/lib.sh"
+  require_ws_test_binary && run_suite "$ROOT/ws/tests/run.sh" rust || failed_suites+=("ws Rust smoke")
   echo
 fi
 
 if [[ -n "${real_home_snapshot+set}" ]]; then
   echo "== real HOME guard ($REAL_HOME) =="
-  if home_guard_check "$real_home_snapshot"; then echo "  ok: agent hooks/config/settings untouched"; else fail=1; fi
+  if home_guard_check "$real_home_snapshot"; then echo "  ok: agent hooks/config/settings untouched"; else failed_suites+=("real HOME guard"); fi
   echo
 fi
 
-if [[ $fail -eq 0 ]]; then
+if [[ ${#failed_suites} -eq 0 ]]; then
   echo "ALL SHELL TESTS PASSED"; exit 0
 fi
-echo "SHELL TESTS FAILED"; exit 1
+echo "SHELL TESTS FAILED: ${(j:, :)failed_suites}"; exit 1

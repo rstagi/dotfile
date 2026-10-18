@@ -17,6 +17,41 @@ struct Sandbox {
 }
 
 #[test]
+fn latency_assertions_require_exactly_one() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    for (value, expected) in [
+        (None, "0"),
+        (Some(OsString::from("")), "0"),
+        (Some(OsString::from("0")), "0"),
+        (Some(OsString::from("1")), "1"),
+        (Some(OsString::from("true")), "0"),
+        (Some(OsString::from("01")), "0"),
+        (Some(OsString::from("1 ")), "0"),
+        (Some(OsString::from_vec(vec![0xff])), "0"),
+    ] {
+        let mut probe = Command::new(std::env::current_exe().unwrap());
+        probe
+            .args(["--ignored", "--exact", "latency_gate_probe"])
+            .env_remove("WS_ASSERT_LATENCY")
+            .env("WS_TEST_EXPECT_LATENCY", expected);
+        if let Some(value) = &value {
+            probe.env("WS_ASSERT_LATENCY", value);
+        }
+        let output = probe.output().unwrap();
+        assert!(output.status.success(), "{value:?}: {output:?}");
+    }
+}
+
+#[test]
+#[ignore = "Checks the latency gate in an isolated process."]
+fn latency_gate_probe() {
+    assert_eq!(
+        common::latency_assertions_enabled(),
+        std::env::var("WS_TEST_EXPECT_LATENCY").unwrap() == "1"
+    );
+}
+
+#[test]
 fn driver_uses_an_explicit_socket_path_and_sandbox_cleans_up_after_panic() {
     let home = common::SandboxRoot::new();
     let directory = home.path().to_owned();
@@ -213,7 +248,7 @@ os.replace(sys.argv[3] + '.tmp', sys.argv[3])
     // The 50 ms p95 target holds on an idle machine. Under parallel loops the scheduler
     // latency alone exceeds it, so the default run only measures and prints. Assert it with:
     // `WS_ASSERT_LATENCY=1 cargo test -p ws --test tmux -- --nocapture`
-    if std::env::var_os("WS_ASSERT_LATENCY").is_some() {
+    if common::latency_assertions_enabled() {
         assert!(!spool.exists() || fs::read_dir(&spool).unwrap().count() == 0);
         assert!(
             latencies[94] < 50.0,
