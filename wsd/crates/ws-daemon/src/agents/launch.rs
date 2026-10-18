@@ -10,10 +10,22 @@ use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     env,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
+    time::Duration,
 };
+use tokio::sync::watch;
 use ws_core::{ids::SessionId, log::SessionLog, registry::Session};
+
+// Removing a sender releases every request that waits for this launch to commit.
+static PENDING: LazyLock<Mutex<HashMap<SessionId, watch::Sender<()>>>> =
+    LazyLock::new(Default::default);
+// The completion signal controls readiness. This deadline only bounds a stalled commit.
+const COMMIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(crate) struct PendingLaunch(SessionId);
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +80,30 @@ async fn launch(
     State(store): State<Store>,
     Json(request): Json<LaunchRequest>,
 ) -> std::result::Result<Json<Launch>, ApiError> {
+    let (request, pending) = api::call(store.clone(), move |sessions| {
+        let session = sessions.get_record(&request.id)?;
+        let pending = PENDING
+            .lock()
+            .map_err(|_| Error::InvalidRequest("Cannot lock the pending agent launches."))?
+            .get(&session.id)
+            .map(watch::Sender::subscribe);
+        Ok((request, pending))
+    })
+    .await?;
+    if let Some(path) = env::var_os("WS_TEST_AGENT_LAUNCH_OBSERVED") {
+        std::fs::write(path, b"requested").map_err(|error| ApiError(Error::Io(error)))?;
+    }
+    if let Some(mut pending) = pending {
+        // The commit needs the store lock. Wait without that lock, then check pane ownership.
+        tokio::time::timeout(COMMIT_TIMEOUT, pending.changed())
+            .await
+            .map_err(|_| {
+                ApiError(Error::InvalidRequest(
+                    "The agent launch did not commit before the deadline.",
+                ))
+            })?
+            .ok();
+    }
     Ok(Json(
         api::call(store, move |sessions| sessions.prepare_agent(request)).await?,
     ))
@@ -79,6 +115,25 @@ async fn exited(
 ) -> std::result::Result<Json<Value>, ApiError> {
     api::call(store, move |sessions| sessions.agent_exited(request)).await?;
     Ok(Json(json!({})))
+}
+
+impl PendingLaunch {
+    pub(crate) fn new(id: SessionId) -> Result<Self> {
+        let (completion, _) = watch::channel(());
+        PENDING
+            .lock()
+            .map_err(|_| Error::InvalidRequest("Cannot lock the pending agent launches."))?
+            .insert(id, completion);
+        Ok(Self(id))
+    }
+}
+
+impl Drop for PendingLaunch {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = PENDING.lock() {
+            pending.remove(&self.0);
+        }
+    }
 }
 
 impl Sessions {

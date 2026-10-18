@@ -13,8 +13,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    env, fs, io,
-    os::unix::fs::PermissionsExt,
+    env, fs,
+    io::{self, Read},
+    os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -263,7 +264,13 @@ async fn start_agent(
     })
     .await?;
     let (plan, launched) = tokio::task::spawn_blocking(move || {
-        let launched = plan.launch();
+        let launched = plan.launch().and_then(|window| {
+            if let Err(error) = wait_for_test_commit_gate() {
+                let _ = Tmux::from_env().execute(&["kill-window", "-t", &window]);
+                return Err(error);
+            }
+            Ok(window)
+        });
         (plan, launched)
     })
     .await
@@ -272,6 +279,16 @@ async fn start_agent(
         sessions.commit_workspace_agent(plan, launched)
     })
     .await
+}
+
+// The test releases this gate after the pane requests preparation, before the commit.
+fn wait_for_test_commit_gate() -> Result<()> {
+    if let Some(path) = env::var_os("WS_TEST_AGENT_COMMIT_GATE") {
+        let mut gate = UnixStream::connect(path)?;
+        gate.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+        gate.read_exact(&mut [0])?;
+    }
+    Ok(())
 }
 
 async fn off_lock<T: Send + 'static>(
@@ -712,6 +729,7 @@ impl Sessions {
                 "The tmux session {session_name} belongs to another workspace."
             )));
         }
+        let pending = crate::agents::launch::PendingLaunch::new(id)?;
         let slot = crate::agents::slots::register(wt, preferred_slot, agent, &id.to_string())?;
         if let Some(session) = resume {
             if ["finished", "failed"].contains(&session.state.as_str()) {
@@ -806,6 +824,7 @@ impl Sessions {
             existed: existing.is_some(),
             run_pane: run.map(|run| run.pane.clone()),
             was_running: resume.is_some_and(|session| session.state == "running"),
+            pending,
             args,
         })
     }
@@ -827,6 +846,7 @@ impl Sessions {
             existed,
             run_pane,
             was_running,
+            pending: _pending,
             args: _,
         } = plan;
         let (name, wt, agent) = (name.as_str(), wt.as_path(), agent.as_str());
@@ -962,6 +982,7 @@ pub(crate) struct AgentLaunch {
     existed: bool,
     run_pane: Option<String>,
     was_running: bool,
+    pending: crate::agents::launch::PendingLaunch,
     args: Vec<String>,
 }
 

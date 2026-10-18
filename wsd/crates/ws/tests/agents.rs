@@ -22,6 +22,120 @@ struct Sandbox {
 }
 
 #[test]
+fn an_agent_launch_waits_for_its_workspace_commit() {
+    let sandbox = Sandbox::with_launch_observation();
+    let repo = sandbox.repo();
+    let gate = UnixListener::bind(sandbox.home.path().join("commit-gate.sock")).unwrap();
+    gate.set_nonblocking(true).unwrap();
+    let mut running = Vec::new();
+    for arguments in [
+        vec![
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "feature",
+            "--detach",
+        ],
+        vec!["add", "api/feature", "--detach"],
+    ] {
+        let observed = sandbox.home.path().join("launch-requested");
+        let _ = fs::remove_file(&observed);
+        let child = sandbox
+            .command()
+            .args(arguments)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut commit = None;
+        sandbox.wait_for(|| match gate.accept() {
+            Ok((stream, _)) => {
+                commit = Some(stream);
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(error) => panic!("{error}"),
+        });
+        sandbox.wait_for(|| observed.exists());
+        commit.unwrap().write_all(b"c").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let (agent, connection) = sandbox.capture();
+        let id = agent["id"].as_str().unwrap();
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert!(!sandbox.window(id).is_empty());
+        running.push(connection);
+    }
+}
+
+#[test]
+fn a_failed_workspace_commit_releases_the_session_and_slot() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feature",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let (owner, _running) = sandbox.capture();
+    let slots = fs::read_to_string(sandbox.slots()).unwrap();
+    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("tmux"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let wrapper = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(&wrapper, format!(
+        "#!/bin/sh\ncase \" $* \" in *' rename-window '*) echo 'synthetic commit failure' >&2; exit 1;; esac\nexec {} \"$@\"\n",
+        shell_words::quote(&real_tmux.to_string_lossy()),
+    )).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = sandbox.output(&["add", "api/feature", "--detach"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("synthetic commit failure"));
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let failed: Vec<_> = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|session| session["body"]["agent"] == "claude" && session["id"] != owner["id"])
+        .collect();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["state"], "failed");
+    let preparation = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/agents/launch",
+        &json!({"id": failed[0]["id"], "pane": owner["pane"]}).to_string(),
+    );
+    assert!(
+        preparation.contains("This pane does not own the agent session."),
+        "{preparation}"
+    );
+    assert_eq!(fs::read_to_string(sandbox.slots()).unwrap(), slots);
+    assert_eq!(
+        sandbox
+            .tmux(&["list-windows", "-t", "api/feature", "-F", "#{window_id}"])
+            .lines()
+            .count(),
+        1
+    );
+
+    // The next launch can reuse the released slot and complete its preparation.
+    fs::remove_file(wrapper).unwrap();
+    let output = sandbox.output(&["add", "api/feature", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let (agent, _new_running) = sandbox.capture();
+    let id = agent["id"].as_str().unwrap();
+    assert_ne!(agent["id"], failed[0]["id"]);
+    assert_eq!(sandbox.json(&["show", id, "--json"])["body"]["slot"], 2);
+}
+
+#[test]
 fn an_exit_self_trigger_reopens_after_the_old_launch_retires() {
     for code in [0, 7] {
         let sandbox = Sandbox::new();
@@ -318,13 +432,8 @@ fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
         "{}",
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert_eq!(
-        sandbox
-            .output(&["send", id, "only for the new window"])
-            .status
-            .code(),
-        Some(75)
-    );
+    let sent = sandbox.output(&["send", id, "only for the new window"]);
+    assert_eq!(sent.status.code(), Some(75), "{sent:?}");
     let (resumed, _resumed) = sandbox.capture();
     assert_eq!(resumed["id"], id);
     let new_window = sandbox.tmux(&[
@@ -1032,6 +1141,12 @@ impl Sandbox {
     }
     /// Runs `setup(home, tmux server)` before the daemon starts and imports legacy state.
     fn with_setup(config: &str, setup: impl FnOnce(&Path, &str)) -> Self {
+        Self::with_options(config, setup, false)
+    }
+    fn with_launch_observation() -> Self {
+        Self::with_options("", |_, _| {}, true)
+    }
+    fn with_options(config: &str, setup: impl FnOnce(&Path, &str), observe_launch: bool) -> Self {
         let home = common::SandboxRoot::new();
         fs::create_dir(home.path().join("state")).unwrap();
         fs::write(home.path().join("state/config.toml"), config).unwrap();
@@ -1039,6 +1154,17 @@ impl Sandbox {
         let server = home.tmux_socket();
         setup(home.path(), &server);
         let mut command = common::ws(home.path(), &socket);
+        if observe_launch {
+            command
+                .env(
+                    "WS_TEST_AGENT_LAUNCH_OBSERVED",
+                    home.path().join("launch-requested"),
+                )
+                .env(
+                    "WS_TEST_AGENT_COMMIT_GATE",
+                    home.path().join("commit-gate.sock"),
+                );
+        }
         let listener = UnixListener::bind(home.path().join("agent.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
         fs::write(
