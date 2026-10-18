@@ -32,6 +32,7 @@ pub mod loops;
 pub mod notify;
 pub mod otlp;
 pub mod phases;
+mod semconv_emit;
 pub mod sessions;
 pub mod spans;
 pub mod supervisor;
