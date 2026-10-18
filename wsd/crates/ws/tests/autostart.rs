@@ -47,9 +47,14 @@ fn concurrent_cli_calls_share_one_background_daemon() {
     let mut commands: Vec<_> = (0..4)
         .map(|_| {
             let mut child = Command::new(command.get_program());
-            child
-                .envs(command.get_envs().map(|(k, v)| (k, v.unwrap())))
-                .arg("ping");
+            for (key, value) in command.get_envs() {
+                if let Some(value) = value {
+                    child.env(key, value);
+                } else {
+                    child.env_remove(key);
+                }
+            }
+            child.arg("ping");
             child
         })
         .collect();
@@ -143,11 +148,14 @@ fn cli(home: &Path, owned: bool) -> (BackgroundDaemon, Command) {
     let binary = home.join("ws-test");
     fs::copy(env!("CARGO_BIN_EXE_ws"), &binary).unwrap();
     let binary = binary.canonicalize().unwrap();
-    let environment: Vec<_> = command
-        .get_envs()
-        .map(|(key, value)| (key.to_owned(), value.unwrap().to_owned()))
-        .collect();
-    command = Command::new(&binary);
-    command.envs(environment);
+    let mut copied = Command::new(&binary);
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            copied.env(key, value);
+        } else {
+            copied.env_remove(key);
+        }
+    }
+    command = copied;
     (BackgroundDaemon { binary }, command)
 }

@@ -13,13 +13,9 @@ use std::{
 
 #[test]
 fn workspace_git_fetch_does_not_hold_the_session_store_lock() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = common::SandboxRoot::new();
     let socket = home.path().join("wsd.sock");
-    let server = format!(
-        "ws-lock-io-{}-{}",
-        std::process::id(),
-        home.path().file_name().unwrap().to_str().unwrap()
-    );
+    let server = home.tmux_socket();
     let real_git = Command::new("zsh")
         .args(["-fc", "command -v git"])
         .output()
@@ -88,7 +84,6 @@ fn workspace_git_fetch_does_not_hold_the_session_store_lock() {
         .env_remove("WS_SESSION_ID");
     let path = format!("{}:{path}", bin.display());
     let _daemon = common::Daemon::start(command, &socket);
-    let _tmux = TmuxServer(server.clone(), home.path().to_owned());
     let mut create = common::ws(home.path(), &socket);
     create
         .env("PATH", &path)
@@ -146,7 +141,7 @@ fn workspace_git_fetch_does_not_hold_the_session_store_lock() {
 
 #[test]
 fn headless_stdin_fifo_without_writer_does_not_hold_the_session_store_lock() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = common::SandboxRoot::new();
     let socket = home.path().join("wsd.sock");
     let mut command = common::ws(home.path(), &socket);
     command.env_remove("WS_SESSION").env_remove("WS_SESSION_ID");
@@ -228,7 +223,7 @@ fn workspace_remove_git_does_not_hold_the_session_store_lock() {
 
 /// A daemon sandbox whose fake tool blocks on a FIFO once `arm` creates it.
 struct BlockingSandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     socket: std::path::PathBuf,
     repo: std::path::PathBuf,
     path: String,
@@ -236,18 +231,13 @@ struct BlockingSandbox {
     started: std::path::PathBuf,
     release: std::path::PathBuf,
     _daemon: common::Daemon,
-    _tmux: TmuxServer,
 }
 
 impl BlockingSandbox {
     fn new(tool: &str, word: &str) -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = common::SandboxRoot::new();
         let socket = home.path().join("wsd.sock");
-        let server = format!(
-            "ws-lock-io-{}-{}",
-            std::process::id(),
-            home.path().file_name().unwrap().to_str().unwrap()
-        );
+        let server = home.tmux_socket();
         let real = |name: &str| {
             let output = Command::new("zsh")
                 .args(["-fc", &format!("command -v {name}")])
@@ -308,7 +298,6 @@ impl BlockingSandbox {
         let daemon =
             common::Daemon::start(environment(home.path(), &socket, &path, &server), &socket);
         Self {
-            _tmux: TmuxServer(server.clone(), home.path().to_owned()),
             _daemon: daemon,
             home,
             socket,
@@ -373,17 +362,6 @@ fn environment(home: &Path, socket: &Path, path: &str, server: &str) -> Command 
         .env_remove("WS_SESSION")
         .env_remove("WS_SESSION_ID");
     command
-}
-
-struct TmuxServer(String, std::path::PathBuf);
-
-impl Drop for TmuxServer {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.0, "kill-server"])
-            .env("HOME", &self.1)
-            .output();
-    }
 }
 
 fn request(socket: &Path, path: &str, timeout: Duration) -> std::io::Result<String> {

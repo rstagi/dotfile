@@ -2,7 +2,6 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     process::{Command, Output},
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -12,11 +11,59 @@ use ws_daemon::tmux::Tmux;
 mod common;
 use common::{Daemon, get, request, ws};
 
-static NEXT_SERVER: AtomicU64 = AtomicU64::new(0);
-
 struct Sandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     server: String,
+}
+
+#[test]
+fn driver_uses_an_explicit_socket_path_and_sandbox_cleans_up_after_panic() {
+    let home = common::SandboxRoot::new();
+    let directory = home.path().to_owned();
+    let socket = home.tmux_socket();
+    let started = Command::new("tmux")
+        .args([
+            "-S",
+            &socket,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "keepalive",
+            "/bin/sleep",
+            "300",
+        ])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{started:?}");
+    let tmux = Tmux::named(&socket);
+    let session = tmux
+        .create_session("isolated", &["/bin/sleep", "300"])
+        .unwrap();
+    assert!(session.starts_with('$'));
+    let pid = tmux.execute(&["display-message", "-p", "#{pid}"]).unwrap();
+    let result = std::panic::catch_unwind(move || {
+        let _home = home;
+        panic!("Test sandbox unwinding.");
+    });
+    assert!(result.is_err());
+    assert!(!directory.exists());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Command::new("kill")
+        .args(["-0", &pid])
+        .output()
+        .unwrap()
+        .status
+        .success()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "The test tmux server did not stop."
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -204,13 +251,10 @@ fn create_window_runs_a_single_executable_path_with_spaces() {
 
 impl Sandbox {
     fn new() -> Self {
+        let home = common::SandboxRoot::new();
         let sandbox = Self {
-            home: tempfile::tempdir_in("/tmp").unwrap(),
-            server: format!(
-                "ws-rs-test-{}-{}",
-                std::process::id(),
-                NEXT_SERVER.fetch_add(1, Ordering::Relaxed)
-            ),
+            server: home.tmux_socket(),
+            home,
         };
         sandbox.output(&[
             "-f",
@@ -229,7 +273,7 @@ impl Sandbox {
 
     fn output(&self, args: &[&str]) -> Output {
         let output = Command::new("tmux")
-            .args(["-L", &self.server])
+            .args(["-S", &self.server])
             .args(args)
             .env("HOME", self.home.path())
             .env("WS_HOME", self.home.path().join(".ws"))
@@ -260,14 +304,5 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
             "The sandbox operation timed out."
         );
         thread::sleep(Duration::from_millis(5));
-    }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .env("HOME", self.home.path())
-            .output();
     }
 }

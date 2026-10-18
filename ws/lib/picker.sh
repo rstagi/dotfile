@@ -98,7 +98,13 @@ if [[ "$ZSH_EVAL_CONTEXT" == *:file ]]; then
   source "${${(%):-%x}:A:h}/picker-legacy.sh"
 else
   set -u -o pipefail
-  tmux_() { command tmux ${WS_TMUX_SOCKET:+-L} ${WS_TMUX_SOCKET:-} "$@"; }
+  tmux_() {
+    case "${WS_TMUX_SOCKET:-}" in
+      */*) command tmux -S "$WS_TMUX_SOCKET" "$@" ;;
+      ?*) command tmux -L "$WS_TMUX_SOCKET" "$@" ;;
+      *) command tmux "$@" ;;
+    esac
+  }
   die() { print -u2 "ws: $1"; exit 1; }
   case "${1:-pick}" in
     pick) cmd_pick ;;

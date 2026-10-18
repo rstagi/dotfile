@@ -64,7 +64,7 @@ F8_BEFORE="$(windows_of "$TRIGGER_WT")"
 "$WS" add api/triggers --detach
 F8_WIN="$(windows_of "$TRIGGER_WT" | grep -vxF -f <(print -r -- "$F8_BEFORE"))"
 F8_ID="$(T display -p -t "$F8_WIN" '#{@ws_session}')"
-F8_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$F8_WIN.lock"
+F8_LOCK="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET//\//_}-$F8_WIN.lock"
 hook api/triggers "$F8_WIN" working </dev/null
 (unset WS_SESSION; "$WS" send "$F8_ID" 'f8 msg' 2>/dev/null)
 assert_exit "$?" "0" "send to the working tab queues without waiting"

@@ -14,7 +14,7 @@ use std::{
 };
 
 struct Sandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     socket: PathBuf,
     server: String,
     listener: UnixListener,
@@ -661,7 +661,7 @@ fn legacy_agent_and_end_wrappers_run_an_imported_zsh_session() {
         );
         let ids = Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 server,
                 "-f",
                 "/dev/null",
@@ -679,7 +679,7 @@ fn legacy_agent_and_end_wrappers_run_an_imported_zsh_session() {
         pane = legacy_pane.into();
         for (key, value) in [("@ws_session", "7"), ("@ws_pane", legacy_pane)] {
             let status = Command::new("tmux")
-                .args(["-L", server, "set-option", "-w", "-t", window, key, value])
+                .args(["-S", server, "set-option", "-w", "-t", window, key, value])
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -767,7 +767,7 @@ fn legacy_end_records_the_exit_of_a_zsh_launched_agent() {
         );
         let ids = Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 server,
                 "-f",
                 "/dev/null",
@@ -785,7 +785,7 @@ fn legacy_end_records_the_exit_of_a_zsh_launched_agent() {
         pane = legacy_pane.into();
         for (key, value) in [("@ws_session", "7"), ("@ws_pane", legacy_pane)] {
             let status = Command::new("tmux")
-                .args(["-L", server, "set-option", "-w", "-t", window, key, value])
+                .args(["-S", server, "set-option", "-w", "-t", window, key, value])
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -1032,15 +1032,11 @@ impl Sandbox {
     }
     /// Runs `setup(home, tmux server)` before the daemon starts and imports legacy state.
     fn with_setup(config: &str, setup: impl FnOnce(&Path, &str)) -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = common::SandboxRoot::new();
         fs::create_dir(home.path().join("state")).unwrap();
         fs::write(home.path().join("state/config.toml"), config).unwrap();
         let socket = home.path().join("wsd.sock");
-        let server = format!(
-            "ws-agents-{}-{}",
-            std::process::id(),
-            home.path().file_name().unwrap().to_str().unwrap()
-        );
+        let server = home.tmux_socket();
         setup(home.path(), &server);
         let mut command = common::ws(home.path(), &socket);
         let listener = UnixListener::bind(home.path().join("agent.sock")).unwrap();
@@ -1145,7 +1141,7 @@ sys.exit(int(control or b'0'))
     }
     fn tmux(&self, args: &[&str]) -> String {
         let out = Command::new("tmux")
-            .args(["-L", &self.server])
+            .args(["-S", &self.server])
             .args(args)
             .output()
             .unwrap();
@@ -1241,13 +1237,6 @@ sys.exit(int(control or b'0'))
                 (s == id).then(|| w.into())
             })
             .unwrap()
-    }
-}
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .output();
     }
 }
 fn git(path: &Path, args: &[&str]) -> String {

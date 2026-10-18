@@ -7,7 +7,7 @@ use std::{
 };
 
 struct Sandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     socket: PathBuf,
     server: String,
     _daemon: common::Daemon,
@@ -1097,13 +1097,9 @@ impl Sandbox {
     }
 
     fn new() -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = common::SandboxRoot::new();
         let socket = home.path().join("wsd.sock");
-        let server = format!(
-            "ws-workspace-{}-{}",
-            std::process::id(),
-            home.path().file_name().unwrap().to_str().unwrap()
-        );
+        let server = home.tmux_socket();
         let mut command = common::ws(home.path(), &socket);
         command
             .env("WS_ROOT", home.path().join("worktrees"))
@@ -1164,7 +1160,7 @@ impl Sandbox {
     }
     fn tmux(&self, args: &[&str]) -> String {
         let output = Command::new("tmux")
-            .args(["-L", &self.server])
+            .args(["-S", &self.server])
             .args(args)
             .env("HOME", self.home.path())
             .env_remove("TMUX")
@@ -1194,13 +1190,6 @@ impl Sandbox {
             .collect::<Vec<_>>();
         rows.sort();
         format!("{}\n", rows.join("\n"))
-    }
-}
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .output();
     }
 }
 fn git(path: &Path, args: &[&str]) -> String {

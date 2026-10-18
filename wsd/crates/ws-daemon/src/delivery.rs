@@ -382,7 +382,7 @@ impl Server {
         use tokio::io::AsyncWriteExt;
         let mut command = tokio::process::Command::from(crate::tmux::client());
         if let Some(socket) = &self.socket {
-            command.args(["-L", socket]);
+            command.args([crate::tmux::socket_flag(socket), socket]);
         } else if let Some(path) = &self.path {
             command.args(["-S", path]);
         } else {
@@ -759,7 +759,7 @@ mod tests {
     };
 
     struct Sandbox {
-        home: tempfile::TempDir,
+        home: crate::test_sandbox::SandboxRoot,
         store: Store,
         sender: SessionId,
         recipient: SessionId,
@@ -767,7 +767,7 @@ mod tests {
 
     impl Sandbox {
         fn new() -> Self {
-            let home = tempfile::tempdir().unwrap();
+            let home = crate::test_sandbox::SandboxRoot::new();
             let mut sessions = Sessions::open(home.path(), 1).unwrap();
             let sender = sessions.create(CreateSession::default()).unwrap().id;
             let recipient = sessions.create(CreateSession::default()).unwrap().id;
@@ -844,7 +844,7 @@ mod tests {
     impl PasteSandbox {
         async fn new() -> Self {
             let sandbox = Sandbox::new();
-            let server = format!("ws-paste-{}-{}", std::process::id(), Ulid::new());
+            let server = sandbox.home.tmux_socket();
             let tmux = crate::tmux::Tmux::named(&server);
             let mut result = Self {
                 sandbox,
@@ -855,7 +855,7 @@ mod tests {
             };
             let output = std::process::Command::new("tmux")
                 .args([
-                    "-L",
+                    "-S",
                     &result.server,
                     "-f",
                     "/dev/null",
@@ -1008,14 +1008,6 @@ mod tests {
             callback.tmux_socket = Some(self.server.clone());
             callback.payload = json!({"hook_event_name":event, "turn_id":"paste-turn"});
             callback
-        }
-    }
-
-    impl Drop for PasteSandbox {
-        fn drop(&mut self) {
-            let _ = std::process::Command::new("tmux")
-                .args(["-L", &self.server, "kill-server"])
-                .output();
         }
     }
 

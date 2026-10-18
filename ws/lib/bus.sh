@@ -48,7 +48,7 @@ cmd_send() {
     elif [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle && -z "$(tmux_ show -wqv -t "$win" @ws_main)" ]]; then
       ws_bus_wait_ready "$id" "$win" || ws_bus_queued_die "$id" "send: message queued; session #$id input not ready"
     fi
-    lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+    lock="${TMPDIR:-/tmp}/ws-hook-${${WS_TMUX_SOCKET:-default}//\//_}-$win.lock"
     { : >> "$lock" && zsystem flock -t "$(lock_wait 3)" -i 0.01 -f lockfd "$lock"; } 2>/dev/null ||
       ws_bus_queued_die "$id" "send: message queued; session #$id busy"
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "$message" 1
@@ -87,7 +87,7 @@ ws_bus_deliver_retry() {
     win="$(ws_bus_window "$id")"
     [[ -n "$win" ]] || return 0
     [[ "$(tmux_ show -wqv -t "$win" @ws_state)" == idle ]] || continue
-    lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+    lock="${TMPDIR:-/tmp}/ws-hook-${${WS_TMUX_SOCKET:-default}//\//_}-$win.lock"
     { : >> "$lock" && zsystem flock -t "$(lock_wait 3)" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || continue
     with_lock "$WS_SESSIONS/$id/inbox" ws_bus_send_locked "$id" "$win" "" 1
     rc=$?

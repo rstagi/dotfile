@@ -6,7 +6,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use axum::{Json, Router, extract::State, routing::get};
@@ -15,6 +15,10 @@ use tokio::{
     signal::unix::{SignalKind, signal},
 };
 use ws_core::{PingResponse, VERSION};
+
+#[cfg(test)]
+#[path = "../../ws/tests/common/sandbox.rs"]
+mod test_sandbox;
 
 pub mod agents;
 pub mod api;
@@ -57,11 +61,11 @@ pub async fn run(socket: &Path) -> io::Result<()> {
     let _lock = lock_socket(socket)?;
     let listener = bind(socket)?;
     let metadata = fs::symlink_metadata(socket)?;
-    let _socket_file = SocketFile {
+    let _socket_file = Arc::new(SocketFile {
         path: socket.to_owned(),
         device: metadata.dev(),
         inode: metadata.ino(),
-    };
+    });
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
     let state = match std::env::var_os("WS_STATE") {
         Some(path) => PathBuf::from(path),
@@ -90,11 +94,13 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         })
         .merge(api::router_with_store(store.clone()));
     let shutdown_store = store.clone();
+    let socket_file = Arc::clone(&_socket_file);
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
                 _ = terminate.recv() => {}
                 _ = interrupt.recv() => {}
+                _ = socket_file.wait_removed() => {}
             }
             let _ = api::call(shutdown_store, |sessions| {
                 sessions.shutdown.send_replace(true);
@@ -147,12 +153,26 @@ async fn ping(State(state): State<AppState>) -> Json<PingResponse> {
     })
 }
 
+impl SocketFile {
+    async fn wait_removed(&self) {
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            poll.tick().await;
+            if !self.is_current() {
+                return;
+            }
+        }
+    }
+
+    fn is_current(&self) -> bool {
+        fs::symlink_metadata(&self.path)
+            .is_ok_and(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+    }
+}
+
 impl Drop for SocketFile {
     fn drop(&mut self) {
-        if let Ok(metadata) = fs::symlink_metadata(&self.path)
-            && metadata.dev() == self.device
-            && metadata.ino() == self.inode
-        {
+        if self.is_current() {
             let _ = fs::remove_file(&self.path);
         }
     }

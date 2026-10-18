@@ -12,7 +12,7 @@ struct Sandbox {
     _daemon: common::Daemon,
     server: Server,
     socket: PathBuf,
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
 }
 
 #[test]
@@ -246,7 +246,7 @@ impl Parser<'_> {
         let file = home.join("parse.tmux");
         std::fs::write(&file, command).unwrap();
         let output = Command::new("tmux")
-            .args(["-L", &self.sandbox.server.0, "source-file", "-n"])
+            .args(["-S", &self.sandbox.server.0, "source-file", "-n"])
             .arg(&file)
             .env_remove("TMUX")
             .output()
@@ -717,13 +717,9 @@ impl Sandbox {
     }
 
     fn fixture(workspaces: &[(&str, bool)], live: bool) -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = common::SandboxRoot::new();
         let socket = home.path().join("ws.sock");
-        let server = Server(format!(
-            "ws-picker-{}-{}",
-            std::process::id(),
-            home.path().file_name().unwrap().to_string_lossy()
-        ));
+        let server = Server(home.tmux_socket());
         let state = home.path().join("state");
         let device = Device::init(&state, "picker-test").unwrap();
         std::fs::create_dir_all(home.path().join(".ws")).unwrap();
@@ -873,7 +869,7 @@ impl Sandbox {
 impl Server {
     fn tmux(&self, home: &std::path::Path, args: &[&str]) -> String {
         let output = Command::new("tmux")
-            .args(["-L", &self.0])
+            .args(["-S", &self.0])
             .args(args)
             .env("HOME", home)
             .env_remove("TMUX")
@@ -882,13 +878,5 @@ impl Server {
             .unwrap();
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap().trim_end().into()
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.0, "kill-server"])
-            .output();
     }
 }

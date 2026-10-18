@@ -8,7 +8,7 @@ use std::{
 };
 
 struct Sandbox {
-    root: tempfile::TempDir,
+    root: common::SandboxRoot,
     socket: PathBuf,
     server: String,
     _daemon: common::Daemon,
@@ -87,7 +87,7 @@ fn confirmed_deletion_removes_squashed_branches_tabs_pins_and_registry_rows() {
     );
     let output = Command::new("tmux")
         .args([
-            "-L",
+            "-S",
             &sandbox.server,
             "has-session",
             "-t",
@@ -420,15 +420,11 @@ fn merge_reports_no_pr_when_the_github_cli_is_unavailable() {
 
 impl Sandbox {
     fn new() -> Self {
-        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let root = common::SandboxRoot::new();
         std::fs::create_dir(root.path().join("home")).unwrap();
         std::fs::create_dir(root.path().join("bin")).unwrap();
         let socket = root.path().join("wsd.sock");
-        let server = format!(
-            "ws-merge-{}-{}",
-            std::process::id(),
-            root.path().file_name().unwrap().to_str().unwrap()
-        );
+        let server = root.tmux_socket();
         let mut command = common::ws(&root.path().join("home"), &socket);
         command
             .env("WS_ROOT", root.path().join("worktrees"))
@@ -601,7 +597,7 @@ impl Sandbox {
 
     fn tmux(&self, args: &[&str]) -> String {
         let output = Command::new("tmux")
-            .args(["-L", &self.server])
+            .args(["-S", &self.server])
             .args(args)
             .env("HOME", self.root.path().join("home"))
             .env_remove("TMUX")
@@ -610,14 +606,6 @@ impl Sandbox {
             .unwrap();
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap().trim_end().into()
-    }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .output();
     }
 }
 

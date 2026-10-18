@@ -22,7 +22,7 @@ emit_notify_event() {
   branch="$(git -C "$wt" branch --show-current 2>/dev/null)"
   detail="$(hook_detail_json "${3:-}")"
   [[ -n "$detail" ]] || detail='""'
-  click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ -L ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
+  click="${(q)$(command -v tmux)}${WS_TMUX_SOCKET:+ $(tmux_socket_flag "$WS_TMUX_SOCKET") ${(q)WS_TMUX_SOCKET}} select-window -t ${(q)win} \\; switch-client -t ${(q)sess}"
   local bundle="${WS_TERMINAL_BUNDLE:-$(tmux_ show-environment -g __CFBundleIdentifier 2>/dev/null | cut -d= -f2)}"
   [[ -n "$bundle" ]] && click+=" ; open -b ${(q)bundle}"
   [[ "$1" == idle ]] && sound=done
@@ -96,7 +96,7 @@ notify_claim() {
   win="${id#ws:}"
   [[ "$id" == ws:?* && "$seq" == <1-> ]] || return 0
   zmodload zsh/system 2>/dev/null
-  lock="${TMPDIR:-/tmp}/ws-notify-${WS_TMUX_SOCKET:-default}-$win.lock"
+  lock="${TMPDIR:-/tmp}/ws-notify-${${WS_TMUX_SOCKET:-default}//\//_}-$win.lock"
   { : >>"$lock" && zsystem flock -t "$(lock_wait 2)" -i 0.01 -f lockfd "$lock"; } 2>/dev/null || return 1
   last="$(tmux_ display -p -t "$win" '#{@ws_notify_seq}' 2>/dev/null)"
   [[ "$last" == <-> ]] && (( seq <= last )) && return 1

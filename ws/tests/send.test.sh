@@ -336,7 +336,7 @@ VANISH_WIN="$(windows_of "$SEND_WT" | grep -vxF -f <(print -r -- "$vanish_before
 VANISH_ID="$(T display -p -t "$VANISH_WIN" '#{@ws_session}')"
 assert_contains "$(wait_pane "$VANISH_WIN" PASTE-READY)" "PASTE-READY" "vanishing target TUI ready"
 hook api/delivery "$VANISH_WIN" working </dev/null
-VANISH_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$VANISH_WIN.lock"
+VANISH_LOCK="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET//\//_}-$VANISH_WIN.lock"
 (zmodload zsh/system; : >> "$VANISH_LOCK"; zsystem flock -f vanish_fd "$VANISH_LOCK"; : > "$TMP/vanish-held"; sleep 2) &
 vanish_holder=$!
 wait_until test -e "$TMP/vanish-held"
@@ -411,7 +411,7 @@ print 8 > "$WS_HOME/tui-delay"
 ROBUST_READY_WIN="$(windows_of "$SEND_WT" | grep -vxF -f <(print -r -- "$ROBUST_BEFORE"))"
 ROBUST_READY_ID="$(T show -wqv -t "$ROBUST_READY_WIN" @ws_session)"
 T set -w -t "$ROBUST_READY_WIN" @ws_main idle
-ROBUST_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$ROBUST_READY_WIN.lock"
+ROBUST_LOCK="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET//\//_}-$ROBUST_READY_WIN.lock"
 (zmodload zsh/system; : >> "$ROBUST_LOCK"; zsystem flock -f robust_fd "$ROBUST_LOCK"; : > "$TMP/robust-ready-held"; sleep 2.5) &
 robust_holder=$!
 wait_until test -e "$TMP/robust-ready-held"

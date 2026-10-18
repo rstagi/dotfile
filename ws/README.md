@@ -114,11 +114,12 @@ Both `$WS_HOME/bin/ws` and `~/.local/bin/ws` point to the shell dispatcher.
 The installer registers `~/Library/LaunchAgents/com.rstagi.wsd.plist` with `RunAtLoad` and `KeepAlive`.
 The agent runs `$WS_HOME/bin/ws-rs daemon`. It retains the installer's `HOME`, `PATH`, `LANG`, `WS_HOME`, `WS_STATE`, `WS_SOCK`, `WS_ROOT` and `WS_TMUX_SOCKET`.
 `LANG` defaults to `en_US.UTF-8`. The daemon also starts each tmux client with `-u`. Thus tmux replies use UTF-8 when the daemon has no locale.
-`WS_ROOT` defaults to `~/.ws/worktrees`. An empty `WS_TMUX_SOCKET` selects the default tmux server.
+`WS_ROOT` defaults to `~/.ws/worktrees`. An empty `WS_TMUX_SOCKET` selects the default tmux server. A value with `/` selects a socket path with `tmux -S`. Other values select a server name with `tmux -L`.
 Its output goes to `$WS_HOME/daemon.log`. Run `./install.sh --dry-run ws` to preview each step without changes.
 
 A Rust CLI request starts a background daemon when its socket is missing and launchd does not own `com.rstagi.wsd`.
 Concurrent starts share a startup lock. A failed start reports the log path beside the socket.
+The daemon exits when its socket file disappears or a different file replaces it.
 Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
 
 `ws backend rust` selects Rust through `$WS_HOME/backend`. The dispatcher uses `$WS_HOME/bin/ws-rs`.
@@ -158,7 +159,7 @@ Each command accepts `--json`. Human output uses `#N` aliases. Targets accept al
 The `me` target selects the current session.
 `WS_SESSION_ID` contains the session ULID. `WS_SESSION` carries the same value for compatibility.
 `whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window option `@ws_session`.
-`WS_TMUX_SOCKET` selects the tmux server.
+`WS_TMUX_SOCKET` selects the tmux server by name or socket path.
 
 JSON returns the registry session fields, including the ULID `id`, numeric `alias` and lifecycle `state`.
 `sessions --json` returns an array. The other commands return one session object. `show --json` adds the `output` path.

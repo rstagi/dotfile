@@ -3,9 +3,13 @@
 
 die() { print -u2 "ws: $1"; exit "${2:-1}"; }
 
+tmux_socket_flag() {
+  [[ "$1" == */* ]] && print -r -- -S || print -r -- -L
+}
+
 tmux_() {
   if [[ -n "${WS_TMUX_SOCKET:-}" ]]; then
-    command tmux -L "$WS_TMUX_SOCKET" "$@"
+    command tmux "$(tmux_socket_flag "$WS_TMUX_SOCKET")" "$WS_TMUX_SOCKET" "$@"
   else
     command tmux "$@"
   fi
@@ -14,7 +18,7 @@ tmux_() {
 # Replaces the process (attach from a plain terminal); `exec` can't target the tmux_ function.
 exec_tmux() {
   if [[ -n "${WS_TMUX_SOCKET:-}" ]]; then
-    exec tmux -L "$WS_TMUX_SOCKET" "$@"
+    exec tmux "$(tmux_socket_flag "$WS_TMUX_SOCKET")" "$WS_TMUX_SOCKET" "$@"
   fi
   exec tmux "$@"
 }
