@@ -13,8 +13,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    env, fs, io,
-    os::unix::fs::PermissionsExt,
+    env, fs,
+    io::{self, Read},
+    os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -263,7 +264,13 @@ async fn start_agent(
     })
     .await?;
     let (plan, launched) = tokio::task::spawn_blocking(move || {
-        let launched = plan.launch();
+        let launched = plan.launch().and_then(|window| {
+            if let Err(error) = wait_for_test_commit_gate() {
+                let _ = Tmux::from_env().execute(&["kill-window", "-t", &window]);
+                return Err(error);
+            }
+            Ok(window)
+        });
         (plan, launched)
     })
     .await
@@ -272,6 +279,16 @@ async fn start_agent(
         sessions.commit_workspace_agent(plan, launched)
     })
     .await
+}
+
+// The test releases this gate after the pane requests preparation, before the commit.
+fn wait_for_test_commit_gate() -> Result<()> {
+    if let Some(path) = env::var_os("WS_TEST_AGENT_COMMIT_GATE") {
+        let mut gate = UnixStream::connect(path)?;
+        gate.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+        gate.read_exact(&mut [0])?;
+    }
+    Ok(())
 }
 
 async fn off_lock<T: Send + 'static>(

@@ -25,17 +25,8 @@ struct Sandbox {
 fn an_agent_launch_waits_for_its_workspace_commit() {
     let sandbox = Sandbox::with_launch_observation();
     let repo = sandbox.repo();
-    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|path| path.join("tmux"))
-        .find(|path| path.is_file())
-        .unwrap();
-    let wrapper = sandbox.home.path().join("fake-agents/tmux");
-    fs::write(&wrapper, format!(
-        "#!/bin/sh\ncase \" $* \" in *' new-window '*|*' new-session '*) window=$({tmux} \"$@\") || exit $?; {tmux} -S {socket} wait-for agent-commit; printf '%s\\n' \"$window\";; *) exec {tmux} \"$@\";; esac\n",
-        tmux = shell_words::quote(&real_tmux.to_string_lossy()),
-        socket = shell_words::quote(&sandbox.server),
-    )).unwrap();
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let gate = UnixListener::bind(sandbox.home.path().join("commit-gate.sock")).unwrap();
+    gate.set_nonblocking(true).unwrap();
     let mut running = Vec::new();
     for arguments in [
         vec![
@@ -57,8 +48,17 @@ fn an_agent_launch_waits_for_its_workspace_commit() {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        let mut commit = None;
+        sandbox.wait_for(|| match gate.accept() {
+            Ok((stream, _)) => {
+                commit = Some(stream);
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(error) => panic!("{error}"),
+        });
         sandbox.wait_for(|| observed.exists());
-        sandbox.tmux(&["wait-for", "-S", "agent-commit"]);
+        commit.unwrap().write_all(b"c").unwrap();
         let output = child.wait_with_output().unwrap();
         assert!(output.status.success(), "{output:?}");
         let (agent, connection) = sandbox.capture();
@@ -432,13 +432,8 @@ fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
         "{}",
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert_eq!(
-        sandbox
-            .output(&["send", id, "only for the new window"])
-            .status
-            .code(),
-        Some(75)
-    );
+    let sent = sandbox.output(&["send", id, "only for the new window"]);
+    assert_eq!(sent.status.code(), Some(75), "{sent:?}");
     let (resumed, _resumed) = sandbox.capture();
     assert_eq!(resumed["id"], id);
     let new_window = sandbox.tmux(&[
@@ -1160,10 +1155,15 @@ impl Sandbox {
         setup(home.path(), &server);
         let mut command = common::ws(home.path(), &socket);
         if observe_launch {
-            command.env(
-                "WS_TEST_AGENT_LAUNCH_OBSERVED",
-                home.path().join("launch-requested"),
-            );
+            command
+                .env(
+                    "WS_TEST_AGENT_LAUNCH_OBSERVED",
+                    home.path().join("launch-requested"),
+                )
+                .env(
+                    "WS_TEST_AGENT_COMMIT_GATE",
+                    home.path().join("commit-gate.sock"),
+                );
         }
         let listener = UnixListener::bind(home.path().join("agent.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
