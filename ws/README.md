@@ -174,7 +174,9 @@ Claude receives a generated `SessionEnd` hook. A `SessionEnd` payload selects th
 
 `ws wait <id|name> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through one daemon request.
 It prints no output on success. A timeout exits 1. Without `--timeout`, the wait has no deadline.
-Recorded events satisfy a wait immediately, including after a daemon restart. State conditions check the current lifecycle state.
+Recorded events satisfy a wait immediately, including after a daemon restart.
+After a session reopens, only events after its latest `session.reopened` event satisfy an event condition.
+State conditions check the current lifecycle state.
 The API is `POST /v1/sessions/{id}/wait` with `{"for":"done","timeout":30}`. Omit `timeout` for an indefinite wait.
 It returns the session and the matching event, or a null event for a state condition. A timeout returns HTTP 408.
 Daemon shutdown releases pending waits with HTTP 503.
