@@ -117,7 +117,7 @@ export function attachRetro(planText: string, archive: string, number: number, r
 }
 
 /** The text of the retro's `- **Outcome:**` bullet, continuation lines included, or undefined. */
-export function retroOutcome(retro: string): string | undefined {
+function retroOutcome(retro: string): string | undefined {
   const lines = retro.split("\n");
   const index = lines.findIndex((line) => OUTCOME_BULLET.test(line));
   if (index === -1) return undefined;
