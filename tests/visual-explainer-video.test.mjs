@@ -165,7 +165,7 @@ test("tts: auto uses ElevenLabs when the key is set, else say; an explicit engin
 });
 
 test("tts: settings use a stock voice and model, and VE_TTS_VOICE and VE_TTS_MODEL override them", () => {
-  assert.deepEqual(ttsSettings("elevenlabs", { ELEVENLABS_API_KEY: KEY }), { engine: "elevenlabs", voice: "XrExE9yKIg1WjnnlVkGX", model: "eleven_multilingual_v2" });
+  assert.deepEqual(ttsSettings("elevenlabs", { ELEVENLABS_API_KEY: KEY }), { engine: "elevenlabs", voice: "XrExE9yKIg1WjnnlVkGX", model: "eleven_flash_v2_5" });
   assert.deepEqual(ttsSettings("elevenlabs", { ELEVENLABS_API_KEY: KEY, VE_TTS_VOICE: "v1", VE_TTS_MODEL: "m1" }), { engine: "elevenlabs", voice: "v1", model: "m1" });
   assert.throws(() => ttsSettings("elevenlabs", {}), /ELEVENLABS_API_KEY is not set/);
   const listing = "Albert              en_US    # Hello!\nSamantha            en_US    # Hello!\n";

@@ -13,7 +13,7 @@ const run = promisify(execFile);
 
 const ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
 const ELEVENLABS_VOICE = "XrExE9yKIg1WjnnlVkGX"; // Matilda: a premade voice for informative and educational speech
-const ELEVENLABS_MODEL = "eleven_multilingual_v2";
+const ELEVENLABS_MODEL = "eleven_flash_v2_5"; // half the credits per character of eleven_multilingual_v2
 const SAMPLE_RATE = 24000;
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
 const RETRY_DELAY_MS = 2000;
