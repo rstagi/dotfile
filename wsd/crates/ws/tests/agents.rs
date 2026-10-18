@@ -395,7 +395,7 @@ fn trigger_spawn_preserves_a_literal_prompt_and_closes_the_child_on_done() {
 }
 
 #[test]
-fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
+fn a_closed_pane_cannot_consume_the_reopened_sessions_message() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo();
     assert!(
@@ -437,6 +437,7 @@ fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
         "{}",
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    sandbox.tmux(&["kill-window", "-t", &old_window]);
     let sent = sandbox.output(&["send", id, "only for the new window"]);
     assert_eq!(sent.status.code(), Some(75), "{sent:?}");
     let (resumed, _resumed) = sandbox.capture();
@@ -455,6 +456,53 @@ fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
     assert!(sandbox.events(id, "hook.delivery").is_empty());
     assert_eq!(sandbox.window(id), new_window);
     assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+}
+
+#[test]
+fn reopening_a_done_agent_keeps_its_live_process_and_delivers_the_message() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    for args in [
+        vec![
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "feature",
+            "--detach",
+        ],
+        vec!["add", "api/feature", "--detach"],
+    ] {
+        let output = sandbox.output(&args);
+        assert!(output.status.success(), "{output:?}");
+        let (first, mut running) = sandbox.capture();
+        let id = first["id"].as_str().unwrap();
+        let original_window = sandbox.window(id);
+        let done = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .arg("done")
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "{done:?}");
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "finished");
+        let sent = sandbox.output(&["send", id, "continue this conversation"]);
+        assert_eq!(sent.status.code(), Some(75), "{sent:?}");
+        assert_eq!(sandbox.window(id), original_window);
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert_eq!(
+            sandbox.listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        running.write_all(b"d").unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(running.try_clone().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        assert!(line.contains("continue this conversation"), "{line}");
+    }
 }
 
 #[test]
