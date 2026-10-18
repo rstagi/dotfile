@@ -45,10 +45,6 @@ pub struct Reading {
 }
 
 impl Reading {
-    pub fn remaining_ratio(&self) -> Option<f64> {
-        self.used_ratio.map(|used| 1.0 - used)
-    }
-
     /// Returns the normalized body of a durable runner.usage.updated event.
     pub fn event_body(&self) -> Value {
         let mut body = json!({
@@ -76,6 +72,9 @@ impl Reading {
             }
         }
         body
+    }
+    pub fn remaining_ratio(&self) -> Option<f64> {
+        self.used_ratio.map(|used| 1.0 - used)
     }
 }
 

@@ -27,16 +27,6 @@ struct AppServer {
     armed: bool,
 }
 
-impl CodexReader {
-    pub fn new(binding: Binding, state: PathBuf, session_id: SessionId) -> Self {
-        Self {
-            binding,
-            state,
-            session_id,
-        }
-    }
-}
-
 impl Reader for CodexReader {
     fn read(&mut self, clock: Clock) -> ReadFuture<'_> {
         Box::pin(async move {
@@ -51,7 +41,9 @@ impl Reader for CodexReader {
                 read_rollouts(&binding, &state, session_id, receipt)
             })
             .await
-            .map_err(io::Error::other)??;
+            .map_err(io::Error::other)
+            .and_then(|result| result)
+            .unwrap_or_default();
             match read_limits(&self.binding)
                 .await
                 .and_then(|result| parse_app_server(&result, account, clock()))
@@ -63,6 +55,91 @@ impl Reader for CodexReader {
             Ok(readings)
         })
     }
+}
+
+impl CodexReader {
+    pub fn new(binding: Binding, state: PathBuf, session_id: SessionId) -> Self {
+        Self {
+            binding,
+            state,
+            session_id,
+        }
+    }
+}
+
+/// Parses one RPC result. The launch account cannot change with the current credentials.
+pub fn parse_app_server(
+    result: &Value,
+    account: &str,
+    received_at_ms: u64,
+) -> io::Result<Vec<Reading>> {
+    if account.is_empty() || result["accountId"].as_str() != Some(account) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "The quota account differs from the launch account.",
+        ));
+    }
+    let mut readings = Vec::new();
+    if let Some(buckets) = result["rateLimitsByLimitId"]
+        .as_object()
+        .filter(|map| !map.is_empty())
+    {
+        for (id, bucket) in buckets {
+            readings.extend(parse_bucket(
+                bucket,
+                Some(id),
+                account,
+                "app-server",
+                received_at_ms,
+                received_at_ms,
+                true,
+            ));
+        }
+    } else {
+        readings.extend(parse_bucket(
+            &result["rateLimits"],
+            None,
+            account,
+            "app-server",
+            received_at_ms,
+            received_at_ms,
+            true,
+        ));
+    }
+    Ok(readings)
+}
+
+/// Uses the rollout event time for reading age and the collector time for receipt.
+pub fn parse_rollout(
+    event: &Value,
+    account: &str,
+    received_at_ms: u64,
+) -> io::Result<Vec<Reading>> {
+    if event["type"] != "event_msg"
+        || event["payload"]["type"] != "token_count"
+        || !event["payload"]["rate_limits"].is_object()
+    {
+        return Ok(Vec::new());
+    }
+    let observed = event["timestamp"]
+        .as_str()
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .and_then(|time| u64::try_from(time.timestamp_millis()).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The rollout quota timestamp is missing or invalid.",
+            )
+        })?;
+    Ok(parse_bucket(
+        &event["payload"]["rate_limits"],
+        None,
+        account,
+        "rollout",
+        observed,
+        received_at_ms,
+        false,
+    ))
 }
 
 fn read_rollouts(
@@ -228,81 +305,6 @@ impl Drop for AppServer {
             self.kill_group();
         }
     }
-}
-
-/// Parses one RPC result. The launch account cannot change with the current credentials.
-pub fn parse_app_server(
-    result: &Value,
-    account: &str,
-    received_at_ms: u64,
-) -> io::Result<Vec<Reading>> {
-    if account.is_empty() || result["accountId"].as_str() != Some(account) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "The quota account differs from the launch account.",
-        ));
-    }
-    let mut readings = Vec::new();
-    if let Some(buckets) = result["rateLimitsByLimitId"]
-        .as_object()
-        .filter(|map| !map.is_empty())
-    {
-        for (id, bucket) in buckets {
-            readings.extend(parse_bucket(
-                bucket,
-                Some(id),
-                account,
-                "app-server",
-                received_at_ms,
-                received_at_ms,
-                true,
-            ));
-        }
-    } else {
-        readings.extend(parse_bucket(
-            &result["rateLimits"],
-            None,
-            account,
-            "app-server",
-            received_at_ms,
-            received_at_ms,
-            true,
-        ));
-    }
-    Ok(readings)
-}
-
-/// Uses the rollout event time for reading age and the collector time for receipt.
-pub fn parse_rollout(
-    event: &Value,
-    account: &str,
-    received_at_ms: u64,
-) -> io::Result<Vec<Reading>> {
-    if event["type"] != "event_msg"
-        || event["payload"]["type"] != "token_count"
-        || !event["payload"]["rate_limits"].is_object()
-    {
-        return Ok(Vec::new());
-    }
-    let observed = event["timestamp"]
-        .as_str()
-        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
-        .and_then(|time| u64::try_from(time.timestamp_millis()).ok())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "The rollout quota timestamp is missing or invalid.",
-            )
-        })?;
-    Ok(parse_bucket(
-        &event["payload"]["rate_limits"],
-        None,
-        account,
-        "rollout",
-        observed,
-        received_at_ms,
-        false,
-    ))
 }
 
 fn parse_bucket(

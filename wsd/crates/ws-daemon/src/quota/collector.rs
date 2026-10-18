@@ -190,6 +190,10 @@ impl Default for Requests {
 
 impl Service {
     pub(crate) fn start(store: Store) -> io::Result<Self> {
+        Self::start_with_collector(store, Collector::new(Arc::new(now_ms)))
+    }
+
+    pub(crate) fn start_with_collector(store: Store, collector: Collector) -> io::Result<Self> {
         let (requests, sender, mut shutdown) = {
             let mut sessions = store.lock().map_err(|_| {
                 io::Error::other("Cannot lock the session store for quota collection.")
@@ -203,8 +207,7 @@ impl Service {
                 sessions.shutdown.subscribe(),
             )
         };
-        let worker =
-            tokio::spawn(Collector::new(Arc::new(now_ms)).run(store, requests, shutdown.clone()));
+        let worker = tokio::spawn(collector.run(store, requests, shutdown.clone()));
         let timer = tokio::spawn(async move {
             let mut interval = tokio::time::interval(PERIOD);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
