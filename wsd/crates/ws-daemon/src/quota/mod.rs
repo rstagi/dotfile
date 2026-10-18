@@ -9,6 +9,7 @@ pub mod binding;
 pub mod claude;
 pub mod codex;
 mod collector;
+pub mod grok;
 pub(crate) use collector::Service;
 pub use collector::{Collector, Requests, Trigger};
 

@@ -229,6 +229,11 @@ pub fn prepare(
             .files
             .push(crate::quota::binding::prepare_file(session, resume)?);
     }
+    if agent == "grok" {
+        prepared
+            .files
+            .push(crate::quota::grok::prepare_file(session)?);
+    }
     telemetry::extend(&mut prepared, agent, session)?;
     prepared.argv.extend(session.arguments.iter().cloned());
     if agent != "claude"

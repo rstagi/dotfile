@@ -913,3 +913,134 @@ async fn delayed_status_callbacks_do_not_replace_a_newer_reading() {
     assert_eq!(readings[0].used_ratio, Some(0.5));
     assert_eq!(readings[0].observed_at_ms, 3000);
 }
+
+#[test]
+fn grok_billing_preserves_the_weekly_period_and_missing_percentage() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/grok.json")).unwrap();
+    let result = &fixture["acp_responses"][0]["response"]["result"];
+    let now = 1_792_186_404_245;
+    let readings = grok::parse_billing(result, "user-a", now);
+    assert_eq!(readings.len(), 1);
+    let reading = &readings[0];
+    assert_eq!(reading.window, "weekly");
+    assert_eq!(reading.duration_secs, Some(604800));
+    assert_eq!(reading.start_ms, Some(1_791_972_561_510));
+    assert_eq!(reading.reset_ms, Some(1_792_577_361_510));
+    assert_eq!(reading.remaining_ratio(), None);
+    assert_eq!(reading.source, Source::Reported);
+    assert_eq!(reading.observed_at_ms, now);
+    assert!(
+        reading
+            .event_body()
+            .get(sc::RUNNER_USAGE_USED_RATIO)
+            .is_none()
+    );
+    let mut reported = result.clone();
+    reported["config"]["creditUsagePercent"] = json!(25);
+    assert_eq!(
+        grok::parse_billing(&reported, "user-a", now)[0].remaining_ratio(),
+        Some(0.75)
+    );
+    reported["config"]["currentPeriod"]["type"] = json!("USAGE_PERIOD_TYPE_MONTHLY");
+    assert_eq!(
+        grok::parse_billing(&reported, "user-a", now)[0].window,
+        "monthly"
+    );
+    assert!(grok::parse_billing(result, "", now).is_empty());
+}
+
+#[tokio::test]
+async fn grok_initializes_then_reads_billing_without_inference_and_rejects_account_changes() {
+    use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+    let sandbox = tempfile::tempdir().unwrap();
+    let program = sandbox.path().join("fake-grok");
+    fs::write(&program, r#"#!/bin/sh
+[ "$1 $2" = 'agent stdio' ] || exit 1
+while IFS= read -r request; do
+  printf '%s\n' "$request" >> "$GROK_HOME/requests"
+  case "$request" in
+    *'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}' ;;
+    *'"method":"_x.ai/billing"'*) cat "$GROK_HOME/billing-response" ;;
+    *) exit 1 ;;
+  esac
+done
+"#).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/grok.json")).unwrap();
+    fs::write(
+        sandbox.path().join("billing-response"),
+        format!("{}\n", fixture["acp_responses"][0]["response"]),
+    )
+    .unwrap();
+    fs::write(
+        sandbox.path().join("auth.json"),
+        json!({"issuer::client":fixture["identity"]["entry"]}).to_string(),
+    )
+    .unwrap();
+    let context = crate::agents::AgentSession {
+        agent_program: Some(program),
+        state: sandbox.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox".into(),
+        id: ws_core::ids::Ulid::new().to_string(),
+        home: sandbox.path().into(),
+        grok_home: Some(sandbox.path().into()),
+        codex_home: None,
+        claude_config_dir: None,
+        ws_home: sandbox.path().join("ws"),
+        ws_bin: "/fake/ws".into(),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    let prepared =
+        crate::agents::prepare("grok", crate::agents::Mode::Headless, &context, None).unwrap();
+    let file = prepared
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("quota-binding.json"))
+        .unwrap();
+    let binding: grok::Binding = serde_json::from_slice(&file.contents).unwrap();
+    assert!(!String::from_utf8_lossy(&file.contents).contains("redacted-email"));
+    prepared.write_files().unwrap();
+    let mut reader = grok::GrokReader::new(binding);
+    let readings = reader.read(Arc::new(|| 1_792_186_404_245)).await.unwrap();
+    assert_eq!(readings.len(), 1);
+    assert_eq!(readings[0].window, "weekly");
+    assert_eq!(readings[0].used_ratio, None);
+    let requests: Vec<Value> = fs::read_to_string(sandbox.path().join("requests"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["method"], "initialize");
+    assert_eq!(requests[0]["params"]["protocolVersion"], 1);
+    assert_eq!(requests[1], fixture["acp_requests"][0]);
+    fs::write(
+        sandbox.path().join("auth.json"),
+        r#"{"issuer::client":{"user_id":"another-account"}}"#,
+    )
+    .unwrap();
+    assert!(reader.read(Arc::new(|| 1_792_186_404_246)).await.is_err());
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("requests"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    let resumed =
+        crate::agents::prepare("grok", crate::agents::Mode::Headless, &context, None).unwrap();
+    assert_eq!(
+        resumed
+            .files
+            .iter()
+            .find(|f| f.path == file.path)
+            .unwrap()
+            .contents,
+        file.contents
+    );
+}
