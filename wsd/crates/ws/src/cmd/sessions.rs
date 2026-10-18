@@ -19,11 +19,10 @@ pub async fn run(socket: &Path, targets: &[String], json: bool) -> Result<()> {
     }
     let windows = Tmux::from_env().session_states().unwrap_or_default();
     for session in sessions {
-        let id = session.id.to_string();
         let alias = format!("#{}", session.alias);
         let state = windows
             .iter()
-            .find(|(identity, _)| identity == &id || identity == &alias)
+            .find(|(identity, _)| matches_identity(&session, identity))
             .map_or("stopped", |(_, state)| state.as_str());
         let fields = [
             alias.as_str(),
@@ -46,4 +45,9 @@ pub async fn run(socket: &Path, targets: &[String], json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+pub(super) fn matches_identity(session: &ws_core::registry::Session, identity: &str) -> bool {
+    identity == session.id.to_string()
+        || identity.strip_prefix('#').unwrap_or(identity) == session.alias.to_string()
 }

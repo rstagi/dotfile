@@ -50,6 +50,54 @@ fn sessions_matches_the_zsh_golden_output_and_resolves_names() {
 }
 
 #[test]
+fn sessions_keep_legacy_window_activity() {
+    let sandbox = Sandbox::new();
+    let tmux = Tmux::named(&sandbox.server);
+    for identity in ["1", "#1", &sandbox.ids[0]] {
+        tmux.set_window_option(&sandbox.window, "@ws_session", identity)
+            .unwrap();
+        for state in ["working", "idle"] {
+            tmux.set_state(&sandbox.window, state).unwrap();
+            sandbox.assert_golden(
+                &["sessions", "#1"],
+                &format!("#1\t\tapi/seed\tclaude\t{state}\tactive\n"),
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_agents_create_children_with_their_resolved_parent() {
+    let sandbox = Sandbox::new();
+    for legacy in ["1", "#1", &sandbox.ids[0]] {
+        for headless in [false, true] {
+            let mut command = sandbox.command();
+            command
+                .env("WS_SESSION", legacy)
+                .args(["session", "create", "--json"]);
+            if headless {
+                command.args(["--headless", "--", "/usr/bin/true"]);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let child: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(child["parent_session_id"], sandbox.ids[0]);
+            if headless {
+                let exited = sandbox.run(&[
+                    "wait",
+                    child["id"].as_str().unwrap(),
+                    "--for",
+                    "event=process.exited",
+                    "--timeout",
+                    "30",
+                ]);
+                assert!(exited.status.success(), "{exited:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn whoami_uses_environment_precedence_then_the_tmux_window() {
     let sandbox = Sandbox::new();
     let output = sandbox

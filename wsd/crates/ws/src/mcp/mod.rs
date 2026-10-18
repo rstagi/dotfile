@@ -37,6 +37,11 @@ impl Control {
         })
     }
 
+    pub fn with_caller(mut self, caller: Option<SessionId>) -> Self {
+        self.caller = caller;
+        self
+    }
+
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {
         match name {
             "loop_start" | "loop_stop" => {
