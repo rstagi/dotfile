@@ -244,6 +244,8 @@ Text to speech:
   `say`. It exits 3.
 - `--tts elevenlabs` and `--tts say` select one engine. `--tts elevenlabs` never uses
   `say`: a failed ElevenLabs call exits 3, and the command writes no `video.mp4`.
+- The default ElevenLabs model is `eleven_flash_v2_5`. It uses 0.5 credits for each
+  character. `eleven_multilingual_v2` uses 1 credit for each character.
 - `VE_TTS_VOICE` sets the voice. `VE_TTS_MODEL` sets the ElevenLabs model. In `auto` mode
   with the key, `VE_TTS_VOICE` is the ElevenLabs voice, so the `say` fallback uses the best
   installed English voice.
