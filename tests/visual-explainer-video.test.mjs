@@ -461,6 +461,27 @@ test("encoder: x264 attempts lower the quality, then the size", () => {
   assert.ok(attempts.every((a) => a.fps === 24 && a.concurrency === 8 && a.hardwareAcceleration === "disable" && a.gl === "angle"));
 });
 
+// Measured on the ship example, x264 veryfast, 24 fps, 1920x1080, on an Apple M4:
+// 278.6 s -> 10.64 MB at CRF 23 · 547.5 s -> 15.54 MB at CRF 23, 12.11 MB at CRF 27, 10.35 MB at CRF 30 ·
+// 599.4 s -> 12.39 MB at CRF 28.
+test("encoder: the first x264 quality comes from the video length, so a 10 minute video fits 14 MB on the first render", () => {
+  const x264 = { fps: 24, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" };
+  const crfs = (seconds, maxMb = 14) => renderAttempts(x264, seconds, maxMb).map((a) => [a.label, a.scale, a.crf]);
+  const backup = [["1920x1080 at a lower quality", 1, 30], ["1280x720", 2 / 3, 30]];
+  assert.deepEqual(crfs(60), [["1920x1080", 1, 23], ...backup], "a short video keeps CRF 23");
+  assert.deepEqual(crfs(278.6), [["1920x1080", 1, 23], ...backup], "10.6 MB at CRF 23 fits");
+  assert.deepEqual(crfs(547.5), [["1920x1080", 1, 27], ...backup], "15.5 MB at CRF 23 is above the limit, 12.1 MB at CRF 27 fits");
+  assert.deepEqual(crfs(600), [["1920x1080", 1, 28], ...backup], "10 minutes: 12.4 MB at CRF 28 fits");
+  assert.deepEqual(crfs(600, 30), [["1920x1080", 1, 23], ...backup], "a larger limit keeps CRF 23");
+  assert.deepEqual(crfs(1500), [["1920x1080", 1, 30], ["1280x720", 2 / 3, 30]], "CRF 30 is the lowest first quality, then only 1280x720 is left");
+  let last = 0;
+  for (let seconds = 30; seconds <= 1500; seconds += 30) {
+    const crf = renderAttempts(x264, seconds, 14)[0].crf;
+    assert.ok(crf >= last, `${seconds} s: a longer video never gets a better first quality`);
+    last = crf;
+  }
+});
+
 test("encoder: a hardware encoder gets a bitrate that fits the size limit for the duration", () => {
   const settings = { fps: 24, concurrency: 8, hardwareAcceleration: "if-possible", x264Preset: "veryfast", gl: "angle" };
   const attempts = renderAttempts(settings, 300, 14);

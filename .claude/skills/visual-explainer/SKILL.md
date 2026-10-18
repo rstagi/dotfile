@@ -234,9 +234,10 @@ Text to speech:
 - `--tts auto` uses ElevenLabs when the environment has `ELEVENLABS_API_KEY`. Else it uses
   the macOS `say` command, which works offline.
 - In `auto` mode, when ElevenLabs fails for one clip, the script speaks the whole narration
-  again with `say`. A video has one voice only. A failure is an HTTP error after the one
-  retry (for example 401, 402, 429 or 5xx), a quota error, a network error, or a request
-  above 90 s. The script writes one stderr line, for example
+  again with `say`. A video has one voice only. These failures cause the fallback: an HTTP
+  error after the one retry, a quota error, a network error, and a request above 90 s.
+  Examples of HTTP errors are 401, 402, 429 and 5xx. The script writes one stderr line, for
+  example
   `render-video: ElevenLabs failed (HTTP 401 quota_exceeded): the video uses the macOS voice`.
   Line 2 of stdout is then `tts: say (fallback: HTTP 401 quota_exceeded)`.
 - When the `--timeout-min` deadline stops the text to speech, the script does not use
@@ -320,9 +321,17 @@ symlinked git checkout or a Loop integration worktree. The script copies `video/
 characters of a SHA-256 over the lock file and the video sources. The script runs
 `npm ci`, the browser download and the bundle there, one time for each key. The voiceover
 clips go to `${XDG_CACHE_HOME:-$HOME/.cache}/visual-explainer/tts/`. The script writes the
-MP4 to a temporary file in the output directory, then renames it to `video.mp4`. When the
-file is larger than `--max-mb`, the script renders again at a lower quality, then at
-1280x720. Each run removes the caches of other keys that no run used for 7 days.
+MP4 to a temporary file in the output directory, then renames it to `video.mp4`. Each run
+removes the caches of other keys that no run used for 7 days.
+
+The first render uses an x264 quality (CRF) that the script chooses from the video length
+and `--max-mb`. A size model from measurements of the ship example predicts the file size.
+The script uses the best CRF from 23 to 30 whose predicted file fits 90% of `--max-mb`. With
+`--max-mb 14`, a video of up to about 6 minutes gets CRF 23. A video of about 10 minutes
+gets CRF 28. Measurements: a 548 s ship video had 15.5 MB at CRF 23 and 12.1 MB at CRF 27.
+A 599 s ship video had 12.4 MB at CRF 28. The plan example has fewer scenes and smaller
+files, so its first CRF can be higher than necessary. When the file is larger than
+`--max-mb`, the script renders again at CRF 30, then at 1280x720.
 
 Encoder settings: the defaults are the fastest combination of a measurement on an Apple M4
 with 10 cores. The text stays sharp. The browser frame capture takes most of the time, so

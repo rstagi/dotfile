@@ -9,8 +9,8 @@
 // The script copies video/ to ${XDG_CACHE_HOME:-$HOME/.cache}/visual-explainer/video-<key>, runs
 // `npm ci` and the browser download there once for each key, and renders there. Text to speech
 // clips go to .../visual-explainer/tts/<sha256>.wav, so a re-render sends no text again.
-// --timeout-min bounds the whole run. A video above --max-mb renders again at a lower quality,
-// then at 1280x720. --tts: auto (ElevenLabs when ELEVENLABS_API_KEY is set, else say), elevenlabs, say.
+// --timeout-min bounds the whole run. The first x264 quality comes from the video length and
+// --max-mb (firstCrf). A video above --max-mb renders again at a lower quality, then at 1280x720. --tts: auto (ElevenLabs when ELEVENLABS_API_KEY is set, else say), elevenlabs, say.
 // In auto mode, a failed ElevenLabs call makes the whole narration speak with say (tts.mjs speak).
 // VE_VIDEO_FPS, VE_VIDEO_CONCURRENCY, VE_VIDEO_HWACCEL, VE_VIDEO_X264_PRESET and VE_VIDEO_GL override
 // the encoder defaults (videoSettings).
@@ -55,7 +55,12 @@ const HWACCEL = ["disable", "if-possible", "required"];
 const GL = ["default", "angle", "egl", "swiftshader", "swangle", "vulkan", "angle-egl"];
 const X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
 const AUDIO_KBPS = 64;
-const SIZE_MARGIN = 0.9; // a hardware encoder can overshoot its target bitrate
+const SIZE_MARGIN = 0.9; // a hardware encoder can overshoot its target bitrate, and the x264 model is an estimate
+// x264 size model, measured on the ship example (17 scenes, 1920x1080, veryfast, 24 fps) at 279 s
+// and 548 s: at CRF 23, the video stream has about 5.6 MB plus 10.2 KB for each second. Each 8 CRF
+// steps halve it (7.6 to 8.1 measured). A long video is mostly still frames, so its bitrate is lower.
+// The plan example is smaller, so the model is conservative for it.
+const X264 = { bestCrf: 23, lowCrf: 30, halvingCrf: 8, fixedBytes: 5_600_000, bytesPerSecond: 10_200 };
 const MIN_VIDEO_KBPS = 150;
 const MAX_VIDEO_KBPS = 2500;
 
@@ -174,16 +179,18 @@ export function videoSettings(env) {
 }
 
 // renderAttempts(settings, seconds, maxMb) -> the encoder settings of each attempt, best first.
-// A file above maxMb moves to the next attempt. x264 lowers the quality, then the size. A hardware
-// encoder gets a bitrate that fits maxMb for this duration, then a lower one at 1280x720.
+// A file above maxMb moves to the next attempt. x264 starts at the CRF that firstCrf predicts for
+// this duration, then lowers the quality to CRF 30, then the size. A hardware encoder gets a
+// bitrate that fits maxMb for this duration, then a lower one at 1280x720.
 export function renderAttempts(settings, seconds, maxMb) {
   const base = { fps: settings.fps, concurrency: settings.concurrency, hardwareAcceleration: settings.hardwareAcceleration, gl: settings.gl };
   if (settings.hardwareAcceleration === "disable") {
     const x264 = { ...base, x264Preset: settings.x264Preset };
+    const first = firstCrf(seconds, maxMb);
     return [
-      { ...x264, label: "1920x1080", scale: 1, crf: 23 },
-      { ...x264, label: "1920x1080 at a lower quality", scale: 1, crf: 30 },
-      { ...x264, label: "1280x720", scale: 2 / 3, crf: 30 },
+      { ...x264, label: "1920x1080", scale: 1, crf: first },
+      ...(first < X264.lowCrf ? [{ ...x264, label: "1920x1080 at a lower quality", scale: 1, crf: X264.lowCrf }] : []),
+      { ...x264, label: "1280x720", scale: 2 / 3, crf: X264.lowCrf },
     ];
   }
   const kbps = Math.floor((maxMb * BYTES_PER_MB * 8 * SIZE_MARGIN) / seconds / 1000) - AUDIO_KBPS;
@@ -192,6 +199,16 @@ export function renderAttempts(settings, seconds, maxMb) {
     { ...base, label: `1920x1080 at ${target} kbps`, scale: 1, videoBitrate: `${target}k` },
     { ...base, label: `1280x720 at ${Math.floor(target * 0.7)} kbps`, scale: 2 / 3, videoBitrate: `${Math.floor(target * 0.7)}k` },
   ];
+}
+
+// firstCrf(seconds, maxMb) -> the best x264 CRF, from 23 to 30, whose predicted file fits
+// SIZE_MARGIN of maxMb. The prediction is the X264 size model plus the audio.
+function firstCrf(seconds, maxMb) {
+  const budget = maxMb * BYTES_PER_MB * SIZE_MARGIN - (seconds * AUDIO_KBPS * 1000) / 8;
+  const atBest = X264.fixedBytes + X264.bytesPerSecond * seconds;
+  if (budget >= atBest) return X264.bestCrf;
+  if (budget <= 0) return X264.lowCrf;
+  return Math.min(X264.lowCrf, X264.bestCrf + Math.ceil(X264.halvingCrf * Math.log2(atBest / budget)));
 }
 
 function integerIn(value, min, max, name) {
