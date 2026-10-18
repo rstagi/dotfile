@@ -159,6 +159,8 @@ Each command accepts `--json`. Human output uses `#N` aliases. Targets accept al
 The `me` target selects the current session.
 `WS_SESSION_ID` contains the session ULID. `WS_SESSION` carries the same value for compatibility.
 `whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window option `@ws_session`.
+Legacy windows and `WS_SESSION` can contain a bare numeric alias.
+Session lists, picker rows and child creation resolve that alias.
 `WS_TMUX_SOCKET` selects the tmux server by name or socket path.
 
 JSON returns the registry session fields, including the ULID `id`, numeric `alias` and lifecycle `state`.
@@ -174,7 +176,9 @@ Claude receives a generated `SessionEnd` hook. A `SessionEnd` payload selects th
 
 `ws wait <id|name> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through one daemon request.
 It prints no output on success. A timeout exits 1. Without `--timeout`, the wait has no deadline.
-Recorded events satisfy a wait immediately, including after a daemon restart. State conditions check the current lifecycle state.
+Recorded events satisfy a wait immediately, including after a daemon restart.
+After a session reopens, only events after its latest `session.reopened` event satisfy an event condition.
+State conditions check the current lifecycle state.
 The API is `POST /v1/sessions/{id}/wait` with `{"for":"done","timeout":30}`. Omit `timeout` for an indefinite wait.
 It returns the session and the matching event, or a null event for a state condition. A timeout returns HTTP 408.
 Daemon shutdown releases pending waits with HTTP 503.
@@ -295,7 +299,7 @@ The tools return the daemon JSON in both text and structured content.
 
 | MCP tool | JSON CLI command |
 |---|---|
-| `session_create` | `ws session create [--name <name>] [--headless … -- <cmd>] --json` |
+| `session_create` | `ws session create [--name <name>] --json`<br>`ws session create --headless --json … -- <cmd>` |
 | `session_list` | `ws session list --json` |
 | `session_get` | `ws session get <target> --json` |
 | `session_send` | `ws send <target> <message> --json` |
@@ -307,6 +311,8 @@ The tools return the daemon JSON in both text and structured content.
 | `loop_start` | `ws loop start <loop_dir> --json` |
 | `loop_stop` | `ws loop stop <loop_dir> --json` |
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
+
+The record form accepts a name and a workspace ID. The headless form rejects both fields.
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.

@@ -180,17 +180,22 @@ fn an_exit_self_trigger_reopens_after_the_old_launch_retires() {
         old_agent
             .write_all(if code == 0 { b"0" } else { b"7" })
             .unwrap();
-        let waited =
-            sandbox.output(&["wait", id, "--for", "event=message.sent", "--timeout", "30"]);
-        assert!(
-            waited.status.success(),
-            "The message wait failed: {waited:?}"
-        );
-        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
-        assert_ne!(sandbox.window(id), old_window);
         let (reopened, _running) = sandbox.capture();
         assert_eq!(reopened["id"], id);
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert_ne!(sandbox.window(id), old_window);
         assert_eq!(sandbox.events(id, "message.sent").len(), 1);
+        let waited = sandbox.output(&["wait", id, "--for", "event=message.sent", "--timeout", "0"]);
+        assert_eq!(waited.status.code(), Some(1), "{waited:?}");
+        let waited = sandbox.output(&[
+            "wait",
+            id,
+            "--for",
+            "event=session.running",
+            "--timeout",
+            "0",
+        ]);
+        assert!(waited.status.success(), "{waited:?}");
     }
 }
 

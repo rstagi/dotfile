@@ -106,6 +106,58 @@ fn done_preserves_the_zsh_output_contract_and_wait_uses_the_daemon() {
 }
 
 #[test]
+fn waits_ignore_events_before_the_latest_reopen() {
+    let home = common::SandboxRoot::new();
+    let socket = home.path().join("ws.sock");
+    let id = ws_core::ids::Ulid::new();
+    let log =
+        ws_core::log::SessionLog::new(&home.path().join("state"), id, ws_core::ids::Ulid::new());
+    for event in [
+        "session.created",
+        "session.running",
+        "done",
+        "exit",
+        "session.reopened",
+        "done",
+        "exit",
+        "session.reopened",
+    ] {
+        log.append(0, event, serde_json::json!({"alias":1}))
+            .unwrap();
+    }
+    let _daemon = common::Daemon::start(command(home.path(), &socket), &socket);
+    for condition in [
+        "done",
+        "exit",
+        "event=done",
+        "event=exit",
+        "event=session.created",
+    ] {
+        let output = command(home.path(), &socket)
+            .args(["wait", "#1", "--for", condition, "--timeout", "0"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{condition}: {output:?}");
+    }
+    let state = command(home.path(), &socket)
+        .args(["wait", "#1", "--for", "state=reopened", "--timeout", "0"])
+        .output()
+        .unwrap();
+    assert!(state.status.success(), "{state:?}");
+
+    // A zero timeout checks recorded history without a timing assertion.
+    let done = common::request(&socket, "POST", &format!("/v1/sessions/{id}/done"), "{}");
+    assert!(done.starts_with("HTTP/1.1 200"), "{done}");
+    let waited = command(home.path(), &socket)
+        .args(["wait", "#1", "--for", "done", "--timeout", "0", "--json"])
+        .output()
+        .unwrap();
+    assert!(waited.status.success(), "{waited:?}");
+    let result: Value = serde_json::from_slice(&waited.stdout).unwrap();
+    assert_eq!(result["event"]["seq"], 9);
+}
+
+#[test]
 fn a_supervised_process_records_exit_after_it_declares_done() {
     let home = tempfile::tempdir_in("/tmp").unwrap();
     let socket = home.path().join("ws.sock");

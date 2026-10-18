@@ -427,6 +427,55 @@ fn live_picker_matches_zsh_states_unread_and_active_targets() {
 }
 
 #[test]
+fn picker_and_list_keep_legacy_window_activity() {
+    let sandbox = Sandbox::seeded_live(&[("api/alpha", false)]);
+    let rows = sandbox.command().arg("_rows").output().unwrap();
+    let list = sandbox.command().arg("list").output().unwrap();
+    let windows = sandbox.server.tmux(
+        sandbox.home.path(),
+        &["list-windows", "-a", "-F", "#{window_id}"],
+    );
+    for prefix in ["", "#"] {
+        for (index, window) in windows.lines().enumerate() {
+            sandbox.server.tmux(
+                sandbox.home.path(),
+                &[
+                    "set",
+                    "-w",
+                    "-t",
+                    window,
+                    "@ws_session",
+                    &format!("{prefix}{}", index + 2),
+                ],
+            );
+        }
+        assert_eq!(
+            sandbox.command().arg("_rows").output().unwrap().stdout,
+            rows.stdout
+        );
+        assert_eq!(
+            sandbox.command().arg("list").output().unwrap().stdout,
+            list.stdout
+        );
+    }
+    sandbox.server.tmux(
+        sandbox.home.path(),
+        &[
+            "set",
+            "-w",
+            "-t",
+            windows.lines().next().unwrap(),
+            "@ws_session",
+            "999",
+        ],
+    );
+    assert_ne!(
+        sandbox.command().arg("list").output().unwrap().stdout,
+        list.stdout
+    );
+}
+
+#[test]
 fn session_toggle_matches_zsh_expansion_and_collapse() {
     let sandbox = Sandbox::seeded_live(&[("api/alpha", false), ("api/orphan", true)]);
     let collapsed = sandbox.command().arg("_rows").output().unwrap().stdout;
@@ -741,6 +790,13 @@ impl Sandbox {
                 .enumerate()
                 {
                     let session_id = Ulid::new().to_string();
+                    SessionLog::new(
+                        &home.path().join("state"),
+                        session_id.parse().unwrap(),
+                        device.device_id,
+                    )
+                    .append(0, "session.created", json!({"alias":index * 10 + slot + 2}))
+                    .unwrap();
                     let session_name = format!("fixture-{index}");
                     let window = if slot == 0 {
                         server.tmux(

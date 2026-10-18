@@ -221,9 +221,15 @@ impl Sessions {
                 }))
             }
             Condition::Event(event_type) => {
+                let reopened = self.registry.latest_event(id, "session.reopened")?;
                 Ok(self
                     .registry
                     .latest_event(id, event_type)?
+                    .filter(|event| {
+                        reopened
+                            .as_ref()
+                            .is_none_or(|reopened| event.seq > reopened.seq)
+                    })
                     .map(|event| WaitResult {
                         session,
                         event: Some(event),
