@@ -173,6 +173,7 @@ Omitted output produces an empty file. `-` and `--output -` read stdin. Repeated
 Unread messages refuse completion. Completion marks the session `finished`. Process exit remains a separate event.
 The supervisor and interactive launch wrapper record `exit`. `ws hook exit` also records exit callbacks.
 Claude receives a generated `SessionEnd` hook. A `SessionEnd` payload selects the exit event. An `exit_code` field supplies its code.
+An exit callback still records the event when tmux cannot read the pane. A spooled callback succeeds at the next replay.
 
 `ws wait <id|name> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through one daemon request.
 It prints no output on success. A timeout exits 1. Without `--timeout`, the wait has no deadline.
@@ -278,10 +279,12 @@ One daemon worker retries queued messages and requeues unconfirmed batches after
 Pending batches survive daemon restart. The worker replaces the detached zsh retry and paste timeout processes for the Rust backend.
 `ws send` still returns exit 75 after it durably queues a message.
 
-A message to a finished local agent session appends `session.reopened` and starts a new tmux window before delivery.
+A message to a finished local agent session appends `session.reopened`.
+If its agent still runs in its owned pane, delivery uses that process.
+Otherwise, the daemon starts a new tmux window before delivery.
 Claude uses `--resume <id>`. Codex uses `resume <id>`.
 Durable hook records retain the conversation ID after a clean exit removes its slot.
-A previous live window loses its session tags, so its hooks cannot consume the new messages.
+A previous launch window loses its session tags after its agent exits, so its hooks cannot consume the new messages.
 The Rust backend accepts `--force` before the target or after the message. The flag has no effect.
 If the agent cannot resume, the message stays queued. Sessions on other devices do not launch locally.
 
