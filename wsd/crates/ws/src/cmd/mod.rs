@@ -31,6 +31,7 @@ pub mod sessions;
 pub mod show;
 pub mod top;
 pub mod triggers;
+pub mod usage;
 pub mod wait;
 pub mod whoami;
 
