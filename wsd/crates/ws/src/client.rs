@@ -91,9 +91,12 @@ pub(crate) async fn request(
     // Hooks retain their bounded spool fallback. Notification dismissal is best effort.
     let autostart = !path.starts_with("/v1/hooks/") && path != "/v1/notifications/dismiss";
     let stream = connect(socket, autostart).await?;
+    // These calls wait for a lifecycle operation or a daemon wait condition.
+    // A client deadline can report failure after the daemon records a durable change.
     if method == Method::POST
-        && path.starts_with("/v1/sessions/")
-        && (path.ends_with("/stop") || path.ends_with("/wait"))
+        && (matches!(path, "/v1/agents/launch" | "/v1/messages")
+            || path.starts_with("/v1/sessions/")
+                && (path.ends_with("/stop") || path.ends_with("/wait")))
     {
         return send_request(stream, method, path, body).await;
     }
@@ -294,5 +297,61 @@ impl Drop for StartingDaemon {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixListener,
+        sync::oneshot,
+    };
+
+    #[tokio::test]
+    async fn lifecycle_requests_wait_for_the_daemons_completion_signal() {
+        let mut failures = Vec::new();
+        for path in ["/v1/agents/launch", "/v1/messages"] {
+            let home = tempfile::tempdir_in("/tmp").unwrap();
+            let socket = home.path().join("daemon.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (observed, received) = oneshot::channel();
+            let (release, released) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut bytes = [0; 1024];
+                while !request.ends_with(b"\r\n\r\n{}") {
+                    let n = stream.read(&mut bytes).await.unwrap();
+                    assert_ne!(n, 0);
+                    request.extend_from_slice(&bytes[..n]);
+                }
+                observed.send(()).unwrap();
+                released.await.unwrap();
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await;
+            });
+            let client =
+                tokio::spawn(
+                    async move { request(&socket, Method::POST, path, b"{}".to_vec()).await },
+                );
+            received.await.unwrap();
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(3)).await;
+            tokio::task::yield_now().await;
+            tokio::time::resume();
+            release.send(()).unwrap();
+            let result = client.await.unwrap();
+            server.await.unwrap();
+            match result {
+                Ok(body) => assert_eq!(body.as_ref(), b"{}"),
+                Err(error) => failures.push(format!("{path}: {error}")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

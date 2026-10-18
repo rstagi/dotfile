@@ -22,8 +22,8 @@ use ws_core::{ids::SessionId, log::SessionLog, registry::Session};
 // Removing a sender releases every request that waits for this launch to commit.
 static PENDING: LazyLock<Mutex<HashMap<SessionId, watch::Sender<()>>>> =
     LazyLock::new(Default::default);
-// Leave time for preparation within the CLI's two-second request deadline.
-const COMMIT_TIMEOUT: Duration = Duration::from_secs(1);
+// The completion signal controls readiness. This deadline only bounds a stalled commit.
+const COMMIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct PendingLaunch(SessionId);
 
