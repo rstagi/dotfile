@@ -13,6 +13,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
+        codex_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: std::env::current_exe().unwrap(),
         spawned: false,
@@ -129,6 +130,7 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
+        codex_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: PathBuf::from("/test/ws rs'bin"),
         spawned: false,
@@ -178,6 +180,7 @@ fn headless_resume_uses_each_agents_noninteractive_mode() {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
+        codex_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: PathBuf::from("/test/ws-rs"),
         spawned: false,
@@ -218,6 +221,7 @@ fn grok_hooks_follow_the_configured_home_inside_the_sandbox() {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: Some(home.path().join("custom-grok")),
+        codex_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: PathBuf::from("/test/ws-rs"),
         spawned: false,
@@ -248,6 +252,7 @@ fn mcp_registration_extends_each_launch_mode_and_preserves_user_configuration() 
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
+        codex_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: PathBuf::from("/test/ws rs'bin"),
         spawned: false,
@@ -330,6 +335,7 @@ fn telemetry_contract_covers_both_agents_in_fresh_and_resumed_launch_modes() {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
+        codex_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: PathBuf::from("/test/ws"),
         spawned: false,
@@ -386,7 +392,15 @@ fn telemetry_contract_covers_both_agents_in_fresh_and_resumed_launch_modes() {
                             "{setting}"
                         );
                     }
-                    assert!(prepared.files.is_empty());
+                    assert_eq!(prepared.files.len(), 1);
+                    assert_eq!(
+                        prepared.files[0].path,
+                        context
+                            .state
+                            .join("sessions")
+                            .join(&context.id)
+                            .join("quota-binding.json")
+                    );
                 }
             }
         }
@@ -413,6 +427,7 @@ fn native_tracing_requires_explicit_config_and_uses_the_session_trace() {
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
+        codex_home: None,
         ws_home: home.path().join(".ws"),
         ws_bin: "/test/ws".into(),
         spawned: false,
@@ -480,6 +495,7 @@ fn setting_names_and_versions_match_the_captured_s2_contracts() {
             id: "01K7Q0K5M00000000000000001".into(),
             home: home.path().into(),
             grok_home: None,
+            codex_home: None,
             ws_home: home.path().join(".ws"),
             ws_bin: "/test/ws".into(),
             spawned: false,

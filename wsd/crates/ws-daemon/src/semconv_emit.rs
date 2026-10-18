@@ -289,10 +289,38 @@ pub(crate) fn event_attributes(entry: &LogEntry, name: &str, phase: Option<&Valu
             }
         }
     }
+    if name == semconv::RUNNER_USAGE_UPDATED {
+        for key in [
+            semconv::RUNNER,
+            semconv::RUNNER_ACCOUNT_ID,
+            semconv::RUNNER_USAGE_BUCKET,
+            semconv::RUNNER_USAGE_WINDOW,
+            semconv::RUNNER_USAGE_WINDOW_DURATION,
+            semconv::RUNNER_USAGE_WINDOW_START,
+            semconv::RUNNER_USAGE_WINDOW_RESET,
+            semconv::RUNNER_USAGE_SOURCE,
+            semconv::RUNNER_USAGE_SOURCE_NAME,
+            semconv::RUNNER_USAGE_OBSERVED_AT,
+            semconv::RUNNER_USAGE_COVERAGE,
+            semconv::RUNNER_USAGE_MODEL,
+            semconv::RUNNER_USAGE_USED_RATIO,
+            semconv::RUNNER_USAGE_REMAINING_RATIO,
+            semconv::RUNNER_USAGE_TOKENS,
+        ] {
+            if let Some(value) = entry.body.get(key).filter(|value| !value.is_null()) {
+                attributes.push(attribute(key, value.clone()));
+            }
+        }
+    }
     attributes
 }
 
 fn timestamp(entry: &LogEntry) -> u64 {
+    if entry.event_type == "runner.usage.updated"
+        && let Some(observed) = entry.body[semconv::RUNNER_USAGE_OBSERVED_AT].as_u64()
+    {
+        return observed.saturating_mul(1_000_000);
+    }
     entry.body["observed_at_us"]
         .as_u64()
         .map(|us| us.saturating_mul(1000))

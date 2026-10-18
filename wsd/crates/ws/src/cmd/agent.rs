@@ -62,6 +62,7 @@ pub fn prepare(command: Command) -> Result<()> {
         id: session.to_string(),
         home,
         grok_home: env::var_os("GROK_HOME").map(|path| directory.join(path)),
+        codex_home: env::var_os("CODEX_HOME").map(|path| directory.join(path)),
         ws_home: directory.join(ws_home),
         ws_bin: env::current_exe()?,
         spawned: false,

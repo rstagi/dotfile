@@ -29,6 +29,7 @@ pub struct AgentSession {
     pub id: String,
     pub home: PathBuf,
     pub grok_home: Option<PathBuf>,
+    pub codex_home: Option<PathBuf>,
     pub ws_home: PathBuf,
     pub ws_bin: PathBuf,
     pub spawned: bool,
@@ -218,6 +219,11 @@ pub fn prepare(
                 "agent must be one of: claude, codex, grok",
             ));
         }
+    }
+    if agent == "codex" {
+        prepared
+            .files
+            .push(crate::quota::binding::prepare_file(session, resume)?);
     }
     telemetry::extend(&mut prepared, agent, session)?;
     prepared.argv.extend(session.arguments.iter().cloned());

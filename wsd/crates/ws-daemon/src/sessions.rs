@@ -34,6 +34,7 @@ pub struct Sessions {
     pub(crate) headless_hooks: HashMap<SessionId, crate::hooks::HookState>,
     pub(crate) changes: tokio::sync::watch::Sender<()>,
     pub(crate) shutdown: tokio::sync::watch::Sender<bool>,
+    pub(crate) quota_requests: crate::quota::Requests,
     _writer_lock: File,
 }
 
@@ -100,6 +101,7 @@ impl Sessions {
             headless_hooks: HashMap::new(),
             changes: tokio::sync::watch::channel(()).0,
             shutdown: tokio::sync::watch::channel(false).0,
+            quota_requests: crate::quota::Requests::default(),
             _writer_lock: writer_lock,
         };
         sessions.recover_spans()?;
@@ -268,6 +270,7 @@ impl Sessions {
             eprintln!("Cannot remove the phase worktree for {id}: {error}");
         }
         self.changes.send_replace(());
+        self.quota_requests.observe(id, event_type);
         self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
         Ok(entry)
     }

@@ -655,6 +655,7 @@ fn headless_command(request: &CreateHeadless, id: SessionId, state: &Path) -> io
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".ws")),
             grok_home: environment("GROK_HOME").map(PathBuf::from),
+            codex_home: environment("CODEX_HOME").map(PathBuf::from),
             home,
             ws_bin: std::env::current_exe()?,
             spawned: false,

@@ -33,6 +33,7 @@ pub mod loops;
 pub mod notify;
 pub mod otlp;
 pub mod phases;
+pub mod quota;
 mod semconv_emit;
 pub mod sessions;
 pub mod spans;
@@ -87,6 +88,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         otlp::Receiver::bind_with_spans(&state, Some(sessions.spans.clone())).await?;
     let _forwarder = forwarder::Forwarder::start(&state)?;
     let store = Arc::new(Mutex::new(sessions));
+    let quota = quota::Service::start(store.clone())?;
     supervisor::adopt(store.clone())
         .await
         .map_err(|error| io::Error::other(error.0))?;
@@ -124,6 +126,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         Ok(())
     })
     .await;
+    quota.shutdown().await;
     delivery.shutdown().await;
     let telemetry_result = telemetry.shutdown().await;
     result.and(telemetry_result)
