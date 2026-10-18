@@ -12,7 +12,9 @@ use ws_daemon::{
     hooks::{self, Callback},
 };
 
-const TRANSPORT_DEADLINE: Duration = Duration::from_millis(250);
+const DEFAULT_TRANSPORT_DEADLINE: Duration = Duration::from_millis(250);
+/// Test seam: sandboxes under load set a long hang guard instead of the production deadline.
+const TRANSPORT_DEADLINE_ENV: &str = "WS_HOOK_TRANSPORT_DEADLINE_MS";
 
 /// Hooks always succeed. A failed transport leaves its callback in the spool.
 pub async fn run(socket: &Path, state: &str) {
@@ -32,7 +34,8 @@ pub async fn run(socket: &Path, state: &str) {
         ("idle", "StopCancelled" | "stop_cancelled" | "Interrupt") => "cancel",
         _ => state,
     };
-    let (mut reply, mut receipt) = deliver(socket, state, payload, observed_at_us)
+    let deadline = transport_deadline(env::var(TRANSPORT_DEADLINE_ENV).ok().as_deref());
+    let (mut reply, mut receipt) = deliver(socket, state, payload, observed_at_us, deadline)
         .await
         .unwrap_or_else(|_| (json!({}), None));
     if state == "stop" {
@@ -52,7 +55,7 @@ pub async fn run(socket: &Path, state: &str) {
                 .is_ok()
         };
         if let Some(receipt) = receipt.filter(|_| written) {
-            let _ = confirm(socket, &receipt).await;
+            let _ = confirm(socket, &receipt, deadline).await;
         }
     }
 }
@@ -62,6 +65,7 @@ async fn deliver(
     state: &str,
     payload: Value,
     observed_at_us: u64,
+    deadline: Duration,
 ) -> Result<(Value, Option<Receipt>)> {
     let session = env::var("WS_SESSION_ID")
         .ok()
@@ -70,7 +74,7 @@ async fn deliver(
     let Some(session) = session else {
         return Ok((json!({}), None));
     };
-    let Some(session) = resolve(socket, &session).await else {
+    let Some(session) = resolve(socket, &session, deadline).await else {
         return Ok((json!({}), None));
     };
     if ![
@@ -107,7 +111,7 @@ async fn deliver(
         notify: Some(ws_daemon::notify::Config::from_env()),
     };
     if let Ok(Ok(reply)) = tokio::time::timeout(
-        TRANSPORT_DEADLINE,
+        deadline,
         client::request(
             socket,
             hyper::Method::POST,
@@ -130,7 +134,16 @@ async fn deliver(
 
 /// Legacy zsh agents export a numeric `WS_SESSION`. Only the daemon maps it to
 /// the imported ULID, so an unreachable daemon drops that callback.
-async fn resolve(socket: &Path, identity: &str) -> Option<Ulid> {
+/// The production deadline keeps a hook from stalling the agent. A sandbox may raise it.
+fn transport_deadline(value: Option<&str>) -> Duration {
+    value
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_TRANSPORT_DEADLINE)
+}
+
+async fn resolve(socket: &Path, identity: &str, deadline: Duration) -> Option<Ulid> {
     if let Ok(id) = identity.parse() {
         return Some(id);
     }
@@ -139,19 +152,19 @@ async fn resolve(socket: &Path, identity: &str) -> Option<Ulid> {
     } else {
         identity.to_owned()
     };
-    tokio::time::timeout(TRANSPORT_DEADLINE, client::session(socket, &target))
+    tokio::time::timeout(deadline, client::session(socket, &target))
         .await
         .ok()?
         .ok()
         .map(|session| session.id)
 }
 
-async fn confirm(socket: &Path, receipt: &Receipt) -> Result<()> {
+async fn confirm(socket: &Path, receipt: &Receipt, deadline: Duration) -> Result<()> {
     // Write the receipt before transport so a daemon restart can restore delivery.
     let pending = delivery::spool(&state_path()?, receipt)?;
     if matches!(
         tokio::time::timeout(
-            TRANSPORT_DEADLINE,
+            deadline,
             client::request(
                 socket,
                 hyper::Method::POST,
@@ -172,4 +185,18 @@ fn state_path() -> Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".ws/state")))
         .ok_or_else(|| "Set HOME or WS_STATE to locate the hook spool.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_transport_deadline_defaults_to_250ms_and_accepts_a_sandbox_override() {
+        assert_eq!(transport_deadline(None), Duration::from_millis(250));
+        assert_eq!(transport_deadline(Some("")), Duration::from_millis(250));
+        assert_eq!(transport_deadline(Some("abc")), Duration::from_millis(250));
+        assert_eq!(transport_deadline(Some("0")), Duration::from_millis(250));
+        assert_eq!(transport_deadline(Some(" 30000 ")), Duration::from_secs(30));
+    }
 }
