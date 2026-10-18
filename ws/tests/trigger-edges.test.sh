@@ -111,9 +111,15 @@ jq -n '{id:"999994",sources:["0"],event:"done",action:"send",target:"0",template
   > "$WS_HOME/triggers/999994.json"
 : > "$WS_HOME/triggers/999994.lock"
 rm -f "$TMP/edge-held"
-zsh -c 'zmodload zsh/system; zsystem flock "$1" && : > "$2" && sleep 8' _ "$WS_HOME/triggers/999994.lock" "$TMP/edge-held" &
+# Preserve the lock across exec. Kill and wait for the process that holds it.
+zsh -c 'zmodload zsh/system; zsystem flock -e "$1" && : > "$2" && exec sleep 60' _ "$WS_HOME/triggers/999994.lock" "$TMP/edge-held" &
 edge_holder=$!
-for _ in {1..100}; do [[ -f "$TMP/edge-held" ]] && break; sleep 0.05; done
+WS_TEST_WAIT=30 wait_until test -f "$TMP/edge-held"
+assert_exit "$?" "0" "the trigger lock holder is ready"
+edge_lock_free() {
+  zsh -c 'zmodload zsh/system; zsystem flock -t 0 "$1" 2>/dev/null' _ "$WS_HOME/triggers/999994.lock"
+}
+assert_eq "$(edge_lock_free && print free || print held)" "held" "the running holder owns the trigger lock"
 zmodload zsh/datetime
 edge_start=$EPOCHREALTIME
 out="$(WS_SESSION="$SOURCE_A" "$WS" done 2>&1)"
@@ -123,7 +129,11 @@ assert_eq "$([[ "$out" == *"timed out"* ]] && print timeout)" "" "in-flight acti
 assert_eq "$([[ -f "$WS_HOME/triggers/999994.json" ]] && print active)" "active" "in-flight record is left to its action"
 kill "$edge_holder" 2>/dev/null
 wait "$edge_holder" 2>/dev/null
+WS_TEST_WAIT=30 wait_until edge_lock_free
+assert_exit "$?" "0" "the trigger lock is free after the holder exits"
 WS_SESSION="$SOURCE_A" "$WS" done 2>/dev/null
+WS_TEST_WAIT=30 wait_until test ! -f "$WS_HOME/triggers/999994.json"
+assert_exit "$?" "0" "the detached worker retires the released record"
 assert_eq "$([[ -f "$WS_HOME/triggers/999994.json" ]] && print active)" "" "released legacy record is retired on the next event"
 # --- end trigger edge record tolerance ---
 # --- G2 bus hardening ---
