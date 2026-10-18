@@ -2,6 +2,9 @@
 nvim/.claude/
 loop-web/node_modules/
 loop-web/dist/
+# render-video.mjs installs and renders in ~/.cache, never here
+.claude/skills/visual-explainer/video/node_modules/
+.claude/skills/visual-explainer/video/bundle/
 wsd/target/
 /.loop-secrets/
 
