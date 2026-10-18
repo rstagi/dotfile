@@ -1,11 +1,12 @@
 //! OTLP log records from durable session events.
 
-use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     io,
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+use serde_json::{Value, json};
 use ws_core::{
     ids::{DeviceId, EventId, SessionId},
     log::LogEntry,
@@ -14,7 +15,8 @@ use ws_core::{
 };
 
 pub(crate) struct Emitter {
-    log: TelemetryLog,
+    state: PathBuf,
+    content: bool,
     written: HashSet<EventId>,
     resources: HashMap<SessionId, Vec<Value>>,
     phases: HashMap<SessionId, Value>,
@@ -31,7 +33,7 @@ impl Emitter {
                 .flatten()
             {
                 for scope in resource["scopeLogs"].as_array().into_iter().flatten() {
-                    if scope["scope"]["name"] != "ws.session" {
+                    if scope["scope"]["name"] != semconv::SESSION_DOMAIN {
                         continue;
                     }
                     for record in scope["logRecords"].as_array().into_iter().flatten() {
@@ -50,7 +52,8 @@ impl Emitter {
             }
         }
         Ok(Self {
-            log,
+            state: state.into(),
+            content: ws_core::config::Config::load(state)?.telemetry.content,
             written,
             resources: HashMap::new(),
             phases: HashMap::new(),
@@ -82,25 +85,32 @@ impl Emitter {
         if self.written.contains(&entry.event_id) {
             return Ok(Some(event));
         }
+        let mut body = entry.body.clone();
+        redact_body(&mut body, self.content);
         let record = json!({"timeUnixNano": timestamp(entry).to_string(),
+            "traceId": format!("{:032x}", u128::from(entry.session_id)),
             "eventName": name, "attributes": attributes,
             "body": {"kvlistValue": {"values": [
                 {"key": semconv::EVENT_NAME, "value": {"stringValue": name}},
-                {"key": "body", "value": any_value(&entry.body)}]}}});
+                {"key": "body", "value": any_value(&body)}]}}});
         let resource = self
             .resources
             .get(&entry.session_id)
             .cloned()
             .unwrap_or_else(|| vec![attribute(semconv::SESSION_ID, json!(entry.session_id))]);
         let payload = json!({"resourceLogs": [{"resource": {"attributes": resource},
-            "scopeLogs": [{"scope": {"name": "ws.session", "version": semconv::VERSION}, "logRecords": [record]}]}]});
-        self.log.append(Signal::Logs, vec![payload], entry.ts_ms)?;
+            "scopeLogs": [{"scope": {"name": semconv::SESSION_DOMAIN, "version": semconv::VERSION}, "logRecords": [record]}]}]});
+        TelemetryLog::new(&self.state, entry.device_id).append(
+            Signal::Logs,
+            vec![payload],
+            entry.ts_ms,
+        )?;
         self.written.insert(entry.event_id);
         Ok(Some(event))
     }
 }
 
-pub(crate) fn mapped_name(entry: &LogEntry, phase: bool) -> Option<&'static str> {
+fn mapped_name(entry: &LogEntry, phase: bool) -> Option<&'static str> {
     if entry.body["state_accepted"] == false {
         return None;
     }
@@ -175,7 +185,14 @@ pub(crate) fn event_attributes(entry: &LogEntry, name: &str, phase: Option<&Valu
         (semconv::SESSION_KIND, "kind"),
         (semconv::REASON, "reason"),
     ] {
-        if let Some(value) = entry.body[source].as_str() {
+        let applies = match key {
+            semconv::SESSION_NAME => {
+                matches!(name, semconv::SESSION_CREATED | semconv::SESSION_RENAMED)
+            }
+            semconv::SESSION_KIND => name == semconv::SESSION_CREATED,
+            _ => true,
+        };
+        if applies && let Some(value) = entry.body[source].as_str() {
             attributes.push(attribute(key, json!(value)));
         }
     }
@@ -275,7 +292,7 @@ pub(crate) fn event_attributes(entry: &LogEntry, name: &str, phase: Option<&Valu
     attributes
 }
 
-pub(crate) fn timestamp(entry: &LogEntry) -> u64 {
+fn timestamp(entry: &LogEntry) -> u64 {
     entry.body["observed_at_us"]
         .as_u64()
         .map(|us| us.saturating_mul(1000))
@@ -284,6 +301,37 @@ pub(crate) fn timestamp(entry: &LogEntry) -> u64 {
 
 fn attribute(key: &str, value: Value) -> Value {
     json!({"key": key, "value": any_value(&value)})
+}
+
+fn redact_body(value: &mut Value, content: bool) {
+    match value {
+        Value::Object(fields) => {
+            fields.retain(|key, _| {
+                key != "user.email"
+                    && (content
+                        || !matches!(
+                            key.as_str(),
+                            "body"
+                                | "text"
+                                | "prompt"
+                                | "template"
+                                | "arguments"
+                                | "output"
+                                | "tool_input"
+                                | "tool_response"
+                        ))
+            });
+            for value in fields.values_mut() {
+                redact_body(value, content);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_body(value, content);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn any_value(value: &Value) -> Value {
@@ -399,6 +447,19 @@ mod tests {
                 .collect();
             assert_eq!(mapped.len(), 1, "{source_type}");
             let record = mapped[0];
+            assert_eq!(
+                record["traceId"],
+                format!("{:032x}", u128::from(session.id))
+            );
+            if source_type != "session.created" {
+                assert!(
+                    !record["attributes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|a| a["key"] == "ws.session.kind")
+                );
+            }
             assert_eq!(attr(record, "event.name")["stringValue"], expected);
             assert_eq!(attr(record, "event.domain")["stringValue"], "ws.session");
             assert_eq!(attr(record, "ws.semconv.version")["stringValue"], "1");
@@ -497,6 +558,186 @@ mod tests {
         drop(sessions);
         drop(Sessions::open(sandbox.path(), 0).unwrap());
         assert_eq!(log.read().unwrap(), records);
+    }
+
+    #[test]
+    fn session_content_obeys_the_export_policy() {
+        for content in [false, true] {
+            let sandbox = tempfile::tempdir().unwrap();
+            std::fs::write(
+                sandbox.path().join("config.toml"),
+                format!("[telemetry]\ncontent = {content}\n"),
+            )
+            .unwrap();
+            let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+            let session = sessions.create(CreateSession::default()).unwrap();
+            sessions.append_entry(session.id, "message.sent", json!({
+                "recipient":session.id, "text":"PRIVATE-MESSAGE", "pair_seq":1,
+                "nested":{"user.email":"PRIVATE-EMAIL", "items":[{"output":"PRIVATE-OUTPUT", "count":2}]}
+            })).unwrap();
+            let log = TelemetryLog::new(sandbox.path(), session.device_id);
+            let records = log.read().unwrap();
+            let record = &records.last().unwrap().payload;
+            let encoded = record.to_string();
+            assert!(!encoded.contains("PRIVATE-EMAIL"));
+            assert_eq!(encoded.contains("PRIVATE-MESSAGE"), content);
+            assert_eq!(encoded.contains("PRIVATE-OUTPUT"), content);
+            assert!(encoded.contains("count"));
+            assert!(encoded.contains("intValue"));
+        }
+    }
+
+    #[test]
+    fn aliases_phase_exits_and_resource_metadata_keep_their_semantics() {
+        for phase in [false, true] {
+            let sandbox = tempfile::tempdir().unwrap();
+            let device = ws_core::device::Device::init(sandbox.path(), "test-device").unwrap();
+            let session = ws_core::ids::Ulid::new();
+            let parent = ws_core::ids::Ulid::new();
+            let source = SessionLog::new(sandbox.path(), session, device.device_id);
+            let mut metadata = json!({"alias":1,"name":"runner","kind":"headless",
+                "parent_session_id":parent,"project":"sample"});
+            if phase {
+                metadata["phase"] = json!(44);
+                metadata["attempt"] = json!(2);
+            }
+            source.append(0, "session.created", metadata).unwrap();
+            let mut entries = Vec::new();
+            for (source_type, expected, body) in [
+                ("done", "ws.session.finished", json!({})),
+                (
+                    "session.depends_on",
+                    "ws.session.edge.added",
+                    json!({"target":parent}),
+                ),
+                (
+                    "session.block_on",
+                    "ws.session.edge.added",
+                    json!({"target":parent}),
+                ),
+                (
+                    "message.sent",
+                    "ws.session.message.sent",
+                    json!({"recipient":parent,"text":"message","pair_seq":1}),
+                ),
+                (
+                    "phase.spawned",
+                    "phase.started",
+                    json!({"phase":44,"attempt":2}),
+                ),
+                (
+                    "process.exited",
+                    if phase {
+                        "phase.finished"
+                    } else {
+                        "ws.session.exit"
+                    },
+                    json!({"code":0}),
+                ),
+            ] {
+                entries.push((source.append(0, source_type, body).unwrap(), expected));
+            }
+            for source_type in ["api.called", "hook.received", "turn.started"] {
+                source
+                    .append(0, source_type, json!({"state_accepted":false}))
+                    .unwrap();
+            }
+            drop(Sessions::open(sandbox.path(), 0).unwrap());
+            let records = TelemetryLog::new(sandbox.path(), device.device_id)
+                .read()
+                .unwrap();
+            assert_eq!(records.len(), 7);
+            for stored in &records {
+                let resource = &stored.payload["resourceLogs"][0]["resource"];
+                assert_eq!(
+                    attr(resource, "ws.session.id")["stringValue"],
+                    session.to_string()
+                );
+                assert_eq!(
+                    attr(resource, "ws.parent_session.id")["stringValue"],
+                    parent.to_string()
+                );
+                assert_eq!(
+                    attr(resource, "ws.device.id")["stringValue"],
+                    device.device_id.to_string()
+                );
+                assert_eq!(attr(resource, "ws.project")["stringValue"], "sample");
+            }
+            for ((entry, expected), stored) in entries.iter().zip(&records[1..]) {
+                let record = &stored.payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
+                assert_eq!(attr(record, "event.name")["stringValue"], *expected);
+                assert_eq!(
+                    attr(record, "event_id")["stringValue"],
+                    entry.event_id.to_string()
+                );
+                match entry.event_type.as_str() {
+                    "done" => {
+                        assert_eq!(attr(record, "ws.session.state")["stringValue"], "finished")
+                    }
+                    "session.depends_on" | "session.block_on" => {
+                        assert_eq!(
+                            attr(record, "ws.session.edge.id")["stringValue"],
+                            entry.event_id.to_string()
+                        );
+                        assert_eq!(
+                            attr(record, "ws.session.edge.kind")["stringValue"],
+                            if entry.event_type == "session.depends_on" {
+                                "depends_on"
+                            } else {
+                                "block_on"
+                            }
+                        );
+                    }
+                    "message.sent" => {
+                        assert_eq!(
+                            attr(record, "ws.session.message.id")["stringValue"],
+                            entry.event_id.to_string()
+                        );
+                        assert_eq!(
+                            attr(record, "ws.session.message.from")["stringValue"],
+                            session.to_string()
+                        );
+                        assert_eq!(
+                            attr(record, "ws.session.message.to")["stringValue"],
+                            parent.to_string()
+                        );
+                        assert_eq!(attr(record, "ws.session.message.pair_seq")["intValue"], "1");
+                    }
+                    "phase.spawned" | "process.exited" if *expected != "ws.session.exit" => {
+                        assert_eq!(attr(record, "ws.phase.id")["stringValue"], "44");
+                        assert_eq!(attr(record, "ws.phase.attempt")["intValue"], "2");
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn imported_events_retain_the_source_device_resource() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let local = ws_core::device::Device::init(sandbox.path(), "local").unwrap();
+        let source_device = ws_core::ids::Ulid::new();
+        let session = ws_core::ids::Ulid::new();
+        let source = SessionLog::new(sandbox.path(), session, source_device);
+        source
+            .append(0, "session.created", json!({"alias":1}))
+            .unwrap();
+        source.append(0, "session.running", json!({})).unwrap();
+        drop(Sessions::open(sandbox.path(), 0).unwrap());
+        let records = TelemetryLog::new(sandbox.path(), local.device_id)
+            .read()
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        for record in records {
+            assert_eq!(
+                attr(
+                    &record.payload["resourceLogs"][0]["resource"],
+                    "ws.device.id"
+                )["stringValue"],
+                source_device.to_string()
+            );
+        }
     }
 
     fn attr<'a>(value: &'a Value, key: &str) -> &'a Value {

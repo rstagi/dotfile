@@ -403,6 +403,13 @@ Restart replay retains span IDs and does not append a completed span twice.
 The receiver removes the known S2 native turn and tool boundaries to prevent duplicate spans.
 It retains native model, transport and permission-wait timing.
 
+Durable session events also produce OTLP logs using [WS semantic conventions v1](../docs/ws-v6/semconv-v1.md).
+Each log record retains the source `event_id`, timestamp, epoch and sequence, with `event.domain=ws.session` and `ws.semconv.version=1`.
+Events inside open turn or tool spans also appear as span events with the same source identity.
+Replay does not append these records twice.
+These OTLP logs omit message text, prompts, trigger templates and tool content unless `content = true`.
+They always omit `user.email`.
+
 The receiver replaces incoming `ws.device.id` resource attributes with the local device ID.
 It appends one durable record per log record, metric or span to `$WS_STATE/telemetry/log.jsonl`.
 Each record has an event ID, its receipt time, the signal type and an OTLP export payload.
