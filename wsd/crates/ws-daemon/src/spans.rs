@@ -437,16 +437,22 @@ pub(crate) fn tool_status(payload: &Value) -> u64 {
     }
 }
 
-// S2 producer boundaries overlap the hook spans. Keep native model and transport timing.
+// Native boundaries overlap canonical spans. Keep Codex transport timing for synthesis.
 pub(crate) fn is_native_boundary(payload: &Value) -> bool {
     let scope = &payload["resourceSpans"][0]["scopeSpans"][0];
     let name = scope["spans"][0]["name"].as_str().unwrap_or("");
-    if matches!(name, semconv::TURN_SPAN | semconv::TOOL_SPAN) {
+    if matches!(
+        name,
+        semconv::TURN_SPAN | semconv::TOOL_SPAN | semconv::MODEL_CALL_SPAN
+    ) {
         return true;
     }
     match scope["scope"]["name"].as_str() {
         Some("com.anthropic.claude_code.tracing") => {
-            matches!(name, "claude_code.tool" | "claude_code.tool.execution")
+            matches!(
+                name,
+                "claude_code.tool" | "claude_code.tool.execution" | "claude_code.llm_request"
+            )
         }
         Some("codex_exec") => matches!(
             name,

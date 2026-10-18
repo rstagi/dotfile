@@ -65,13 +65,13 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
     let cases = [
         ("baseline-logs.json", Signal::Logs, 11),
         ("baseline-metrics.json", Signal::Metrics, 3),
-        ("beta-json-traces.json", Signal::Traces, 3),
+        ("beta-json-traces.json", Signal::Traces, 1),
         ("codex-baseline-logs.json", Signal::Logs, 24),
         ("codex-baseline-metrics.json", Signal::Metrics, 16),
         ("codex-baseline-traces.json", Signal::Traces, 29),
         ("beta-protobuf-logs.pb", Signal::Logs, 7),
         ("beta-protobuf-metrics.pb", Signal::Metrics, 3),
-        ("beta-protobuf-traces.pb", Signal::Traces, 2),
+        ("beta-protobuf-traces.pb", Signal::Traces, 1),
         ("codex-protobuf-logs.pb", Signal::Logs, 24),
         ("codex-protobuf-metrics.pb", Signal::Metrics, 16),
         ("codex-protobuf-traces.pb", Signal::Traces, 29),
@@ -141,6 +141,7 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
                         Some(
                             "claude_code.tool"
                                 | "claude_code.tool.execution"
+                                | "claude_code.llm_request"
                                 | "run_turn"
                                 | "session_task.turn"
                                 | "handle_tool_call_with_source"
@@ -214,7 +215,7 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
         offset += count;
     }
     receiver.shutdown().await.unwrap();
-    assert_eq!(log.read().unwrap().len(), 167);
+    assert_eq!(log.read().unwrap().len(), 164);
 }
 
 #[tokio::test]
@@ -470,7 +471,7 @@ async fn redacts_codex_tool_content_and_email_before_storage_in_both_encodings()
 }
 
 #[tokio::test]
-async fn native_boundaries_do_not_duplicate_canonical_turns_or_tools() {
+async fn native_boundaries_do_not_duplicate_canonical_turns_tools_or_models() {
     let sandbox = tempfile::tempdir().unwrap();
     let device = Device::init(sandbox.path(), "test-device").unwrap();
     let receiver = Receiver::bind(sandbox.path()).await.unwrap();
@@ -480,7 +481,7 @@ async fn native_boundaries_do_not_duplicate_canonical_turns_or_tools() {
             {"name":"handle_tool_call_with_source"}, {"name":"dispatch_tool_call_with_state"},
             {"name":"exec_command"}, {"name":"unified_exec.exec_command"},
             {"name":"code_mode.broker.invoke_tool"}, {"name":"exec"},
-            {"name":"ws.session.turn"}, {"name":"ws.session.tool"},
+            {"name":"ws.session.turn"}, {"name":"ws.session.tool"}, {"name":"ws.session.model_call"},
             {"name":"responses_websocket.stream_request"}
         ]},
         {"scope":{"name":"com.anthropic.claude_code.tracing"}, "spans":[
@@ -512,7 +513,6 @@ async fn native_boundaries_do_not_duplicate_canonical_turns_or_tools() {
         names,
         [
             "responses_websocket.stream_request",
-            "claude_code.llm_request",
             "claude_code.tool.blocked_on_user",
             "exec"
         ]
