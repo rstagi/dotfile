@@ -69,19 +69,28 @@ fn sessions_keep_legacy_window_activity() {
 #[test]
 fn legacy_agents_create_children_with_their_resolved_parent() {
     let sandbox = Sandbox::new();
-    for legacy in ["1", "#1", &sandbox.ids[0]] {
+    for (legacy, current, expected) in [
+        ("1", None, &sandbox.ids[0]),
+        ("#1", None, &sandbox.ids[0]),
+        (sandbox.ids[0].as_str(), None, &sandbox.ids[0]),
+        ("1", Some(""), &sandbox.ids[0]),
+        ("1", Some(sandbox.ids[1].as_str()), &sandbox.ids[1]),
+    ] {
         for headless in [false, true] {
             let mut command = sandbox.command();
             command
                 .env("WS_SESSION", legacy)
                 .args(["session", "create", "--json"]);
+            if let Some(current) = current {
+                command.env("WS_SESSION_ID", current);
+            }
             if headless {
                 command.args(["--headless", "--", "/usr/bin/true"]);
             }
             let output = command.output().unwrap();
             assert!(output.status.success(), "{output:?}");
             let child: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(child["parent_session_id"], sandbox.ids[0]);
+            assert_eq!(child["parent_session_id"], *expected);
             if headless {
                 let exited = sandbox.run(&[
                     "wait",

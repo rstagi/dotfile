@@ -31,15 +31,14 @@ impl Control {
             .ok()
             .map(|id| id.parse())
             .transpose()?;
-        Ok(Self {
-            socket: socket.into(),
-            caller,
-        })
+        Ok(Self::for_caller(socket, caller))
     }
 
-    pub fn with_caller(mut self, caller: Option<SessionId>) -> Self {
-        self.caller = caller;
-        self
+    pub fn for_caller(socket: &Path, caller: Option<SessionId>) -> Self {
+        Self {
+            socket: socket.into(),
+            caller,
+        }
     }
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {

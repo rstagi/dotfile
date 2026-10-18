@@ -159,6 +159,8 @@ Each command accepts `--json`. Human output uses `#N` aliases. Targets accept al
 The `me` target selects the current session.
 `WS_SESSION_ID` contains the session ULID. `WS_SESSION` carries the same value for compatibility.
 `whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window option `@ws_session`.
+Legacy windows and `WS_SESSION` can contain a bare numeric alias.
+Session lists, picker rows and child creation resolve that alias.
 `WS_TMUX_SOCKET` selects the tmux server by name or socket path.
 
 JSON returns the registry session fields, including the ULID `id`, numeric `alias` and lifecycle `state`.
