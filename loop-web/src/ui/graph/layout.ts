@@ -131,7 +131,7 @@ function milestoneBands(graph: Graph, layers: Map<string, number>, height: numbe
     const right = PAD_X + Math.max(...ls) * COL_W + NODE_W + MILESTONE_PAD_X;
     bands.push({
       milestone: milestone.number,
-      label: `M${milestone.number} · ${milestone.title}`,
+      label: `M${milestone.number} · ${milestone.title}${milestone.archived ? " · archived" : ""}`,
       x,
       y: 0,
       width: right - x,

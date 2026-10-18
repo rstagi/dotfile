@@ -88,7 +88,11 @@ export function buildGraph(plan: Plan, runtime: Runtime | null, opts: BuildOpts 
   }));
   const edges = buildEdges(plan, nodes);
 
-  const milestones = plan.milestones.map((milestone) => ({ number: milestone.number, title: milestone.title }));
+  const milestones = plan.milestones.map((milestone) => ({
+    number: milestone.number,
+    title: milestone.title,
+    ...(milestone.archive ? { archived: true } : {}),
+  }));
   return { milestones, nodes, edges, lanes };
 }
 

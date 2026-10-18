@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import { buildGraph } from "./build-graph.ts";
 import { parsePlan } from "./parse-plan.ts";
@@ -554,5 +555,23 @@ describe("buildGraph — parked gate precedence", () => {
     const gate = buildGraph(parsePlan(MILESTONES), parkedAt1({ paused: true })).nodes.find((n) => n.id === "2")!;
     expect(gate.awaitingMerge).toBe(true);
     expect(gate.ui).toBe("paused");
+  });
+});
+
+describe("buildGraph — archived milestone stubs", () => {
+  const stubbed = readFileSync(new URL("../../../tests/fixtures/milestones/archived-m1/plan.md", import.meta.url), "utf8");
+
+  it("satisfies a Depends on edge to an archived gate", () => {
+    const graph = buildGraph(parsePlan(stubbed), null);
+    expect(graph.nodes.find((node) => node.id === "3")).toMatchObject({ phase: "3", status: "done" });
+    expect(graph.edges.find((edge) => edge.id === "3->4")).toMatchObject({ kind: "depends", blocking: false });
+  });
+
+  it("marks archived milestones in the graph", () => {
+    expect(buildGraph(parsePlan(stubbed), null).milestones).toEqual([
+      { number: 1, title: "Core API and web shell ship", archived: true },
+      { number: 2, title: "The web shell calls the API" },
+      { number: 3, title: "The API enforces rate limits" },
+    ]);
   });
 });

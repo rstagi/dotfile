@@ -1,4 +1,5 @@
 import type {
+  MilestoneArchive,
   Plan,
   PlanMilestone,
   PlanPhase,
@@ -29,6 +30,11 @@ const REVIEW_TAG = /\[review:\s*([^\]]+?)\s*\]/i;
 const ROUNDS_TAG = /\[rounds:\s*([^\]]+?)\s*\]/i;
 const INNER_TAG = /\[inner:\s*([^\]]*?)\s*\]/i;
 const GATE_TAG = /\[gate:\s*([^\]]+?)\s*\]/i;
+/** Archived milestone stub marker, last on the `## Milestone N — <outcome>` heading. */
+const ARCHIVED_TAG = /\s*`?\[archived\]`?\s*$/i;
+/** Stub bullet listing the archived milestone's phases, in document order. */
+export const ARCHIVED_PHASES_LABEL = "Phases (all done)";
+const ARCHIVED_TITLE = "(archived)";
 const REVIEW_TIERS: ReviewTier[] = ["standard", "max", "shallow", "medium"];
 /** Mirrors LOOP_REVIEW_ROUNDS_CAP in loop-models.conf. */
 const REVIEW_ROUNDS_CAP = 5;
@@ -37,6 +43,8 @@ interface MilestoneSection {
   number: number;
   title: string;
   explicit: boolean;
+  /** `[archived]` stub: phases come from its bullets, not from `### Phase` blocks. */
+  archived: boolean;
   lines: string[];
 }
 
@@ -91,9 +99,15 @@ function parseMilestones(
     if (heading) {
       const milestone = heading[1].match(MILESTONE_HEADING);
       current = milestone
-        ? { number: Number(milestone[1]), title: milestone[2].trim(), explicit: true, lines: [] }
+        ? {
+          number: Number(milestone[1]),
+          title: milestone[2].replace(ARCHIVED_TAG, "").trim(),
+          explicit: true,
+          archived: ARCHIVED_TAG.test(milestone[2]),
+          lines: [],
+        }
         : heading[1] === "Phases"
-          ? { number: 1, title: "Phases", explicit: false, lines: [] }
+          ? { number: 1, title: "Phases", explicit: false, archived: false, lines: [] }
           : null;
       if (current) sections.push(current);
       else if (/^Milestone\b/i.test(heading[1])) {
@@ -109,26 +123,106 @@ function parseMilestones(
   const seenPhases = new Set<string>();
   const milestonePlan = sections.some((section) => section.explicit);
   for (const section of validateMilestoneNumbers(sections, warnings)) {
+    if (section.archived) {
+      const participants = archivedParticipants(section, repositories, warnings);
+      const previousGate = milestones.at(-1)?.gatePhase ?? null;
+      const milestonePhases = archivedPhases(section, participants, previousGate, warnings, seenPhases);
+      phases.push(...milestonePhases);
+      milestones.push(buildMilestone(section, milestonePhases, participants, repositories, milestonePlan, warnings));
+      continue;
+    }
     const milestonePhases = parsePhases(section.lines, repositories, multiRepository, warnings, section.number, seenPhases);
     phases.push(...milestonePhases);
-    milestones.push(buildMilestone(section, milestonePhases, repositories, milestonePlan, warnings));
+    milestones.push(buildMilestone(section, milestonePhases, workParticipants(milestonePhases), repositories, milestonePlan, warnings));
   }
   validateMilestones(milestones, phases, milestonePlan, warnings);
   return { phases, milestones, explicitMilestones: milestonePlan };
 }
 
+/** Repositories of a milestone's work phases, in document order. */
+function workParticipants(phases: PlanPhase[]): string[] {
+  return [...new Set(phases
+    .filter((phase) => phase.kind === "work" && phase.repository)
+    .map((phase) => phase.repository))];
+}
+
+/** An archived stub names its participants: `- **Repositories:** \`owner/a\`, \`owner/b\``. */
+function archivedParticipants(section: MilestoneSection, repositories: PlanRepository[], warnings: string[]): string[] {
+  const raw = bulletValue(section.lines, "Repositories");
+  const listed = raw ? [...new Set(raw.split(",").map((slug) => stripBackticks(slug)).filter((slug): slug is string => !!slug))] : [];
+  if (listed.length === 0) warnings.push(`Milestone ${section.number} is archived but its stub names no Repositories`);
+  for (const slug of listed) {
+    if (!repositories.some((repository) => repository.slug === slug)) {
+      warnings.push(`Milestone ${section.number}: archived stub names unknown repository ${slug}`);
+    }
+  }
+  return listed;
+}
+
+/**
+ * Phases of an archived stub: each listed number is an existing, `done` phase. The gate is the
+ * merge-gate review; the rest are work phases. Bodies live in the archive file, so `dependsOn`
+ * is a display-only chain in stub order that starts at the previous milestone's gate.
+ */
+function archivedPhases(
+  section: MilestoneSection,
+  participants: string[],
+  previousGate: string | null,
+  warnings: string[],
+  seen: Set<string>,
+): PlanPhase[] {
+  const listed: string[] = bulletValue(section.lines, ARCHIVED_PHASES_LABEL)?.match(/\d+/g) ?? [];
+  if (listed.length === 0) {
+    warnings.push(`Milestone ${section.number} is archived but its stub has no "${ARCHIVED_PHASES_LABEL}" list`);
+  }
+  const gate = bulletValue(section.lines, "Gate")?.match(/\d+/)?.[0] ?? null;
+  if (!gate) warnings.push(`Milestone ${section.number} is archived but its stub names no Gate phase`);
+  else if (!listed.includes(gate)) {
+    warnings.push(`Milestone ${section.number}: archived gate Phase ${gate} is not listed in "${ARCHIVED_PHASES_LABEL}"`);
+  }
+
+  const phases: PlanPhase[] = [];
+  let previous = previousGate;
+  for (const phase of listed) {
+    if (seen.has(phase)) {
+      warnings.push(`Milestone ${section.number}: archived stub repeats Phase ${phase} — ignoring the repeat`);
+      continue;
+    }
+    seen.add(phase);
+    const isGate = phase === gate;
+    phases.push({
+      phase,
+      milestone: section.number,
+      title: ARCHIVED_TITLE,
+      kind: isGate ? "pr-review" : "work",
+      gate: isGate ? "merge" : null,
+      lane: isGate ? "review" : "archived",
+      status: "done",
+      repository: isGate ? "all" : participants.length === 1 ? participants[0] : "",
+      dependsOn: previous ? [previous] : [],
+      suggestedBranch: null,
+      touches: null,
+      doneWhen: null,
+      verify: null,
+      notes: null,
+      review: isGate ? { tier: "standard", rounds: null, inner: null } : null,
+      archived: true,
+    });
+    previous = phase;
+  }
+  return phases;
+}
+
 function buildMilestone(
   section: MilestoneSection,
   phases: PlanPhase[],
+  participants: string[],
   repositories: PlanRepository[],
   milestonePlan: boolean,
   warnings: string[],
 ): PlanMilestone {
   const firstPhase = section.lines.findIndex((line) => PHASE_HEADING.test(line));
   const header = firstPhase === -1 ? section.lines : section.lines.slice(0, firstPhase);
-  const participants = [...new Set(phases
-    .filter((phase) => phase.kind === "work" && phase.repository)
-    .map((phase) => phase.repository))];
   const sharedBranch = stripBackticks(bulletValue(header, "Integration branch"));
   const barePr = bulletValue(header, "PR");
   const sharedPr = participants.length === 1 ? barePr : null;
@@ -152,7 +246,15 @@ function buildMilestone(
       return [slug, raw != null ? normalizePr(raw) : fallback];
     })),
     participants,
+    ...(section.archived ? { archive: archiveRef(header) } : {}),
   };
+}
+
+/** The stub's `- **Archive:** [milestones/mN.md](milestones/mN.md)` link and one-line outcome. */
+function archiveRef(header: string[]): MilestoneArchive {
+  const raw = bulletValue(header, "Archive");
+  const file = raw ? raw.match(/\]\(([^)]+)\)/)?.[1] ?? stripBackticks(raw) : null;
+  return { file, outcome: bulletValue(header, "Outcome") };
 }
 
 /** Milestones (an implicit `## Phases` counts as 1) must be numbered 1, 2, 3… with no gaps; duplicates are dropped. */
@@ -183,7 +285,8 @@ function validateMilestones(
   const branches = new Map<string, Set<string>>();
   for (const [index, milestone] of milestones.entries()) {
     const milestonePhases = phases.filter((phase) => phase.milestone === milestone.number);
-    if (milestonePlan && milestone.participants.length === 0) {
+    // An archived stub already warned about its own participants; its phases carry no edges.
+    if (milestonePlan && !milestone.archive && milestone.participants.length === 0) {
       warnings.push(`Milestone ${milestone.number} has no work phases — its review has no repositories to review`);
     }
     const lastPhase = milestonePhases.at(-1);
@@ -191,7 +294,7 @@ function validateMilestones(
       warnings.push(`Milestone ${milestone.number} must end with a PR-review phase tagged [gate: merge]`);
     }
     const previousGate = milestones[index - 1]?.gatePhase;
-    if (previousGate) {
+    if (previousGate && !milestone.archive) {
       const localPhases = new Set(milestonePhases.map((phase) => phase.phase));
       for (const phase of milestonePhases) {
         const root = !phase.dependsOn.some((dependency) => localPhases.has(dependency));
