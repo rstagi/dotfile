@@ -66,11 +66,11 @@ fn an_exit_self_trigger_reopens_after_the_old_launch_retires() {
         old_agent
             .write_all(if code == 0 { b"0" } else { b"7" })
             .unwrap();
+        let waited =
+            sandbox.output(&["wait", id, "--for", "event=message.sent", "--timeout", "30"]);
         assert!(
-            sandbox
-                .output(&["wait", id, "--for", "event=message.sent", "--timeout", "30"])
-                .status
-                .success()
+            waited.status.success(),
+            "The message wait failed: {waited:?}"
         );
         assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
         assert_ne!(sandbox.window(id), old_window);
