@@ -25,6 +25,7 @@ pub mod agents;
 pub mod api;
 pub mod bus;
 pub mod edges;
+pub mod forwarder;
 pub mod hooks;
 pub mod import;
 pub mod limits;
@@ -84,6 +85,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
     let sessions = import::open_for_daemon(&state, &import::backend::home()?)?;
     let mut telemetry =
         otlp::Receiver::bind_with_spans(&state, Some(sessions.spans.clone())).await?;
+    let _forwarder = forwarder::Forwarder::start(&state)?;
     let store = Arc::new(Mutex::new(sessions));
     supervisor::adopt(store.clone())
         .await

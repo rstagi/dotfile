@@ -23,6 +23,8 @@ pub struct TelemetryConfig {
     /// Zero selects an available port. The daemon publishes its bound endpoint.
     pub port: u16,
     pub retention_days: u64,
+    /// OTLP/HTTP base URLs. Each sink receives the full retained window.
+    pub sinks: Vec<String>,
     pub native_tracing: bool,
     pub content: bool,
 }
@@ -58,6 +60,7 @@ impl Default for TelemetryConfig {
         Self {
             port: 0,
             retention_days: 30,
+            sinks: Vec::new(),
             native_tracing: false,
             content: false,
         }

@@ -19,6 +19,7 @@ shell-words = "1"
 libc = "0.2"
 opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "with-serde", "logs", "metrics", "trace"] }
 prost = "0.14"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

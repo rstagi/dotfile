@@ -114,6 +114,8 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
         .env("WS_HOME", home.join(".ws"))
         .env("WS_ROOT", home.join(".ws/worktrees"))
         .env("WS_NOTIFY", "0")
+        // Hang guard, not the production deadline: a loaded sandbox must wait for the reply.
+        .env("WS_HOOK_TRANSPORT_DEADLINE_MS", "30000")
         .env("WS_STATE", home.join("state"))
         .env("WS_SOCK", socket)
         .env("WS_TMUX_SOCKET", home.join("tmux.sock"));

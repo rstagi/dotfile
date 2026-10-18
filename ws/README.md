@@ -121,6 +121,7 @@ A Rust CLI request starts a background daemon when its socket is missing and lau
 Concurrent starts share a startup lock. A failed start reports the log path beside the socket.
 The daemon exits when its socket file disappears or a different file replaces it.
 Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
+A hook waits 250 ms for the daemon reply, then spools the callback and prints `{}`. Test sandboxes raise this bound with `WS_HOOK_TRANSPORT_DEADLINE_MS`.
 
 `ws backend rust` selects Rust through `$WS_HOME/backend`. The dispatcher uses `$WS_HOME/bin/ws-rs`.
 `WS_RUST_BIN` overrides the binary path for tests. An absent selector selects Rust when `WS_RUST_BIN` is set or `$WS_HOME/bin/ws-rs` is executable.
@@ -366,6 +367,7 @@ Configure it in the same file:
 [telemetry]
 port = 0
 retention_days = 30
+sinks = []
 native_tracing = false
 content = false
 ```
@@ -420,6 +422,17 @@ The receiver syncs each accepted batch before it returns HTTP 200.
 It repairs incomplete crash tails before the next append.
 Retention uses receipt time. The daemon prunes expired records at startup and every minute.
 Pruning replaces the file atomically under the append lock. It preserves retained event IDs and order.
+
+Set `sinks = ["http://127.0.0.1:4318"]` to forward retained telemetry to OTLP/HTTP sinks.
+Each entry is a base URL. The daemon appends `/v1/logs`, `/v1/metrics` or `/v1/traces`.
+HTTP and HTTPS are supported. Restart the daemon after a sink change.
+Each sink receives data independently. An unavailable sink does not block other sinks.
+The daemon saves each sink's cursor per source device in `$WS_STATE/telemetry-cursors.json`.
+It commits a cursor by atomic replacement only after the sink acknowledges the batch.
+A sink without a cursor receives the full retention window. Expired records cannot be recovered.
+Delivery can repeat after a lost response or a daemon crash.
+Log records keep their `event_id` attributes. A log without that attribute uses its durable telemetry event ID.
+Spans keep their span IDs. The sink must deduplicate repeated records.
 
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 
