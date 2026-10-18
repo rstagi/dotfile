@@ -43,9 +43,11 @@ const UNUSED_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const TEMP_MAX_AGE_MS = 24 * 3600 * 1000;
 const TAIL_LINES = 20;
 const KILL_GRACE_MS = 3000;
-// Encoder defaults: the Remotion defaults at 30 fps. VE_VIDEO_FPS, VE_VIDEO_CONCURRENCY, VE_VIDEO_HWACCEL,
-// VE_VIDEO_X264_PRESET and VE_VIDEO_GL override them.
-const VIDEO_DEFAULTS = { fps: 30, concurrency: null, hardwareAcceleration: "disable", x264Preset: "medium", gl: null };
+// Encoder defaults: the fastest measured combination that keeps the text sharp (see SKILL.md, The video).
+// Frame capture in the browser takes most of the time, so fewer frames and GPU compositing help most.
+// VE_VIDEO_FPS, VE_VIDEO_CONCURRENCY, VE_VIDEO_HWACCEL, VE_VIDEO_X264_PRESET and VE_VIDEO_GL override them.
+const VIDEO_DEFAULTS = { fps: 24, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" };
+const SPARE_CORES = 2;
 const HWACCEL = ["disable", "if-possible", "required"];
 const GL = ["default", "angle", "egl", "swiftshader", "swangle", "vulkan", "angle-egl"];
 const X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
@@ -156,10 +158,10 @@ export function pruneCaches(current, now = Date.now()) {
 }
 
 // videoSettings(env) -> { fps, concurrency, hardwareAcceleration, x264Preset, gl }: the defaults, with
-// the VE_VIDEO_* overrides. VE_VIDEO_GL=default lets Chrome choose. Throws an IoError for a value
-// that is not valid.
+// the VE_VIDEO_* overrides. The default concurrency leaves 2 cores free. VE_VIDEO_GL=default lets
+// Chrome choose. Throws an IoError for a value that is not valid.
 export function videoSettings(env) {
-  const settings = { ...VIDEO_DEFAULTS };
+  const settings = { ...VIDEO_DEFAULTS, concurrency: Math.max(1, os.availableParallelism() - SPARE_CORES) };
   if (env.VE_VIDEO_FPS) settings.fps = integerIn(env.VE_VIDEO_FPS, 1, 60, "VE_VIDEO_FPS");
   if (env.VE_VIDEO_CONCURRENCY) settings.concurrency = integerIn(env.VE_VIDEO_CONCURRENCY, 1, 64, "VE_VIDEO_CONCURRENCY");
   if (env.VE_VIDEO_HWACCEL) settings.hardwareAcceleration = oneOf(env.VE_VIDEO_HWACCEL, HWACCEL, "VE_VIDEO_HWACCEL");

@@ -238,7 +238,9 @@ Text to speech:
   number of characters sent.
 
 The first run for each version of `video/` runs `npm ci` and downloads a headless browser.
-It needs network access and takes up to about one minute more.
+It needs network access and takes up to about one minute more. On an Apple M4 laptop, a
+later render takes about one third of the video length, plus the text to speech for new
+text.
 
 ### 8. Publish
 
@@ -284,7 +286,7 @@ block between the title and the section navigation. The path must be relative, e
 
 `video/` is a Remotion project with two compositions, `plan` and `ship`. Each composition
 takes the props JSON and the voiceover clips as its input props. The video is 1920x1080
-at 30 fps, with the voiceover as its audio. It has no captions.
+at 24 fps, with the voiceover as its audio. It has no captions.
 
 - The scenes follow the page. `plan`: title, goal, architecture, timeline, decisions,
   risks. `ship`: title, summary, changes, delivered, deviations, setbacks and hiccups,
@@ -308,11 +310,22 @@ MP4 to a temporary file in the output directory, then renames it to `video.mp4`.
 file is larger than `--max-mb`, the script renders again at a lower quality, then at
 1280x720. Each run removes the caches of other keys that no run used for 7 days.
 
-Encoder settings: `VE_VIDEO_FPS`, `VE_VIDEO_CONCURRENCY`, `VE_VIDEO_X264_PRESET`,
-`VE_VIDEO_HWACCEL` (`disable`, `if-possible`, `required`) and `VE_VIDEO_GL` override the
-Remotion defaults. With hardware encoding, the script sets a video bitrate that fits
-`--max-mb` for the duration of the video. A value that is not valid is a usage error
-(exit 2).
+Encoder settings: the defaults are the fastest combination of a measurement on an Apple M4
+with 10 cores. The text stays sharp. The browser frame capture takes most of the time, so
+fewer frames and GPU compositing help most. A faster x264 preset and more processes help a
+little. Hardware encoding (VideoToolbox) was slower, and its file was larger than its
+target. An environment variable overrides each default:
+
+| Variable | Default | Values |
+|----------|---------|--------|
+| `VE_VIDEO_FPS` | `24` | an integer from 1 to 60 |
+| `VE_VIDEO_CONCURRENCY` | the number of cores minus 2 | an integer from 1 to 64 |
+| `VE_VIDEO_X264_PRESET` | `veryfast` | an x264 preset, from `ultrafast` to `veryslow` |
+| `VE_VIDEO_HWACCEL` | `disable` | `disable`, `if-possible`, `required` |
+| `VE_VIDEO_GL` | `angle` | `default` (Chrome chooses), `angle`, `egl`, `swiftshader`, `swangle`, `vulkan`, `angle-egl` |
+
+With hardware encoding, the script sets a video bitrate that fits `--max-mb` for the
+duration of the video. A value that is not valid is a usage error (exit 2).
 
 The ElevenLabs key stays in the environment. The script never writes it to a log, an error
 message, a file name, a file or the props. The npm, Remotion and browser processes do not

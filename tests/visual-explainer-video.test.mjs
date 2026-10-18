@@ -315,8 +315,9 @@ test("render-video: an unreadable props or narration file exits 2", () => {
 
 // ---- render-video.mjs: encoder settings ----
 
-test("encoder: the defaults are the Remotion defaults at 30 fps", () => {
-  assert.deepEqual(videoSettings({}), { fps: 30, concurrency: null, hardwareAcceleration: "disable", x264Preset: "medium", gl: null });
+test("encoder: the defaults are 24 fps, x264 veryfast, ANGLE and all cores but 2", () => {
+  assert.deepEqual(videoSettings({}),
+    { fps: 24, concurrency: Math.max(1, os.availableParallelism() - 2), hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" });
 });
 
 test("encoder: VE_VIDEO_* variables override each default, and a bad value is an error", () => {
