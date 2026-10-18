@@ -15,14 +15,16 @@ const PROCESS_STATS = [
 ];
 const MAX_STAGGER = 12;
 
-// renderPage(template, props) -> the complete HTML page for validated props.
-export function renderPage(template, props) {
+// renderPage(template, props, { video }) -> the complete HTML page for validated props.
+// `video` is a checked relative MP4 path. Without it, the page has no video block.
+export function renderPage(template, props, { video } = {}) {
   const view = props.mode === "plan" ? planView(props) : shipView(props);
   return fill(template, {
     MODE: esc(props.mode),
     TITLE: esc(props.meta.title),
     DESCRIPTION: esc(props.meta.subtitle),
     HERO: view.hero,
+    VIDEO: video ? videoBlock(video) : "",
     NAV: nav(view.scenes),
     SCENES: view.scenes.map(scene).join("\n"),
     FOOTER: `visual-explainer · ${esc(props.mode)} · ${esc(props.meta.date)}`,
@@ -91,6 +93,14 @@ function hero(meta, kicker, aside) {
   return `<div class="hero-text"><p class="eyebrow">${esc(kicker)}</p><h1>${esc(meta.title)}</h1>
 <p class="subtitle">${inline(meta.subtitle)}</p><div class="chips">${[...chips, ...links].join("")}</div></div>
 <div class="hero-aside">${aside}</div>`;
+}
+
+// Inline styles: a page without a video must stay byte-for-byte the same, so the template has no video CSS.
+function videoBlock(src) {
+  return `<section class="video-block" aria-label="Video" style="padding: 24px 0 8px;"><div class="wrap">
+<video controls preload="metadata" playsinline src="${esc(src)}" style="display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; border: 1px solid var(--line); background: #000;"><a href="${esc(src)}">Download the video</a></video>
+</div></section>
+`;
 }
 
 // ---- plan scenes ----
