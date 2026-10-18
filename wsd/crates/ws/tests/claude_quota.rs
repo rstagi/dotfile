@@ -7,6 +7,7 @@ use std::{
 };
 mod common;
 use common::{Daemon, request, ws};
+use ws_core::semconv as sc;
 
 #[test]
 fn generated_status_command_spools_quota_and_daemon_exports_it_after_restart() {
@@ -101,10 +102,21 @@ fn generated_status_command_spools_quota_and_daemon_exports_it_after_restart() {
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .filter(|e| {
                 e["type"] == "runner.usage.updated"
-                    && e["body"]["ws.runner.usage.source.name"] == "status-line"
+                    && e["body"][sc::RUNNER_ACCOUNT_ID] == "custom-account"
+                    && ((e["body"][sc::RUNNER_USAGE_WINDOW] == "five_hour"
+                        && e["body"][sc::RUNNER_USAGE_SOURCE_NAME] == "status-line"
+                        && e["body"][sc::RUNNER_USAGE_USED_RATIO] == 0.25)
+                        || (e["body"][sc::RUNNER_USAGE_WINDOW] == "weekly"
+                            && e["body"][sc::RUNNER_USAGE_SOURCE] == "estimated"))
             })
             .collect();
-        if readings.len() >= 2 {
+        if readings
+            .iter()
+            .any(|entry| entry["body"][sc::RUNNER_USAGE_WINDOW] == "five_hour")
+            && readings
+                .iter()
+                .any(|entry| entry["body"][sc::RUNNER_USAGE_WINDOW] == "weekly")
+        {
             break readings;
         }
         assert!(
@@ -123,7 +135,21 @@ fn generated_status_command_spools_quota_and_daemon_exports_it_after_restart() {
         .iter()
         .find(|r| r["body"]["ws.runner.usage.window"] == "weekly")
         .unwrap();
-    assert!(weekly["body"].get("ws.runner.usage.used_ratio").is_none());
+    assert_eq!(five["body"][sc::RUNNER_USAGE_SOURCE], "reported");
+    assert_eq!(weekly["body"][sc::RUNNER_USAGE_SOURCE], "estimated");
+    assert_eq!(weekly["body"][sc::RUNNER_USAGE_TOKENS], 0);
+    assert!(
+        weekly["body"][sc::RUNNER_USAGE_COVERAGE]
+            .as_str()
+            .unwrap()
+            .contains("incomplete")
+    );
+    assert!(weekly["body"].get(sc::RUNNER_USAGE_USED_RATIO).is_none());
+    assert!(
+        weekly["body"]
+            .get(sc::RUNNER_USAGE_REMAINING_RATIO)
+            .is_none()
+    );
 }
 
 #[test]
