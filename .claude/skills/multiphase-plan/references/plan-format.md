@@ -88,6 +88,11 @@ out of `plan.md`.
   `.loop/milestones/m<N>.md`). It holds the milestone section (heading, branch and PR lines,
   phase blocks) and the progress-log entries of that milestone. The command moves them without
   changes.
+- **Retro.** When `milestones/m<N>.retro.md` exists beside the plan, the archive file has the
+  retro first, then `## Raw log`, then the moved section and progress-log entries without
+  changes. The retro is the "Analysis and recap" that the `ship` explainer runner writes at
+  the merge gate (`loop-execute` protocol → Milestone retrospective). After the write, the
+  command removes the retro file. Its content now lives in the archive file.
 - **Stub.** The milestone section in `plan.md` becomes a stub with this shape:
 
   ```markdown
@@ -103,7 +108,8 @@ out of `plan.md`.
 
   - The heading keeps its text and ends with `` `[archived]` ``.
   - The `Integration branch` and `PR` lines are the milestone's own lines, without changes.
-  - `Outcome:` is one line. The default is the milestone title. `--outcome <text>` sets it.
+  - `Outcome:` is one line. `--outcome <text>` sets it. The default is the Outcome bullet of
+    the retro, else the milestone title.
   - `Repositories:` lists the participants.
   - `Phases (all done):` lists every phase number of the milestone in document order.
   - `Gate:` names the `[gate: merge]` review phase. The phase list contains it.
@@ -128,7 +134,11 @@ out of `plan.md`.
     gives exit 3. A PR that is closed and not merged gives exit 4. A `gh` error gives exit 1.
   - It is atomic. It writes the archive file first. It replaces `plan.md` last, with one
     rename. On any failure, `plan.md` stays unchanged.
-  - It is idempotent. A second run on an archived milestone writes nothing and pushes nothing.
+  - It is idempotent. Without a pending retro file, a second run on an archived milestone
+    writes nothing and pushes nothing.
+  - An archived milestone with a pending retro file is not a no-op. The command attaches the
+    retro to the existing archive file, updates the stub `Outcome:` line, removes the retro
+    file and pushes. A newer retro replaces an attached retro.
   - After the write, it runs `loop-plan.sh push`.
   - A final milestone that has no `[gate: merge]` phase cannot be archived.
 

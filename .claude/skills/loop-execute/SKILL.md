@@ -474,9 +474,15 @@ final milestone is an ordinary terminal review (finish below):
    and gate PRs go in `detail` as one compact string (e.g. `M1 owner/api=<url> owner/web=<url>`).
 4. **Ship explainer (best-effort).** Explain the milestone in `visual-explainer` `ship` mode
    (protocol § Milestone explainers). The output directory is `.loop/explainers/m<n>-ship/`.
+   - Collect the retro facts (protocol § Milestone retrospective):
+     `node "$RUNTIME_ROOT/loop-retro.mjs" --dir .loop --milestone <n> --json > .loop/explainers/m<n>-ship/retro-facts.json`.
    - Supervise does not write the props. Reuse a `props.json` that passes the skill's
-     `--check`. Otherwise spawn one detached explainer runner and wait for its `meta.json`.
+     `--check` when `.loop/milestones/m<n>.retro.md` exists. Otherwise spawn one detached
+     explainer runner and wait for its `meta.json`. It writes the props and
+     `.loop/milestones/m<n>.retro.md` from the same facts.
      Exit 12 gets one relaunch with the `verify.log` tail.
+   - Check that `.loop/milestones/m<n>.retro.md` exists. When it is missing, write the reason
+     to `retro-error.txt` in the output directory. A missing retro never blocks the park.
    - Then supervise renders, publishes and writes `link.txt`, as the skill tells it.
    - When the link is an artifact URL, add or replace one line in each gate PR body:
      `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
@@ -501,9 +507,15 @@ milestone of a plan, or the final review of a plan with no milestones.
    `visual-explainer` `ship` mode (protocol § Milestone explainers). For a plan with no
    milestones, this work is the whole plan. The output directory is `.loop/explainers/m<n>-ship/`,
    where n is `state.milestone`.
+   - Collect the retro facts (protocol § Milestone retrospective):
+     `node "$RUNTIME_ROOT/loop-retro.mjs" --dir .loop --milestone <n> --json > .loop/explainers/m<n>-ship/retro-facts.json`.
    - Supervise does not write the props. Reuse a `props.json` that passes the skill's
-     `--check`. Otherwise spawn one detached explainer runner and wait for its `meta.json`.
+     `--check` when `.loop/milestones/m<n>.retro.md` exists. Otherwise spawn one detached
+     explainer runner and wait for its `meta.json`. It writes the props and
+     `.loop/milestones/m<n>.retro.md` from the same facts.
      Exit 12 gets one relaunch with the `verify.log` tail.
+   - Check that `.loop/milestones/m<n>.retro.md` exists. When it is missing, write the reason
+     to `retro-error.txt` in the output directory. A missing retro never blocks the finish.
    - Then supervise renders, publishes and writes `link.txt`, as the skill tells it.
    - When the link is an artifact URL, add or replace one line in the PR body of each
      participating repository: `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
@@ -592,9 +604,16 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    worktree (or its retained old one when the host sits the milestone out):
    switch `RUNTIME_ROOT` to it before composing any later prompt; patch `runtimeRoot` null (no host) → keep the installed runtime.
 5. **Restart.** Set plan Status back to `in progress` + `loop-plan.sh push`; remove
-   `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); respawn the
+   `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); seed the lessons (below); respawn the
    orchestrator for the new milestone (the SUB then schedules only its phases); last,
    `loop-state.sh set '.resumePending = null'` (every restart item above is idempotent).
+   **Lessons in the seed.** Before the respawn, add the `### Lessons` of the most recent
+   archive file `.loop/milestones/m<M>.md` to `.loop/sub/prompt-seed.md`, at most 15 lines.
+   M is the highest archived milestone.
+   - Put the lessons between the lines `<!-- loop-lessons -->` and `<!-- /loop-lessons -->`.
+     Replace that block when it exists. Otherwise, add it at the end of the seed.
+   - Start the block with `Lessons from milestone <M>. Apply each lesson that fits a phase.`
+   - When the archive file has no `### Lessons` section, remove the block.
 6. **Plan explainer (best-effort).** Explain the new milestone in `visual-explainer` `plan`
    mode (protocol § Milestone explainers). The output directory is
    `.loop/explainers/m<N>-plan/`, where N is the new milestone.

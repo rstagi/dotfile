@@ -216,6 +216,28 @@ assert_contains "$PROTOCOL" '| Finish step 2: after `loop-state.sh finish`, befo
 assert_contains "$PROTOCOL_FLAT" 'A plan with no milestones is milestone 1. Its finish `ship` page explains the whole plan.' "protocol: no-milestone plan gets a finish ship page"
 assert_contains "$PROTOCOL_FLAT" 'At the park and at the finish, a `ship` link' "protocol: PR body link at the finish"
 
+echo "review workflow: one retrospective step writes the ship page and the agent retro"
+SKILL_FLAT="${(j: :)${=SKILL}}"
+PARK="${SKILL#*"4. **Ship explainer (best-effort).**"}"
+PARK="${PARK%%"5. Notify once"*}"
+PARK="${(j: :)${=PARK}}"
+for block in PARK FINISH; do
+  assert_contains "${(P)block}" 'node "$RUNTIME_ROOT/loop-retro.mjs" --dir .loop --milestone <n> --json > .loop/explainers/m<n>-ship/retro-facts.json' "$block: supervise collects the retro facts"
+  assert_contains "${(P)block}" 'It writes the props and `.loop/milestones/m<n>.retro.md` from the same facts' "$block: one runner writes both forms"
+  assert_contains "${(P)block}" 'write the reason to `retro-error.txt` in the output directory' "$block: supervise checks the retro file"
+done
+assert_contains "$PARK" 'A missing retro never blocks the park.' "a missing retro never blocks the park"
+assert_contains "$FINISH" 'A missing retro never blocks the finish.' "a missing retro never blocks the finish"
+assert_contains "$PROTOCOL" '### Milestone retrospective' "protocol documents the retrospective"
+for heading in '## Analysis and recap' '### Changes against the plan' '### Setbacks and hiccups' '### Lessons' '### Follow-ups'; do
+  assert_contains "$PROTOCOL" "$heading" "retro format: $heading"
+done
+assert_contains "$PROTOCOL" '- **Outcome:** <1–2 sentences: what shipped, the PR, the final verdict>' "retro format: Outcome bullet"
+assert_contains "$PROTOCOL_FLAT" 'A deviation is a result that is different from the plan. A setback is a process cost, also when the result agrees with the plan.' "protocol: deviation vs setback"
+assert_contains "$PROTOCOL" 'milestones/m<N>.retro.md' "layout lists the pending retro"
+assert_contains "$PROTOCOL_FLAT" 'Write the retro file `<abs .loop>/milestones/m<n>.retro.md` in the format of loop-protocol.md § Milestone retrospective' "runner prompt names the retro file"
+assert_contains "$SKILL_FLAT" 'add the `### Lessons` of the most recent archive file `.loop/milestones/m<M>.md` to `.loop/sub/prompt-seed.md`, at most 15 lines' "resume seeds the SUB with the last lessons"
+
 echo "review workflow: milestone resume after a merge"
 assert_contains "$SKILL" '**Milestone resume**' "step 9 documents the milestone resume"
 assert_contains "$SKILL" '`loop-milestone.sh check --state .loop/state.json`: exit 3 (open) → report each open' "open gate PR → report + stop"

@@ -172,6 +172,7 @@ Run the `visual-explainer` skill in `ship` mode with this output directory. Writ
 - `changes`: the key files or modules, each with how and why. This field is optional.
 - `delivered`: one row for each claim of the PR description or of its linked issue. Use the Step 1 result as the evidence.
 - `deviations`: each difference between the PR description and the observed behavior. Use an empty array when there is none.
+- `process` and `setbacks`: optional. Take them from the review rounds, the fix rounds and the CI failures of the PR. Count only what the PR shows. Omit both fields when the PR shows no process cost. Do not write a retro file outside a Loop run.
 - `reviews`: one entry with `repository`, `pr`, `head` (the reviewed SHA) and `verdict`. The verdict is the posted event, or `COMMENT` when you post nothing. Put the verdict sentence in `summary` and the Step 1 commands in `validation`.
 - `reviews[0].findings`: every finding. Put its label in `severity` and its file and line in `location`. Put the mechanism and evidence in `detail`, and the fix and preventive change in `fix`.
 - `reviews[0].split`: the stacked-PR split proposal, or `No split recommended.`
