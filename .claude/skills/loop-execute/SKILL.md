@@ -112,6 +112,15 @@ intentional re-run mints `<planId>-r<K>`. Take the lock now —
 this effort; surface it and stop (never `--force` silently). This happens before the confirm
 gate so the gate's no-further-contact promise holds.
 
+Before the start, check runner quota:
+
+```sh
+"${WS_BIN:-ws}" usage --preflight --plan .loop/plan.md \
+  --models-conf "${RUNTIME_ROOT:-$HOME/dotfile}/loop-models.conf" || printf '%s\n' 'Warning: no quota data. Continue the plan.' >&2
+```
+
+The check only reports. Continue when quota data or the `usage` command is unavailable.
+
 ### 2. One confirm gate, then autonomy
 
 Show the user: the plan id, repository → checkout/default

@@ -7,6 +7,9 @@ source "$HERE/lib.sh"
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 export LOOP_REPO_REGISTRY="$TMP/home/repos.json"
 export LOOP_WORKTREE_ROOT="$TMP/worktrees"
 mkdir -p "$TMP/bin" "$TMP/home"
@@ -25,6 +28,16 @@ printf 'main\n'
 GH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
+export WS_SOCK="$TMP/wsd.sock" FAKE_WS_SOCKET="$TMP/wsd.sock" FAKE_WS_LOG="$TMP/ws.log"
+unset WS_BIN
+cat > "$TMP/bin/ws" <<'WS'
+#!/bin/sh
+[ "$WS_SOCK" = "$FAKE_WS_SOCKET" ] || exit 99
+printf '%s\n' "$@" > "$FAKE_WS_LOG"
+printf '%s' "${FAKE_WS_OUTPUT:-}"
+exit "${FAKE_WS_EXIT:-0}"
+WS
+chmod +x "$TMP/bin/ws"
 
 # make_repo <slug>: bare remote + checkout whose origin fetches from the bare remote.
 make_repo() {
@@ -60,6 +73,7 @@ write_state() {
       awaitingMerge:{milestone:1, prs:{"acme/api":$api, "acme/web":$web}}}' > "$STATE"
 }
 write_state
+cp "$HERE/fixtures/milestones/plan.md" "$TMP/plan.md"
 
 echo "loop-milestone: check"
 export FAKE_PR_STATES="$API_PR=MERGED
@@ -136,6 +150,30 @@ echo "loop-milestone: advance is idempotent"
 out2="$($ROOT/loop-milestone.sh advance --state "$STATE" --next 2 --branches "$BRANCHES")"; rc=$?
 assert_exit "$rc" "0" "repeat advance"
 assert_eq "$out2" "$out" "same patch on repeat"
+
+echo "loop-milestone: quota preflight is advisory"
+assert_contains "$(cat "$FAKE_WS_LOG" 2>/dev/null)" "usage
+--preflight
+--plan
+$TMP/plan.md" "advance requests quota for the coordinator plan"
+assert_contains "$(cat "$FAKE_WS_LOG" 2>/dev/null)" "--milestone
+2" "advance scopes quota to the next milestone"
+for mode in missing unknown failure; do
+  case "$mode" in
+    missing) export WS_BIN="$TMP/no-ws" FAKE_WS_EXIT=0 ;;
+    unknown) export WS_BIN=ws FAKE_WS_EXIT=2 ;;
+    failure) export WS_BIN=ws FAKE_WS_EXIT=9 ;;
+  esac
+  quota_patch="$($ROOT/loop-milestone.sh advance --state "$STATE" --next 2 --branches "$BRANCHES" 2>"$TMP/quota.err")"; rc=$?
+  assert_exit "$rc" "0" "$mode quota command never blocks advance"
+  assert_eq "$quota_patch" "$out2" "$mode quota command preserves the state patch"
+  assert_contains "$(cat "$TMP/quota.err")" "no quota data" "$mode quota command warns"
+done
+unset WS_BIN FAKE_WS_EXIT
+FAKE_WS_OUTPUT='quota warning from ws' $ROOT/loop-milestone.sh advance --state "$STATE" --next 2 --branches "$BRANCHES" >"$TMP/quota.patch" 2>"$TMP/quota.err"
+assert_exit "$?" "0" "quota warning does not block advance"
+assert_eq "$(cat "$TMP/quota.patch")" "$out2" "quota output does not corrupt the JSON patch"
+assert_contains "$(cat "$TMP/quota.err")" 'quota warning from ws' "quota output reaches stderr"
 
 echo "loop-milestone: check and advance on a stubbed plan (milestone 1 archived)"
 # Coordinator .loop: the 3-milestone fixture plan (acme/api#1 + acme/web#2 gate milestone 1) beside the parked state.
