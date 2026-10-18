@@ -11,8 +11,15 @@ FAKE="$HERE/fake"
 TMP="$(mktemp -d)"
 DAEMON_PID=""
 STORE=""
-cleanup() { [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; rm -rf "$TMP" "$STORE"; }
+cleanup() {
+  [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null
+  [[ -n "$DAEMON_PID" ]] && wait "$DAEMON_PID" 2>/dev/null
+  rm -rf "$TMP" "$STORE"
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 plan() { zsh "$ROOT/loop-plan.sh" "$@"; }
 
@@ -100,6 +107,27 @@ fresh_loop() {
   print -r -- "$d"
 }
 files_in() { (cd "$1" && print -l -- *(DN)) }
+
+echo "loop-plan: archive preserves the tool error and exit status"
+FAILED_TOOL="$TMP/failing-tool"; mkdir -p "$FAILED_TOOL"
+cp "$ROOT/loop-plan.sh" "$FAILED_TOOL/loop-plan.sh"
+cat > "$FAILED_TOOL/loop-plan-archive.mjs" <<'JS'
+console.error('archive: fixture read failed');
+process.exit(42);
+JS
+FT="$(fresh_loop archive-tool-error)"
+OUT="$(zsh "$FAILED_TOOL/loop-plan.sh" archive --milestone 1 --dir "$FT" 2>&1)"; rc=$?
+assert_exit "$rc" "42" "archive returns the tool status"
+assert_eq "$OUT" "archive: fixture read failed" "archive preserves the tool error without a Node requirement"
+assert_eq "$(cat "$FT/plan.md")" "$(cat "$FIX/plan.md")" "tool failure leaves the plan unchanged"
+assert_eq "$(files_in "$FT")" $'plan.md\nstate.json' "tool failure removes temporary files"
+
+echo "loop-plan: archive explains a missing node"
+MN="$(fresh_loop archive-no-node)"
+OUT="$(PATH="$(path_without_command node)" plan archive --milestone 1 --dir "$MN" 2>&1)"; rc=$?
+assert_exit "$rc" "1" "archive fails when node is missing"
+assert_contains "$OUT" "needs Node >= 22.18" "missing node produces the Node requirement"
+assert_eq "$(cat "$MN/plan.md")" "$(cat "$FIX/plan.md")" "missing node leaves the plan unchanged"
 
 echo "loop-plan: archive — moves milestone 1 into milestones/m1.md, leaves the stub, pushes once"
 A="$(fresh_loop archive-ok)"
@@ -432,6 +460,31 @@ EOF
       "$LOOP_DAEMON_URL/api/loops/$CTL_PID/state" >/dev/null
     ctl() { curl -s -o "$TMP/ctl.out" -w '%{http_code}' -X POST --data-binary "$2" "$LOOP_DAEMON_URL/api/loops/$1/control"; }
     snap() { curl -sf "$LOOP_DAEMON_URL/api/loops/$CTL_PID/snapshot" | jq -r "$1"; }
+
+    echo "loop-plan: HIL answer clears the phase pause in the daemon snapshot"
+    jq -cn --arg runId "$CTL_PID" '{runId:$runId,phases:{"1":{slug:"p1-started",status:"running",attempt:1},"2":{slug:"p2-later",status:"todo"}}}' > "$CTL/state.json"
+    mkdir -p "$CTL/hil"
+    print -r -- 'Choose the next step.' > "$CTL/hil/p1-started.md"
+    wait_hil() {
+      local expected="$1" deadline=$(( SECONDS + 30 ))
+      until [[ "$(snap '.graph.nodes[] | select(.id=="1") | .runtime.hilOpen')" == "$expected" ]]; do
+        (( SECONDS < deadline )) || return 1
+        sleep 0.05
+      done
+    }
+    zsh "$ROOT/loop-state.sh" log --dir "$CTL" hil.raise 1 'Choose the next step.'
+    wait_hil true; assert_exit "$?" "0" "the daemon reads the HIL brief"
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$CTL_PID" '.[] | select(.runId==$id) | .status')" "paused" "hil.raise pauses the loop"
+    assert_eq "$(snap '.graph.nodes[] | select(.id=="1") | "\(.runtime.hilOpen) \(.ui)"')" "true awaiting" "the phase awaits a HIL answer"
+    TOP="$(LOOP_STORE_DIR="$STORE" node "$ROOT/loop-top.mjs" "$CTL_PID" --once)"
+    assert_contains "$TOP" "waiting on you (orchestrator)" "loop-top displays the unanswered HIL"
+    zsh "$ROOT/loop-state.sh" hil-resolve --dir "$CTL" 1 p1-started 'Use option B.'
+    wait_hil false; assert_exit "$?" "0" "the daemon reads the HIL answer"
+    assert_eq "$(cat "$CTL/hil/p1-started.answer.md")" "Use option B." "the HIL answer persists"
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$CTL_PID" '.[] | select(.runId==$id) | .status')" "active" "hil-resolve clears the daemon pause"
+    assert_eq "$(snap '.graph.nodes[] | select(.id=="1") | "\(.runtime.hilOpen) \(.ui)"')" "false running" "hil-resolve clears the pause in the loop-top snapshot"
+    TOP="$(LOOP_STORE_DIR="$STORE" node "$ROOT/loop-top.mjs" "$CTL_PID" --once)"
+    assert_eq "$([[ "$TOP" == *'waiting on you (orchestrator)'* ]] && echo yes || echo no)" "no" "loop-top clears the answered HIL"
 
     assert_eq "$(ctl "$CTL_PID" '{"action":"pause"}')" "200" "pause loop → 200"
     assert_eq "$([[ -f "$CTL/control/pause" ]] && echo yes)" "yes" "pause loop writes control/pause"
