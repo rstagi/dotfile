@@ -7,6 +7,8 @@ Run the following command to install everything:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/rstagi/dotfile/master/install.sh)"
 ```
 
+You can run the installer again. A second run changes no file. Before the installer links a dotfile config (`.gitconfig`, `.zshrc`, `~/.config/nvim`, Claude and Codex config), it moves a different file or folder to a new `<path>.bak.<timestamp>` backup. For other links (`ws`, `docker-buildx`, `.tmux.conf`), it keeps a different file and prints a warning.
+
 ## ws — terminal workspaces
 
 Bare-minimum Conductor in tmux: a git worktree + tmux session per branch, one tab per Claude/Codex/Grok session, hook-driven status, notifications, and a session bus (`ws send`, `ws done`, `ws on`). `./install.sh ws`, then `ws`. Docs: [ws/README.md](ws/README.md).
