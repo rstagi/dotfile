@@ -148,9 +148,7 @@ async fn start_daemon(socket: &Path) -> Result<UnixStream> {
         match lock.try_lock() {
             Ok(()) => break,
             Err(TryLockError::WouldBlock) => {
-                if let Ok(stream) = UnixStream::connect(socket).await {
-                    return Ok(stream);
-                }
+                // The startup owner releases this lock after the daemon answers a ping.
                 sleep(Duration::from_millis(20)).await;
             }
             Err(TryLockError::Error(error)) => return Err(error.into()),
@@ -192,7 +190,12 @@ async fn start_daemon(socket: &Path) -> Result<UnixStream> {
             )
             .into());
         }
-        if let Ok(stream) = UnixStream::connect(socket).await {
+        if let Ok(probe) = UnixStream::connect(socket).await
+            && send_request(probe, Method::GET, "/v1/ping", Vec::new())
+                .await
+                .is_ok()
+            && let Ok(stream) = UnixStream::connect(socket).await
+        {
             let mut child = starting.0.take().unwrap();
             std::thread::spawn(move || {
                 let _ = child.wait();
