@@ -16,9 +16,22 @@ export type ArchiveResult =
   | { status: "already"; archiveFile: string | null }
   | { status: "refused"; reason: string };
 
+export type AttachResult =
+  | {
+    status: "attached";
+    /** The plan text with the stub Outcome taken from the retro (or `outcome`). */
+    plan: string;
+    /** The archive text: header, the retro, then `## Raw log` with the archived content unchanged. */
+    archive: string;
+    archiveFile: string;
+  }
+  | { status: "refused"; reason: string };
+
 export interface ArchiveOptions {
-  /** One-line outcome for the stub; defaults to the milestone title (its `<outcome>`). */
+  /** One-line outcome for the stub. Default: the retro Outcome bullet, else the milestone title. */
   outcome?: string;
+  /** The pending `milestones/m<N>.retro.md` text. It goes first in the archive, before `## Raw log`. */
+  retro?: string;
 }
 
 const MILESTONE_HEADING = /^##\s+Milestone\s+(\d+)\s*[—–-]/;
@@ -28,6 +41,10 @@ const BRANCH_OR_PR_BULLET = /^\s*[-*]\s*\*\*(Integration branch|PR)(\s+\([^)]*\)
 const LOG_ENTRY = /^[-*]\s+/;
 /** A log entry is about one milestone when its subject (after the date) is that milestone or one of its phases. */
 const LOG_SUBJECT = /^[-*]\s+(?:\S+\s+[—–-]\s+)?(?:Phase\s+(\d+)\b|Milestone\s+(\d+)\b|M(\d+)\b)/;
+const RETRO_HEADING = "## Analysis and recap";
+const RAW_LOG_HEADING = "## Raw log";
+const OUTCOME_BULLET = /^\s*[-*]\s+\*\*Outcome:\*\*\s*(.*)$/;
+const STUB_OUTCOME = /^- \*\*Outcome:\*\*.*$/;
 
 /**
  * Archive shipped milestone `number`: move its section (heading, branch/PR lines, phase blocks)
@@ -59,23 +76,74 @@ export function archiveMilestone(planText: string, number: number, opts: Archive
   const archiveFile = `milestones/m${number}.md`;
   const moved = milestoneLogEntries(lines, number, new Set(phases.map((phase) => phase.phase)));
 
+  const outcome = opts.outcome ?? (opts.retro != null ? retroOutcome(opts.retro) : undefined);
   const out: string[] = [];
   for (let index = 0; index < lines.length; index++) {
     if (index === start) {
-      out.push(...stub(section, milestone, phases, archiveFile, opts.outcome));
+      out.push(...stub(section, milestone, phases, archiveFile, outcome));
       index = bodyEnd - 1;
     } else if (!moved.has(index)) {
       out.push(lines[index]);
     }
   }
 
+  const raw = archiveText(planText, plan.name, number, section, [...moved].map((index) => lines[index]));
   return {
     status: "archived",
     plan: out.join("\n"),
-    archive: archiveText(planText, plan.name, number, section, [...moved].map((index) => lines[index])),
+    archive: opts.retro != null ? withRetro(raw, opts.retro) : raw,
     archiveFile,
     prs: milestone.prs as Record<string, string>,
   };
+}
+
+/**
+ * Attach a pending retro to an archived milestone: the archive gets the retro before `## Raw log`
+ * (a newer retro replaces an attached one), and the stub Outcome takes `outcome` or the retro
+ * Outcome bullet. Pure: the caller writes both files.
+ */
+export function attachRetro(planText: string, archive: string, number: number, retro: string, opts: { outcome?: string } = {}): AttachResult {
+  const plan = parsePlan(planText);
+  const milestone = plan.explicitMilestones ? plan.milestones.find((entry) => entry.number === number) : undefined;
+  if (!milestone) return refused(`plan has no milestone ${number}`);
+  if (!milestone.archive) return refused(`milestone ${number} is not archived`);
+  const outcome = opts.outcome ?? retroOutcome(retro);
+  const lines = planText.split("\n");
+  const start = lines.findIndex((line) => Number(line.match(MILESTONE_HEADING)?.[1]) === number);
+  const next = lines.findIndex((line, index) => index > start && SECTION_HEADING.test(line));
+  const end = next === -1 ? lines.length : next;
+  const newPlan = lines.map((line, index) => (outcome && index > start && index < end && STUB_OUTCOME.test(line) ? `- **Outcome:** ${oneLine(outcome)}` : line));
+  return { status: "attached", plan: newPlan.join("\n"), archive: withRetro(archive, retro), archiveFile: milestone.archive.file ?? `milestones/m${number}.md` };
+}
+
+/** The text of the retro's `- **Outcome:**` bullet, continuation lines included, or undefined. */
+export function retroOutcome(retro: string): string | undefined {
+  const lines = retro.split("\n");
+  const index = lines.findIndex((line) => OUTCOME_BULLET.test(line));
+  if (index === -1) return undefined;
+  const parts = [lines[index].match(OUTCOME_BULLET)![1]];
+  for (let next = index + 1; next < lines.length && /^\s+\S/.test(lines[next]) && !/^\s*[-*]\s/.test(lines[next]); next++) parts.push(lines[next]);
+  return oneLine(parts.join(" ")) || undefined;
+}
+
+/**
+ * Archive text with the retro first: the file header (everything before the first `## ` line),
+ * the retro, `## Raw log`, then the archived content. A retro that is already there is replaced.
+ */
+function withRetro(archive: string, retro: string): string {
+  const lines = archive.split("\n");
+  const first = lines.findIndex((line) => SECTION_HEADING.test(line));
+  const header = first === -1 ? lines : lines.slice(0, first);
+  const rawAt = lines.indexOf(RAW_LOG_HEADING);
+  let raw = first === -1 ? [] : lines.slice(rawAt === -1 ? first : rawAt + 1);
+  while (raw.length > 0 && raw[0].trim() === "") raw = raw.slice(1);
+  let body = retro.trim();
+  if (!body.startsWith(RETRO_HEADING)) body = `${RETRO_HEADING}\n${body}`;
+  return [...header, body, "", RAW_LOG_HEADING, "", ...raw].join("\n");
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function stub(section: string[], milestone: PlanMilestone, phases: PlanPhase[], archiveFile: string, outcome?: string): string[] {
@@ -84,7 +152,7 @@ function stub(section: string[], milestone: PlanMilestone, phases: PlanPhase[], 
   return [
     `${section[0].trimEnd()} \`[archived]\``,
     ...header.filter((line) => BRANCH_OR_PR_BULLET.test(line)),
-    `- **Outcome:** ${outcome?.replace(/\s+/g, " ").trim() || milestone.title}`,
+    `- **Outcome:** ${(outcome && oneLine(outcome)) || milestone.title}`,
     `- **Repositories:** ${milestone.participants.map((slug) => `\`${slug}\``).join(", ")}`,
     `- **${ARCHIVED_PHASES_LABEL}:** ${phases.map((phase) => phase.phase).join(", ")}`,
     `- **Gate:** Phase ${milestone.gatePhase}`,
@@ -129,6 +197,6 @@ function archiveText(planText: string, name: string, number: number, section: st
   return [...header, ...section, ...log].join("\n") + "\n";
 }
 
-function refused(reason: string): ArchiveResult {
+function refused(reason: string): { status: "refused"; reason: string } {
   return { status: "refused", reason };
 }
