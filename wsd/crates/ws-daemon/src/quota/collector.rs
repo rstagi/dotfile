@@ -5,6 +5,8 @@ use super::{
     binding::Binding,
     claude::{self, ClaudeReader},
     codex::CodexReader,
+    estimator,
+    grok::{self, GrokReader},
 };
 use crate::{api, sessions::Sessions};
 use std::{
@@ -124,6 +126,9 @@ impl Collector {
                                 Box::new(ClaudeReader::new(binding, state.clone(), session.id))
                                     as Box<dyn Reader>
                             }),
+                        Some("grok") => serde_json::from_value::<grok::Binding>(binding)
+                            .ok()
+                            .map(|binding| Box::new(GrokReader::new(binding)) as Box<dyn Reader>),
                         _ => None,
                     };
                 if let Some(reader) = reader {
@@ -136,7 +141,23 @@ impl Collector {
                 Ok(readings) => readings,
                 Err(error) => {
                     eprintln!("Cannot read runner quota for {id}: {error}");
-                    continue;
+                    estimator::missing_for_session(&state, *id, (self.clock)())
+                }
+            };
+            let estimate_state = state.clone();
+            let now = (self.clock)();
+            let input = readings.clone();
+            let readings = match tokio::task::spawn_blocking(move || {
+                estimator::estimate_missing(&estimate_state, input, now)
+            })
+            .await
+            .map_err(io::Error::other)
+            .and_then(|result| result)
+            {
+                Ok(readings) => readings,
+                Err(error) => {
+                    eprintln!("Cannot estimate runner usage for {id}: {error}");
+                    readings
                 }
             };
             for reading in readings {

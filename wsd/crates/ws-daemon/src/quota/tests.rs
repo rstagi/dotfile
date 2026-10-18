@@ -1044,3 +1044,243 @@ done
         file.contents
     );
 }
+
+#[test]
+fn token_estimates_deduplicate_model_records_and_keep_unknown_denominators() {
+    use std::fs;
+    use ws_core::{
+        device::Device,
+        ids::Ulid,
+        telemetry_log::{Signal, TelemetryLog},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-host").unwrap();
+    let log = TelemetryLog::new(sandbox.path(), device.device_id);
+    let session = Ulid::new().to_string();
+    let other = Ulid::new().to_string();
+    for (id, account) in [(&session, "account-a"), (&other, "account-b")] {
+        let path = sandbox.path().join("sessions").join(id);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(
+            path.join("quota-binding.json"),
+            json!({"runner":"claude","account_id":account}).to_string(),
+        )
+        .unwrap();
+    }
+    let model = |id: &str, span: &str, at: u64, input: u64, output: u64| {
+        json!({
+            "resourceSpans":[{"resource":{"attributes":[{"key":sc::SESSION_ID,"value":{"stringValue":id}}]},
+            "scopeSpans":[{"spans":[{"name":sc::MODEL_CALL_SPAN,"traceId":id,"spanId":span,
+            "startTimeUnixNano":(at - 1).to_string(),"endTimeUnixNano":at.to_string(),"attributes":[
+                {"key":sc::GEN_AI_INPUT_TOKENS,"value":{"intValue":input.to_string()}},
+                {"key":sc::GEN_AI_OUTPUT_TOKENS,"value":{"intValue":output.to_string()}},
+                {"key":sc::GEN_AI_CACHE_READ_INPUT_TOKENS,"value":{"intValue":"999"}},
+                {"key":sc::GEN_AI_REQUEST_MODEL,"value":{"stringValue":"model-a"}}
+            ]}]}]}]
+        })
+    };
+    let first = model(&session, "call-a", 2_000_000_000, 1000, 100);
+    for payload in [
+        first.clone(),
+        first,
+        model(&session, "call-b", 3_000_000_000, 2000, 200),
+        model(&other, "call-c", 3_000_000_000, 9000, 900),
+        model(&session, "old", 999_000_000, 8000, 800),
+        model(&session, "next-window", 5_000_000_000, 7000, 700),
+    ] {
+        log.append(Signal::Traces, vec![payload], 4000).unwrap();
+    }
+    let missing = Reading {
+        runner: "claude".into(),
+        account_id: "account-a".into(),
+        bucket: None,
+        window: "five_hour".into(),
+        duration_secs: Some(4),
+        start_ms: Some(1000),
+        reset_ms: Some(5000),
+        source: Source::Reported,
+        source_name: "status-line".into(),
+        observed_at_ms: 4000,
+        received_at_ms: 4000,
+        used_ratio: None,
+        tokens: None,
+        coverage: None,
+    };
+    let mut reported = missing.clone();
+    reported.used_ratio = Some(0.25);
+    let estimates = estimator::estimate_missing(
+        sandbox.path(),
+        vec![missing.clone(), reported.clone()],
+        4000,
+    )
+    .unwrap();
+    // A valid report for this window takes precedence over token estimates.
+    assert!(estimates.iter().all(|r| r.source == Source::Reported));
+    let estimate = estimator::estimate_missing(sandbox.path(), vec![missing], 4000)
+        .unwrap()
+        .remove(0);
+    assert_eq!(estimate.tokens, Some(3300));
+    assert_eq!(estimate.source, Source::Estimated);
+    assert_eq!(estimate.remaining_ratio(), None);
+    let coverage = estimate.coverage.as_deref().unwrap();
+    assert!(coverage.contains("2 model records"));
+    assert!(coverage.contains("1000..5000"));
+    assert!(coverage.contains("other devices"));
+    assert!(coverage.contains("incomplete"));
+    let body = estimate.event_body();
+    assert_eq!(body[sc::RUNNER_USAGE_TOKENS], 3300);
+    assert_eq!(body[sc::RUNNER_USAGE_SOURCE], "estimated");
+    assert!(body.get(sc::RUNNER_USAGE_REMAINING_RATIO).is_none());
+    assert!(body.get(sc::RUNNER_USAGE_USED_RATIO).is_none());
+}
+
+#[tokio::test]
+async fn grok_collector_discovers_billing_and_persists_an_estimate_with_coverage() {
+    use crate::sessions::{CreateSession, Sessions};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::{Arc, Mutex},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    let program = sandbox.path().join("grok");
+    fs::write(
+        &program,
+        r#"#!/bin/sh
+IFS= read -r request || exit 1
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+IFS= read -r request || exit 1
+printf '%s\n' "$request" > "$GROK_HOME/billing-request"
+cat "$GROK_HOME/billing-response"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/grok.json")).unwrap();
+    fs::write(
+        sandbox.path().join("billing-response"),
+        format!("{}\n", fixture["acp_responses"][0]["response"]),
+    )
+    .unwrap();
+    fs::write(
+        sandbox.path().join("auth.json"),
+        r#"{"issuer::client":{"user_id":"account-a"}}"#,
+    )
+    .unwrap();
+    let state = sandbox.path().join("state");
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    let binding = grok::Binding {
+        runner: "grok".into(),
+        account_id: Some("account-a".into()),
+        identity: Some(grok::Identity {
+            user_id: "account-a".into(),
+            principal_type: None,
+            principal_id: None,
+            team_id: None,
+        }),
+        grok_home: sandbox.path().into(),
+        program,
+    };
+    fs::write(
+        state
+            .join("sessions")
+            .join(session.id.to_string())
+            .join("quota-binding.json"),
+        serde_json::to_vec(&binding).unwrap(),
+    )
+    .unwrap();
+    let log = ws_core::log::SessionLog::new(&state, session.id, session.device_id);
+    let mut changes = sessions.changes.subscribe();
+    let store = Arc::new(Mutex::new(sessions));
+    let collector = Collector::new(Arc::new(|| 1_792_186_404_245));
+    let service = Service::start_with_collector(store.clone(), collector).unwrap();
+    wait_for_usage(&log, &mut changes, 1).await;
+    store.lock().unwrap().shutdown.send_replace(true);
+    service.shutdown().await;
+    let entries = log.read().unwrap().entries;
+    let event = entries
+        .iter()
+        .find(|entry| entry.event_type == "runner.usage.updated")
+        .unwrap();
+    assert_eq!(event.body[sc::RUNNER_USAGE_WINDOW], "weekly");
+    assert_eq!(event.body[sc::RUNNER_USAGE_SOURCE], "estimated");
+    assert_eq!(
+        event.body[sc::RUNNER_USAGE_WINDOW_START],
+        1_791_972_561_510_u64
+    );
+    assert_eq!(event.body[sc::RUNNER_USAGE_TOKENS], 0);
+    assert!(
+        event.body[sc::RUNNER_USAGE_COVERAGE]
+            .as_str()
+            .unwrap()
+            .contains("incomplete")
+    );
+    assert!(event.body.get(sc::RUNNER_USAGE_REMAINING_RATIO).is_none());
+    let request: Value =
+        serde_json::from_slice(&fs::read(sandbox.path().join("billing-request")).unwrap()).unwrap();
+    assert_eq!(request["method"], "_x.ai/billing");
+}
+
+#[tokio::test]
+async fn unavailable_quota_sources_still_persist_token_estimates() {
+    use crate::sessions::{CreateSession, Sessions};
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    let binding = binding::Binding {
+        runner: "codex".into(),
+        account_id: Some("launch-account".into()),
+        codex_home: sandbox.path().join("absent-home"),
+        program: sandbox.path().join("absent-program"),
+        resume_id: None,
+    };
+    fs::write(
+        sandbox
+            .path()
+            .join("sessions")
+            .join(session.id.to_string())
+            .join("quota-binding.json"),
+        serde_json::to_vec(&binding).unwrap(),
+    )
+    .unwrap();
+    let log = ws_core::log::SessionLog::new(sandbox.path(), session.id, session.device_id);
+    let mut changes = sessions.changes.subscribe();
+    let store = Arc::new(Mutex::new(sessions));
+    let service = Service::start_with_collector(
+        store.clone(),
+        Collector::new(Arc::new(|| 1_792_186_404_245)),
+    )
+    .unwrap();
+    wait_for_usage(&log, &mut changes, 2).await;
+    store.lock().unwrap().shutdown.send_replace(true);
+    service.shutdown().await;
+    let events: Vec<_> = log
+        .read()
+        .unwrap()
+        .entries
+        .into_iter()
+        .filter(|entry| entry.event_type == "runner.usage.updated")
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(
+        events
+            .iter()
+            .all(|event| event.body[sc::RUNNER_USAGE_SOURCE] == "estimated")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.body[sc::RUNNER_ACCOUNT_ID] == "launch-account")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.body.get(sc::RUNNER_USAGE_REMAINING_RATIO).is_none())
+    );
+}
