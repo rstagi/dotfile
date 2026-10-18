@@ -59,8 +59,18 @@ if [[ "${WS_TESTS_JOBS:-}" == 1 ]]; then
 fi
 
 logs="$(mktemp -d)"
-trap 'rm -rf "$logs"' EXIT
 typeset -A pids
+ws_groups_cleanup() {
+  trap '' INT TERM HUP
+  local pid
+  for pid in ${(v)pids}; do kill -TERM "$pid" 2>/dev/null; done
+  for pid in ${(v)pids}; do wait "$pid" 2>/dev/null; done
+  rm -rf "$logs"
+}
+trap ws_groups_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 for g in $order; do
   zsh "$HERE/run.sh" "$g" > "$logs/$g.log" 2>&1 &
   pids+=("$g" $!)
@@ -68,6 +78,7 @@ done
 fail=0 total=0 failed=0
 for g in $order; do
   wait "${pids[$g]}" || fail=1
+  unset "pids[$g]"
   echo "== ws group: $g =="
   cat "$logs/$g.log"
   # test_summary's last line: "<n> passed" or "<f>/<n> failed" (colored)

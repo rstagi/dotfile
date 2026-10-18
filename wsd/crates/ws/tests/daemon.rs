@@ -10,6 +10,63 @@ mod common;
 use common::{Daemon, create_stale_socket, get, request, ws};
 
 #[test]
+fn test_commands_pin_tmux_to_their_sandbox() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let command = ws(sandbox.path(), &socket);
+    let tmux = command.get_envs().find(|(key, _)| *key == "WS_TMUX_SOCKET");
+    assert_eq!(
+        tmux.and_then(|(_, value)| value),
+        Some(sandbox.path().join("tmux.sock").as_os_str())
+    );
+}
+
+#[test]
+fn daemon_stops_when_its_socket_is_removed() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    std::fs::remove_file(&socket).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = daemon.child.try_wait().unwrap() {
+            assert!(status.success(), "{status}: {}", daemon.stderr());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The daemon did not stop after its socket disappeared."
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn daemon_stops_without_removing_a_replacement_at_its_socket_path() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    std::fs::remove_file(&socket).unwrap();
+    std::fs::write(&socket, "Keep the replacement.").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = daemon.child.try_wait().unwrap() {
+            assert!(status.success(), "{status}: {}", daemon.stderr());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The daemon did not stop after its socket changed."
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_to_string(socket).unwrap(),
+        "Keep the replacement."
+    );
+}
+
+#[test]
 fn daemon_serves_the_session_lifecycle_and_restores_it_after_restart() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");

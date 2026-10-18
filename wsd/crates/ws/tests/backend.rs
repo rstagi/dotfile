@@ -25,10 +25,7 @@ fn dispatcher(home: &Path, socket: &Path) -> Command {
         command.env_remove(key);
     }
     command.env("WS_RUST_BIN", env!("CARGO_BIN_EXE_ws"));
-    command.env(
-        "WS_TMUX_SOCKET",
-        format!("ws-cutover-{}", std::process::id()),
-    );
+    command.env("WS_TMUX_SOCKET", home.join("tmux.sock"));
     command
 }
 
@@ -40,10 +37,7 @@ async fn dispatcher_smoke_covers_rust_sessions_messages_wait_mcp_and_rollback() 
     let home = tempfile::tempdir_in("/tmp").unwrap();
     let socket = home.path().join("ws.sock");
     let mut command = common::ws(home.path(), &socket);
-    command.env(
-        "WS_TMUX_SOCKET",
-        format!("ws-cutover-{}", std::process::id()),
-    );
+    command.env("WS_TMUX_SOCKET", home.path().join("tmux.sock"));
     let _daemon = common::Daemon::start(command, &socket);
     let output = dispatcher(home.path(), &socket)
         .args(["backend", "rust"])
@@ -202,10 +196,7 @@ fn existing_rust_sessions_prevent_an_automatic_legacy_import() {
     fs::create_dir_all(&legacy).unwrap();
     fs::write(legacy.join("meta"), "invalid legacy metadata").unwrap();
     let mut command = common::ws(home.path(), &socket);
-    command.env(
-        "WS_TMUX_SOCKET",
-        format!("ws-cutover-{}", std::process::id()),
-    );
+    command.env("WS_TMUX_SOCKET", home.path().join("tmux.sock"));
     let _daemon = common::Daemon::start(command, &socket);
     let output = dispatcher(home.path(), &socket)
         .args(["sessions", "--json"])
@@ -224,10 +215,7 @@ fn first_start_imports_legacy_state_once_before_serving_commands() {
     let socket = home.path().join("ws.sock");
     let legacy = home.path().join(".ws");
     let mut command = common::ws(home.path(), &socket);
-    command.env(
-        "WS_TMUX_SOCKET",
-        format!("ws-cutover-{}", std::process::id()),
-    );
+    command.env("WS_TMUX_SOCKET", home.path().join("tmux.sock"));
     fs::remove_file(legacy.join("backend")).unwrap();
     let output = Command::new("zsh")
         .arg(concat!(
@@ -320,10 +308,7 @@ fn first_start_imports_legacy_state_once_before_serving_commands() {
     )
     .unwrap();
     let mut command = common::ws(home.path(), &socket);
-    command.env(
-        "WS_TMUX_SOCKET",
-        format!("ws-cutover-{}", std::process::id()),
-    );
+    command.env("WS_TMUX_SOCKET", home.path().join("tmux.sock"));
     let daemon = common::Daemon::start(command, &socket);
     let output = dispatcher(home.path(), &socket)
         .env("WS_SESSION_ID", id)
@@ -344,10 +329,7 @@ fn first_start_imports_legacy_state_once_before_serving_commands() {
     // A completed startup import does not read the source again.
     fs::write(legacy.join("sessions/2/meta"), "invalid after import").unwrap();
     let mut command = common::ws(home.path(), &socket);
-    command.env(
-        "WS_TMUX_SOCKET",
-        format!("ws-cutover-{}", std::process::id()),
-    );
+    command.env("WS_TMUX_SOCKET", home.path().join("tmux.sock"));
     let _daemon = common::Daemon::start(command, &socket);
     let output = dispatcher(home.path(), &socket)
         .args(["show", "#2", "--json"])

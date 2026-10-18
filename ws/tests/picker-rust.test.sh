@@ -6,7 +6,7 @@ set -eu -o pipefail
 WS="$WS_RUST_BIN"
 mkdir -p "$WS_ROOT"
 export WS_ROOT="$(cd "$WS_ROOT" && pwd -P)"
-T() { command tmux -L "$WS_TMUX_SOCKET" "$@"; }
+T() { command tmux -S "$WS_TMUX_SOCKET" "$@"; }
 check_eq() { [[ "$1" == "$2" ]] || { print -u2 "Expected $2. Received $1. Check: $3"; exit 1; }; }
 
 # The fake replaces terminal input and client attachment. Data commands remain Rust commands.

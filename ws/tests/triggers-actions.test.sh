@@ -130,7 +130,7 @@ T send-keys -t "$EMPTY_WIN" Enter
 echo "ws send/on: a durably queued but undelivered send exits 75 and triggers record queued"
 # Keep this target busy so a delivery retry cannot paste into the fake agent.
 hook api/triggers "$DEFAULT_WIN" working </dev/null
-QUEUED_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$DEFAULT_WIN.lock"
+QUEUED_LOCK="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET//\//_}-$DEFAULT_WIN.lock"
 rm -f "$TMP/queued-held" "$TMP/queued-release"
 (zmodload zsh/system; : >> "$QUEUED_LOCK"; zsystem flock -f queued_fd "$QUEUED_LOCK"; : > "$TMP/queued-held"
   while [[ ! -e "$TMP/queued-release" ]]; do sleep 0.05; done) &

@@ -70,7 +70,9 @@ pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
             if let Some(socket) =
                 std::env::var_os("WS_TMUX_SOCKET").filter(|socket| !socket.is_empty())
             {
-                command.arg("-L").arg(socket);
+                command
+                    .arg(ws_daemon::tmux::socket_flag(&socket))
+                    .arg(socket);
             }
             if !command
                 .args(["attach-session", "-t", &session])

@@ -215,7 +215,11 @@ async fn emit(
     // The click runs without a known locale. "-u" keeps the tmux client in UTF-8.
     click.push_str(" -u");
     if let Some(socket) = &context.tmux_socket {
-        click.push_str(&format!(" -L {}", shell_words::quote(socket)));
+        click.push_str(&format!(
+            " {} {}",
+            crate::tmux::socket_flag(socket),
+            shell_words::quote(socket)
+        ));
     } else if let Some(path) = &context.tmux_path {
         click.push_str(&format!(" -S {}", shell_words::quote(path)));
     }

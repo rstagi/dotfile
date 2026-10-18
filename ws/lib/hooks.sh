@@ -42,7 +42,7 @@ cmd_hook() {
   [[ -n "$payload" ]] && agent_id="$(print -r -- "$payload" | jq -r '.agent_id // empty' 2>/dev/null)"
   agent_id="${agent_id//[^A-Za-z0-9_-]/_}"
   win="$(tmux_ display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || { [[ -z "$reply" ]] || print -r -- "$reply"; return 0; }
-  lock="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET:-default}-$win.lock"
+  lock="${TMPDIR:-/tmp}/ws-hook-${${WS_TMUX_SOCKET:-default}//\//_}-$win.lock"
   # Stop waits longest (3s hook lock + 1s inbox lock stay under the 5s hook timeout) and, if
   # starved, hands settling the tab to a detached retry rather than dropping the event.
   local lock_wait=2

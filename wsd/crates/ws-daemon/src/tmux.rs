@@ -2,7 +2,7 @@
 
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     io::{self, Write},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -26,6 +26,15 @@ pub fn client() -> Command {
     let mut command = Command::new("tmux");
     command.arg("-u");
     command
+}
+
+/// Selects an explicit socket path or a named tmux server.
+pub fn socket_flag(socket: impl AsRef<OsStr>) -> &'static str {
+    if socket.as_ref().as_encoded_bytes().contains(&b'/') {
+        "-S"
+    } else {
+        "-L"
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -270,7 +279,7 @@ impl Tmux {
     fn command(&self) -> Command {
         let mut command = client();
         if let Some(socket) = &self.socket {
-            command.arg("-L").arg(socket);
+            command.arg(socket_flag(socket)).arg(socket);
         }
         command
     }
@@ -301,15 +310,12 @@ mod tests {
     use super::Tmux;
     use std::{
         process::{Command, Output},
-        sync::atomic::{AtomicU64, Ordering},
         thread,
         time::{Duration, Instant},
     };
 
-    static NEXT_SERVER: AtomicU64 = AtomicU64::new(0);
-
     struct Sandbox {
-        home: tempfile::TempDir,
+        home: crate::test_sandbox::SandboxRoot,
         server: String,
         tmux: Tmux,
     }
@@ -519,13 +525,10 @@ mod tests {
 
     impl Sandbox {
         fn new() -> Self {
-            let server = format!(
-                "ws-driver-test-{}-{}",
-                std::process::id(),
-                NEXT_SERVER.fetch_add(1, Ordering::Relaxed)
-            );
+            let home = crate::test_sandbox::SandboxRoot::new();
+            let server = home.tmux_socket();
             let sandbox = Self {
-                home: tempfile::tempdir_in("/tmp").unwrap(),
+                home,
                 tmux: Tmux::named(&server),
                 server,
             };
@@ -548,7 +551,7 @@ mod tests {
 
         fn output(&self, args: &[&str]) -> Output {
             let output = Command::new("tmux")
-                .args(["-L", &self.server])
+                .args(["-S", &self.server])
                 .args(args)
                 .env("HOME", self.home.path())
                 .env("WS_HOME", self.home.path().join(".ws"))
@@ -561,14 +564,6 @@ mod tests {
                 .unwrap();
             assert!(output.status.success(), "{args:?}: {output:?}");
             output
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            let _ = Command::new("tmux")
-                .args(["-L", &self.server, "kill-server"])
-                .output();
         }
     }
 

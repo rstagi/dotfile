@@ -5,7 +5,7 @@ use common::{Daemon, request, ws};
 
 #[test]
 fn cli_spools_every_callback_and_daemon_replays_logical_boundaries() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = common::SandboxRoot::new();
     let socket = home.path().join("wsd.sock");
     let daemon = Daemon::start(ws(home.path(), &socket), &socket);
     assert!(common::get(&socket, "/v1/ping").starts_with("HTTP/1.1 200"));
@@ -102,7 +102,7 @@ fn cli_spools_every_callback_and_daemon_replays_logical_boundaries() {
 }
 
 struct HookSandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     server: String,
     socket: std::path::PathBuf,
     pane: String,
@@ -117,16 +117,12 @@ impl HookSandbox {
     }
 
     fn start(configure_daemon: impl FnOnce(&mut std::process::Command)) -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
-        let server = format!(
-            "ws-hook-{}-{}",
-            std::process::id(),
-            ws_core::ids::Ulid::new()
-        );
+        let home = common::SandboxRoot::new();
+        let server = home.tmux_socket();
         let socket = home.path().join("wsd.sock");
         let output = std::process::Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 &server,
                 "-f",
                 "/dev/null",
@@ -204,16 +200,6 @@ impl HookSandbox {
                 "#{@ws_state}|#{@ws_main}|#{@ws_turn}|#{@ws_sub_a}|#{@ws_sub_b}|#{@ws_unread}",
             ])
             .unwrap()
-    }
-}
-
-impl Drop for HookSandbox {
-    fn drop(&mut self) {
-        self.daemon.take();
-        let _ = std::process::Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .env("HOME", self.home.path())
-            .output();
     }
 }
 
@@ -680,7 +666,7 @@ fn a_cached_delivery_reply_does_not_reach_a_reused_pane() {
 
 #[test]
 fn a_numeric_legacy_ws_session_reaches_the_imported_session() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = common::SandboxRoot::new();
     let socket = home.path().join("wsd.sock");
     let legacy = home.path().join(".ws/sessions");
     fs::create_dir_all(legacy.join("7")).unwrap();

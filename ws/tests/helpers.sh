@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Shared setup for the ws suite, sourced by ws/tests/run.sh: private HOME + tmux server (-L), fake
+# Shared setup for the ws suite, sourced by ws/tests/run.sh: private HOME + tmux server (-S), fake
 # agent bins, the real-HOME guard and the helper functions the area files use. Terminal workspace
 # manager (worktree + one tmux window per agent session) under test: ws/ws.sh. Never touches
 # the user's tmux server or agent config.
@@ -12,7 +12,7 @@ HERE="${${(%):-%x}:A:h}"
 ROOT="${HERE:h:h}" # physical (:A): ws.sh records ${0:A}
 source "$ROOT/tests/lib.sh"
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d /tmp/ws-tests.XXXXXX)"
 TMP="$(cd "$TMP" && pwd -P)"
 # Not exported: only this shell (which sourced us) can pass the area files' guard.
 typeset +x WS_TESTS_SANDBOX="$TMP"
@@ -28,7 +28,7 @@ home_guard_sandbox "$TMP/home"
 real_home_snapshot="$(home_guard_snapshot)"
 # Keep the default Unix socket path below macOS's 104-byte limit.
 NOTCH_HOME="$(mktemp -d /tmp/ws-notch.XXXXXX)"
-export WS_TMUX_SOCKET="ws-test-$$"
+export WS_TMUX_SOCKET="$TMP/tmux.sock"
 export WS_ROOT="$TMP/worktrees"
 export WS_HOME="$TMP/wshome"
 mkdir -p "$WS_HOME"
@@ -46,10 +46,14 @@ export WS_READY_TIMEOUT=15
 socket_listener_pid=""
 ws_rust_daemon_pid=""
 trap ws_tests_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 # ws_tests_cleanup — EXIT trap: stop this suite's background jobs and tmux server, drop the hook
 # locks ws keeps in ${TMPDIR:-/tmp}, then fail if the real agent hooks/config changed.
 # Detached retries (setsid) exit on their own once their tmux server is gone.
 ws_tests_cleanup() {
+  trap '' INT TERM HUP
   if [[ -n "$ws_rust_daemon_pid" ]]; then
     kill "$ws_rust_daemon_pid" 2>/dev/null
     wait "$ws_rust_daemon_pid" 2>/dev/null
@@ -58,14 +62,14 @@ ws_tests_cleanup() {
   local -a pids=(${(s.:.)${(j.:.)${(v)jobstates#*:*:}}})
   (( $#pids )) && kill ${pids%%=*} 2>/dev/null
   rm -f "$WS_HOME/tui-hold" # release a gated fake TUI on every exit path
-  tmux -L "$WS_TMUX_SOCKET" kill-server 2>/dev/null
-  rm -f "${TMPDIR:-/tmp}"/ws-hook-"$WS_TMUX_SOCKET"-*.lock(N)
+  tmux -S "$WS_TMUX_SOCKET" kill-server 2>/dev/null
+  rm -f "${TMPDIR:-/tmp}"/ws-hook-"${WS_TMUX_SOCKET//\//_}"-*.lock(N)
   rm -rf "$TMP" "$NOTCH_HOME" 2>/dev/null || { sleep 1; rm -rf "$TMP" "$NOTCH_HOME"; }
   home_guard_check "$real_home_snapshot" || exit 1
 }
 WS="$ROOT/ws/ws.sh"
 export WS_TEST_CLI="$WS"
-T() { tmux -L "$WS_TMUX_SOCKET" "$@"; }
+T() { tmux -S "$WS_TMUX_SOCKET" "$@"; }
 
 # Fake agents print their argv, then stay alive until a line arrives (→ clean exit 0).
 mkdir -p "$TMP/bin"

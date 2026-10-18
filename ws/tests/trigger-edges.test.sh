@@ -199,9 +199,9 @@ cat > "$TMP/g2-bin/tmux" <<'G2_TMUX'
 #!/bin/zsh
 # Agent exits after validation, right before the paste: wait for its wrapper to untag.
 if [[ " $* " == *" load-buffer "* ]]; then
-  "$G2_TMUX" -L "$WS_TMUX_SOCKET" send-keys -t "$G2_WIN" Enter
+  "$G2_TMUX" -S "$WS_TMUX_SOCKET" send-keys -t "$G2_WIN" Enter
   for _ in {1..100}; do
-    [[ -z "$("$G2_TMUX" -L "$WS_TMUX_SOCKET" display -p -t "$G2_WIN" '#{@ws_session}')" ]] && break
+    [[ -z "$("$G2_TMUX" -S "$WS_TMUX_SOCKET" display -p -t "$G2_WIN" '#{@ws_session}')" ]] && break
     sleep 0.05
   done
 fi
@@ -224,7 +224,7 @@ T set -w -t "$G2_WIN" @ws_state idle \; set -w -t "$G2_WIN" @ws_main 1
 cat > "$TMP/g2-bin/tmux" <<'G2_TMUX'
 #!/bin/zsh
 # One tmux command: the agent's exit line and the owned paste land together, before any untag.
-[[ " $* " == *" paste-buffer "* ]] && exec "$G2_TMUX" -L "$WS_TMUX_SOCKET" send-keys -t "$G2_WIN" Enter \; "${@[3,-1]}"
+[[ " $* " == *" paste-buffer "* ]] && exec "$G2_TMUX" -S "$WS_TMUX_SOCKET" send-keys -t "$G2_WIN" Enter \; "${@[3,-1]}"
 exec "$G2_TMUX" "$@"
 G2_TMUX
 (unset WS_SESSION; G2_TMUX="$(command -v tmux)" G2_WIN="$G2_WIN" PATH="$TMP/g2-bin:$PATH" \

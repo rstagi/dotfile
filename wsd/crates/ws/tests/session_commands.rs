@@ -12,7 +12,7 @@ use ws_daemon::tmux::Tmux;
 mod common;
 
 struct Sandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     socket: PathBuf,
     server: String,
     ids: Vec<String>,
@@ -77,7 +77,7 @@ fn whoami_uses_environment_precedence_then_the_tmux_window() {
     assert_eq!(identity["alias"], 2);
     let pane = Command::new("tmux")
         .args([
-            "-L",
+            "-S",
             &sandbox.server,
             "display-message",
             "-p",
@@ -220,9 +220,9 @@ fn name_is_unique_validated_and_durable_across_daemon_restart() {
 
 impl Sandbox {
     fn new() -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = common::SandboxRoot::new();
         let socket = home.path().join("wsd.sock");
-        let server = format!("ws-cli-{}-{}", std::process::id(), Ulid::new());
+        let server = home.tmux_socket();
         let mut ids = Vec::new();
         let device = Ulid::new();
         for (alias, name, agent, state) in [
@@ -256,7 +256,7 @@ impl Sandbox {
         let tmux = Tmux::named(&server);
         let created = Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 &server,
                 "-f",
                 "/dev/null",
@@ -321,13 +321,5 @@ impl Sandbox {
         let output = self.run(args);
         assert!(output.status.success(), "{output:?}");
         serde_json::from_slice(&output.stdout).unwrap()
-    }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .output();
     }
 }

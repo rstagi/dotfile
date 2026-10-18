@@ -176,7 +176,7 @@ assert_eq "$(jq -r '.state' "$FAKE_EVENT_LOG" 2>/dev/null)" "idle" "only the new
 
 echo "ws hook: fails closed when the tab lock can't be taken"
 hook api/feat-login "$NWIN" working </dev/null
-HOOK_LOCK="${TMPDIR:-/tmp}/ws-hook-$WS_TMUX_SOCKET-$NWIN.lock"
+HOOK_LOCK="${TMPDIR:-/tmp}/ws-hook-${WS_TMUX_SOCKET//\//_}-$NWIN.lock"
 rm -f "$TMP/locked" "$FAKE_EVENT_OUT"
 zsh -fc 'zmodload zsh/system; zsystem flock -f fd "$1" && : > "$2" && sleep 4' _ "$HOOK_LOCK" "$TMP/locked" &
 holder_pid=$!
