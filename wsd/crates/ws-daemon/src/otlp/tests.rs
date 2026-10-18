@@ -388,13 +388,37 @@ async fn redacts_codex_tool_content_and_email_before_storage_in_both_encodings()
         }
         let receiver = Receiver::bind(sandbox.path()).await.unwrap();
         let log = TelemetryLog::new(sandbox.path(), device.device_id);
-        for (name, encoding) in [
-            ("codex-baseline-logs.json", "application/json"),
-            ("codex-protobuf-logs.pb", "application/x-protobuf"),
+        for (name, path, encoding) in [
+            ("codex-baseline-logs.json", "/v1/logs", "application/json"),
+            (
+                "codex-protobuf-logs.pb",
+                "/v1/logs",
+                "application/x-protobuf",
+            ),
+            (
+                "codex-baseline-metrics.json",
+                "/v1/metrics",
+                "application/json",
+            ),
+            (
+                "codex-protobuf-metrics.pb",
+                "/v1/metrics",
+                "application/x-protobuf",
+            ),
+            (
+                "codex-baseline-traces.json",
+                "/v1/traces",
+                "application/json",
+            ),
+            (
+                "codex-protobuf-traces.pb",
+                "/v1/traces",
+                "application/x-protobuf",
+            ),
         ] {
             let response = post(
                 receiver.local_addr(),
-                "/v1/logs",
+                path,
                 encoding,
                 &std::fs::read(Path::new(FIXTURES).join(name)).unwrap(),
             )
@@ -406,6 +430,9 @@ async fn redacts_codex_tool_content_and_email_before_storage_in_both_encodings()
         for record in &records {
             let serialized = serde_json::to_string(&record.payload).unwrap();
             assert!(!serialized.contains("user.email"));
+            if record.signal != Signal::Logs {
+                continue;
+            }
             let item = &record.payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
             let attributes = item["attributes"].as_array().unwrap();
             if attributes.iter().any(|a| {

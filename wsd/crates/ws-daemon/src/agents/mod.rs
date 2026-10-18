@@ -12,6 +12,7 @@ use ws_core::ids::Ulid;
 
 pub mod launch;
 pub mod slots;
+mod telemetry;
 pub(crate) use launch::router;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -21,6 +22,10 @@ pub enum Mode {
 }
 
 pub struct AgentSession {
+    pub agent_program: Option<PathBuf>,
+    pub state: PathBuf,
+    pub parent_session_id: Option<Ulid>,
+    pub project: String,
     pub id: String,
     pub home: PathBuf,
     pub grok_home: Option<PathBuf>,
@@ -36,7 +41,18 @@ pub struct Prepared {
     pub program: String,
     pub argv: Vec<String>,
     pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub unset_env: Vec<String>,
     pub files: Vec<GeneratedFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryMetadata>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TelemetryMetadata {
+    pub agent_version: Option<String>,
+    pub settings_version: String,
+    pub version_covered: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -59,7 +75,9 @@ pub fn prepare(
             ("WS_SESSION".into(), session.id.clone()),
             ("WS_SESSION_ID".into(), session.id.clone()),
         ]),
+        unset_env: vec![],
         files: vec![],
+        telemetry: None,
     };
     let preamble = if session.spawned {
         format!(
@@ -201,6 +219,7 @@ pub fn prepare(
             ));
         }
     }
+    telemetry::extend(&mut prepared, agent, session)?;
     prepared.argv.extend(session.arguments.iter().cloned());
     if agent != "claude"
         && !(agent == "grok" && matches!(mode, Mode::Headless))

@@ -364,3 +364,46 @@ impl Sandbox {
         }
     }
 }
+
+#[test]
+fn supervised_agents_override_inherited_identity_and_privacy_settings() {
+    use std::os::unix::fs::PermissionsExt;
+    use ws_core::{device::Device, semconv};
+    let sandbox = Sandbox::new();
+    let device = Device::load(&sandbox.home.path().join("state")).unwrap();
+    for agent in ["claude", "codex"] {
+        let executable = sandbox.home.path().join("fake-agents").join(agent);
+        fs::write(&executable, r#"#!/usr/bin/python3
+import json, os, sys
+if sys.argv[1:] == ['--version']:
+    print('test-agent 0.0.0')
+    sys.exit(0)
+print(json.dumps(dict(resource=os.environ['OTEL_RESOURCE_ATTRIBUTES'], native=os.getenv('TRACEPARENT'), content=os.getenv('OTEL_LOG_USER_PROMPTS'))))
+"#).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let id = sandbox.create(&[
+            "--env",
+            "OTEL_RESOURCE_ATTRIBUTES=wrong-session",
+            "--env",
+            "TRACEPARENT=wrong-parent",
+            "--env",
+            "OTEL_LOG_USER_PROMPTS=1",
+            "--",
+            agent,
+            "prompt",
+        ]);
+        sandbox.wait(&id);
+        let captured: Value =
+            serde_json::from_slice(&sandbox.output(&["session", "tail", &id]).stdout).unwrap();
+        let resources: std::collections::BTreeMap<_, _> = captured["resource"]
+            .as_str()
+            .unwrap()
+            .split(',')
+            .map(|part| part.split_once('=').unwrap())
+            .collect();
+        assert_eq!(resources[semconv::SESSION_ID], id);
+        assert_eq!(resources[semconv::DEVICE_ID], device.device_id.to_string());
+        assert!(captured["native"].is_null());
+        assert!(captured["content"].is_null());
+    }
+}
