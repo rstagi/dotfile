@@ -2,6 +2,7 @@
 
 use std::{
     fs::{self, File, TryLockError},
+    future::IntoFuture,
     io,
     os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -29,6 +30,7 @@ pub mod import;
 pub mod limits;
 pub mod loops;
 pub mod notify;
+pub mod otlp;
 pub mod phases;
 pub mod sessions;
 pub mod supervisor;
@@ -78,6 +80,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .join(".ws/state"),
     };
     let sessions = import::open_for_daemon(&state, &import::backend::home()?)?;
+    let mut telemetry = otlp::Receiver::bind(&state).await?;
     let store = Arc::new(Mutex::new(sessions));
     supervisor::adopt(store.clone())
         .await
@@ -95,22 +98,30 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .merge(api::router_with_store(store.clone()));
     let shutdown_store = store.clone();
     let socket_file = Arc::clone(&_socket_file);
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                _ = terminate.recv() => {}
-                _ = interrupt.recv() => {}
-                _ = socket_file.wait_removed() => {}
-            }
-            let _ = api::call(shutdown_store, |sessions| {
-                sessions.shutdown.send_replace(true);
-                Ok(())
-            })
-            .await;
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+            _ = socket_file.wait_removed() => {}
+        }
+        let _ = api::call(shutdown_store, |sessions| {
+            sessions.shutdown.send_replace(true);
+            Ok(())
         })
         .await;
+    });
+    let result = tokio::select! {
+        result = server.into_future() => result,
+        result = telemetry.wait() => result,
+    };
+    let _ = api::call(store, |sessions| {
+        sessions.shutdown.send_replace(true);
+        Ok(())
+    })
+    .await;
     delivery.shutdown().await;
-    result
+    let telemetry_result = telemetry.shutdown().await;
+    result.and(telemetry_result)
 }
 
 fn lock_socket(socket: &Path) -> io::Result<File> {

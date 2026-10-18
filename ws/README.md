@@ -358,6 +358,29 @@ The codes are `max_children_exceeded` and `max_depth_exceeded`.
 The CLI exits with code 1 and writes this JSON error to standard error.
 MCP returns the same error as structured content with `isError: true`.
 
+The daemon also accepts OTLP/HTTP exports at `/v1/logs`, `/v1/metrics` and `/v1/traces`.
+It accepts `application/json` and `application/x-protobuf` on IPv4 localhost only.
+Configure it in the same file:
+
+```toml
+[telemetry]
+port = 0
+retention_days = 30
+```
+
+These are the defaults. Port zero selects an available port.
+`$WS_STATE/otlp.endpoint` contains the bound HTTP endpoint when the daemon is ready.
+A nonzero port selects a fixed port. Restart the daemon after a configuration change.
+
+The receiver replaces incoming `ws.device.id` resource attributes with the local device ID.
+It appends one durable record per log record, metric or span to `$WS_STATE/telemetry/log.jsonl`.
+Each record has an event ID, its receipt time, the signal type and an OTLP export payload.
+The payload preserves the resource, scope, schema URLs and signal data.
+The receiver syncs each accepted batch before it returns HTTP 200.
+It repairs incomplete crash tails before the next append.
+Retention uses receipt time. The daemon prunes expired records at startup and every minute.
+Pruning replaces the file atomically under the append lock. It preserves retained event IDs and order.
+
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 
 ```json

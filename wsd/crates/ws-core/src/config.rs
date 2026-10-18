@@ -7,6 +7,7 @@ use std::{fs, io, path::Path};
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub limits: SpawnLimits,
+    pub telemetry: TelemetryConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -14,6 +15,14 @@ pub struct Config {
 pub struct SpawnLimits {
     pub max_children: usize,
     pub max_depth: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelemetryConfig {
+    /// Zero selects an available port. The daemon publishes its bound endpoint.
+    pub port: u16,
+    pub retention_days: u64,
 }
 
 impl Config {
@@ -38,6 +47,15 @@ impl Default for SpawnLimits {
         Self {
             max_children: 8,
             max_depth: 3,
+        }
+    }
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            port: 0,
+            retention_days: 30,
         }
     }
 }
