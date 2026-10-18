@@ -33,6 +33,7 @@ pub mod notify;
 pub mod otlp;
 pub mod phases;
 pub mod sessions;
+pub mod spans;
 pub mod supervisor;
 pub mod tail;
 pub mod tmux;

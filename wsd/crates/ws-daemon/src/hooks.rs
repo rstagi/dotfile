@@ -557,7 +557,9 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         .or_else(|| callback.payload["turn_id"].as_str())
         .unwrap_or("");
     if event == "cancel" {
-        if turn.is_empty() || turn != window.turn {
+        if (!turn.is_empty() && !window.turn.is_empty() && turn != window.turn)
+            || (turn.is_empty() && !matches!(window.state.as_str(), "working" | "waiting"))
+        {
             result.event_type = None;
             return result;
         }
@@ -724,7 +726,9 @@ fn event_type(callback: &Callback, decision: &StopDecision) -> Option<&'static s
         "SessionEnd" | "session_end" => "exit",
         "UserPromptSubmit" | "user_prompt_submit" => "turn.started",
         "PreToolUse" | "pre_tool_use" => "tool.pre",
-        "PostToolUse" | "post_tool_use" => "tool.post",
+        "PostToolUse" | "post_tool_use" | "PostToolUseFailure" | "post_tool_use_failure" => {
+            "tool.post"
+        }
         "PermissionRequest" | "Notification" | "permission_request" | "notification" => {
             "agent.waiting"
         }
@@ -770,6 +774,9 @@ fn body(callback: &Callback) -> Value {
         if let Some(value) = keys.iter().find_map(|key| callback.payload.get(key)) {
             body[target] = value.clone();
         }
+    }
+    if event_type(callback, &StopDecision::Accept) == Some("tool.post") {
+        body["tool_status"] = json!(crate::spans::tool_status(&callback.payload));
     }
     body
 }

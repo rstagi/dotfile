@@ -28,6 +28,7 @@ pub struct Sessions {
     pub(crate) device_id: DeviceId,
     pub(crate) registry: Registry,
     needs_rebuild: bool,
+    spans: crate::spans::Spans,
     writers: HashMap<SessionId, LogWriter>,
     pub(crate) headless_hooks: HashMap<SessionId, crate::hooks::HookState>,
     pub(crate) changes: tokio::sync::watch::Sender<()>,
@@ -90,12 +91,14 @@ impl Sessions {
             device_id: device.device_id,
             registry,
             needs_rebuild: false,
+            spans: crate::spans::Spans::open(state, device.device_id)?,
             writers: HashMap::new(),
             headless_hooks: HashMap::new(),
             changes: tokio::sync::watch::channel(()).0,
             shutdown: tokio::sync::watch::channel(false).0,
             _writer_lock: writer_lock,
         };
+        sessions.recover_spans()?;
         sessions.restore_triggers()?;
         sessions.recover_phase_worktrees()?;
         Ok(sessions)
@@ -215,6 +218,7 @@ impl Sessions {
         if self.needs_rebuild {
             self.registry.rebuild(&self.state)?;
             self.restore_triggers()?;
+            self.recover_spans()?;
             self.needs_rebuild = false;
         }
         if let Some(parent) = parent_session_id {
@@ -250,6 +254,7 @@ impl Sessions {
         self.needs_rebuild = true;
         let entry = writer.append_current(event_type, body)?;
         self.registry.apply(&entry)?;
+        self.spans.observe(&entry)?;
         self.needs_rebuild = false;
         self.apply_trigger_entry(&entry);
         if self.process_complete(id, event_type)?
@@ -261,6 +266,20 @@ impl Sessions {
         self.changes.send_replace(());
         self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
         Ok(entry)
+    }
+
+    fn recover_spans(&mut self) -> Result<()> {
+        let mut spans = crate::spans::Spans::open(&self.state, self.device_id)?;
+        for session in self.registry.sessions()? {
+            for entry in SessionLog::new(&self.state, session.id, session.device_id)
+                .read()?
+                .entries
+            {
+                spans.observe(&entry)?;
+            }
+        }
+        self.spans = spans;
+        Ok(())
     }
 
     /// Reports whether this event completes both the session and its supervised process.

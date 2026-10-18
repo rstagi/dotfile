@@ -83,6 +83,17 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
                     .unwrap()
                     .ends_with(" hook exit")
             );
+            let failure = generated["hooks"]
+                .as_object_mut()
+                .unwrap()
+                .remove("PostToolUseFailure")
+                .expect("Claude must report tool failure.");
+            assert!(
+                failure[0]["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(" hook working")
+            );
             assert_eq!(generated, legacy);
         }
         if agent == "grok" {
