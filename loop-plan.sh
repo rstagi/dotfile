@@ -26,8 +26,12 @@ set -u -o pipefail
 #     Refuses unless every phase of N is done and every gate PR in the plan is merged (the
 #     loop-milestone.sh check rule). Atomic: plan.md changes by one rename, last; any failure
 #     leaves it unchanged. Idempotent: an archived milestone is a no-op (no write, no push).
-#     Exit 0 archived or already archived; 3 refused (phase not done, no gate, no PR link, PR
-#     open); 4 a gate PR closed unmerged; 1 usage, gh or write error. Needs Node >= 22.18.
+#     A pending <plan dir>/milestones/m<N>.retro.md goes first in the archive file, before
+#     `## Raw log`. Its Outcome bullet becomes the stub Outcome unless --outcome is given. The
+#     command removes the retro file after the write. For an archived milestone, a pending retro
+#     is attached to the existing archive file (not a no-op).
+#     Exit 0 archived, attached or already archived; 3 refused (phase not done, no gate, no PR
+#     link, PR open); 4 a gate PR closed unmerged; 1 usage, gh or write error. Needs Node >= 22.18.
 
 DIR=".loop"
 CMD="${1:-}"; [[ -n "$CMD" ]] && shift
@@ -111,22 +115,28 @@ do_register() {
 }
 
 # archive: compute in a temp dir beside plan.md → check the gate PRs → place the archive file →
-# rename the new plan.md over the old one (the only change to plan.md) → push.
+# rename the new plan.md over the old one (the only change to plan.md) → remove the attached
+# retro → push. A pending milestones/m<N>.retro.md goes first in the archive file.
 ARCHIVE_TMP=""
 do_archive() {
   [[ "$MILESTONE" =~ '^[1-9][0-9]*$' ]] || die "archive requires --milestone <N>"
-  local plan="${PLAN_FILE:-$DIR/plan.md}" result plan_sum target created=false
+  local plan="${PLAN_FILE:-$DIR/plan.md}" result plan_sum target retro created=false
+  local -a extra=()
   [[ -f "$plan" ]] || die "archive: no plan at $plan"
   plan_sum="$(shasum < "$plan")"
+  retro="${plan:h}/milestones/m${MILESTONE}.retro.md"
+  [[ -n "$OUTCOME" ]] && extra+=(--outcome "$OUTCOME")
+  [[ -f "$retro" ]] && extra+=(--retro "$retro")
   ARCHIVE_TMP="$(mktemp -d "${plan:h}/.archive.XXXXXX" 2>/dev/null)" || die "archive: cannot create a temp dir in ${plan:h}"
   result="$(node "$SCRIPT_DIR/loop-plan-archive.mjs" --plan "$plan" --milestone "$MILESTONE" \
-    --out "$ARCHIVE_TMP" ${OUTCOME:+--outcome "$OUTCOME"})" \
+    --out "$ARCHIVE_TMP" "${extra[@]}")" \
     || die "archive: cannot compute the archive (needs Node >= 22.18)"
   case "$(jq -r '.status' <<< "$result")" in
   already)
     print -r -- "loop-plan: milestone $MILESTONE already archived ($(jq -r '.archiveFile // "?"' <<< "$result"))"
     return 0 ;;
   refused) die "archive refused: $(jq -r '.reason' <<< "$result")" 3 ;;
+  attached) attach_retro "$plan" "$plan_sum" "${plan:h}/$(jq -r '.archiveFile' <<< "$result")" "$retro"; return ;;
   archived) ;;
   *) die "archive: unexpected result: $result" ;;
   esac
@@ -144,7 +154,27 @@ do_archive() {
     $created && rm -f "$target"
     die "archive: $plan changed or cannot be replaced; nothing archived"
   fi
+  rm -f "$retro"
   print -r -- "loop-plan: archived milestone $MILESTONE → $target"
+  PLAN_FILE="$plan"
+  do_register >/dev/null
+}
+
+# attach_retro <plan> <plan sum> <archive file> <retro>: milestone N is archived and a retro is
+# pending. Replace the archive file (keep the old one until plan.md is replaced), replace plan.md,
+# remove the retro, push.
+attach_retro() {
+  local plan="$1" plan_sum="$2" target="$3" retro="$4"
+  cp -p "$target" "$ARCHIVE_TMP/archive.old" 2>/dev/null || die "archive: cannot read $target"
+  if [[ "$(shasum < "$plan")" != "$plan_sum" ]] || ! mv "$ARCHIVE_TMP/archive.md" "$target" 2>/dev/null; then
+    die "archive: $plan changed or $target cannot be replaced; no retro attached"
+  fi
+  if ! mv "$ARCHIVE_TMP/plan.md" "$plan" 2>/dev/null; then
+    mv "$ARCHIVE_TMP/archive.old" "$target"
+    die "archive: $plan cannot be replaced; no retro attached"
+  fi
+  rm -f "$retro"
+  print -r -- "loop-plan: attached the milestone $MILESTONE retro → $target"
   PLAN_FILE="$plan"
   do_register >/dev/null
 }

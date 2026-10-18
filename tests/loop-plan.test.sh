@@ -128,6 +128,46 @@ assert_eq "$(cat "$A/plan.md")" "$PLAN_AFTER" "plan.md unchanged"
 assert_eq "$(cat "$A/milestones/m1.md")" "$ARCHIVE_AFTER" "archive file unchanged"
 assert_eq "$(cat "$EMIT_LOG")" "" "no push"
 
+echo "loop-plan: archive --outcome — a text with spaces reaches the stub as one argument"
+O="$(fresh_loop archive-outcome)"
+OUT="$(plan archive --milestone 1 --dir "$O" --outcome "The API and the shell are live" 2>&1)"; rc=$?
+assert_exit "$rc" "0" "archive with --outcome succeeds ($OUT)"
+assert_contains "$(cat "$O/plan.md")" "- **Outcome:** The API and the shell are live" "the stub carries the --outcome text"
+
+echo "loop-plan: archive — a pending retro goes first in the archive, its Outcome into the stub, then it is removed"
+RT="$(fresh_loop archive-retro)"
+mkdir -p "$RT/milestones"; cp "$FIX/m1.retro.md" "$RT/milestones/m1.retro.md"
+: > "$EMIT_LOG"
+OUT="$(plan archive --milestone 1 --dir "$RT" 2>&1)"; rc=$?
+assert_exit "$rc" "0" "archive with a retro succeeds ($OUT)"
+assert_eq "$(cat "$RT/plan.md")" "$(cat "$FIX/archived-m1-retro/plan.md")" "the stub Outcome is the retro Outcome"
+assert_eq "$(cat "$RT/milestones/m1.md")" "$(cat "$FIX/archived-m1-retro/milestones/m1.md")" "the archive holds the retro, then ## Raw log"
+assert_eq "$(files_in "$RT/milestones")" "m1.md" "the retro file is removed"
+assert_eq "$(grep -c ' register ' "$EMIT_LOG")" "1" "pushes the plan once"
+
+echo "loop-plan: archive — an archived milestone with a pending retro attaches it; without one it stays a no-op"
+AT="$TMP/archive-attach/.loop"; mkdir -p "$AT/milestones"
+cp "$FIX/archived-m1/plan.md" "$AT/plan.md"; cp "$FIX/archived-m1/milestones/m1.md" "$AT/milestones/m1.md"
+cp "$FIX/m1.retro.md" "$AT/milestones/m1.retro.md"
+: > "$EMIT_LOG"
+OUT="$(plan archive --milestone 1 --dir "$AT" 2>&1)"; rc=$?
+assert_exit "$rc" "0" "attach succeeds ($OUT)"
+assert_contains "$OUT" "attached" "reports the attach"
+assert_eq "$(cat "$AT/plan.md")" "$(cat "$FIX/archived-m1-retro/plan.md")" "attach updates the stub Outcome"
+assert_eq "$(cat "$AT/milestones/m1.md")" "$(cat "$FIX/archived-m1-retro/milestones/m1.md")" "attach puts the retro before the raw log"
+assert_eq "$(files_in "$AT/milestones")" "m1.md" "attach removes the retro file"
+assert_eq "$(grep -c ' register ' "$EMIT_LOG")" "1" "attach pushes the plan once"
+: > "$EMIT_LOG"
+OUT="$(plan archive --milestone 1 --dir "$AT" 2>&1)"; rc=$?
+assert_exit "$rc" "0" "a run without a pending retro succeeds"
+assert_contains "$OUT" "already archived" "it is a no-op"
+assert_eq "$(cat "$EMIT_LOG")" "" "no push"
+rm "$AT/milestones/m1.md"; cp "$FIX/m1.retro.md" "$AT/milestones/m1.retro.md"
+plan archive --milestone 1 --dir "$AT" >/dev/null 2>&1
+assert_exit "$?" "1" "attach fails when the archive file is missing"
+assert_eq "$(cat "$AT/plan.md")" "$(cat "$FIX/archived-m1-retro/plan.md")" "plan.md unchanged after a failed attach"
+assert_eq "$(files_in "$AT/milestones")" "m1.retro.md" "the retro file stays after a failed attach"
+
 echo "loop-plan: archive — refuses while a phase of the milestone is not done"
 R="$(fresh_loop archive-open)"
 : > "$EMIT_LOG"

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "visual-explainer/ship.schema.json",
   "title": "visual-explainer ship props",
-  "description": "What shipped: each Done when result, deviations, the review verdict and findings, a hand-test checklist and rollback steps.",
+  "description": "What shipped: each Done when result, deviations, setbacks, the review verdict and findings, a hand-test checklist and rollback steps.",
   "type": "object",
   "additionalProperties": false,
   "required": ["mode", "meta", "summary", "delivered", "deviations", "reviews", "handTest", "rollback"],
@@ -54,6 +54,42 @@
           "planned": { "$ref": "#/$defs/text" },
           "actual": { "$ref": "#/$defs/text" },
           "reason": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "process": {
+      "description": "Optional process numbers of the work. In a Loop run, copy them from loop-retro.mjs totals. Omit a number that you do not know.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phases": { "type": "integer", "minimum": 0 },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "retries": { "type": "integer", "minimum": 0 },
+        "escalations": { "type": "integer", "minimum": 0 },
+        "questions": { "type": "integer", "minimum": 0 },
+        "hil": { "type": "integer", "minimum": 0 },
+        "mergeConflicts": { "type": "integer", "minimum": 0 },
+        "reviewRounds": { "type": "integer", "minimum": 0 },
+        "fixRounds": { "type": "integer", "minimum": 0 },
+        "wallTime": { "$ref": "#/$defs/label" }
+      }
+    },
+    "setbacks": {
+      "description": "Optional process costs, also when the result matches the plan. A deviation is a different result. A setback is a cost on the way to the result.",
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "title", "what", "resolution"],
+        "properties": {
+          "phase": { "type": "integer", "minimum": 0 },
+          "kind": { "enum": ["retry", "verify-fail", "timeout", "rate-limit", "model-escalation", "question", "hil", "merge-conflict", "review-round", "review-dispute", "replan", "environment", "other"] },
+          "title": { "$ref": "#/$defs/label" },
+          "what": { "$ref": "#/$defs/text" },
+          "cost": { "$ref": "#/$defs/label" },
+          "resolution": { "$ref": "#/$defs/text" },
+          "lesson": { "$ref": "#/$defs/text" }
         }
       }
     },

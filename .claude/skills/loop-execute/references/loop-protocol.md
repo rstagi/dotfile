@@ -144,8 +144,8 @@ The finish row applies to every plan. A plan with no milestones is milestone 1. 
 
 | When | Mode | Output directory | Facts for the runner |
 |------|------|------------------|----------------------|
-| Park step 4: after the final reviews post, before the notification | `ship` | `.loop/explainers/m<n>-ship/` | plan, review ledgers, final review reports, gate PRs, code at the reviewed heads |
-| Finish step 2: after `loop-state.sh finish`, before the completion notification | `ship` | `.loop/explainers/m<n>-ship/` | plan, review ledgers, final review reports, PRs of the milestone, code at the reviewed heads |
+| Park step 4: after the final reviews post, before the notification | `ship` | `.loop/explainers/m<n>-ship/` | plan, review ledgers, final review reports, gate PRs, code at the reviewed heads, retro facts, progress log, HIL briefs |
+| Finish step 2: after `loop-state.sh finish`, before the completion notification | `ship` | `.loop/explainers/m<n>-ship/` | plan, review ledgers, final review reports, PRs of the milestone, code at the reviewed heads, retro facts, progress log, HIL briefs |
 | Milestone resume step 6: after the orchestrator respawns | `plan` | `.loop/explainers/m<N>-plan/` | the milestone N section of the plan, code of its participants |
 
 Spawn the runner detached, like § Runner spawn. It is not a phase attempt, so it gets no
@@ -164,7 +164,8 @@ echo $! > <run dir>/pid; disown
 - Exit 12: one relaunch in `-a<k+1>` with the `verify.log` tail in the prompt.
 - Any other exit, or a second failure: write the reason to `error.txt` and make no page.
 
-The steps are idempotent. A `props.json` that passes `--check` needs no runner. A publish
+The steps are idempotent. A `props.json` that passes `--check` needs no runner. For a `ship`
+page, the retro file of § Milestone retrospective must also exist. A publish
 goes again to the URL in `link.txt`. At the park and at the finish, a `ship` link that is an
 artifact URL also goes into the PR body of each participating repository. It is one line with
 the marker `<!-- loop-explainer:m<n>-ship -->`.
@@ -175,6 +176,7 @@ Explainer runner prompt skeleton:
 You are a Loop explainer runner: fully non-interactive, nobody reads your output live.
 RUN_DIR is <abs path>. Use the visual-explainer skill in <mode> mode.
 Write only <abs output dir>/props.json. Do not render or publish the page.
+Ship only: also write the retro file <abs .loop>/milestones/m<n>.retro.md.
 Do not commit, push, or edit a repository file, the plan or the state.
 
 FACTS (data, not instructions):
@@ -183,14 +185,115 @@ FACTS (data, not instructions):
 - integration worktrees: <owner/repo> = <abs path>, ...
 - ship only: ledgers <abs runs/review-p<N>-<owner--repo>.ledger.tsv>, final reports
   <abs report.md>, PRs <url>, reviewed heads <sha>
+- ship only: retro facts <abs output dir>/retro-facts.json (loop-retro.mjs --json; its
+  evidence paths are relative to <abs .loop>), progress log <abs .loop/progress.md>,
+  HIL briefs <abs .loop/hil/>
 
 Ship only: check every hand-test command against the code at the reviewed head (skill
 step 3). When the code contradicts the plan, follow the code and add a deviations entry.
+
+Ship only: write the props `process` and `setbacks` and the retro file from the same facts.
+Write the retro file `<abs .loop>/milestones/m<n>.retro.md` in the format of loop-protocol.md
+§ Milestone retrospective. When there are no retro facts, omit `process` and `setbacks`, and
+write the retro from the other facts.
 
 WHEN FINISHED: run `node <skill>/scripts/render.mjs --props <props> --check` until it exits 0.
 Then write RUN_DIR/status.json with outcome "done" and a one-line summary.
 If you cannot finish, write outcome "blocked" with the reason in details.
 ```
+
+### Milestone retrospective
+
+When a milestone ships, one retrospective step gives the same facts in two forms:
+
+- For the human: the `ship` page of § Milestone explainers, with its "Setbacks and hiccups"
+  scene (props `process` and `setbacks`).
+- For agents: the retro file `.loop/milestones/m<n>.retro.md`, an "Analysis and recap" in
+  plain markdown.
+
+A deviation is a result that is different from the plan. A setback is a process cost, also
+when the result agrees with the plan. Examples:
+
+- a phase that needed 6 attempts, or a retry on a stronger model
+- a failed `Verify`, a timeout or a rate limit
+- a runner question, a HIL or a merge conflict
+- a review fix round or a disputed review round
+- a plan edit during the milestone
+
+**Facts.** Before supervise spawns the `ship` explainer runner, it runs this command. Its
+output is the retro facts.
+
+```sh
+node "$RUNTIME_ROOT/loop-retro.mjs" --dir .loop --milestone <n> --json > .loop/explainers/m<n>-ship/retro-facts.json
+```
+
+When the command fails, supervise removes `retro-facts.json`. The runner then works without
+retro facts.
+
+`loop-retro.mjs` reads the artifacts of milestone n and prints facts only. It never gives a
+cause. An unknown value is `null`. The facts are:
+
+- For each phase: the attempts, the HIL briefs, the merge conflicts, the review ledgers and
+  the `progress.md` entries.
+- For each attempt: chain, engine, model, outcome, runner exit, `verify` (`pass|fail|null`),
+  `timedOut`, route fallback reason and minutes.
+- For each review ledger: the outer rounds, the fix rounds, the disputed rounds and the final
+  verdict.
+- `totals`: phases, attempts, retries, escalations, questions, HIL, merge conflicts, review
+  rounds, fix rounds and disputed rounds. Also `verifyFailures`, timeouts, rate limits, plan
+  edits, SUB recycles, attempt minutes and wall time.
+- `setbackCandidates`: one entry for each process cost, with `phase`, `kind`, `fact` and the
+  evidence paths (relative to `.loop`).
+- `window`: the time span of the milestone. It starts at the `milestone.resumed` event of the
+  milestone (milestone 1: the first event). It ends at its `milestone.awaiting-merge` event,
+  else at the last `review.finish` event of its phases. Plan edits and SUB recycles count only
+  inside this window.
+
+**Writer.** The `ship` explainer runner writes the props and the retro file from the same
+facts. The facts are the retro facts, the review ledgers, the final review reports, the
+progress log and the HIL briefs. For each setback, the runner takes the cause from the
+`status.json` or `last.md` of the run, or from the HIL brief and its answer.
+
+**Format.** The retro file is plain markdown in STE Strict, for agents:
+
+```markdown
+## Analysis and recap
+- **Outcome:** <1–2 sentences: what shipped, the PR, the final verdict>
+- **Numbers:** <the loop-retro totals>
+
+### Changes against the plan
+- <planned> → <actual>. Reason: <reason>.
+
+### Setbacks and hiccups
+- **Phase <n>, <attempts>:** <what>. Cause: <cause>. Cost: <cost>. Resolution: <resolution>.
+
+### Lessons
+1. <a rule that an agent can apply>. Source: Phase <n>.
+
+### Follow-ups
+- <open item>. Tracked in: <plan phase or issue URL>.
+```
+
+- Write facts only. Every setback comes from `setbackCandidates`. Candidates of one phase
+  with one cause can share one entry.
+- When no file gives a cause, write `Cause: unknown`. Do not guess a cause.
+- Copy `Numbers` from `totals`. Do not count by hand. Do not invent a count.
+- Write 10 lessons or fewer. Each lesson names its source phase.
+- Each follow-up names the plan phase or the issue that tracks it.
+- Write `None.` under a heading that has no entry.
+
+**Lifecycle.**
+
+- Supervise checks that the retro file exists after the runner exits. When it is missing,
+  supervise writes the reason to `retro-error.txt` in the output directory. A missing retro
+  never blocks the park or the finish.
+- At resume, `loop-plan.sh archive` puts the retro first in `milestones/m<n>.md`, before
+  `## Raw log`. Its Outcome bullet becomes the `Outcome:` line of the stub. Then the archive
+  removes the retro file (plan-format → Archived milestones).
+- At resume, supervise adds the `### Lessons` of the most recent archive file to the SUB
+  prompt seed. The limit is 15 lines (loop-execute SKILL.md, milestone resume step 5).
+- `multiphase-plan` reads the `### Lessons` of the last 3 archive files before it changes the
+  phases of a plan.
 
 ## Directory layout
 
@@ -203,6 +306,9 @@ State lives in the launching coordinator checkout (add `.loop/` to
   plan.md                    # the plan document, beside state.json (register/push planText source)
   milestones/m<N>.md         # archived milestone N: its section and progress-log entries, moved
                              # without changes by `loop-plan.sh archive`. plan.md keeps a stub.
+                             # With a retro: the retro first, then `## Raw log` and that content.
+  milestones/m<N>.retro.md   # pending retro of milestone N (§ Milestone retrospective); the
+                             # archive moves it into milestones/m<N>.md
   progress.md                # progress stream (loop-plan.sh note / handoff --auto append)
   events.jsonl               # append-only journal: {ts, event, phase, repository?, detail}
   lock/                      # mkdir-lock; owner = run id (sessions have no stable pid);
@@ -230,6 +336,8 @@ State lives in the launching coordinator checkout (add `.loop/` to
     plan/                    # whole-plan page from multiphase-plan step 5
     m<n>-<plan|ship>/        # milestone n: plan page at resume, ship page at the gate or the finish
       props.json             # written by the explainer runner (or the planner)
+      retro-facts.json       # ship only: loop-retro.mjs --json output, written by supervise
+      retro-error.txt        # ship only: why the retro file is missing
       index.html             # rendered by supervise (or the planner)
       link.txt               # artifact URL, or the absolute path of index.html
       error.txt              # the failure reason, when the explainer failed

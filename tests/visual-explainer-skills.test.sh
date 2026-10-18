@@ -29,5 +29,8 @@ assert_contains "$PR_REVIEW" 'pr-review-output/<repo>-<pr>/' "Step 4 keeps the o
 assert_lacks "$PR_REVIEW" 'Remotion' "no Remotion"
 assert_lacks "$PR_REVIEW" 'video.mp4' "no video output"
 assert_lacks "$PR_REVIEW" 'ffprobe' "no ffmpeg step"
+PR_REVIEW_FLAT="${(j: :)${=PR_REVIEW}}"
+assert_contains "$PR_REVIEW_FLAT" '`process` and `setbacks`: optional. Take them from the review rounds, the fix rounds and the CI failures of the PR.' "Step 4: setbacks and process are optional"
+assert_contains "$PR_REVIEW_FLAT" 'Do not write a retro file outside a Loop run.' "Step 4: no retro text outside a Loop"
 
 test_summary

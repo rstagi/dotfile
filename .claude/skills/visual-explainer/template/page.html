@@ -159,6 +159,29 @@ h3 { font-size: 1.1rem; margin: 18px 0 8px; }
 @media (max-width: 639px) { .arrow { transform: rotate(90deg); } }
 .reason { color: var(--ink-2); border-top: 1px dashed var(--line); padding-top: 8px; margin: 0; }
 
+/* Setbacks and hiccups */
+.stats { list-style: none; margin: 0 0 18px; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 112px), 1fr)); }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; min-width: 0; }
+.stat b { font-size: 1.4rem; line-height: 1.1; }
+.stat span { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 700; }
+.setback { display: grid; gap: 4px; border-left: 4px solid var(--muted); }
+.setback h3 { margin: 4px 0 0; }
+.setback-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.kind { font-size: 0.75rem; font-weight: 700; padding: 1px 8px; border-radius: 6px; color: var(--on-color); background: var(--muted); }
+.cost { font-family: var(--mono); font-size: 0.85rem; color: var(--ink-2); }
+.resolution, .lesson { margin: 0; color: var(--ink-2); }
+.lesson { border-top: 1px dashed var(--line); padding-top: 6px; }
+:is(.kind-verify-fail, .kind-timeout, .kind-merge-conflict).kind { background: var(--bad); }
+:is(.kind-retry, .kind-rate-limit, .kind-model-escalation, .kind-environment).kind { background: var(--warn); }
+:is(.kind-question, .kind-hil, .kind-review-round, .kind-review-dispute, .kind-replan).kind { background: var(--info); }
+:is(.kind-border-verify-fail, .kind-border-timeout, .kind-border-merge-conflict) { border-left-color: var(--bad); }
+:is(.kind-border-retry, .kind-border-rate-limit, .kind-border-model-escalation, .kind-border-environment) { border-left-color: var(--warn); }
+:is(.kind-border-question, .kind-border-hil, .kind-border-review-round, .kind-border-review-dispute, .kind-border-replan) { border-left-color: var(--info); }
+@media (prefers-reduced-motion: no-preference) {
+  .js .scene .stat { transition: opacity 0.5s ease calc(var(--i, 0) * 0.05s), transform 0.5s ease calc(var(--i, 0) * 0.05s); }
+  .js .scene:not(.in) .stat { opacity: 0; transform: translateY(8px) scale(0.96); }
+}
+
 /* Review */
 .review { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); margin-bottom: 18px; }
 .review-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

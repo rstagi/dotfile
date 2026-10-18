@@ -154,12 +154,76 @@ test("ship: renders every section in order with the props content", () => {
   assert.ok(r.html.indexOf(">F4<") < r.html.indexOf(">F2<"), "the major finding comes before the minor one");
 });
 
+const processProps = {
+  phases: 36, attempts: 44, retries: 9, escalations: 2, questions: 3, hil: 1,
+  mergeConflicts: 0, reviewRounds: 2, fixRounds: 1, wallTime: "20h 21m",
+};
+const setbackProps = [
+  {
+    phase: 21, kind: "hil", title: "Verify flaked under load",
+    what: "The notifications tests failed in about half of the full Verify runs.",
+    cost: "6 attempts, 134 min", resolution: "The human chose deterministic tests.",
+    lesson: "Gate wall-clock tests on events, not on sleeps.",
+  },
+  { kind: "replan", title: "Plan edit", what: "Phase 71 was added.", resolution: "The plan moved F4 to milestone 3." },
+];
+
+test("ship: the setbacks scene sits between deviations and review, with the process numbers and one card per setback", () => {
+  const r = render(shipProps({ process: processProps, setbacks: setbackProps }));
+  assert.equal(r.status, 0, r.stderr);
+  const order = ["Deviations", "Setbacks and hiccups", "Review"].map((title) => r.html.indexOf(`<h2>${title}</h2>`));
+  assert.ok(order.every((i) => i > 0), `all sections present: ${order}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "setbacks come after deviations and before review");
+  assert.match(r.html, /<a href="#s-setbacks">Setbacks and hiccups<\/a>/, "the nav links the scene");
+  const scene = r.html.slice(order[1], order[2]);
+  for (const [value, label] of [["36", "phases"], ["44", "attempts"], ["9", "retries"], ["2", "escalations"], ["3", "questions"],
+    ["1", "HIL"], ["0", "merge conflicts"], ["2", "review rounds"], ["1", "fix rounds"], ["20h 21m", "wall time"]]) {
+    assert.match(scene, new RegExp(`<b>${value}</b><span>${label}</span>`), `stat ${label}`);
+  }
+  for (const text of [
+    "Verify flaked under load", "P21", "6 attempts, 134 min", "The notifications tests failed in about half of the full Verify runs.",
+    "The human chose deterministic tests.", "Gate wall-clock tests on events, not on sleeps.", "Phase 71 was added.",
+  ]) assert.ok(scene.includes(text), `scene shows ${text}`);
+  assert.match(scene, /<span class="kind kind-hil">hil<\/span>/, "a kind chip");
+  assert.match(scene, /<span class="kind kind-replan">replan<\/span>/);
+  assert.equal((scene.match(/<article class="card setback/g) ?? []).length, 2, "one card per setback");
+});
+
+test("ship: the setbacks scene shows only what it has, and is omitted without process and setbacks", () => {
+  const none = render(shipProps());
+  assert.equal(none.status, 0, none.stderr);
+  assert.ok(!none.html.includes("<h2>Setbacks and hiccups</h2>") && !none.html.includes('href="#s-setbacks"'), "no scene and no nav link");
+  const numbersOnly = render(shipProps({ process: { attempts: 3 } }));
+  assert.equal(numbersOnly.status, 0, numbersOnly.stderr);
+  assert.match(numbersOnly.html, /<b>3<\/b><span>attempts<\/span>/);
+  assert.ok(!numbersOnly.html.includes("<span>phases</span>"), "an absent number is not shown");
+  assert.match(numbersOnly.html, /No setbacks\./);
+  const cardsOnly = render(shipProps({ setbacks: [setbackProps[1]] }));
+  assert.equal(cardsOnly.status, 0, cardsOnly.stderr);
+  assert.ok(cardsOnly.html.includes("<h2>Setbacks and hiccups</h2>") && !cardsOnly.html.includes('class="stats'), "cards without a stat strip");
+});
+
+test("ship: setbacks and process are checked against the schema", () => {
+  const r = render(shipProps({
+    process: { attempts: -1, retries: 1.5, extra: 1 },
+    setbacks: [{ kind: "flake", title: "t", what: "w" }, { phase: 2, kind: "retry", title: "t", what: "w", resolution: "r", cause: "x" }],
+  }));
+  assert.equal(r.status, 1);
+  assert.deepEqual(r.stderr.trim().split("\n").map((l) => l.split(":")[0]), [
+    "$.process.attempts", "$.process.retries", "$.process.extra",
+    "$.setbacks[0].resolution", "$.setbacks[0].kind", "$.setbacks[1].cause",
+  ]);
+  assert.match(r.stderr, /\$\.setbacks\[0\]\.kind: must be one of retry, verify-fail, timeout, rate-limit, model-escalation, question, hil, merge-conflict, review-round, review-dispute, replan, environment, other/);
+});
+
 test("escaping: props text cannot inject HTML, script or template slots", () => {
   const evil = `<script>alert(1)</script>"><img src=x onerror=alert(2)>`;
   const props = shipProps({
     meta: { title: "Evil <b>ship</b> report", subtitle: `${evil} $& $' {{SCENES}}`, date: "2026-10-18" },
     summary: `Run \`</code><script>alert(3)</script>\` now`,
     deviations: [{ planned: evil, actual: "x' onmouseover='alert(4)", reason: "{{HERO}}" }],
+    process: { wallTime: evil },
+    setbacks: [{ kind: "other", title: evil, what: evil, cost: evil, resolution: evil, lesson: evil }],
     handTest: [{ command: `echo "${evil}"`, ref: "src/a.js:1", why: evil, expect: evil }],
   });
   props.reviews[0].findings = [{ id: "F1", severity: "major", title: evil, location: evil, detail: evil, fix: evil, status: "open" }];

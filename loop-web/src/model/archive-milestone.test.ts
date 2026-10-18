@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
-import { archiveMilestone } from "./archive-milestone.ts";
+import { archiveMilestone, attachRetro } from "./archive-milestone.ts";
 import { parsePlan } from "./parse-plan.ts";
 
 const fixture = (name: string) => readFileSync(new URL(`../../../tests/fixtures/milestones/${name}`, import.meta.url), "utf8");
@@ -55,6 +55,52 @@ describe("archiveMilestone", () => {
     expect(second.plan).toContain("- **Phases (all done):** 4, 10, 5\n- **Gate:** Phase 5\n- **Archive:** [milestones/m2.md](milestones/m2.md)");
     expect(second.archive).toContain("- 2026-10-04 — Phase 4 claimed (lane A, codex)\n- 2026-10-04 — Phase 10 added to milestone 2");
     expect(second.plan).toContain("## Progress log\n- 2026-10-01 — Plan drafted (Claude Code, main).\n- 2026-10-04 — Phases 4 and 6 revised");
+  });
+
+  it("puts a pending retro first, then the raw log; the stub takes the retro Outcome", () => {
+    expect(archiveMilestone(PLAN, 1, { retro: fixture("m1.retro.md") })).toEqual({
+      status: "archived",
+      plan: fixture("archived-m1-retro/plan.md"),
+      archive: fixture("archived-m1-retro/milestones/m1.md"),
+      archiveFile: "milestones/m1.md",
+      prs: { "acme/api": "https://github.com/acme/api/pull/1", "acme/web": "https://github.com/acme/web/pull/2" },
+    });
+  });
+
+  it("prefers --outcome over the retro Outcome, and the title when the retro has no Outcome", () => {
+    const stubOutcome = (result: ReturnType<typeof archiveMilestone>) =>
+      result.status === "archived" ? result.plan.match(/^- \*\*Outcome:\*\* (.*)$/m)?.[1] : result.status;
+    expect(stubOutcome(archiveMilestone(PLAN, 1, { retro: fixture("m1.retro.md"), outcome: "Shipped" }))).toBe("Shipped");
+    expect(stubOutcome(archiveMilestone(PLAN, 1, { retro: "### Lessons\n1. Keep it small.\n" }))).toBe("Core API and web shell ship");
+  });
+
+  it("gives a retro without its heading the `## Analysis and recap` heading", () => {
+    const result = archiveMilestone(PLAN, 1, { retro: "- **Outcome:** Shipped.\n" });
+    expect(result.status === "archived" && result.archive).toContain(
+      "without changes.\n\n## Analysis and recap\n- **Outcome:** Shipped.\n\n## Raw log\n\n## Milestone 1 — Core API and web shell ship\n");
+  });
+
+  it("attaches a pending retro to an archived milestone and updates the stub Outcome", () => {
+    const attached = attachRetro(fixture("archived-m1/plan.md"), fixture("archived-m1/milestones/m1.md"), 1, fixture("m1.retro.md"));
+    expect(attached).toEqual({
+      status: "attached",
+      plan: fixture("archived-m1-retro/plan.md"),
+      archive: fixture("archived-m1-retro/milestones/m1.md"),
+      archiveFile: "milestones/m1.md",
+    });
+  });
+
+  it("replaces an attached retro with a newer one and keeps the raw log", () => {
+    const newer = fixture("m1.retro.md").replace("1. Run the web build", "1. Fail the web build on warnings. 2. Run the web build");
+    const attached = attachRetro(fixture("archived-m1-retro/plan.md"), fixture("archived-m1-retro/milestones/m1.md"), 1, newer);
+    if (attached.status !== "attached") throw new Error(JSON.stringify(attached));
+    expect(attached.archive).toBe(fixture("archived-m1-retro/milestones/m1.md").replace("1. Run the web build", "1. Fail the web build on warnings. 2. Run the web build"));
+    expect(attached.plan).toBe(fixture("archived-m1-retro/plan.md"));
+  });
+
+  it("refuses to attach a retro to a milestone that is not archived", () => {
+    expect(attachRetro(PLAN, "", 1, fixture("m1.retro.md"))).toEqual({ status: "refused", reason: "milestone 1 is not archived" });
+    expect(attachRetro(PLAN, "", 4, fixture("m1.retro.md"))).toEqual({ status: "refused", reason: "plan has no milestone 4" });
   });
 
   it("refuses when a participant has no gate PR link", () => {

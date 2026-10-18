@@ -7,6 +7,12 @@ const IMPACT_ORDER = { high: 0, medium: 1, low: 2 };
 const VERDICT_LABEL = { APPROVE: "Approved", COMMENT: "Comment", REQUEST_CHANGES: "Changes requested" };
 const DELIVERED_LABEL = { met: "Met", partial: "Partial", missed: "Missed" };
 const STATUS_ICON_PATH = { met: "M6 13l4 4 8-9", partial: "M6 12h12", missed: "M7 7l10 10M17 7L7 17" };
+// The process numbers of a ship page, in display order, with their labels.
+const PROCESS_STATS = [
+  ["phases", "phases"], ["attempts", "attempts"], ["retries", "retries"], ["escalations", "escalations"],
+  ["questions", "questions"], ["hil", "HIL"], ["mergeConflicts", "merge conflicts"], ["reviewRounds", "review rounds"],
+  ["fixRounds", "fix rounds"], ["wallTime", "wall time"],
+];
 const MAX_STAGGER = 12;
 
 // renderPage(template, props) -> the complete HTML page for validated props.
@@ -52,6 +58,7 @@ function shipView(p) {
       { key: "outcome", title: "Outcome", body: outcomeScene(p) },
       { key: "delivered", title: "Delivered", body: deliveredScene(p.delivered) },
       { key: "deviations", title: "Deviations", body: deviationsScene(p.deviations) },
+      ...(p.process || p.setbacks ? [{ key: "setbacks", title: "Setbacks and hiccups", body: setbacksScene(p.process, p.setbacks) }] : []),
       { key: "review", title: "Review", body: p.reviews.map(reviewBlock).join("") },
       { key: "hand-test", title: "Hand test", body: handTestScene(p.handTest) },
       { key: "rollback", title: "Rollback", body: rollbackScene(p.rollback) },
@@ -191,6 +198,17 @@ function deviationsScene(items) {
 <svg class="arrow" viewBox="0 0 40 16" aria-hidden="true"><path class="draw" pathLength="1" d="M2 8h34M30 2l6 6-6 6"/></svg>
 <div class="dev-col"><p class="label">Actual</p><p>${inline(d.actual)}</p></div>
 <p class="reason"><b>Why</b> ${inline(d.reason)}</p></article>`).join("")}</div>`;
+}
+
+// The process numbers as a stat strip, then one card per setback. Each part shows only when present.
+function setbacksScene(process, setbacks) {
+  const stats = PROCESS_STATS.filter(([key]) => process?.[key] !== undefined).map(([key, label], i) =>
+    `<li class="stat" ${stagger(i)}><b>${esc(process[key])}</b><span>${esc(label)}</span></li>`).join("");
+  const cards = (setbacks ?? []).map((s, i) => `<article class="card setback kind-border-${esc(s.kind)}" ${stagger(i)}>
+<div class="setback-top"><span class="kind kind-${esc(s.kind)}">${esc(s.kind)}</span>${s.phase !== undefined ? `<span class="tag">P${esc(s.phase)}</span>` : ""}${s.cost ? `<span class="cost">${esc(s.cost)}</span>` : ""}</div>
+<h3>${esc(s.title)}</h3><p>${inline(s.what)}</p><p class="resolution"><b>Resolution</b> ${inline(s.resolution)}</p>
+${s.lesson ? `<p class="lesson"><b>Lesson</b> ${inline(s.lesson)}</p>` : ""}</article>`).join("");
+  return `${stats && `<ul class="stats" aria-label="Process numbers">${stats}</ul>`}${cards ? `<div class="stack">${cards}</div>` : `<p class="empty">No setbacks.</p>`}`;
 }
 
 function reviewBlock(r) {
