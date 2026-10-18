@@ -220,7 +220,9 @@ The video is an addition to the page. Do these steps in this order:
 
 Exit codes of `render-video.mjs`:
 
-- Exit 0: stdout is the absolute path of `<output-dir>/video.mp4`.
+- Exit 0: stdout has two lines. Line 1 is the absolute path of `<output-dir>/video.mp4`.
+  Line 2 names the voice engine: `tts: elevenlabs`, `tts: say`, or
+  `tts: say (fallback: <reason>)`.
 - Exit 1: the props or the narration are not valid. Each stderr line is
   `<field path>: <error>`.
 - Exit 2: a usage error or an I/O error.
@@ -231,8 +233,19 @@ Text to speech:
 
 - `--tts auto` uses ElevenLabs when the environment has `ELEVENLABS_API_KEY`. Else it uses
   the macOS `say` command, which works offline.
-- `--tts elevenlabs` and `--tts say` select one engine.
-- `VE_TTS_VOICE` sets the voice. `VE_TTS_MODEL` sets the ElevenLabs model.
+- In `auto` mode, when ElevenLabs fails for one clip, the script speaks the whole narration
+  again with `say`. A video has one voice only. A failure is an HTTP error after the one
+  retry (for example 401, 402, 429 or 5xx), a quota error, a network error, or a request
+  above 90 s. The script writes one stderr line, for example
+  `render-video: ElevenLabs failed (HTTP 401 quota_exceeded): the video uses the macOS voice`.
+  Line 2 of stdout is then `tts: say (fallback: HTTP 401 quota_exceeded)`.
+- When the `--timeout-min` deadline stops the text to speech, the script does not use
+  `say`. It exits 3.
+- `--tts elevenlabs` and `--tts say` select one engine. `--tts elevenlabs` never uses
+  `say`: a failed ElevenLabs call exits 3, and the command writes no `video.mp4`.
+- `VE_TTS_VOICE` sets the voice. `VE_TTS_MODEL` sets the ElevenLabs model. In `auto` mode
+  with the key, `VE_TTS_VOICE` is the ElevenLabs voice, so the `say` fallback uses the best
+  installed English voice.
 - The script caches each clip by the engine, the voice, the model and the text. A
   re-render of the same narration sends no text again. The log line `tts:` gives the
   number of characters sent.
@@ -259,7 +272,8 @@ only. Its caller renders the page and the video, and publishes them.
 ### 9. Report
 
 Report one line: the mode, then the artifact URL or the absolute path of `index.html`.
-Add the video result: `video: embedded`, or `video: failed` with the reason. When a step
+Add the video result: `video: embedded`, or `video: failed` with the reason. When line 2 of
+the `render-video.mjs` stdout starts with `tts: say`, write `video: embedded (macOS voice)`. When a step
 fails, report the failure and the last stderr lines. A failed explainer never blocks the
 work of the caller. A failed video never blocks the page.
 

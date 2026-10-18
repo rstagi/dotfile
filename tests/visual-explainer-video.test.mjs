@@ -135,7 +135,7 @@ test("narration: invalid JSON is one error, an unreadable file throws", () => {
 
 // ---- text to speech ----
 
-const { chooseEngine, clipKey, pickSayVoice, synthesize, ttsSettings, wavSeconds } = await import(path.join(SKILL, "scripts", "tts.mjs"));
+const { chooseEngine, clipKey, pickSayVoice, speak, synthesize, ttsSettings, wavSeconds } = await import(path.join(SKILL, "scripts", "tts.mjs"));
 const KEY = "sk_test_0123456789abcdef";
 
 // A fake engine: one second of silence for each 10 characters, as 24 kHz mono 16-bit WAV.
@@ -232,6 +232,122 @@ test("tts: a failure names the section, hides the API key and leaves no partial 
     },
   );
   assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+// ---- text to speech: the macOS voice fallback ----
+
+const SAY_LISTING = "Samantha            en_US    # Hello!\n";
+const QUOTA_BODY = JSON.stringify({ detail: { status: "quota_exceeded", message: `The key ${KEY} has 355 credits, 667 are needed.` } });
+
+// A fake fetch: each call takes the next response. A response is { status, body } or "network".
+function fakeFetch(responses, calls) {
+  return async (url, init) => {
+    calls.push({ url, headers: init.headers });
+    const next = responses[Math.min(calls.length - 1, responses.length - 1)];
+    if (next === "network") throw new TypeError("fetch failed", { cause: Object.assign(new Error(`getaddrinfo ENOTFOUND api.elevenlabs.io ${KEY}`), { code: "ENOTFOUND" }) });
+    return new Response(next.body ?? "", { status: next.status });
+  };
+}
+
+const NARRATED = [{ id: "intro", text: "x".repeat(50) }, { id: "goal", text: "y".repeat(30) }, { id: "outro", text: "z".repeat(20) }];
+
+function filesContain(dir, needle) {
+  return fs.readdirSync(dir).some((name) => name.includes(needle) || fs.readFileSync(path.join(dir, name)).includes(needle));
+}
+
+for (const [label, responses, reason, requests] of [
+  ["401 with a quota error", [{ status: 401, body: QUOTA_BODY }], "HTTP 401 quota_exceeded", 1],
+  ["402", [{ status: 402, body: "payment required" }], "HTTP 402", 1],
+  ["429 after its one retry", [{ status: 429, body: "busy" }], "HTTP 429", 2],
+  ["a network error", ["network"], "network error ENOTFOUND", 1],
+]) {
+  test(`tts fallback: auto renders the whole narration with say when ElevenLabs fails with ${label}`, async () => {
+    const dir = fs.mkdtempSync(path.join(TMP, "tts-"));
+    const calls = [];
+    const sayCalls = [];
+    const notices = [];
+    const result = await speak(NARRATED, "auto", {
+      dir, env: { ELEVENLABS_API_KEY: KEY }, fetch: fakeFetch(responses, calls), retryDelayMs: 0,
+      engines: { say: fakeEngines(sayCalls).say }, sayVoices: SAY_LISTING, onFallback: (r) => notices.push(r),
+    });
+    assert.equal(calls.length, requests, "the first clip fails, so no later clip goes to ElevenLabs");
+    assert.deepEqual(result.settings, { engine: "say", voice: "Samantha", model: "say" });
+    assert.equal(result.fallback, reason);
+    assert.deepEqual(notices, [reason]);
+    assert.deepEqual(sayCalls.map((c) => c.text), NARRATED.map((s) => s.text), "say speaks every section: one voice");
+    assert.deepEqual(result.clips.map((c) => [c.id, c.file]), NARRATED.map((s) => [s.id, path.join(dir, `${clipKey({ ...result.settings, text: s.text })}.wav`)]));
+    assert.ok(!JSON.stringify(result).includes(KEY), "no key in the result");
+    assert.ok(!filesContain(dir, KEY), "no key in a clip name or a clip");
+  });
+}
+
+test("tts fallback: a failure after good ElevenLabs clips still gives a say voice for every section", async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "tts-"));
+  const calls = [];
+  const sayCalls = [];
+  const result = await speak(NARRATED, "auto", {
+    dir, env: { ELEVENLABS_API_KEY: KEY }, retryDelayMs: 0, engines: { say: fakeEngines(sayCalls).say }, sayVoices: SAY_LISTING,
+    fetch: fakeFetch([{ status: 200, body: Buffer.alloc(4800) }, { status: 401, body: QUOTA_BODY }], calls),
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(result.fallback, "HTTP 401 quota_exceeded");
+  assert.ok(result.clips.every((c) => c.file.endsWith(`${clipKey({ engine: "say", voice: "Samantha", model: "say", text: NARRATED.find((s) => s.id === c.id).text })}.wav`)));
+  assert.equal(sayCalls.length, 3, "the intro clip of ElevenLabs is not used");
+});
+
+test("tts fallback: an explicit --tts elevenlabs fails, with no say pass and no key in the error", async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "tts-"));
+  const sayCalls = [];
+  await assert.rejects(speak(NARRATED, "elevenlabs", {
+    dir, env: { ELEVENLABS_API_KEY: KEY }, retryDelayMs: 0, engines: { say: fakeEngines(sayCalls).say }, sayVoices: SAY_LISTING,
+    fetch: fakeFetch([{ status: 401, body: QUOTA_BODY }], []),
+  }), (err) => {
+    assert.match(err.message, /^text to speech failed for section intro: ElevenLabs returned HTTP 401/);
+    assert.ok(!err.message.includes(KEY));
+    return true;
+  });
+  assert.equal(sayCalls.length, 0);
+});
+
+// A fetch that answers only when its signal aborts. Like an open socket, it keeps node running.
+const hangingFetch = (calls) => (url, init) => {
+  calls.push(url);
+  const alive = setInterval(() => {}, 1000);
+  return new Promise((_, reject) => init.signal.addEventListener("abort", () => {
+    clearInterval(alive);
+    reject(init.signal.reason);
+  }));
+};
+
+test("tts fallback: an ElevenLabs request above its timeout falls back to say", async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "tts-"));
+  const sayCalls = [];
+  const result = await speak(NARRATED, "auto", {
+    dir, env: { ELEVENLABS_API_KEY: KEY }, fetch: hangingFetch([]), requestTimeoutMs: 20,
+    engines: { say: fakeEngines(sayCalls).say }, sayVoices: SAY_LISTING, signal: AbortSignal.timeout(60_000),
+  });
+  assert.equal(result.fallback, "timeout");
+  assert.equal(sayCalls.length, 3);
+});
+
+test("tts fallback: when the run deadline stops ElevenLabs, there is no say pass", async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "tts-"));
+  const sayCalls = [];
+  await assert.rejects(speak(NARRATED, "auto", {
+    dir, env: { ELEVENLABS_API_KEY: KEY }, fetch: hangingFetch([]), engines: { say: fakeEngines(sayCalls).say }, sayVoices: SAY_LISTING,
+    signal: AbortSignal.timeout(20),
+  }), /text to speech failed for section intro/);
+  assert.equal(sayCalls.length, 0);
+});
+
+test("tts fallback: VE_TTS_VOICE names the ElevenLabs voice, so the say pass uses the best say voice", async () => {
+  const sayCalls = [];
+  const result = await speak(NARRATED, "auto", {
+    dir: fs.mkdtempSync(path.join(TMP, "tts-")), env: { ELEVENLABS_API_KEY: KEY, VE_TTS_VOICE: "XrExE9yKIg1WjnnlVkGX" }, retryDelayMs: 0,
+    fetch: fakeFetch([{ status: 401 }], []), engines: { say: fakeEngines(sayCalls).say }, sayVoices: SAY_LISTING,
+  });
+  assert.deepEqual(result.settings, { engine: "say", voice: "Samantha", model: "say" });
+  assert.ok(sayCalls.every((c) => c.voice === "Samantha"));
 });
 
 test("tts: wavSeconds reads the duration from the WAV header", () => {
@@ -427,6 +543,90 @@ test("render-video: a timeout exits 3, removes the partial cache and writes no v
   assert.match(r.stderr, /timed out after 0\.002 min/);
   assert.deepEqual(fs.readdirSync(path.join(cache, "visual-explainer")), [], "no cache directory stays");
   assert.deepEqual(fs.readdirSync(path.join(r.dir, "out")), [], "no video and no temporary file");
+});
+
+// ---- render-video.mjs: the text to speech engine, end to end with fakes ----
+
+// A fake world for one render-video.mjs process: a fetch preload (FAKE_FETCH=ok|401), `say` and
+// `afconvert` on PATH, and a ready cache whose engine.mjs records its input and writes a tiny MP4.
+function fakeWorld() {
+  const root = fs.mkdtempSync(path.join(TMP, "world-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  const wav = path.join(root, "silence.wav");
+  fs.writeFileSync(wav, Buffer.concat([wavHeaderForTest(48000), Buffer.alloc(48000)]));
+  const script = (name, body) => fs.writeFileSync(path.join(bin, name), `#!/usr/bin/env node\nconst fs = require("fs");\nconst a = process.argv.slice(2);\n${body}\n`, { mode: 0o755 });
+  script("say", `if (a[0] === "-v" && a[1] === "?") { process.stdout.write(${JSON.stringify(SAY_LISTING)}); process.exit(0); }
+fs.appendFileSync(process.env.FAKE_SAY_LOG, a.join(" ") + "\\n");
+fs.writeFileSync(a[a.indexOf("-o") + 1], "aiff");`);
+  script("afconvert", "fs.copyFileSync(process.env.FAKE_WAV, a.at(-1));");
+  const preload = path.join(root, "fake-fetch.mjs");
+  fs.writeFileSync(preload, `globalThis.fetch = async (url, init) => process.env.FAKE_FETCH === "ok"
+  ? new Response(Buffer.alloc(48000), { status: 200 })
+  : new Response(JSON.stringify({ detail: { status: "quota_exceeded", message: "key " + init.headers["xi-api-key"] } }), { status: 401 });\n`);
+  const xdg = path.join(root, "xdg");
+  const cache = cacheDir({ XDG_CACHE_HOME: xdg }, cacheKey(path.join(SKILL, "video")));
+  fs.mkdirSync(cache, { recursive: true });
+  fs.writeFileSync(path.join(cache, ".ready"), "");
+  fs.writeFileSync(path.join(cache, "engine.mjs"), `import fs from "node:fs";
+const a = process.argv.slice(2);
+fs.copyFileSync(a[a.indexOf("--input") + 1], process.env.FAKE_ENGINE_INPUT);
+fs.writeFileSync(a[a.indexOf("--out") + 1], "mp4");\n`);
+  const out = path.join(root, "out");
+  const env = {
+    ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_CACHE_HOME: xdg, VE_TTS_VOICE: "",
+    FAKE_WAV: wav, FAKE_SAY_LOG: path.join(root, "say.log"), FAKE_ENGINE_INPUT: path.join(root, "engine-input.json"),
+  };
+  const render = (args, extraEnv) => spawnSync(process.execPath, ["--import", preload, RENDER_VIDEO,
+    "--props", path.join(SKILL, "examples", "plan-visual-explainer.props.json"), "--narration", path.join(SKILL, "examples", "plan-visual-explainer.narration.json"),
+    "--out", out, ...args], { encoding: "utf8", env: { ...env, ...extraEnv }, timeout: 60_000 });
+  const sayCalls = () => (fs.existsSync(env.FAKE_SAY_LOG) ? fs.readFileSync(env.FAKE_SAY_LOG, "utf8").trim().split("\n") : []);
+  return { root, out, render, sayCalls, engineInput: () => JSON.parse(fs.readFileSync(env.FAKE_ENGINE_INPUT, "utf8")) };
+}
+
+function treeContains(dir, needle) {
+  return fs.readdirSync(dir, { recursive: true }).some((rel) => {
+    const file = path.join(dir, rel);
+    return rel.includes(needle) || (fs.statSync(file).isFile() && fs.readFileSync(file).includes(needle));
+  });
+}
+
+const PLAN_SECTIONS = EXAMPLE_NARRATION.plan.sections.length;
+
+test("render-video: when ElevenLabs fails in auto mode, the video uses say, one stderr line says so, and the result names the engine", () => {
+  const world = fakeWorld();
+  const r = world.render([], { ELEVENLABS_API_KEY: KEY, FAKE_FETCH: "401" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split("\n"), [path.join(world.out, "video.mp4"), "tts: say (fallback: HTTP 401 quota_exceeded)"]);
+  assert.deepEqual(r.stderr.split("\n").filter((l) => l.includes("ElevenLabs failed")),
+    ["render-video: ElevenLabs failed (HTTP 401 quota_exceeded): the video uses the macOS voice"]);
+  assert.match(r.stderr, new RegExp(`render-video: tts: say voice Samantha model say: ${PLAN_SECTIONS} clips, 0 cached`));
+  assert.equal(world.sayCalls().length, PLAN_SECTIONS, "say speaks every section");
+  assert.deepEqual(Object.keys(world.engineInput().voiceover).sort(), EXAMPLE_NARRATION.plan.sections.map((s) => s.id).sort());
+  assert.ok(![r.stdout, r.stderr].some((text) => text.includes(KEY)), "no key in stdout or stderr");
+  assert.ok(!treeContains(world.root, KEY), "no key in a file name or a file");
+});
+
+test("render-video: an explicit --tts elevenlabs still fails with exit 3 and writes no video", () => {
+  const world = fakeWorld();
+  const r = world.render(["--tts", "elevenlabs"], { ELEVENLABS_API_KEY: KEY, FAKE_FETCH: "401" });
+  assert.equal(r.status, 3, r.stderr);
+  assert.match(r.stderr, /render-video\.mjs: text to speech failed for section intro: ElevenLabs returned HTTP 401/);
+  assert.ok(!r.stderr.includes("macOS voice"));
+  assert.equal(r.stdout, "");
+  assert.deepEqual(fs.readdirSync(world.out), [], "no video");
+  assert.deepEqual(world.sayCalls(), []);
+  assert.ok(!r.stderr.includes(KEY) && !treeContains(world.root, KEY));
+});
+
+test("render-video: the result names the engine when no fallback happens", () => {
+  const ok = fakeWorld().render([], { ELEVENLABS_API_KEY: KEY, FAKE_FETCH: "ok" });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout.trim().split("\n")[1], "tts: elevenlabs");
+  assert.ok(!ok.stderr.includes("ElevenLabs failed"));
+  const say = fakeWorld().render(["--tts", "say"], { ELEVENLABS_API_KEY: KEY });
+  assert.equal(say.status, 0, say.stderr);
+  assert.equal(say.stdout.trim().split("\n")[1], "tts: say");
 });
 
 // ---- page embed: render.mjs --video ----
@@ -705,7 +905,10 @@ for (const mode of ["plan", "ship"]) {
     if (process.env.ELEVENLABS_API_KEY) assert.ok(!r.stderr.includes(process.env.ELEVENLABS_API_KEY), "the key is never in the log");
     const out = path.join(r.dir, "out");
     const video = path.join(out, "video.mp4");
-    assert.equal(r.stdout.trim(), video, "stdout is the absolute MP4 path");
+    const [line, engine, ...rest] = r.stdout.trim().split("\n");
+    assert.equal(line, video, "stdout starts with the absolute MP4 path");
+    assert.match(engine, /^tts: (elevenlabs|say|say \(fallback: .+\))$/, "then the engine line");
+    assert.deepEqual(rest, []);
     assert.deepEqual(fs.readdirSync(out), ["video.mp4"], "no temporary file stays");
     const size = fs.statSync(video).size;
     assert.ok(size > 0 && size <= 14_000_000, `${size} bytes`);
