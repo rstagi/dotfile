@@ -313,6 +313,16 @@ describe("reduceLoop — promotion lattice (the staleness fix)", () => {
     expect(effectivePhaseStatus(rec, "2")).toBe("running");
   });
 
+  it("keeps merge.verify-fail timeline-only on live ingest and JSONL replay", () => {
+    const message = { event: "merge.verify-fail", phase: "2", repository: "acme/api", detail: "verify exit 1\nFAILED", ts: "2026-10-18T00:00:00Z" };
+    const initial = fold("r", stateWith({ "2": { slug: "cart", status: "running" } }));
+    const live = reduceLoop(initial, { kind: "event", event: message });
+    const replayed = reduceLoop(live, { kind: "eventsFile", text: JSON.stringify(message) });
+    expect(effectivePhaseStatus(replayed, "2")).toBe("running");
+    expect(replayed.phases).toEqual(initial.phases);
+    expect(replayed.events).toEqual([expect.objectContaining({ event: "merge.verify-fail", phase: "2" })]);
+  });
+
   it("is order-independent: a late attempt.start after a merged event does not regress", () => {
     const rec = fold(
       "r",

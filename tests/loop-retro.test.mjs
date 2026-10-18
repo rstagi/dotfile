@@ -209,6 +209,71 @@ test("lists each process cost of a phase as a setback candidate with its evidenc
   );
 });
 
+test("counts each merge.verify-fail event as a merged-tree Verify failure of the attempt that the loop merged", () => {
+  const dir = loop({
+    milestone: 2,
+    phases: {
+      13: { slug: "p13-lock", status: "done", kind: "work", milestone: 2 },
+      21: { slug: "p21-headless", status: "done", kind: "work", milestone: 2 },
+      22: { slug: "p22-legacy", status: "done", kind: "work", milestone: 2 },
+    },
+  });
+  const passed = { meta: codex, status: { outcome: "done" }, spawn: "RUNNER_EXIT=0\n", verify: "ok" };
+  for (const k of [1, 2]) attempt(dir, "p13-lock", k, passed);
+  for (const k of [1, 2, 3]) attempt(dir, "p21-headless", k, passed);
+  const lockFail = "verify exit 101\ntest lockfile::fork ... FAILED";
+  events(dir, [
+    { ts: "2026-10-17T01:00:00Z", event: "phase.spawn", phase: "13", detail: "attempt a1 chain task pid 1" },
+    { ts: "2026-10-17T01:30:00Z", event: "merge.verify-fail", phase: "13", repository: "acme/api", detail: lockFail },
+    // The L3 spawn has the same second as the failure. File order puts the failure on a1.
+    { ts: "2026-10-17T01:30:00Z", event: "phase.spawn", phase: "13", detail: "attempt a2 chain escalate pid 2" },
+    { ts: "2026-10-17T02:00:00Z", event: "phase.spawn", phase: "21", detail: "attempt a1 chain task pid 3" },
+    { ts: "2026-10-17T02:20:00Z", event: "merge.verify-fail", phase: "21", repository: "acme/api", detail: "notifications regression" },
+    { ts: "2026-10-17T02:30:00Z", event: "phase.spawn", phase: "21", detail: "attempt a2 chain task pid 4" },
+    { ts: "2026-10-17T02:50:00Z", event: "merge.verify-fail", phase: "21", repository: "acme/api", detail: "notifications regression again" },
+    { ts: "2026-10-17T03:00:00Z", event: "phase.spawn", phase: "21", detail: "attempt a3 chain escalate pid 5" },
+    { ts: "2026-10-17T04:00:00Z", event: "merge.verify-fail", phase: "22", detail: "verify exit 2" },
+  ]);
+
+  const r = retro(dir, 2);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.out.phases.find((p) => p.phase === 13).mergeVerifyFailures, [
+    { ts: "2026-10-17T01:30:00Z", repository: "acme/api", attempt: 1, detail: lockFail },
+  ]);
+  assert.deepEqual(r.out.setbackCandidates.filter((c) => c.kind === "verify-fail"), [
+    { phase: 13, attempt: 1, kind: "verify-fail", stage: "merged-tree", fact: `a1 merged, then the merged-tree Verify failed (acme/api): ${lockFail}`, evidence: ["events.jsonl"] },
+    { phase: 21, attempt: 1, kind: "verify-fail", stage: "merged-tree", fact: "a1 merged, then the merged-tree Verify failed (acme/api): notifications regression", evidence: ["events.jsonl"] },
+    { phase: 21, attempt: 2, kind: "verify-fail", stage: "merged-tree", fact: "a2 merged, then the merged-tree Verify failed (acme/api): notifications regression again", evidence: ["events.jsonl"] },
+    { phase: 22, attempt: null, kind: "verify-fail", stage: "merged-tree", fact: "the merged-tree Verify failed: verify exit 2", evidence: ["events.jsonl"] },
+  ]);
+  assert.equal(r.out.totals.verifyFailures, 4);
+});
+
+test("a runner Verify failure and the first merged-tree failure of the same attempt count once", () => {
+  const dir = loop({ milestone: 2, phases: { 21: { slug: "p21-headless", status: "done", kind: "work", milestone: 2 } } });
+  const verifyFail = "loop-runner: claimed done but verify failed (see verify.log)\nRUNNER_EXIT=12\n";
+  for (const k of [1, 2, 3]) attempt(dir, "p21-headless", k, { meta: claude, status: { outcome: "done" }, spawn: verifyFail, verify: "FAILED" });
+  events(dir, [
+    { ts: "2026-10-17T01:00:00Z", event: "phase.spawn", phase: "21", detail: "attempt a1 chain task pid 1" },
+    { ts: "2026-10-17T01:30:00Z", event: "merge.verify-fail", phase: "21", repository: "acme/api", detail: "notifications regression" },
+    { ts: "2026-10-17T02:00:00Z", event: "phase.spawn", phase: "21", detail: "attempt a2 chain task pid 2" },
+    { ts: "2026-10-17T02:30:00Z", event: "merge.verify-fail", phase: "21", repository: "acme/api", detail: "first merge" },
+    { ts: "2026-10-17T02:40:00Z", event: "merge.verify-fail", phase: "21", repository: "acme/api", detail: "second merge" },
+    { ts: "2026-10-17T03:00:00Z", event: "phase.spawn", phase: "21", detail: "attempt a3 chain escalate pid 3" },
+  ]);
+
+  const r = retro(dir, 2);
+  assert.equal(r.status, 0, r.stderr);
+  const runnerLogs = (k) => [`runs/p21-headless-a${k}/spawn.log`, `runs/p21-headless-a${k}/verify.log`];
+  assert.deepEqual(r.out.setbackCandidates.filter((c) => c.kind === "verify-fail"), [
+    { phase: 21, attempt: 1, kind: "verify-fail", stage: "runner", fact: "a1 claimed done, then Verify failed. The merged-tree Verify failed too (acme/api): notifications regression", evidence: [...runnerLogs(1), "events.jsonl"] },
+    { phase: 21, attempt: 2, kind: "verify-fail", stage: "runner", fact: "a2 claimed done, then Verify failed. The merged-tree Verify failed too (acme/api): first merge", evidence: [...runnerLogs(2), "events.jsonl"] },
+    { phase: 21, attempt: 2, kind: "verify-fail", stage: "merged-tree", fact: "a2 merged, then the merged-tree Verify failed (acme/api): second merge", evidence: ["events.jsonl"] },
+    { phase: 21, attempt: 3, kind: "verify-fail", stage: "runner", fact: "a3 claimed done, then Verify failed", evidence: runnerLogs(3) },
+  ]);
+  assert.equal(r.out.totals.verifyFailures, 4);
+});
+
 test("the milestone window bounds wall time and the plan edits and recycles without a phase", () => {
   const dir = loop({ milestone: 2, phases: { 1: { slug: "p1-a", status: "done", milestone: 1 }, 10: { slug: "p10-b", status: "done", milestone: 2 } } });
   events(dir, [

@@ -233,8 +233,10 @@ retro facts.
 `loop-retro.mjs` reads the artifacts of milestone n and prints facts only. It never gives a
 cause. An unknown value is `null`. The facts are:
 
-- For each phase: the attempts, the HIL briefs, the merge conflicts, the review ledgers and
-  the `progress.md` entries.
+- For each phase: the attempts, the HIL briefs, the merge conflicts, the merged-tree Verify
+  failures (`mergeVerifyFailures`), the review ledgers and the `progress.md` entries.
+- A merged-tree Verify failure is a `merge.verify-fail` event in `events.jsonl`. Its attempt is
+  the attempt of the last `phase.spawn` or `phase.resume` event before it, else `null`.
 - For each attempt: chain, engine, model, outcome, runner exit, `verify` (`pass|fail|null`),
   `timedOut`, route fallback reason and minutes.
 - For each review ledger: the outer rounds, the fix rounds, the disputed rounds and the final
@@ -243,7 +245,12 @@ cause. An unknown value is `null`. The facts are:
   rounds, fix rounds and disputed rounds. Also `verifyFailures`, timeouts, rate limits, plan
   edits, SUB recycles, attempt minutes and wall time.
 - `setbackCandidates`: one entry for each process cost, with `phase`, `kind`, `fact` and the
-  evidence paths (relative to `.loop`).
+  evidence paths (relative to `.loop`). A `verify-fail` entry also has `stage`:
+  - `runner`: the runner Verify failed (`spawn.log`).
+  - `merged-tree`: a `merge.verify-fail` event.
+- `verifyFailures` counts the `verify-fail` entries. A runner Verify failure and the first
+  merged-tree failure of the same attempt are one failure. They make one `runner` entry with
+  the evidence of the two. Each other merged-tree failure makes its own entry.
 - `window`: the time span of the milestone. It starts at the `milestone.resumed` event of the
   milestone (milestone 1: the first event). It ends at its `milestone.awaiting-merge` event,
   else at the last `review.finish` event of its phases. Plan edits and SUB recycles count only
@@ -419,6 +426,7 @@ completed phase ranks remain monotone.
 | `phase.attempt.finish` | loop-runner.sh (EXIT trap) | phase, repository, outcome, exitCode, engine, model |
 | `phase.merged` | loop-merge.sh (EXIT trap, rc==0) | phase, repository |
 | `merge.conflict` | loop-merge.sh (conflict branch) | phase, repository, detail |
+| `merge.verify-fail` | loop-merge.sh (exit 4) and orchestrator (loop-state.sh log) | phase, repository, detail |
 | `hil.raise` / `hil.resolve` | orchestrator (loop-state.sh log) | phase |
 | `review.finish` | orchestrator | phase, repository, outcome, summary |
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
@@ -439,6 +447,13 @@ loop-level: they never promote a phase (the keyword fallback would read "merg…
 
 `progress.note` is the progress narration — kept on the timeline, promotes
 nothing in the lattice.
+
+`merge.verify-fail` records a merged-tree Verify failure (`loop-merge.sh` exit 4). The daemon
+keeps it as a typed event on the timeline only. It does not change the status of a phase.
+- `loop-merge.sh` sends it to the daemon. Its detail is `verify exit <n>` and the last 20 lines
+  of the Verify output, 2048 bytes at most.
+- The orchestrator writes it to `events.jsonl` with `loop-state.sh log`. `loop-retro.mjs` reads
+  only this copy.
 
 Unknown/legacy event names fall back to keyword matching, so today's free-form
 `events.jsonl` still works. The two `sub.*` events are **loop-level** (no `phase`); the daemon
@@ -1254,8 +1269,12 @@ observability only: serialized merge and merged-tree Verify remain unconditional
   inline; a **`sub`** spawns a **detached merge-runner** (skeleton below) so the conflict diff
   never enters the SUB's context — the SUB promotes on the next tick when `loop-merge`'s EXIT
   trap fires `phase.merged`.
-- **4** — merge committed but Verify failed (semantic conflict). Orchestrator reverts the
-  merge commit (`git revert -m1 HEAD`) and escalates L3.
+- **4** — merge committed but Verify failed (semantic conflict). `loop-merge.sh` sends
+  `merge.verify-fail` to the daemon. The orchestrator then does these steps in this order:
+  1. It writes the failure to `events.jsonl`: `loop-state.sh log --dir .loop --repository
+     <owner/repo> merge.verify-fail <N> "<last Verify output lines, 2 KB at most>"`.
+  2. It reverts the merge commit (`git revert -m1 HEAD`).
+  3. It escalates L3. The L3 `phase.spawn` event comes after the `merge.verify-fail` event.
 - **3** — lane branch missing: reconcile from git (already merged + deleted → treat as
   done; otherwise escalate). Occurs after crash-resume repairs.
 - **1** — merge failed to start (dirty integration worktree) — clean it, don't "resolve".

@@ -302,7 +302,7 @@ permit. Low risk, fallback, policy error, or low confidence cannot skip merge se
 Serialize merges globally (one at a time), targeting the phase repository.
 `loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --run-id <runId> --phase <N>
 --repository <owner/repo> --verify-cmd '<repository verify>'` (inherits `LOOP_DAEMON_URL`;
-its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
+it emits `phase.merged` on rc 0, `merge.conflict` on a conflict and `merge.verify-fail` on exit 4):
 
 - **0** → run `loop-handoff --auto phase:<N> status:done lane:<X> engine:<engine>`
   inline — the orchestrator context of that skill (you are the plan's sole writer; runners
@@ -322,8 +322,15 @@ its EXIT trap emits `phase.merged` on rc 0, `merge.conflict` on a conflict):
   both phases' *Done when*), then `loop-merge.sh --worktree <repo-int-wt> --finish
   --repository <owner/repo> --verify-cmd '<repository verify>'`. Either way, not confident
   it's semantically right → `--abort` + HIL.
-- **4** → semantic conflict: `git revert -m1 HEAD` in the integration worktree, then L3
-  for this phase with the verify output.
+- **4** → semantic conflict. The merge commit exists, but the merged-tree Verify failed. Do
+  these steps in this order:
+  1. Write the failure to `.loop/events.jsonl`: `loop-state.sh log --dir .loop --repository
+     <owner/repo> merge.verify-fail <N> "<detail>"`. The detail is the last lines of the
+     Verify output, 2 KB at most. `loop-retro.mjs` counts this event as a Verify failure.
+  2. Run `git revert -m1 HEAD` in the integration worktree.
+  3. Start L3 for this phase with the Verify output. Write the event before the L3
+     `phase.spawn` event: `loop-retro.mjs` gives the failure to the attempt of the last
+     `phase.spawn` or `phase.resume` event before it.
 - **3 / 1** → reconcile from git per the protocol (already-merged → done; dirty
   integration worktree → clean it, except an `adopted` one: never discard its changes, HIL
   pause instead), don't treat as a conflict.

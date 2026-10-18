@@ -191,6 +191,7 @@ function phaseFacts(dir, phase, entry, events) {
     escalateEvents,
     hil: hilFacts(dir, entry.slug, events),
     mergeConflicts: events.filter((e) => e.event === "merge.conflict").map((e) => ({ ts: e.ts ?? null, repository: e.repository ?? null, detail: e.detail ?? null })),
+    mergeVerifyFailures: mergeVerifyFailures(events),
     reviews: reviewLedgers(dir, phase),
   };
 }
@@ -200,12 +201,32 @@ function phaseFacts(dir, phase, entry, events) {
 function attemptSpawns(events) {
   const spawns = {};
   for (const e of events) {
-    const spawn = e.event === "phase.spawn" && String(e.detail ?? "").match(/\battempt a(\d+) chain (\S+)/);
-    const resume = e.event === "phase.resume" && String(e.detail ?? "").match(/\battempt a(\d+) resume\b/);
-    if (spawn) spawns[spawn[1]] = { chain: spawn[2], ts: e.ts ?? null };
-    else if (resume) spawns[resume[1]] = { chain: "resume", ts: e.ts ?? null };
+    const spawn = spawnOf(e);
+    if (spawn) spawns[spawn.attempt] = { chain: spawn.chain, ts: e.ts ?? null };
   }
   return spawns;
+}
+
+// The attempt and the chain that a phase.spawn or phase.resume event starts, or null.
+function spawnOf(e) {
+  const spawn = e.event === "phase.spawn" && String(e.detail ?? "").match(/\battempt a(\d+) chain (\S+)/);
+  if (spawn) return { attempt: Number(spawn[1]), chain: spawn[2] };
+  const resume = e.event === "phase.resume" && String(e.detail ?? "").match(/\battempt a(\d+) resume\b/);
+  return resume ? { attempt: Number(resume[1]), chain: "resume" } : null;
+}
+
+// The merge.verify-fail events of one phase: a merged-tree Verify failure after `loop-merge.sh`
+// exit 4. The attempt is the one that the last phase.spawn or phase.resume event before the
+// failure (in file order) started, or null.
+function mergeVerifyFailures(events) {
+  const failures = [];
+  let attempt = null;
+  for (const e of events) {
+    const spawn = spawnOf(e);
+    if (spawn) attempt = spawn.attempt;
+    else if (e.event === "merge.verify-fail") failures.push({ ts: e.ts ?? null, repository: e.repository ?? null, attempt, detail: e.detail ?? null });
+  }
+  return failures;
 }
 
 // The K of every runs/<slug>-a<K>/ directory, in order.
@@ -318,7 +339,7 @@ function reviewLedgers(dir, phase) {
 // The setback candidates of one phase: one entry for each process cost, with its evidence paths.
 function phaseSetbacks(dir, p) {
   const out = [];
-  const add = (kind, attempt, fact, evidence) => out.push({ phase: p.phase, attempt, kind, fact, evidence });
+  const add = (kind, attempt, fact, evidence, extra = {}) => out.push({ phase: p.phase, attempt, kind, ...extra, fact, evidence });
   if (p.attempts.length > 1) add("retry", null, `${p.attempts.length} attempts`, p.attempts.map((a) => a.runDir));
   for (let i = 0; i < p.hil.count; i += 1) {
     const [raise, resolve] = [p.hil.raised[i], p.hil.resolved[i]];
@@ -326,7 +347,7 @@ function phaseSetbacks(dir, p) {
       resolve ? `Resolved at ${resolve.ts}: ${resolve.detail ?? "no detail"}` : null].filter(Boolean).join(". ");
     add("hil", null, fact, [...p.hil.files, ...(p.hil.raised.length ? ["events.jsonl"] : [])]);
   }
-  for (const c of p.mergeConflicts) add("merge-conflict", null, `merge conflict${c.repository ? ` (${c.repository})` : ""}: ${c.detail ?? "no detail"}`, ["events.jsonl"]);
+  for (const c of p.mergeConflicts) add("merge-conflict", null, `merge conflict${inRepository(c)}: ${c.detail ?? "no detail"}`, ["events.jsonl"]);
   for (const r of p.reviews) {
     for (const fix of r.fixes) add("review-round", null, `${r.repository} ${fix.stage}: ${fix.verdict}`, [r.ledger, fix.runDir]);
     for (const round of r.disputed) {
@@ -335,9 +356,18 @@ function phaseSetbacks(dir, p) {
   }
   const escalated = new Set(escalatedAttempts(p.attempts).map((a) => a.attempt));
   for (let i = escalated.size; i < p.escalations; i += 1) add("model-escalation", null, "phase.escalate event without a chain change", ["events.jsonl"]);
+  // A runner Verify failure and the first merged-tree failure of the same attempt are one
+  // failure: one candidate. Each other merged-tree failure is a candidate of its own.
+  const mergedTree = [...p.mergeVerifyFailures];
   p.attempts.forEach((a, i) => {
     const file = (name) => (a.files.includes(name) ? [`${a.runDir}/${name}`] : []);
-    if (a.verify === "fail") add("verify-fail", a.attempt, `a${a.attempt} claimed done, then Verify failed`, [...file("spawn.log"), ...file("verify.log")]);
+    if (a.verify === "fail") {
+      const index = mergedTree.findIndex((f) => f.attempt === a.attempt);
+      const same = index === -1 ? null : mergedTree.splice(index, 1)[0];
+      add("verify-fail", a.attempt, `a${a.attempt} claimed done, then Verify failed`
+        + (same ? `. The merged-tree Verify failed too${inRepository(same)}: ${same.detail ?? "no detail"}` : ""),
+      [...file("spawn.log"), ...file("verify.log"), ...(same ? ["events.jsonl"] : [])], { stage: "runner" });
+    }
     if (a.timedOut || a.exit === 124 || a.engineExit === 124) add("timeout", a.attempt, `a${a.attempt} timed out`, [...file("spawn.log"), ...file("meta.json")]);
     if (a.rateLimitedLegs.length || a.exit === 40 || a.engineExit === 40 || a.exit40Event) {
       const legs = a.rateLimitedLegs.length ? `usage limit on ${a.rateLimitedLegs.join(", ")}` : "usage limit";
@@ -358,7 +388,15 @@ function phaseSetbacks(dir, p) {
     }
     if (a.outcome === "blocked" || a.exit === 50) add("other", a.attempt, `a${a.attempt} ${a.exit === 50 ? "crashed (exit 50)" : "blocked"}`, file("status.json").length ? file("status.json") : file("spawn.log"));
   });
+  for (const f of mergedTree) {
+    add("verify-fail", f.attempt, `${f.attempt == null ? "the" : `a${f.attempt} merged, then the`} merged-tree Verify failed${inRepository(f)}: ${f.detail ?? "no detail"}`,
+      ["events.jsonl"], { stage: "merged-tree" });
+  }
   return out;
+}
+
+function inRepository({ repository }) {
+  return repository ? ` (${repository})` : "";
 }
 
 function engineModel(a) {

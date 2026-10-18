@@ -19,15 +19,20 @@ set -u -o pipefail
 #   1  usage / unexpected git failure
 
 # Capture SCRIPT_DIR before any cd (loop-merge cd's into the worktree below).
+# LOOP_EMIT_SH is a test seam like loop-orchestrator.sh.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [[ -r "$SCRIPT_DIR/loop-emit.sh" ]]; then
-  source "$SCRIPT_DIR/loop-emit.sh"
+EMIT_SH="${LOOP_EMIT_SH:-$SCRIPT_DIR/loop-emit.sh}"
+if [[ -r "$EMIT_SH" ]]; then
+  source "$EMIT_SH"
 else
   loop_emit() { :; }
 fi
 
 WT="" LANE="" VERIFY="" MODE="merge" PUSH=1 NOVERIFY=0
 RUN_ID="" PHASE="" REPOSITORY=""
+VERIFY_LOG=""   # a copy of the Verify output, outside the worktree; the EXIT trap removes it
+VERIFY_DETAIL_BYTES=2048
+VERIFY_DETAIL_LINES=20
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,9 +50,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# A clean merge/finish (rc 0, not abort) is a phase.merged; conflicts emit merge.conflict.
+# A clean merge/finish (rc 0, not abort) is a phase.merged; conflicts emit merge.conflict;
+# a failed Verify (exit 4) emits merge.verify-fail.
 loop_merge_finish() {
   local rc="$1"
+  [[ -n "$VERIFY_LOG" ]] && rm -f "$VERIFY_LOG"
   [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" && "$MODE" != "abort" && "$rc" -eq 0 ]] || return 0
   jq -cn --arg event phase.merged --arg phase "$PHASE" --arg repository "$REPOSITORY" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -60,6 +67,20 @@ emit_conflict() { # $1 = conflicting files (newline-separated)
     '{event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end),
       detail:$detail, ts:$ts}' | loop_emit "$RUN_ID" event
 }
+# $1 = Verify exit, $2 = file with the Verify output. The detail is "verify exit <n>" and the
+# last output lines, VERIFY_DETAIL_BYTES at most; the cut keeps whole characters.
+emit_verify_fail() {
+  [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" ]] || return 0
+  local tail_text
+  tail_text="$(tail -n "$VERIFY_DETAIL_LINES" "$2" 2>/dev/null | LC_ALL=C tail -c "$VERIFY_DETAIL_BYTES")"
+  jq -cn --arg event merge.verify-fail --arg phase "$PHASE" --arg repository "$REPOSITORY" \
+    --arg head "verify exit $1" --arg tail "$tail_text" --argjson max "$VERIFY_DETAIL_BYTES" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    'def fit($n): if utf8bytelength <= $n then . else .[1:] | fit($n) end;
+     {event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end),
+      detail:(if $tail == "" then $head else $head + "\n" + ($tail | fit($max - ($head|utf8bytelength) - 1)) end),
+      ts:$ts}' | loop_emit "$RUN_ID" event
+}
 trap 'loop_merge_finish $?' EXIT
 
 [[ -d "$WT" ]] || { echo "loop-merge: worktree '$WT' not found" >&2; exit 1; }
@@ -69,9 +90,17 @@ if [[ "$MODE" != "abort" && -z "$VERIFY" && $NOVERIFY -eq 0 ]]; then
   exit 1
 fi
 
+# Verify output still reaches stdout and stderr; tee keeps a copy for the merge.verify-fail detail.
+# The copy keeps the order inside each stream, not between stdout and stderr.
 verify_and_push() {
+  local rc
   if [[ -n "$VERIFY" ]]; then
-    if ! eval "$VERIFY"; then
+    VERIFY_LOG="$(mktemp "${TMPDIR:-/tmp}/loop-merge-verify.XXXXXX")" || VERIFY_LOG=""
+    # The braces make zsh wait for both tee processes before the next command.
+    { eval "$VERIFY" } > >(tee -a "${VERIFY_LOG:-/dev/null}") 2> >(tee -a "${VERIFY_LOG:-/dev/null}" >&2)
+    rc=$?
+    if (( rc != 0 )); then
+      emit_verify_fail "$rc" "${VERIFY_LOG:-/dev/null}"
       return 4
     fi
   fi
