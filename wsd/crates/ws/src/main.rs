@@ -18,6 +18,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show runner quota windows and their sources.
+    Usage {
+        #[arg(long)]
+        json: bool,
+    },
     /// Select the active local backend.
     Backend { backend: String },
     /// Select a workspace or tab with fzf.
@@ -281,6 +286,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         return cmd::attach::run(&socket_path()?).await;
     };
     match command {
+        Command::Usage { json } => cmd::usage::run(&socket_path()?, json).await?,
         Command::Backend { backend } => cmd::backend::run(&socket_path()?, &backend).await?,
         Command::Pick => return cmd::pick::run(),
         Command::PickFocus { window } => cmd::pick::focus(&window)?,
