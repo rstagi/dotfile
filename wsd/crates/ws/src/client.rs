@@ -100,10 +100,16 @@ pub(crate) async fn request(
     {
         return send_request(stream, method, path, body).await;
     }
+    // Store requests can wait behind lifecycle changes. Their deadline is a hang guard.
     let seconds = if path.starts_with("/v1/workspaces") || path == "/v1/phases/worktree" {
         120
-    } else {
+    } else if path == "/v1/ping"
+        || path.starts_with("/v1/hooks/")
+        || path == "/v1/notifications/dismiss"
+    {
         2
+    } else {
+        30
     };
     timeout(
         Duration::from_secs(seconds),
@@ -313,9 +319,18 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn lifecycle_requests_wait_for_the_daemons_completion_signal() {
+    async fn store_requests_wait_for_completion_while_fast_requests_keep_their_deadline() {
         let mut failures = Vec::new();
-        for path in ["/v1/agents/launch", "/v1/messages"] {
+        for (method, path, waits) in [
+            (Method::POST, "/v1/agents/launch", true),
+            (Method::POST, "/v1/messages", true),
+            (Method::POST, "/v1/agents/run", true),
+            (Method::POST, "/v1/agents/exit", true),
+            (Method::GET, "/v1/sessions/target", true),
+            (Method::GET, "/v1/ping", false),
+            (Method::POST, "/v1/hooks/ingest", false),
+            (Method::POST, "/v1/notifications/dismiss", false),
+        ] {
             let home = tempfile::tempdir_in("/tmp").unwrap();
             let socket = home.path().join("daemon.sock");
             let listener = UnixListener::bind(&socket).unwrap();
@@ -325,7 +340,7 @@ mod tests {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
                 let mut bytes = [0; 1024];
-                while !request.ends_with(b"\r\n\r\n{}") {
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
                     let n = stream.read(&mut bytes).await.unwrap();
                     assert_ne!(n, 0);
                     request.extend_from_slice(&bytes[..n]);
@@ -339,9 +354,7 @@ mod tests {
                     .await;
             });
             let client =
-                tokio::spawn(
-                    async move { request(&socket, Method::POST, path, b"{}".to_vec()).await },
-                );
+                tokio::spawn(async move { request(&socket, method, path, Vec::new()).await });
             received.await.unwrap();
             tokio::time::pause();
             tokio::time::advance(Duration::from_secs(3)).await;
@@ -351,7 +364,9 @@ mod tests {
             let result = client.await.unwrap();
             server.await.unwrap();
             match result {
-                Ok(body) => assert_eq!(body.as_ref(), b"{}"),
+                Ok(body) if waits => assert_eq!(body.as_ref(), b"{}"),
+                Ok(_) => failures.push(format!("{path} did not enforce its deadline.")),
+                Err(error) if !waits => assert!(error.to_string().contains("within 2 seconds")),
                 Err(error) => failures.push(format!("{path}: {error}")),
             }
         }
