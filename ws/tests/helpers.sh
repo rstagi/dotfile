@@ -46,10 +46,14 @@ export WS_READY_TIMEOUT=15
 socket_listener_pid=""
 ws_rust_daemon_pid=""
 trap ws_tests_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 # ws_tests_cleanup — EXIT trap: stop this suite's background jobs and tmux server, drop the hook
 # locks ws keeps in ${TMPDIR:-/tmp}, then fail if the real agent hooks/config changed.
 # Detached retries (setsid) exit on their own once their tmux server is gone.
 ws_tests_cleanup() {
+  trap '' INT TERM HUP
   if [[ -n "$ws_rust_daemon_pid" ]]; then
     kill "$ws_rust_daemon_pid" 2>/dev/null
     wait "$ws_rust_daemon_pid" 2>/dev/null

@@ -13,7 +13,28 @@ ROOT="$(cd "$HERE/.." && pwd)"
 fail=0
 # Every suite runs under a private HOME; the real agent hooks/config must stay byte-identical.
 TEST_HOME_DIR="$(mktemp -d)"
-trap 'rm -rf "$TEST_HOME_DIR"' EXIT
+ws_pid="" suite_pid=""
+runner_cleanup() {
+  trap '' INT TERM HUP
+  [[ -z "$suite_pid" ]] || kill -TERM "$suite_pid" 2>/dev/null
+  [[ -z "$ws_pid" ]] || kill -TERM "$ws_pid" 2>/dev/null
+  [[ -z "$suite_pid" ]] || wait "$suite_pid" 2>/dev/null
+  [[ -z "$ws_pid" ]] || wait "$ws_pid" 2>/dev/null
+  rm -rf "$TEST_HOME_DIR"
+}
+trap runner_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+run_suite() {
+  zsh "$@" &
+  suite_pid=$!
+  wait "$suite_pid"
+  local result=$?
+  suite_pid=""
+  return "$result"
+}
 REAL_HOME="${TESTS_REAL_HOME:-$HOME}"
 if [[ -f "$HERE/home-guard.sh" ]]; then
   source "$HERE/home-guard.sh"
@@ -40,17 +61,18 @@ fi
 
 for t in "$HERE"/*.test.sh; do
   echo "== ${t:t} =="
-  zsh "$t" || fail=1
+  run_suite "$t" || fail=1
   echo
 done
 
 if [[ -n "$ws_pid" ]]; then
   echo "== ws/tests/run.sh =="
   wait "$ws_pid" || fail=1
+  ws_pid=""
   cat "$TEST_HOME_DIR/ws.log"
   if [[ -x "$ROOT/wsd/target/debug/ws" ]]; then
     echo "== ws Rust smoke =="
-    zsh "$ROOT/ws/tests/run.sh" rust || fail=1
+    run_suite "$ROOT/ws/tests/run.sh" rust || fail=1
   fi
   echo
 fi
