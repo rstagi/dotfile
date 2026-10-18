@@ -394,6 +394,15 @@ The settings versions match the captured S2 manifests: Claude Code 2.1.302 and C
 A different detected version sets `version_covered` to false. It does not prevent launch.
 Contract tests compare setting names and values with those manifests.
 
+The daemon builds one canonical turn span from each accepted prompt and Stop pair.
+It builds child tool spans from matching tool-use IDs and hook results.
+An empty Codex hook result leaves the tool status unset, regardless of native `success`.
+An interruption, process exit or abandoned session closes open spans with an error status.
+A missing tool result closes the tool with an error when its turn closes.
+Restart replay retains span IDs and does not append a completed span twice.
+The receiver removes the known S2 native turn and tool boundaries to prevent duplicate spans.
+It retains native model, transport and permission-wait timing.
+
 The receiver replaces incoming `ws.device.id` resource attributes with the local device ID.
 It appends one durable record per log record, metric or span to `$WS_STATE/telemetry/log.jsonl`.
 Each record has an event ID, its receipt time, the signal type and an OTLP export payload.

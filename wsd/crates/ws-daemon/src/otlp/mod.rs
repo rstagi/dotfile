@@ -211,6 +211,9 @@ async fn ingest(state: Ingestion, signal: Signal, headers: HeaderMap, body: Byte
         }
     };
     let mut payloads = split_records(payload, signal);
+    if signal == Signal::Traces {
+        payloads.retain(|payload| !crate::spans::is_native_boundary(payload));
+    }
     for payload in &mut payloads {
         redact(payload, state.content, false);
     }

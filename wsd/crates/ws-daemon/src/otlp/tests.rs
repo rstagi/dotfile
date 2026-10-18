@@ -65,16 +65,16 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
     let cases = [
         ("baseline-logs.json", Signal::Logs, 11),
         ("baseline-metrics.json", Signal::Metrics, 3),
-        ("beta-json-traces.json", Signal::Traces, 5),
+        ("beta-json-traces.json", Signal::Traces, 3),
         ("codex-baseline-logs.json", Signal::Logs, 24),
         ("codex-baseline-metrics.json", Signal::Metrics, 16),
-        ("codex-baseline-traces.json", Signal::Traces, 38),
+        ("codex-baseline-traces.json", Signal::Traces, 29),
         ("beta-protobuf-logs.pb", Signal::Logs, 7),
         ("beta-protobuf-metrics.pb", Signal::Metrics, 3),
-        ("beta-protobuf-traces.pb", Signal::Traces, 4),
+        ("beta-protobuf-traces.pb", Signal::Traces, 2),
         ("codex-protobuf-logs.pb", Signal::Logs, 24),
         ("codex-protobuf-metrics.pb", Signal::Metrics, 16),
-        ("codex-protobuf-traces.pb", Signal::Traces, 38),
+        ("codex-protobuf-traces.pb", Signal::Traces, 29),
     ];
     let receiver = Receiver::bind(sandbox.path()).await.unwrap();
     let log = TelemetryLog::new(sandbox.path(), device.device_id);
@@ -133,7 +133,25 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
             .unwrap()
             .iter()
             .flat_map(|r| r[scope_key].as_array().unwrap())
-            .flat_map(|s| s[record_key].as_array().unwrap());
+            .flat_map(|s| s[record_key].as_array().unwrap())
+            .filter(|record| {
+                signal != Signal::Traces
+                    || !matches!(
+                        record["name"].as_str(),
+                        Some(
+                            "claude_code.tool"
+                                | "claude_code.tool.execution"
+                                | "run_turn"
+                                | "session_task.turn"
+                                | "handle_tool_call_with_source"
+                                | "dispatch_tool_call_with_state"
+                                | "exec_command"
+                                | "unified_exec.exec_command"
+                                | "code_mode.broker.invoke_tool"
+                                | "exec"
+                        )
+                    )
+            });
         for (stored, original) in records[offset..].iter().zip(expected) {
             let item = &stored.payload[signal.resource_key()][0][scope_key][0][record_key][0];
             match signal {
@@ -196,7 +214,7 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
         offset += count;
     }
     receiver.shutdown().await.unwrap();
-    assert_eq!(log.read().unwrap().len(), 189);
+    assert_eq!(log.read().unwrap().len(), 167);
 }
 
 #[tokio::test]
@@ -449,4 +467,55 @@ async fn redacts_codex_tool_content_and_email_before_storage_in_both_encodings()
         receiver.shutdown().await.unwrap();
         assert_eq!(log.read().unwrap(), records);
     }
+}
+
+#[tokio::test]
+async fn native_boundaries_do_not_duplicate_canonical_turns_or_tools() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-device").unwrap();
+    let receiver = Receiver::bind(sandbox.path()).await.unwrap();
+    let payload = serde_json::json!({"resourceSpans": [{"scopeSpans": [
+        {"scope":{"name":"codex_exec"}, "spans":[
+            {"name":"run_turn"}, {"name":"session_task.turn"},
+            {"name":"handle_tool_call_with_source"}, {"name":"dispatch_tool_call_with_state"},
+            {"name":"exec_command"}, {"name":"unified_exec.exec_command"},
+            {"name":"code_mode.broker.invoke_tool"}, {"name":"exec"},
+            {"name":"ws.session.turn"}, {"name":"ws.session.tool"},
+            {"name":"responses_websocket.stream_request"}
+        ]},
+        {"scope":{"name":"com.anthropic.claude_code.tracing"}, "spans":[
+            {"name":"claude_code.tool"}, {"name":"claude_code.tool.execution"},
+            {"name":"claude_code.llm_request"}, {"name":"claude_code.tool.blocked_on_user"}
+        ]},
+        {"scope":{"name":"other.instrumentation"}, "spans":[{"name":"exec"}]}
+    ]}]});
+    let response = post(
+        receiver.local_addr(),
+        "/v1/traces",
+        "application/json",
+        &serde_json::to_vec(&payload).unwrap(),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let records = TelemetryLog::new(sandbox.path(), device.device_id)
+        .read()
+        .unwrap();
+    let names: Vec<_> = records
+        .iter()
+        .map(|r| {
+            r.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "responses_websocket.stream_request",
+            "claude_code.llm_request",
+            "claude_code.tool.blocked_on_user",
+            "exec"
+        ]
+    );
+    receiver.shutdown().await.unwrap();
 }
