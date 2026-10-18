@@ -80,7 +80,7 @@ impl Spans {
 
     /// Consumes each durable entry once. Replay uses the same source-derived span ids.
     pub(crate) fn observe(&mut self, entry: &LogEntry) -> io::Result<()> {
-        self.emitter.observe(entry)?;
+        let emitted_event = self.emitter.observe(entry)?;
         let event = entry.event_type.as_str();
         if event == "hook.received" {
             if matches!(
@@ -101,28 +101,30 @@ impl Spans {
             }
             return Ok(());
         }
-        if !matches!(
-            event,
-            "session.created"
-                | "edge.added"
-                | "edge.removed"
-                | "session.depends_on"
-                | "turn.started"
-                | "turn.ended"
-                | "turn.continued"
-                | "turn.cancelled"
-                | "tool.pre"
-                | "tool.post"
-                | "agent.waiting"
-                | "subagent.started"
-                | "subagent.stopped"
-                | "exit"
-                | "process.exited"
-                | "session.failed"
-                | "session.finished"
-                | "session.orphaned"
-                | "done"
-        ) {
+        if emitted_event.is_none()
+            && !matches!(
+                event,
+                "session.created"
+                    | "edge.added"
+                    | "edge.removed"
+                    | "session.depends_on"
+                    | "turn.started"
+                    | "turn.ended"
+                    | "turn.continued"
+                    | "turn.cancelled"
+                    | "tool.pre"
+                    | "tool.post"
+                    | "agent.waiting"
+                    | "subagent.started"
+                    | "subagent.stopped"
+                    | "exit"
+                    | "process.exited"
+                    | "session.failed"
+                    | "session.finished"
+                    | "session.orphaned"
+                    | "done"
+            )
+        {
             return Ok(());
         }
         if entry.body["state_accepted"] == false
@@ -147,6 +149,24 @@ impl Spans {
             .get(&entry.session_id)
             .cloned()
             .unwrap_or_default();
+        if let Some(event) = emitted_event
+            && let Some(turn) = state.turn.as_mut()
+            && turn
+                .source_id
+                .as_deref()
+                .zip(turn_id(entry))
+                .is_none_or(|(current, incoming)| current == incoming)
+            && timestamp(entry) >= number(&turn.span["startTimeUnixNano"]).unwrap()
+        {
+            push_event(&mut turn.span, event.clone());
+            for (id, tool) in &mut turn.tools {
+                if timestamp(entry) >= number(&tool["startTimeUnixNano"]).unwrap()
+                    && (entry.event_type != "tool.post" || entry.body["tool_use_id"] == id.as_str())
+                {
+                    push_event(tool, event.clone());
+                }
+            }
+        }
         let result = entry.body["callback_id"]
             .as_str()
             .and_then(|id| state.tool_results.remove(id));
@@ -520,10 +540,7 @@ fn finish(span: &mut Value, entry: &LogEntry, code: u64, event: &str) {
             .unwrap()
             .push(attribute(semconv::REASON, &entry.event_type));
     }
-    span["events"]
-        .as_array_mut()
-        .unwrap()
-        .push(span_event(entry, event));
+    push_event(span, span_event(entry, event));
 }
 
 fn closure_name(entry: &LogEntry) -> &'static str {
@@ -539,7 +556,19 @@ fn closure_name(entry: &LogEntry) -> &'static str {
 }
 
 fn span_event(entry: &LogEntry, name: &str) -> Value {
-    json!({"name": name, "timeUnixNano": timestamp(entry).to_string(), "attributes": [attribute(semconv::EVENT_ID, entry.event_id.to_string()), attribute(semconv::SEMCONV_VERSION, semconv::VERSION), attribute(semconv::EVENT_DOMAIN, semconv::SESSION_DOMAIN)]})
+    json!({"name": name, "timeUnixNano": timestamp(entry).to_string(),
+        "attributes": crate::semconv_emit::event_attributes(entry, name, None)})
+}
+
+fn push_event(span: &mut Value, event: Value) {
+    let id = string_attribute(&event, semconv::EVENT_ID);
+    let events = span["events"].as_array_mut().unwrap();
+    if !events
+        .iter()
+        .any(|previous| string_attribute(previous, semconv::EVENT_ID) == id)
+    {
+        events.push(event);
+    }
 }
 
 fn timestamp(entry: &LogEntry) -> u64 {
@@ -1331,7 +1360,10 @@ mod tests {
         let log = TelemetryLog::new(sandbox.path(), session.device_id);
         let sessions = Sessions::open(sandbox.path(), 0).unwrap();
         let first = log.read().unwrap();
-        assert_eq!(first.len(), 2);
+        assert_eq!(
+            first.iter().filter(|r| r.signal == Signal::Traces).count(),
+            2
+        );
         let spans = stored_spans(&log);
         let tool = spans
             .iter()
@@ -1643,7 +1675,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(log.read().unwrap().is_empty());
+        assert!(stored_spans(&log).is_empty());
         hook(
             &store,
             session.id,
@@ -1702,6 +1734,8 @@ mod tests {
             notify: None,
         };
         let broken = sandbox.path().join("telemetry/log.jsonl");
+        let saved = sandbox.path().join("telemetry/saved.jsonl");
+        std::fs::rename(&broken, &saved).unwrap();
         std::fs::create_dir(&broken).unwrap();
         assert!(
             hooks::ingest(store.clone(), callback.clone(), StopDecision::Accept)
@@ -1709,6 +1743,7 @@ mod tests {
                 .is_err()
         );
         std::fs::remove_dir(&broken).unwrap();
+        std::fs::rename(&saved, &broken).unwrap();
         hooks::ingest(store.clone(), callback, StopDecision::Accept)
             .await
             .unwrap();
@@ -1725,7 +1760,10 @@ mod tests {
         )
         .await;
         let first = log.read().unwrap();
-        assert_eq!(first.len(), 2);
+        assert_eq!(
+            first.iter().filter(|r| r.signal == Signal::Traces).count(),
+            2
+        );
         drop(store);
         drop(Sessions::open(sandbox.path(), 0).unwrap());
         assert_eq!(log.read().unwrap(), first);
@@ -1761,7 +1799,11 @@ mod tests {
         assert_eq!(spans[0]["startTimeUnixNano"], "100000");
         assert_eq!(spans[0]["endTimeUnixNano"], "200000");
         let records = log.read().unwrap();
-        let resource = &records[0].payload["resourceSpans"][0]["resource"];
+        let resource = &records
+            .iter()
+            .find(|r| r.signal == Signal::Traces)
+            .unwrap()
+            .payload["resourceSpans"][0]["resource"];
         assert_eq!(
             attribute(resource, semconv::SESSION_ID),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV"

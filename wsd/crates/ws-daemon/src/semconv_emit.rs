@@ -57,7 +57,7 @@ impl Emitter {
         })
     }
 
-    pub(crate) fn observe(&mut self, entry: &LogEntry) -> io::Result<()> {
+    pub(crate) fn observe(&mut self, entry: &LogEntry) -> io::Result<Option<Value>> {
         if entry.event_type == "session.created" {
             let mut resource = vec![attribute(semconv::SESSION_ID, json!(entry.session_id))];
             for (key, source) in [
@@ -75,12 +75,13 @@ impl Emitter {
         }
         let phase = self.phases.get(&entry.session_id);
         let Some(name) = mapped_name(entry, phase.is_some()) else {
-            return Ok(());
+            return Ok(None);
         };
-        if self.written.contains(&entry.event_id) {
-            return Ok(());
-        }
         let attributes = event_attributes(entry, name, phase);
+        let event = json!({"name": name, "timeUnixNano": timestamp(entry).to_string(), "attributes": attributes});
+        if self.written.contains(&entry.event_id) {
+            return Ok(Some(event));
+        }
         let record = json!({"timeUnixNano": timestamp(entry).to_string(),
             "eventName": name, "attributes": attributes,
             "body": {"kvlistValue": {"values": [
@@ -95,7 +96,7 @@ impl Emitter {
             "scopeLogs": [{"scope": {"name": "ws.session", "version": semconv::VERSION}, "logRecords": [record]}]}]});
         self.log.append(Signal::Logs, vec![payload], entry.ts_ms)?;
         self.written.insert(entry.event_id);
-        Ok(())
+        Ok(Some(event))
     }
 }
 
@@ -427,6 +428,75 @@ mod tests {
             drop(Sessions::open(sandbox.path(), 0).unwrap());
             assert_eq!(log.read().unwrap(), records, "{source_type}: replay");
         }
+    }
+
+    #[test]
+    fn events_attach_to_open_session_spans_before_closure_without_duplicates() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let session = sessions.create(CreateSession::default()).unwrap();
+        let other = sessions.create(CreateSession::default()).unwrap();
+        let mut entries = Vec::new();
+        for (time, source, body) in [
+            (100, "turn.started", json!({"turn_id":"turn"})),
+            (200, "tool.pre", json!({"tool_use_id":"tool"})),
+            (250, "message.read", json!({"message_id":session.id})),
+            (260, "edge.action_fired", json!({"trigger_id":session.id})),
+            (
+                300,
+                "tool.post",
+                json!({"tool_use_id":"tool", "tool_status":1}),
+            ),
+            (350, "session.renamed", json!({"name":"new-name"})),
+            (400, "turn.ended", json!({"turn_id":"turn"})),
+            (450, "message.read", json!({"message_id":session.id})),
+        ] {
+            let mut body = body;
+            body["observed_at_us"] = json!(time);
+            if time == 260 {
+                sessions
+                    .append_entry(other.id, "agent.waiting", json!({"observed_at_us":255}))
+                    .unwrap();
+            }
+            entries.push(sessions.append_entry(session.id, source, body).unwrap());
+        }
+        let log = TelemetryLog::new(sandbox.path(), session.device_id);
+        let records = log.read().unwrap();
+        let spans: Vec<_> = records
+            .iter()
+            .filter(|r| r.signal == Signal::Traces)
+            .map(|r| &r.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0])
+            .collect();
+        assert_eq!(spans.len(), 2);
+        for (span_name, indices) in [
+            ("ws.session.tool", vec![1, 2, 3, 4]),
+            ("ws.session.turn", vec![0, 1, 2, 3, 4, 5, 6]),
+        ] {
+            let span = spans.iter().find(|s| s["name"] == span_name).unwrap();
+            let events = span["events"].as_array().unwrap();
+            assert_eq!(events.len(), indices.len(), "{span_name}");
+            for (event, index) in events.iter().zip(indices) {
+                assert_eq!(
+                    attr(event, "event_id")["stringValue"],
+                    entries[index].event_id.to_string()
+                );
+                assert_eq!(attr(event, "event.domain")["stringValue"], "ws.session");
+                assert_eq!(attr(event, "ws.semconv.version")["stringValue"], "1");
+                let record = records
+                    .iter()
+                    .filter(|r| r.signal == Signal::Logs)
+                    .map(|r| &r.payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0])
+                    .find(|r| {
+                        attr(r, "event_id")["stringValue"] == entries[index].event_id.to_string()
+                    })
+                    .unwrap();
+                assert_eq!(event["name"], attr(record, "event.name")["stringValue"]);
+                assert_eq!(event["attributes"], record["attributes"]);
+            }
+        }
+        drop(sessions);
+        drop(Sessions::open(sandbox.path(), 0).unwrap());
+        assert_eq!(log.read().unwrap(), records);
     }
 
     fn attr<'a>(value: &'a Value, key: &str) -> &'a Value {
