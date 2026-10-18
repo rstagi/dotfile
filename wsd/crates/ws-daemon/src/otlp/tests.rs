@@ -373,3 +373,80 @@ async fn post(address: SocketAddr, path: &str, content_type: &str, body: &[u8]) 
         String::from_utf8(response).unwrap()
     }).await.expect("The OTLP request exceeded the hang guard.")
 }
+
+#[tokio::test]
+async fn redacts_codex_tool_content_and_email_before_storage_in_both_encodings() {
+    for content in [false, true] {
+        let sandbox = tempfile::tempdir().unwrap();
+        let device = Device::init(sandbox.path(), "test-device").unwrap();
+        if content {
+            std::fs::write(
+                sandbox.path().join("config.toml"),
+                "[telemetry]\ncontent = true\n",
+            )
+            .unwrap();
+        }
+        let receiver = Receiver::bind(sandbox.path()).await.unwrap();
+        let log = TelemetryLog::new(sandbox.path(), device.device_id);
+        for (name, path, encoding) in [
+            ("codex-baseline-logs.json", "/v1/logs", "application/json"),
+            (
+                "codex-protobuf-logs.pb",
+                "/v1/logs",
+                "application/x-protobuf",
+            ),
+            (
+                "codex-baseline-metrics.json",
+                "/v1/metrics",
+                "application/json",
+            ),
+            (
+                "codex-protobuf-metrics.pb",
+                "/v1/metrics",
+                "application/x-protobuf",
+            ),
+            (
+                "codex-baseline-traces.json",
+                "/v1/traces",
+                "application/json",
+            ),
+            (
+                "codex-protobuf-traces.pb",
+                "/v1/traces",
+                "application/x-protobuf",
+            ),
+        ] {
+            let response = post(
+                receiver.local_addr(),
+                path,
+                encoding,
+                &std::fs::read(Path::new(FIXTURES).join(name)).unwrap(),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        }
+        let records = log.read().unwrap();
+        let mut tools = 0;
+        for record in &records {
+            let serialized = serde_json::to_string(&record.payload).unwrap();
+            assert!(!serialized.contains("user.email"));
+            if record.signal != Signal::Logs {
+                continue;
+            }
+            let item = &record.payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
+            let attributes = item["attributes"].as_array().unwrap();
+            if attributes.iter().any(|a| {
+                a["key"] == "event.name" && a["value"]["stringValue"] == "codex.tool_result"
+            }) {
+                tools += 1;
+                for key in ["arguments", "output"] {
+                    assert_eq!(attributes.iter().any(|a| a["key"] == key), content, "{key}");
+                }
+                assert!(attributes.iter().any(|a| a["key"] == "tool_name"));
+            }
+        }
+        assert_eq!(tools, 4);
+        receiver.shutdown().await.unwrap();
+        assert_eq!(log.read().unwrap(), records);
+    }
+}

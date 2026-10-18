@@ -439,3 +439,155 @@ fn session_events(home: &std::path::Path, id: &str) -> Vec<Value> {
         })
         .collect()
 }
+
+#[test]
+fn headless_preparation_exports_local_telemetry_identity_versions_and_privacy_defaults() {
+    use std::os::unix::fs::PermissionsExt;
+    for native in [false, true] {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let state = home.path().join("state");
+        fs::create_dir(&state).unwrap();
+        fs::write(
+            state.join("config.toml"),
+            format!("[telemetry]\nnative_tracing = {native}\n"),
+        )
+        .unwrap();
+        let socket = home.path().join("wsd.sock");
+        let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+        let endpoint = fs::read_to_string(state.join("otlp.endpoint")).unwrap();
+        let device = ws_core::device::Device::load(&state).unwrap();
+        let create = |body: Value| {
+            let response = common::request(&socket, "POST", "/v1/sessions", &body.to_string());
+            assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+            serde_json::from_str::<Value>(response.split_once("\r\n\r\n").unwrap().1).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let parent = create(serde_json::json!({}));
+        let id =
+            create(serde_json::json!({"parent_session_id":parent,"workspace_id":"test-project"}));
+        for (agent, version) in [("claude", "2.1.302"), ("codex", "0.159.2")] {
+            let program = home.path().join("fake-agents").join(agent);
+            fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\n[ \"$1\" = --version ] || exit 1\nprintf '{agent} {version}\\n'\n"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            let config = home.path().join(if agent == "claude" {
+                ".claude/settings.json"
+            } else {
+                ".codex/config.toml"
+            });
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            fs::write(&config, "# Preserve the user configuration.\n").unwrap();
+            for resume in [None, Some("resume-123")] {
+                let mut command = common::ws(home.path(), &socket);
+                command.current_dir(home.path()).args([
+                    "agent",
+                    "prepare",
+                    "--agent",
+                    agent,
+                    "--mode",
+                    "headless",
+                    "--session",
+                    &id,
+                ]);
+                if let Some(resume) = resume {
+                    command.args(["--resume", resume]);
+                }
+                let output = command.output().unwrap();
+                assert!(output.status.success(), "{output:?}");
+                let prepared: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(
+                    prepared["telemetry"]["agent_version"],
+                    format!("{agent} {version}")
+                );
+                assert_eq!(prepared["telemetry"]["settings_version"], version);
+                assert_eq!(prepared["telemetry"]["version_covered"], true);
+                let resources = prepared["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+                    .as_str()
+                    .unwrap();
+                for expected in [
+                    format!("{}={id}", ws_core::semconv::SESSION_ID),
+                    format!("{}={parent}", ws_core::semconv::PARENT_SESSION_ID),
+                    format!("{}={}", ws_core::semconv::DEVICE_ID, device.device_id),
+                    format!("{}=test-project", ws_core::semconv::PROJECT),
+                ] {
+                    assert!(
+                        resources.split(',').any(|value| value == expected),
+                        "{resources}"
+                    );
+                }
+                assert_eq!(prepared["env"].get("TRACEPARENT").is_some(), native);
+                if agent == "claude" {
+                    assert_eq!(
+                        prepared["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"],
+                        endpoint.trim()
+                    );
+                } else {
+                    let argv = prepared["argv"].as_array().unwrap();
+                    assert!(argv.iter().any(|a| {
+                        a.as_str()
+                            .is_some_and(|a| a.contains(&format!("{}/v1/logs", endpoint.trim())))
+                    }));
+                }
+                assert_eq!(
+                    fs::read_to_string(&config).unwrap(),
+                    "# Preserve the user configuration.\n"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn shell_preparation_removes_inherited_native_tracing_and_content_switches() {
+    use std::process::Command;
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("wsd.sock");
+    let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    let output = common::ws(home.path(), &socket)
+        .args([
+            "agent",
+            "prepare",
+            "--agent",
+            "claude",
+            "--mode",
+            "headless",
+            "--session",
+            "01K7Q0K5M00000000000000001",
+            "--format",
+            "sh",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    for shell in ["/bin/sh", "zsh"] {
+        let mut probe = Command::new(shell);
+        probe.args(["-c", "eval \"$1\"; /usr/bin/python3 -c 'import json,os; print(json.dumps({k:v for k,v in os.environ.items() if k in os.environ[\"PROBE_KEYS\"].split(\",\")}))'", "probe"])
+            .arg(std::str::from_utf8(&output.stdout).unwrap());
+        let keys = [
+            "TRACEPARENT",
+            "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+            "ENABLE_BETA_TRACING_DETAILED",
+            "BETA_TRACING_ENDPOINT",
+            "OTEL_LOG_USER_PROMPTS",
+            "OTEL_LOG_TOOL_DETAILS",
+            "OTEL_LOG_TOOL_CONTENT",
+        ];
+        probe.env("PROBE_KEYS", keys.join(","));
+        for key in keys {
+            probe.env(key, "inherited");
+        }
+        let output = probe.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}

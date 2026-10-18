@@ -293,6 +293,12 @@ impl Sessions {
             })
             .unwrap_or_default();
         let context = AgentSession {
+            agent_program: None,
+            state: self.state.clone(),
+            parent_session_id: session.body["parent_session_id"]
+                .as_str()
+                .and_then(|id| id.parse().ok()),
+            project: session.workspace_id.clone().unwrap_or_default(),
             id: session.id.to_string(),
             home,
             grok_home: env::var_os("GROK_HOME").map(PathBuf::from),

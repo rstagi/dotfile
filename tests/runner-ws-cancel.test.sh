@@ -76,6 +76,9 @@ EOF
 cat > "$TMP/bin/codex" <<'PY'
 #!/usr/bin/env python3
 import json, os, pathlib, signal, subprocess, sys
+if sys.argv[1:] == ['--version']:
+    print('codex-cli 0.159.2')
+    sys.exit(0)
 if sys.argv[1:3] == ['debug', 'models']:
     print('{"models":[{"slug":"gpt-6-sol","visibility":"list"}]}')
     sys.exit(0)

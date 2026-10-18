@@ -6,6 +6,10 @@ use ws_daemon::agents::{AgentSession, Mode, prepare};
 fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
     let home = tempfile::tempdir().unwrap();
     let context = AgentSession {
+        agent_program: None,
+        state: home.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox-project".into(),
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
@@ -107,6 +111,10 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::tempdir().unwrap();
     let session = AgentSession {
+        agent_program: None,
+        state: home.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox-project".into(),
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
@@ -152,6 +160,10 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
 fn headless_resume_uses_each_agents_noninteractive_mode() {
     let home = tempfile::tempdir().unwrap();
     let context = AgentSession {
+        agent_program: None,
+        state: home.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox-project".into(),
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
@@ -188,6 +200,10 @@ fn headless_resume_uses_each_agents_noninteractive_mode() {
 fn grok_hooks_follow_the_configured_home_inside_the_sandbox() {
     let home = tempfile::tempdir().unwrap();
     let context = AgentSession {
+        agent_program: None,
+        state: home.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox-project".into(),
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: Some(home.path().join("custom-grok")),
@@ -214,6 +230,10 @@ fn mcp_registration_extends_each_launch_mode_and_preserves_user_configuration() 
     std::fs::write(&claude_config, claude_contents).unwrap();
     std::fs::write(&codex_config, codex_contents).unwrap();
     let session = AgentSession {
+        agent_program: None,
+        state: home.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox-project".into(),
         id: "01K7Q0K5M00000000000000001".into(),
         home: home.path().into(),
         grok_home: None,
@@ -277,6 +297,237 @@ fn mcp_registration_extends_each_launch_mode_and_preserves_user_configuration() 
                 assert_eq!(
                     std::fs::read_to_string(&codex_config).unwrap(),
                     codex_contents
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn telemetry_contract_covers_both_agents_in_fresh_and_resumed_launch_modes() {
+    use ws_core::{device::Device, semconv};
+    let home = tempfile::tempdir().unwrap();
+    let state = home.path().join("state");
+    let device = Device::init(&state, "sandbox").unwrap();
+    std::fs::write(state.join("otlp.endpoint"), "http://127.0.0.1:43123\n").unwrap();
+    let parent = "01K7Q0K5M00000000000000002";
+    let context = AgentSession {
+        agent_program: Some("/usr/bin/true".into()),
+        state,
+        parent_session_id: Some(parent.parse().unwrap()),
+        project: "sandbox-project".into(),
+        id: "01K7Q0K5M00000000000000001".into(),
+        home: home.path().into(),
+        grok_home: None,
+        ws_home: home.path().join(".ws"),
+        ws_bin: PathBuf::from("/test/ws"),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    for mode in [Mode::Interactive, Mode::Headless] {
+        for resume in [None, Some("resume-123")] {
+            for agent in ["claude", "codex"] {
+                let prepared = prepare(agent, mode, &context, resume).unwrap();
+                let resources: BTreeMap<_, _> = prepared.env["OTEL_RESOURCE_ATTRIBUTES"]
+                    .split(',')
+                    .map(|part| part.split_once('=').unwrap())
+                    .collect();
+                assert_eq!(resources[semconv::SESSION_ID], context.id);
+                assert_eq!(resources[semconv::PARENT_SESSION_ID], parent);
+                assert_eq!(resources[semconv::DEVICE_ID], device.device_id.to_string());
+                assert_eq!(resources[semconv::PROJECT], "sandbox-project");
+                for key in [
+                    "TRACEPARENT",
+                    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+                    "ENABLE_BETA_TRACING_DETAILED",
+                    "BETA_TRACING_ENDPOINT",
+                    "OTEL_LOG_USER_PROMPTS",
+                    "OTEL_LOG_TOOL_DETAILS",
+                    "OTEL_LOG_TOOL_CONTENT",
+                ] {
+                    assert!(!prepared.env.contains_key(key), "{agent}: {key}");
+                }
+                if agent == "claude" {
+                    assert_eq!(prepared.env["CLAUDE_CODE_ENABLE_TELEMETRY"], "1");
+                    for key in [
+                        "OTEL_METRICS_EXPORTER",
+                        "OTEL_LOGS_EXPORTER",
+                        "OTEL_TRACES_EXPORTER",
+                    ] {
+                        assert_eq!(prepared.env[key], "otlp");
+                    }
+                    assert_eq!(
+                        prepared.env["OTEL_EXPORTER_OTLP_ENDPOINT"],
+                        "http://127.0.0.1:43123"
+                    );
+                    assert_eq!(prepared.env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/json");
+                } else {
+                    for setting in [
+                        "analytics.enabled=true",
+                        "otel.log_user_prompt=false",
+                        "otel.exporter={otlp-http={endpoint=\"http://127.0.0.1:43123/v1/logs\",protocol=\"json\"}}",
+                        "otel.metrics_exporter={otlp-http={endpoint=\"http://127.0.0.1:43123/v1/metrics\",protocol=\"json\"}}",
+                        "otel.trace_exporter=\"none\"",
+                    ] {
+                        assert!(
+                            prepared.argv.windows(2).any(|p| p == ["-c", setting]),
+                            "{setting}"
+                        );
+                    }
+                    assert!(prepared.files.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_tracing_requires_explicit_config_and_uses_the_session_trace() {
+    use ws_core::device::Device;
+    let home = tempfile::tempdir().unwrap();
+    let state = home.path().join("state");
+    Device::init(&state, "sandbox").unwrap();
+    std::fs::write(state.join("otlp.endpoint"), "http://127.0.0.1:43123\n").unwrap();
+    std::fs::write(
+        state.join("config.toml"),
+        "[telemetry]\nnative_tracing = true\n",
+    )
+    .unwrap();
+    let context = AgentSession {
+        agent_program: Some("/usr/bin/true".into()),
+        state,
+        parent_session_id: Some("01K7Q0K5M00000000000000002".parse().unwrap()),
+        project: "sandbox".into(),
+        id: "01K7Q0K5M00000000000000001".into(),
+        home: home.path().into(),
+        grok_home: None,
+        ws_home: home.path().join(".ws"),
+        ws_bin: "/test/ws".into(),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    for mode in [Mode::Interactive, Mode::Headless] {
+        for resume in [None, Some("resume-123")] {
+            for agent in ["claude", "codex"] {
+                let prepared = prepare(agent, mode, &context, resume).unwrap();
+                let traceparent: Vec<_> = prepared.env["TRACEPARENT"].split('-').collect();
+                assert_eq!(traceparent[0], "00");
+                assert_eq!(traceparent[1], "0199ee09968000000000000000000001");
+                assert_eq!(traceparent[2].len(), 16);
+                assert_ne!(traceparent[2], "0000000000000000");
+                assert_eq!(traceparent[3], "01");
+                if agent == "claude" {
+                    assert_eq!(prepared.env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"], "1");
+                    assert_eq!(prepared.env["ENABLE_BETA_TRACING_DETAILED"], "1");
+                    assert_eq!(
+                        prepared.env["BETA_TRACING_ENDPOINT"],
+                        "http://127.0.0.1:43123"
+                    );
+                } else {
+                    assert!(prepared.argv.windows(2).any(|p| p == ["-c", "otel.trace_exporter={otlp-http={endpoint=\"http://127.0.0.1:43123/v1/traces\",protocol=\"json\"}}"]));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn setting_names_and_versions_match_the_captured_s2_contracts() {
+    use std::os::unix::fs::PermissionsExt;
+    use ws_core::device::Device;
+    let home = tempfile::tempdir().unwrap();
+    let state = home.path().join("state");
+    Device::init(&state, "sandbox").unwrap();
+    std::fs::write(state.join("otlp.endpoint"), "http://127.0.0.1:43123\n").unwrap();
+    std::fs::write(
+        state.join("config.toml"),
+        "[telemetry]\nnative_tracing = true\n",
+    )
+    .unwrap();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/spikes/s2");
+    for (agent, manifest) in [
+        ("claude", "manifest.json"),
+        ("codex", "codex-manifest.json"),
+    ] {
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(fixtures.join(manifest)).unwrap()).unwrap();
+        let version = manifest["version"].as_str().unwrap();
+        let program = home.path().join(agent);
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf '{agent} {version}\\n'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let context = AgentSession {
+            agent_program: Some(program),
+            state: state.clone(),
+            parent_session_id: None,
+            project: "sandbox".into(),
+            id: "01K7Q0K5M00000000000000001".into(),
+            home: home.path().into(),
+            grok_home: None,
+            ws_home: home.path().join(".ws"),
+            ws_bin: "/test/ws".into(),
+            spawned: false,
+            prompt: None,
+            arguments: vec![],
+        };
+        let prepared = prepare(agent, Mode::Headless, &context, None).unwrap();
+        let metadata = prepared.telemetry.as_ref().unwrap();
+        assert_eq!(
+            metadata.settings_version, version,
+            "New versions need S2 contract coverage."
+        );
+        assert!(metadata.version_covered);
+        if agent == "claude" {
+            let captured = manifest["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|run| run["label"] == "detailed-json")
+                .unwrap();
+            for (key, value) in &prepared.env {
+                if key.starts_with("WS_") {
+                    continue;
+                }
+                assert!(
+                    captured["settings"].get(key).is_some(),
+                    "The S2 sample does not cover {key}."
+                );
+                if key == "OTEL_RESOURCE_ATTRIBUTES" || key == "TRACEPARENT" {
+                    continue;
+                }
+                assert_eq!(
+                    value.replace(":43123", ":<port>"),
+                    captured["settings"][key].as_str().unwrap()
+                );
+            }
+        } else {
+            let captured = manifest["runs"][0]["otel_flags"].as_array().unwrap();
+            let settings: Vec<_> = prepared
+                .argv
+                .windows(2)
+                .filter(|p| {
+                    p[0] == "-c" && (p[1].starts_with("otel.") || p[1].starts_with("analytics."))
+                })
+                .map(|p| p[1].replace(":43123", ":<port>"))
+                .collect();
+            for setting in &settings {
+                assert!(
+                    captured.iter().any(|value| value == setting),
+                    "The S2 sample does not cover {setting}."
+                );
+            }
+            for setting in captured {
+                if setting.as_str().unwrap().starts_with("otel.environment=") {
+                    continue;
+                }
+                assert!(
+                    settings.iter().any(|value| setting == value),
+                    "Missing captured setting: {setting}"
                 );
             }
         }

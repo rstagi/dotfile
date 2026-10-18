@@ -366,16 +366,40 @@ Configure it in the same file:
 [telemetry]
 port = 0
 retention_days = 30
+native_tracing = false
+content = false
 ```
 
 These are the defaults. Port zero selects an available port.
 `$WS_STATE/otlp.endpoint` contains the bound HTTP endpoint when the daemon is ready.
 A nonzero port selects a fixed port. Restart the daemon after a configuration change.
 
+The shared launch contract reads this endpoint for interactive agents and `ws agent prepare`.
+Claude receives OTLP environment settings. Codex receives independent log and metric exporters through `-c` flags.
+Both agents receive the session, parent, device and project resource attributes.
+Preparation does not change the user's agent configuration files.
+It works without a daemon when the endpoint file is absent, with no telemetry additions.
+
+Native tracing is off by default. Set `native_tracing = true` to enable Claude beta tracing and the Codex trace exporter.
+This also supplies `TRACEPARENT` with the trace ID from the session ULID.
+Parent sessions retain separate trace IDs.
+The contract removes inherited native-tracing and content switches before it applies these settings.
+It does not enable prompt or tool-content logging in either agent.
+`content = true` only permits the receiver to retain Codex tool arguments and output.
+Email redaction stays enabled.
+
+Preparation JSON includes `telemetry.agent_version`, `telemetry.settings_version` and `telemetry.version_covered`.
+The version probe uses `--version`. If the probe fails, the agent version is null.
+The settings versions match the captured S2 manifests: Claude Code 2.1.302 and Codex 0.159.2.
+A different detected version sets `version_covered` to false. It does not prevent launch.
+Contract tests compare setting names and values with those manifests.
+
 The receiver replaces incoming `ws.device.id` resource attributes with the local device ID.
 It appends one durable record per log record, metric or span to `$WS_STATE/telemetry/log.jsonl`.
 Each record has an event ID, its receipt time, the signal type and an OTLP export payload.
-The payload preserves the resource, scope, schema URLs and signal data.
+The receiver removes `user.email` from all signals before storage.
+It also removes `arguments` and `output` from `codex.tool_result` records unless `content = true`.
+Other fields preserve the resource, scope, schema URLs and signal data.
 The receiver syncs each accepted batch before it returns HTTP 200.
 It repairs incomplete crash tails before the next append.
 Retention uses receipt time. The daemon prunes expired records at startup and every minute.

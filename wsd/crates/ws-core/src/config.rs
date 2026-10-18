@@ -23,6 +23,8 @@ pub struct TelemetryConfig {
     /// Zero selects an available port. The daemon publishes its bound endpoint.
     pub port: u16,
     pub retention_days: u64,
+    pub native_tracing: bool,
+    pub content: bool,
 }
 
 impl Config {
@@ -56,6 +58,8 @@ impl Default for TelemetryConfig {
         Self {
             port: 0,
             retention_days: 30,
+            native_tracing: false,
+            content: false,
         }
     }
 }

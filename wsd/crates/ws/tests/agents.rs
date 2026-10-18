@@ -669,6 +669,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         }
         let id = session["id"].as_str().unwrap();
         assert_mcp_registration(&args, agent, id);
+        assert_agent_telemetry(&sandbox, &capture, agent, id);
         let rows = rows.replace(
             &format!("\t{agent}\t\t{id}"),
             &format!("\t{agent}\tresume-{agent}\t{id}"),
@@ -683,6 +684,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         assert_eq!(resumed["id"], id);
         let resumed_args: Vec<String> = serde_json::from_value(resumed["argv"].clone()).unwrap();
         assert_mcp_registration(&resumed_args, agent, id);
+        assert_agent_telemetry(&sandbox, &resumed, agent, id);
         let args = resumed["argv"].as_array().unwrap();
         assert!(args.windows(2).any(|p| p
             == [
@@ -1238,9 +1240,12 @@ impl Sandbox {
             let script = format!(
                 r#"#!/usr/bin/python3
 import json, os, socket, subprocess, sys, tty
+if sys.argv[1:] == ['--version']:
+    print({agent:?} + ' ' + ('2.1.302' if {agent:?} == 'claude' else '0.159.2'))
+    sys.exit(0)
 s = socket.socket(socket.AF_UNIX)
 s.connect({:?})
-s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE')))+'\n').encode())
+s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE'), otel=dict(resource=os.getenv('OTEL_RESOURCE_ATTRIBUTES'), endpoint=os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT'), protocol=os.getenv('OTEL_EXPORTER_OTLP_PROTOCOL'), enabled=os.getenv('CLAUDE_CODE_ENABLE_TELEMETRY'), traceparent=os.getenv('TRACEPARENT'), beta=os.getenv('CLAUDE_CODE_ENHANCED_TELEMETRY_BETA'), prompt=os.getenv('OTEL_LOG_USER_PROMPTS'), detail=os.getenv('OTEL_LOG_TOOL_DETAILS'), content=os.getenv('OTEL_LOG_TOOL_CONTENT'))))+'\n').encode())
 control = s.recv(1)
 if control == b'd':
     tty.setraw(0)
@@ -1448,5 +1453,40 @@ fn assert_mcp_registration(args: &[String], agent: &str, id: &str) {
             args.iter()
                 .any(|arg| arg == &format!("mcp_servers.ws.env.WS_SESSION_ID=\"{id}\""))
         );
+    }
+}
+
+fn assert_agent_telemetry(sandbox: &Sandbox, capture: &Value, agent: &str, id: &str) {
+    use ws_core::{device::Device, semconv};
+    if agent == "grok" {
+        return;
+    }
+    let state = sandbox.home.path().join("state");
+    let device = Device::load(&state).unwrap();
+    let resources: std::collections::BTreeMap<_, _> = capture["otel"]["resource"]
+        .as_str()
+        .unwrap()
+        .split(',')
+        .map(|part| part.split_once('=').unwrap())
+        .collect();
+    assert_eq!(resources[semconv::SESSION_ID], id);
+    assert_eq!(resources[semconv::PARENT_SESSION_ID], "");
+    assert_eq!(resources[semconv::DEVICE_ID], device.device_id.to_string());
+    assert_eq!(resources[semconv::PROJECT], "api/feature");
+    for key in ["traceparent", "beta", "prompt", "detail", "content"] {
+        assert!(capture["otel"][key].is_null(), "{key}");
+    }
+    let endpoint = fs::read_to_string(state.join("otlp.endpoint")).unwrap();
+    if agent == "claude" {
+        assert_eq!(capture["otel"]["endpoint"], endpoint.trim());
+        assert_eq!(capture["otel"]["protocol"], "http/json");
+        assert_eq!(capture["otel"]["enabled"], "1");
+    } else {
+        let args: Vec<String> = serde_json::from_value(capture["argv"].clone()).unwrap();
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains(&format!("{}/v1/logs", endpoint.trim())))
+        );
+        assert!(args.iter().any(|arg| arg == "otel.trace_exporter=\"none\""));
     }
 }
