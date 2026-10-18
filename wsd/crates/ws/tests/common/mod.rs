@@ -17,6 +17,11 @@ pub struct Daemon {
     stderr: tempfile::NamedTempFile,
 }
 
+#[allow(dead_code)]
+pub fn latency_assertions_enabled() -> bool {
+    std::env::var("WS_ASSERT_LATENCY").as_deref() == Ok("1")
+}
+
 impl Daemon {
     pub fn start(command: Command, socket: &Path) -> Self {
         let mut daemon = Self::spawn(command);

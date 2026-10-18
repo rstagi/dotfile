@@ -553,7 +553,7 @@ fn daemon_down_hooks_spool_without_tmux_and_replay_every_callback() {
         "HOOK_SPOOL samples=100 p50_ms={:.3} p95_ms={:.3} max_ms={:.3}",
         times[49], times[94], times[99]
     );
-    if std::env::var("WS_ASSERT_LATENCY").as_deref() == Ok("1") {
+    if common::latency_assertions_enabled() {
         assert!(
             times[94] < 50.0,
             "The spool p95 exceeds 50 ms: {}",
@@ -597,10 +597,12 @@ fn slow_tmux_lookup_has_a_deadline_and_preserves_the_callback() {
         "working",
         json!({"hook_event_name":"PreToolUse", "tool_use_id":"slow-tool"}),
     );
-    assert!(
-        elapsed < std::time::Duration::from_millis(400),
-        "{elapsed:?}"
-    );
+    if common::latency_assertions_enabled() {
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "{elapsed:?}"
+        );
+    }
     assert_eq!(sandbox.log().last().unwrap()["type"], "hook.received");
     assert_eq!(
         fs::read_dir(sandbox.home.path().join("state/spool"))

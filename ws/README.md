@@ -421,7 +421,10 @@ Run `zsh wsd/crates/ws/tests/golden/notify-capture.zsh` to regenerate the zsh no
 Run `cd wsd && cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to check hooks and measure latency.
 This run prints the p95 values of the full ingest path and the daemon-down spool path. It does not assert them.
 Run `cd wsd && WS_ASSERT_LATENCY=1 cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to assert both p95 values below 50 ms.
-Use the assertion only on an idle machine. Parallel loads increase scheduler latency above the limit.
+`WS_ASSERT_LATENCY=1` also enables the 400 ms bound for the slow tmux lookup test.
+Only the exact value `1` enables latency assertions. An unset variable or any other value disables them.
+The slow lookup test always checks the callback and the spool count.
+Enable latency assertions only on an idle machine. Parallel loads increase scheduler latency above the limit.
 Run `zsh wsd/crates/ws/tests/golden/hook-capture.zsh` to regenerate the zsh hook state fixture.
 Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.
 The tests use fake agents and private tmux servers. Preparation tests also compare the existing zsh builders.
