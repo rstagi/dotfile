@@ -781,7 +781,7 @@ pub(crate) async fn tmux_server(
     path: Option<&str>,
     args: &[&str],
 ) -> io::Result<String> {
-    let mut command = tokio::process::Command::new("tmux");
+    let mut command = tokio::process::Command::from(crate::tmux::client());
     if let Some(socket) = socket {
         command.args(["-L", socket]);
     } else if let Some(path) = path {

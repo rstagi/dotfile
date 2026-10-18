@@ -21,6 +21,8 @@ export WS_RUST_BIN
 export WS_NOTIFY=0 WS_TMUX_SOCKET="loop-ws-test-$$"
 export LOOP_WS_SESSIONS=1
 export LOOP_JEV_MODE=off LOOP_JEV_KEY_FILE="$TMP/no-key"
+# Only $TMP/bin supplies ws. The "missing" case removes it, and a host ws must not replace it.
+PATH="$(path_without_command ws)"
 mkdir -p "$TMP/bin" "$TMP/work tree"
 # A fake launchctl records any daemon autostart during the readiness probe.
 cat > "$TMP/bin/launchctl" <<EOF

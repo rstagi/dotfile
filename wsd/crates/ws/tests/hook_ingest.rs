@@ -113,6 +113,10 @@ struct HookSandbox {
 
 impl HookSandbox {
     fn new() -> Self {
+        Self::start(|_| {})
+    }
+
+    fn start(configure_daemon: impl FnOnce(&mut std::process::Command)) -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         let server = format!(
             "ws-hook-{}-{}",
@@ -146,6 +150,7 @@ impl HookSandbox {
             .unwrap();
         let mut command = ws(home.path(), &socket);
         command.env("WS_TMUX_SOCKET", &server);
+        configure_daemon(&mut command);
         let daemon = Daemon::start(command, &socket);
         let created = request(&socket, "POST", "/v1/sessions", "{}");
         let created: Value =
@@ -287,6 +292,31 @@ impl HookSandbox {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
     }
+}
+
+#[test]
+fn hooks_apply_when_the_daemon_has_no_utf8_locale() {
+    // launchd starts the daemon without LANG and without LC_* variables.
+    // Without a UTF-8 locale, a tmux client prints control characters as "_".
+    // TMUX in the environment also makes the tmux client use UTF-8. launchd does not set TMUX.
+    let sandbox = HookSandbox::start(|daemon| {
+        for (key, _) in std::env::vars_os() {
+            let key = key.to_string_lossy();
+            if key == "LANG" || key.starts_with("LC_") || key.starts_with("TMUX") {
+                daemon.env_remove(key.as_ref());
+            }
+        }
+    });
+    sandbox.post(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "turn_id":"t1"}),
+        100,
+    );
+    assert!(
+        sandbox.options().starts_with("working|working|t1|"),
+        "{}",
+        sandbox.options()
+    );
 }
 
 #[test]

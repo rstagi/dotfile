@@ -14,8 +14,9 @@ real_tmux="$(command -v tmux)"
 mkdir -p "$HOME/fake-agents"
 cat > "$HOME/fake-agents/tmux" <<EOF_TMUX
 #!/bin/sh
-case "\$3" in
-  attach-session|switch-client) printf '%s\\n' "\$@" > "\$HOME/focus"; exit 0 ;;
+# Global options such as -u and -L come before the command name.
+case " \$* " in
+  *" attach-session "*|*" switch-client "*) printf '%s\\n' "\$@" > "\$HOME/focus"; exit 0 ;;
 esac
 exec ${(q)real_tmux} "\$@"
 EOF_TMUX

@@ -61,6 +61,18 @@ test_summary() {
   exit 1
 }
 
+# path_without_command <name> — print $PATH without each directory that holds an executable <name>.
+# Use it when a test must control <name>: a host installation must not replace a test double.
+path_without_command() {
+  local directory
+  local -a kept=()
+  for directory in ${(s.:.)PATH}; do
+    [[ -f "$directory/$1" && -x "$directory/$1" ]] && continue
+    kept+=("$directory")
+  done
+  print -r -- "${(j.:.)kept}"
+}
+
 # Start a private Rust daemon on $WS_SOCK. The caller must stop WS_TEST_DAEMON_PID on exit.
 # The probe pings only after the socket exists: `ws ping` autostarts a daemon when the socket is missing.
 start_ws_test_daemon() {

@@ -12,6 +12,7 @@
   <dict>
     <key>HOME</key><string>@HOME@</string>
     <key>PATH</key><string>@PATH@</string>
+    <key>LANG</key><string>@LANG@</string>
     <key>WS_HOME</key><string>@WS_HOME@</string>
     <key>WS_STATE</key><string>@WS_STATE@</string>
     <key>WS_SOCK</key><string>@WS_SOCK@</string>

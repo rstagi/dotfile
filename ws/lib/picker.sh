@@ -58,12 +58,15 @@ configure_bindings() {
   local add_cmd="$ws_command add #{q:@ws_path}"
   tmux_ set-hook -g 'session-window-changed[77]' 'set -wu @ws_unread'
   tmux_ set-hook -g 'client-session-changed[77]' 'set -wu @ws_unread'
+  # The tmux parser reads an unquoted "#" at the start of a word as a comment. Quote each format.
+  # display-popup expands the -d format. The path needs no other quotes.
+  local start_dir="-d '#{pane_current_path}'"
   tmux_ bind-key w if-shell -F "$in_ws" \
-    "display-popup -E -w 90% -h 85% -d #{qa:pane_current_path} ${(q)pick_cmd}" "choose-tree -Zw"
+    "display-popup -E -w 90% -h 85% $start_dir ${(q)pick_cmd}" "choose-tree -Zw"
   tmux_ bind-key N if-shell -F "$in_ws" \
-    "display-popup -E -w 60% -h 50% -d #{qa:pane_current_path} ${(q)new_cmd}"
+    "display-popup -E -w 60% -h 50% $start_dir ${(q)new_cmd}"
   tmux_ bind-key M if-shell -F "$in_ws" \
-    "display-popup -E -w 70% -h 50% -d #{qa:pane_current_path} ${(q)merge_cmd}"
+    "display-popup -E -w 70% -h 50% $start_dir ${(q)merge_cmd}"
   tmux_ bind-key a if-shell -F "$in_ws" "run-shell ${(q)add_cmd}"
   add_cmd="$ws_command add #{q:@ws_path} --agent codex"
   tmux_ bind-key A if-shell -F "$in_ws" "run-shell ${(q)add_cmd}"

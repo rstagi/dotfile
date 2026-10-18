@@ -44,6 +44,8 @@ unset WS_SESSION_ID WS_SESSION TMUX TMUX_PANE
 export WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock"
 export WS_RUST_BIN WS_NOTIFY=0 WS_TMUX_SOCKET="loop-ws-cancel-$$"
 export LOOP_WS_SESSIONS=1 LOOP_CONTROL_POLL_SEC=0.05 LOOP_JEV_MODE=off
+# Only $TMP/bin supplies ws. A host ws must not reach the runner or the test daemon.
+PATH="$(path_without_command ws)"
 mkdir -p "$TMP/bin" "$TMP/worktree"
 start_ws_test_daemon || exit 1
 cat > "$TMP/bin/ws" <<'EOF'

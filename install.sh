@@ -6,6 +6,7 @@ REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
 gcloud_installed=false
+PREREQUISITE_FORMULAE=(openssl readline sqlite3 xz zlib graphviz jq git tree ack fzf shellcheck trash-cli font-jetbrains-mono-nerd-font)
 
 # Dependency mapping
 get_dependencies() {
@@ -82,12 +83,30 @@ install_prerequisites() {
     eval "$(/opt/homebrew/bin/brew shellenv)"
   else
     echo "brew is already installed"
-    brew update && brew upgrade
+    if [ "$INTERACTIVE_MODE" = true ]; then
+      brew update && brew upgrade
+    else
+      brew_upgrade_plan
+    fi
   fi
 
   # Install necessary dependencies
   echo "Installing dependencies..."
-  brew install openssl readline sqlite3 xz zlib graphviz jq git tree ack fzf shellcheck trash-cli font-jetbrains-mono-nerd-font
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    brew install "${PREREQUISITE_FORMULAE[@]}"
+  else
+    # A package install does not upgrade formulae that are already installed.
+    HOMEBREW_NO_INSTALL_UPGRADE=1 brew install "${PREREQUISITE_FORMULAE[@]}"
+  fi
+}
+
+# Only the full interactive install upgrades every brew formula.
+brew_upgrade_plan() {
+  if [ "$INTERACTIVE_MODE" = true ]; then
+    echo "Run brew update && brew upgrade (full install)"
+  else
+    echo "Skip the global brew upgrade (package install)"
+  fi
 }
 
 # Setup core configuration (always run)
@@ -128,6 +147,19 @@ is_already_installed() {
 
 install_pkg() {
   brew update && brew install ${2:+"$2"} "$1"
+}
+
+# link_file <source> <link> — make <link> a symbolic link to <source>.
+# Skip the step when <link> already points to <source>. Keep a different file and print a warning.
+link_file() {
+  if [ "$2" -ef "$1" ]; then
+    echo "$2 already links to $1"
+  elif [ -e "$2" ] || [ -L "$2" ]; then
+    echo "Warning: $2 exists and is not a link to $1. The installer keeps it." >&2
+    echo "To use the dotfile version, run: ln -sfn $1 $2" >&2
+  else
+    ln -s "$1" "$2"
+  fi
 }
 
 read_yes() {
@@ -330,9 +362,15 @@ install_node() {
 }
 
 install_rust() {
-  install_pkg_if_needed "rustup" || return 1
-  local rustup_bin
-  rustup_bin="$(brew --prefix rustup)/bin"
+  local rustup_path rustup_bin
+  # An existing rustup counts as installed, also when it does not come from brew.
+  if rustup_path="$(command -v rustup)"; then
+    echo "rustup is already installed: $rustup_path"
+    rustup_bin="$(dirname "$rustup_path")"
+  else
+    install_pkg_if_needed "rustup" || return 1
+    rustup_bin="$(brew --prefix rustup)/bin"
+  fi
   export PATH="$HOME/.cargo/bin:$rustup_bin:$PATH"
   "$rustup_bin/rustup" default stable
 }
@@ -462,7 +500,8 @@ install_ws_daemon() {
   uid="$(id -u)"
   content="$(cat "$HOME/dotfile/wsd/launchd/$label.plist")" || return 1
   # WS_ROOT locates workspaces. An empty WS_TMUX_SOCKET selects the default tmux server.
-  for key in WS_HOME WS_STATE WS_SOCK WS_ROOT WS_TMUX_SOCKET HOME PATH; do
+  # launchd gives the daemon no locale. LANG keeps the daemon and its children in UTF-8.
+  for key in WS_HOME WS_STATE WS_SOCK WS_ROOT WS_TMUX_SOCKET HOME PATH LANG; do
     case "$key" in
       WS_HOME) value="$ws_home" ;;
       WS_ROOT) value="${WS_ROOT:-$HOME/.ws/worktrees}" ;;
@@ -471,6 +510,7 @@ install_ws_daemon() {
       WS_SOCK) value="${WS_SOCK:-$HOME/.ws/wsd.sock}" ;;
       HOME) value="$HOME" ;;
       PATH) value="$PATH" ;;
+      LANG) value="${LANG:-en_US.UTF-8}" ;;
     esac
     escaped="$(printf '%s' "$value" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
     content="${content//@$key@/$escaped}"
@@ -561,8 +601,12 @@ install_docker() {
 install_tmux() {
   if install_pkg_if_needed "tmux"; then
     configure_tmux() {
-      git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-      ln -s "$HOME"/dotfile/.tmux.conf "$HOME"/.tmux.conf
+      if [ -d "$HOME/.tmux/plugins/tpm" ]; then
+        echo "tpm is already installed"
+      else
+        git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm" || return 1
+      fi
+      link_file "$HOME/dotfile/.tmux.conf" "$HOME/.tmux.conf"
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure tmux?"; then
@@ -765,6 +809,7 @@ main() {
   # Always install prerequisites and core setup (unless dry-run)
   if [ "$DRY_RUN" = true ]; then
     echo "=== DRY RUN: Would install prerequisites and core setup ==="
+    echo "  $(brew_upgrade_plan)"
   else
     install_prerequisites
     setup_core
@@ -833,7 +878,7 @@ preview_package() {
   done
   case "$package" in
     rust)
-      echo "  brew install rustup"
+      echo "  brew install rustup (skipped when rustup is on PATH)"
       echo "  rustup default stable"
       ;;
     ws)
