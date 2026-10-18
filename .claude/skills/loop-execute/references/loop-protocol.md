@@ -136,7 +136,8 @@ no stacking.
 
 Supervise makes a `visual-explainer` page when a milestone ships and when a milestone starts.
 A milestone ships at its merge gate (the park) or at the end of the plan (the finish). A
-detached explainer runner writes the props. Supervise only renders, publishes and links. A
+detached explainer runner writes the props and the narration. Supervise only renders the page
+and the video, publishes and links. A
 failed explainer never blocks the park, the finish or the resume.
 
 The finish row applies to every plan. A plan with no milestones is milestone 1. Its finish
@@ -155,17 +156,18 @@ Spawn the runner detached, like § Runner spawn. It is not a phase attempt, so i
 nohup "$RUNTIME_ROOT/loop-runner.sh" --worktree <integration worktree of the first participant> \
   --run-dir <abs .loop/runs/explainer-m<n>-<mode>-a<k>> --prompt-file <run dir>/prompt.md \
   --chain task --timeout 900 \
-  --verify-cmd 'node <RUNTIME_ROOT>/.claude/skills/visual-explainer/scripts/render.mjs --props <abs output dir>/props.json --check' \
+  --verify-cmd 'node <RUNTIME_ROOT>/.claude/skills/visual-explainer/scripts/render-video.mjs --props <abs output dir>/props.json --narration <abs output dir>/narration.json --check' \
   > <run dir>/spawn.log 2>&1 &
 echo $! > <run dir>/pid; disown
 ```
 
-- Exit 0: supervise renders, publishes and writes `link.txt`, as the skill tells it.
+- Exit 0: supervise renders the page and the video, publishes and writes `link.txt`, as the
+  skill tells it.
 - Exit 12: one relaunch in `-a<k+1>` with the `verify.log` tail in the prompt.
 - Any other exit, or a second failure: write the reason to `error.txt` and make no page.
 
-The steps are idempotent. A `props.json` that passes `--check` needs no runner. For a `ship`
-page, the retro file of § Milestone retrospective must also exist. A publish
+The steps are idempotent. A `props.json` and a `narration.json` that pass `--check` need no
+runner. For a `ship` page, the retro file of § Milestone retrospective must also exist. A publish
 goes again to the URL in `link.txt`. At the park and at the finish, a `ship` link that is an
 artifact URL also goes into the PR body of each participating repository. It is one line with
 the marker `<!-- loop-explainer:m<n>-ship -->`.
@@ -175,7 +177,8 @@ Explainer runner prompt skeleton:
 ```
 You are a Loop explainer runner: fully non-interactive, nobody reads your output live.
 RUN_DIR is <abs path>. Use the visual-explainer skill in <mode> mode.
-Write only <abs output dir>/props.json. Do not render or publish the page.
+Write only <abs output dir>/props.json and <abs output dir>/narration.json.
+Do not render or publish the page or the video.
 Ship only: also write the retro file <abs .loop>/milestones/m<n>.retro.md.
 Do not commit, push, or edit a repository file, the plan or the state.
 
@@ -195,9 +198,10 @@ step 3). When the code contradicts the plan, follow the code and add a deviation
 Ship only: write the props `process` and `setbacks` and the retro file from the same facts.
 Write the retro file `<abs .loop>/milestones/m<n>.retro.md` in the format of loop-protocol.md
 § Milestone retrospective. When there are no retro facts, omit `process` and `setbacks`, and
-write the retro from the other facts.
+write the retro from the other facts. The narration also explains the setbacks section.
 
-WHEN FINISHED: run `node <skill>/scripts/render.mjs --props <props> --check` until it exits 0.
+WHEN FINISHED: run `node <skill>/scripts/render-video.mjs --props <props> --narration <narration> --check`
+until it exits 0.
 Then write RUN_DIR/status.json with outcome "done" and a one-line summary.
 If you cannot finish, write outcome "blocked" with the reason in details.
 ```
@@ -343,11 +347,14 @@ State lives in the launching coordinator checkout (add `.loop/` to
     plan/                    # whole-plan page from multiphase-plan step 5
     m<n>-<plan|ship>/        # milestone n: plan page at resume, ship page at the gate or the finish
       props.json             # written by the explainer runner (or the planner)
+      narration.json         # written by the explainer runner (or the planner)
       retro-facts.json       # ship only: loop-retro.mjs --json output, written by supervise
       retro-error.txt        # ship only: why the retro file is missing
       index.html             # rendered by supervise (or the planner)
+      video.mp4              # rendered by supervise (or the planner), embedded in index.html
       link.txt               # artifact URL, or the absolute path of index.html
       error.txt              # the failure reason, when the explainer failed
+      video-error.txt        # the failure reason, when only the video failed
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
   notes/<key>.md             # explicit phase number; legacy pr-review.* keys accepted
