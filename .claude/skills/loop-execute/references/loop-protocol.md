@@ -227,6 +227,9 @@ output is the retro facts.
 node "$RUNTIME_ROOT/loop-retro.mjs" --dir .loop --milestone <n> --json > .loop/explainers/m<n>-ship/retro-facts.json
 ```
 
+When the command fails, supervise removes `retro-facts.json`. The runner then works without
+retro facts.
+
 `loop-retro.mjs` reads the artifacts of milestone n and prints facts only. It never gives a
 cause. An unknown value is `null`. The facts are:
 

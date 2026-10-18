@@ -476,6 +476,7 @@ final milestone is an ordinary terminal review (finish below):
    (protocol § Milestone explainers). The output directory is `.loop/explainers/m<n>-ship/`.
    - Collect the retro facts (protocol § Milestone retrospective):
      `node "$RUNTIME_ROOT/loop-retro.mjs" --dir .loop --milestone <n> --json > .loop/explainers/m<n>-ship/retro-facts.json`.
+     When the command fails, remove that file and go on without retro facts.
    - Supervise does not write the props. Reuse a `props.json` that passes the skill's
      `--check` when `.loop/milestones/m<n>.retro.md` exists. Otherwise spawn one detached
      explainer runner and wait for its `meta.json`. It writes the props and
@@ -509,6 +510,7 @@ milestone of a plan, or the final review of a plan with no milestones.
    where n is `state.milestone`.
    - Collect the retro facts (protocol § Milestone retrospective):
      `node "$RUNTIME_ROOT/loop-retro.mjs" --dir .loop --milestone <n> --json > .loop/explainers/m<n>-ship/retro-facts.json`.
+     When the command fails, remove that file and go on without retro facts.
    - Supervise does not write the props. Reuse a `props.json` that passes the skill's
      `--check` when `.loop/milestones/m<n>.retro.md` exists. Otherwise spawn one detached
      explainer runner and wait for its `meta.json`. It writes the props and
