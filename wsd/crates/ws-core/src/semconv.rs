@@ -35,6 +35,15 @@ pub const PHASE_ID: &str = "ws.phase.id";
 pub const PHASE_ATTEMPT: &str = "ws.phase.attempt";
 pub const REASON: &str = "ws.session.reason";
 
+// GenAI model-call attributes.
+pub const GEN_AI_OPERATION_NAME: &str = "gen_ai.operation.name";
+pub const GEN_AI_PROVIDER_NAME: &str = "gen_ai.provider.name";
+pub const GEN_AI_REQUEST_MODEL: &str = "gen_ai.request.model";
+pub const GEN_AI_INPUT_TOKENS: &str = "gen_ai.usage.input_tokens";
+pub const GEN_AI_OUTPUT_TOKENS: &str = "gen_ai.usage.output_tokens";
+pub const GEN_AI_CACHE_READ_INPUT_TOKENS: &str = "gen_ai.usage.cache_read.input_tokens";
+pub const GEN_AI_CACHE_CREATION_INPUT_TOKENS: &str = "gen_ai.usage.cache_creation.input_tokens";
+
 // Spans.
 pub const TURN_SPAN: &str = "ws.session.turn";
 pub const TOOL_SPAN: &str = "ws.session.tool";

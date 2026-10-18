@@ -1,21 +1,27 @@
-//! Canonical turn and tool spans from durable hook events.
+//! Canonical turn, tool and model spans from durable events.
 
 use std::{
     collections::{HashMap, HashSet},
     io,
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use serde_json::{Value, json};
 use ws_core::{
-    ids::{DeviceId, SessionId},
+    ids::{DeviceId, EventId, SessionId},
     log::LogEntry,
     semconv,
-    telemetry_log::{Signal, TelemetryLog},
+    telemetry_log::{Signal, TelemetryLog, TelemetryRecord},
 };
 
+pub(crate) type SharedSpans = Arc<Mutex<Spans>>;
+
 pub(crate) struct Spans {
+    state: PathBuf,
+    device: DeviceId,
     log: TelemetryLog,
+    native_tracing: bool,
     written: HashSet<(String, String)>,
     sessions: HashMap<SessionId, SessionSpans>,
 }
@@ -23,7 +29,10 @@ pub(crate) struct Spans {
 #[derive(Clone, Default)]
 struct SessionSpans {
     resource: Vec<Value>,
+    exited: bool,
+    relations: HashMap<String, SessionId>,
     turn: Option<Turn>,
+    closed_turns: Vec<Turn>,
     tool_results: HashMap<String, u64>,
 }
 
@@ -33,6 +42,7 @@ struct Turn {
     span: Value,
     tools: HashMap<String, Value>,
     seen_tools: HashSet<String>,
+    boundaries: Vec<u64>,
 }
 
 impl Spans {
@@ -46,7 +56,7 @@ impl Spans {
             let span = &record.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
             if matches!(
                 span["name"].as_str(),
-                Some(semconv::TURN_SPAN | semconv::TOOL_SPAN)
+                Some(semconv::TURN_SPAN | semconv::TOOL_SPAN | semconv::MODEL_CALL_SPAN)
             ) {
                 written.insert((
                     span["traceId"].as_str().unwrap_or("").into(),
@@ -55,6 +65,11 @@ impl Spans {
             }
         }
         Ok(Self {
+            state: state.into(),
+            device,
+            native_tracing: ws_core::config::Config::load(state)?
+                .telemetry
+                .native_tracing,
             log,
             written,
             sessions: HashMap::new(),
@@ -86,12 +101,18 @@ impl Spans {
         if !matches!(
             event,
             "session.created"
+                | "edge.added"
+                | "edge.removed"
+                | "session.depends_on"
                 | "turn.started"
                 | "turn.ended"
                 | "turn.continued"
                 | "turn.cancelled"
                 | "tool.pre"
                 | "tool.post"
+                | "agent.waiting"
+                | "subagent.started"
+                | "subagent.stopped"
                 | "exit"
                 | "process.exited"
                 | "session.failed"
@@ -110,6 +131,9 @@ impl Spans {
                     | "turn.cancelled"
                     | "tool.pre"
                     | "tool.post"
+                    | "agent.waiting"
+                    | "subagent.started"
+                    | "subagent.stopped"
             )
         {
             return Ok(());
@@ -123,6 +147,19 @@ impl Spans {
         let result = entry.body["callback_id"]
             .as_str()
             .and_then(|id| state.tool_results.remove(id));
+        if matches!(
+            event,
+            "exit"
+                | "process.exited"
+                | "session.failed"
+                | "session.finished"
+                | "session.orphaned"
+                | "done"
+        ) {
+            state.exited = true;
+        } else if event == "turn.started" {
+            state.exited = false;
+        }
         let mut finished = Vec::new();
         if event == "session.created" {
             state.resource = vec![attribute(semconv::SESSION_ID, entry.session_id.to_string())];
@@ -134,12 +171,30 @@ impl Spans {
                     state.resource.push(attribute(key, value));
                 }
             }
+            if let Some(parent) = entry.body["parent_session_id"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+            {
+                state.relations.insert("parent".into(), parent);
+            }
+        } else if event == "edge.added" || event == "session.depends_on" {
+            if (event == "session.depends_on"
+                || matches!(entry.body["kind"].as_str(), Some("parent" | "depends_on")))
+                && let Some(target) = entry.body["target"].as_str().and_then(|s| s.parse().ok())
+            {
+                state.relations.insert(entry.event_id.to_string(), target);
+            }
+        } else if event == "edge.removed" {
+            if let Some(edge) = entry.body["edge_id"].as_str() {
+                state.relations.remove(edge);
+            }
         } else if event == "turn.started" {
             close_turn(&mut state, entry, true, &mut finished);
             let id = turn_id(entry)
                 .map(str::to_owned)
                 .unwrap_or_else(|| entry.event_id.to_string());
             let mut span = new_span(entry, semconv::TURN_SPAN);
+            span["links"] = json!(self.segment_links(&state, &span)?);
             span["attributes"]
                 .as_array_mut()
                 .unwrap()
@@ -149,6 +204,7 @@ impl Spans {
                 span,
                 tools: HashMap::new(),
                 seen_tools: HashSet::new(),
+                boundaries: vec![timestamp(entry)],
             });
         } else if let Some(turn) = state.turn.as_mut() {
             let same_turn = turn
@@ -156,6 +212,21 @@ impl Spans {
                 .as_deref()
                 .zip(turn_id(entry))
                 .is_none_or(|(current, incoming)| current == incoming);
+            if same_turn
+                && matches!(
+                    event,
+                    "tool.pre"
+                        | "tool.post"
+                        | "turn.continued"
+                        | "turn.ended"
+                        | "turn.cancelled"
+                        | "agent.waiting"
+                        | "subagent.started"
+                        | "subagent.stopped"
+                )
+            {
+                turn.boundaries.push(timestamp(entry));
+            }
             match event {
                 "tool.pre" if same_turn => {
                     if let Some(id) = entry.body["tool_use_id"]
@@ -195,6 +266,17 @@ impl Spans {
                 _ => {}
             }
         }
+        for span in &mut finished {
+            if span["name"] == semconv::TURN_SPAN {
+                let links = self.segment_links(&state, span)?;
+                let existing = span["links"].as_array_mut().unwrap();
+                for link in links {
+                    if !existing.contains(&link) {
+                        existing.push(link);
+                    }
+                }
+            }
+        }
         let pending: Vec<_> = finished
             .into_iter()
             .filter(|span| !self.written.contains(&identity(span)))
@@ -205,7 +287,123 @@ impl Spans {
             self.written.extend(pending.iter().map(identity));
         }
         self.sessions.insert(entry.session_id, state);
+        self.synthesize_models()
+    }
+
+    /// Joins durable agent records to observed turn intervals. Replay retains each span identity.
+    pub(crate) fn synthesize_models(&mut self) -> io::Result<()> {
+        let records = self.log.read()?;
+        for source in records.iter().filter(|r| r.signal == Signal::Logs) {
+            for (ordinal, (resource, model)) in
+                signal_records(&source.payload, Signal::Logs).enumerate()
+            {
+                let name = string_attribute(model, semconv::EVENT_NAME);
+                let claude = model["body"]["stringValue"] == "claude_code.api_request"
+                    || name == Some("claude_code.api_request");
+                let codex = name == Some("codex.sse_event")
+                    && string_attribute(model, "event.kind") == Some("response.completed");
+                if !claude && !codex {
+                    continue;
+                }
+                if codex && numeric_attribute(model, "output_token_count").is_none_or(|n| n == 0) {
+                    continue;
+                }
+                let Some(session) = string_attribute(&resource["resource"], semconv::SESSION_ID)
+                    .or_else(|| string_attribute(model, semconv::SESSION_ID))
+                    .and_then(|s| s.parse::<SessionId>().ok())
+                else {
+                    continue;
+                };
+                let Some(state) = self.sessions.get(&session) else {
+                    continue;
+                };
+                let Some(time) = number(&model["timeUnixNano"])
+                    .filter(|t| *t > 0)
+                    .or_else(|| number(&model["observedTimeUnixNano"]))
+                else {
+                    continue;
+                };
+                let Some(turn) = state
+                    .closed_turns
+                    .iter()
+                    .chain(state.turn.iter())
+                    .find(|turn| {
+                        let start = number(&turn.span["startTimeUnixNano"]).unwrap();
+                        start <= time && time <= *turn.boundaries.last().unwrap()
+                    })
+                else {
+                    continue;
+                };
+                let (start, end, timing) = if claude {
+                    let Some(duration) = numeric_attribute(model, "duration_ms") else {
+                        continue;
+                    };
+                    (
+                        time.saturating_sub(duration.saturating_mul(1_000_000)),
+                        time,
+                        "measured",
+                    )
+                } else if let Some((start, end)) = native_interval(&records, session, time) {
+                    (start, end, "measured")
+                } else {
+                    // Native exporters flush independently. Retain pending records until timing or exit.
+                    if self.native_tracing && !state.exited {
+                        continue;
+                    }
+                    let Some(window) = turn
+                        .boundaries
+                        .windows(2)
+                        .find(|w| w[0] <= time && time <= w[1])
+                    else {
+                        continue;
+                    };
+                    (window[0], window[1], "estimated")
+                };
+                let attributes = model_attributes(model, claude, source.event_id, timing);
+                let span = json!({"traceId":turn.span["traceId"],
+                    "spanId":format!("{:016x}", (u128::from(source.event_id) as u64).wrapping_add(ordinal as u64 + 1).max(1)),
+                    "parentSpanId":turn.span["spanId"], "name":semconv::MODEL_CALL_SPAN,"kind":3,
+                    "startTimeUnixNano":start.to_string(),"endTimeUnixNano":end.to_string(),
+                    "attributes":attributes,"status":{"code":1}});
+                if !self.written.contains(&identity(&span)) {
+                    let payload = json!({"resourceSpans":[{"resource":{"attributes":state.resource},"scopeSpans":[{"scope":{"name":"ws.spans","version":semconv::VERSION},"spans":[span]}]}]});
+                    self.log
+                        .append(Signal::Traces, vec![payload], source.received_at_ms)?;
+                    self.written.insert(identity(&span));
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn segment_links(&self, state: &SessionSpans, current: &Value) -> io::Result<Vec<Value>> {
+        let mut links = Vec::new();
+        if let Some(previous) = state
+            .closed_turns
+            .iter()
+            .rev()
+            .find(|turn| turn.span["spanId"] != current["spanId"])
+        {
+            links
+                .push(json!({"traceId":previous.span["traceId"],"spanId":previous.span["spanId"]}));
+        }
+        let mut targets: Vec<_> = state.relations.values().copied().collect();
+        targets.sort();
+        targets.dedup();
+        for target in targets {
+            let entries = ws_core::log::SessionLog::new(&self.state, target, self.device)
+                .read()?
+                .entries;
+            for entry in entries {
+                if matches!(entry.event_type.as_str(), "turn.started" | "phase.started")
+                    && entry.body["state_accepted"] != false
+                {
+                    let span = new_span(&entry, semconv::TURN_SPAN);
+                    links.push(json!({"traceId":span["traceId"],"spanId":span["spanId"]}));
+                }
+            }
+        }
+        Ok(links)
     }
 }
 
@@ -280,7 +478,9 @@ fn close_turn(state: &mut SessionSpans, entry: &LogEntry, error: bool, finished:
         if error { 2 } else { 1 },
         closure_name(entry),
     );
-    finished.push(turn.span);
+    turn.boundaries.push(timestamp(entry));
+    finished.push(turn.span.clone());
+    state.closed_turns.push(turn);
 }
 
 fn new_span(entry: &LogEntry, name: &str) -> Value {
@@ -344,6 +544,159 @@ fn attribute(key: &str, value: impl Into<String>) -> Value {
     json!({"key": key, "value": {"stringValue": value.into()}})
 }
 
+fn signal_records(payload: &Value, signal: Signal) -> impl Iterator<Item = (&Value, &Value)> {
+    let (scopes, items) = match signal {
+        Signal::Logs => ("scopeLogs", "logRecords"),
+        Signal::Traces => ("scopeSpans", "spans"),
+        Signal::Metrics => ("scopeMetrics", "metrics"),
+    };
+    payload[signal.resource_key()]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(move |resource| {
+            resource[scopes]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(move |scope| {
+                    scope[items]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(move |item| (resource, item))
+                })
+        })
+}
+
+fn model_attributes(model: &Value, claude: bool, event_id: EventId, timing: &str) -> Vec<Value> {
+    let mut attributes = vec![
+        attribute(semconv::SEMCONV_VERSION, semconv::VERSION),
+        attribute(semconv::EVENT_ID, event_id.to_string()),
+        attribute(semconv::TIMING, timing),
+        attribute(semconv::GEN_AI_OPERATION_NAME, "chat"),
+        attribute(
+            semconv::GEN_AI_PROVIDER_NAME,
+            if claude { "anthropic" } else { "openai" },
+        ),
+    ];
+    for producer in model["attributes"].as_array().into_iter().flatten() {
+        if matches!(
+            producer["key"].as_str(),
+            Some(
+                "model"
+                    | "request_id"
+                    | "input_tokens"
+                    | "output_tokens"
+                    | "cache_read_tokens"
+                    | "cache_creation_tokens"
+                    | "input_token_count"
+                    | "output_token_count"
+                    | "cached_token_count"
+                    | "cache_write_token_count"
+                    | "reasoning_token_count"
+                    | "duration_ms"
+            )
+        ) {
+            attributes.push(producer.clone());
+        }
+    }
+    if let Some(model) = string_attribute(model, "model") {
+        attributes.push(attribute(semconv::GEN_AI_REQUEST_MODEL, model));
+    }
+    for (target, claude_source, codex_source) in [
+        (
+            semconv::GEN_AI_INPUT_TOKENS,
+            "input_tokens",
+            "input_token_count",
+        ),
+        (
+            semconv::GEN_AI_OUTPUT_TOKENS,
+            "output_tokens",
+            "output_token_count",
+        ),
+        (
+            semconv::GEN_AI_CACHE_READ_INPUT_TOKENS,
+            "cache_read_tokens",
+            "cached_token_count",
+        ),
+        (
+            semconv::GEN_AI_CACHE_CREATION_INPUT_TOKENS,
+            "cache_creation_tokens",
+            "cache_write_token_count",
+        ),
+    ] {
+        let source = if claude { claude_source } else { codex_source };
+        if let Some(mut tokens) = numeric_attribute(model, source) {
+            if claude && target == semconv::GEN_AI_INPUT_TOKENS {
+                tokens = tokens
+                    .saturating_add(numeric_attribute(model, "cache_read_tokens").unwrap_or(0))
+                    .saturating_add(numeric_attribute(model, "cache_creation_tokens").unwrap_or(0));
+            }
+            attributes.push(json!({"key":target,"value":{"intValue":tokens.to_string()}}));
+        }
+    }
+    attributes
+}
+
+fn native_interval(
+    records: &[TelemetryRecord],
+    session: SessionId,
+    time: u64,
+) -> Option<(u64, u64)> {
+    records
+        .iter()
+        .filter(|r| r.signal == Signal::Traces)
+        .flat_map(|r| r.payload["resourceSpans"].as_array().into_iter().flatten())
+        .filter(|r| {
+            string_attribute(&r["resource"], semconv::SESSION_ID)
+                == Some(session.to_string().as_str())
+        })
+        .flat_map(|r| r["scopeSpans"].as_array().into_iter().flatten())
+        .flat_map(|s| s["spans"].as_array().into_iter().flatten())
+        .filter(|s| {
+            matches!(
+                s["name"].as_str(),
+                Some(
+                    "receiving_stream"
+                        | "responses_websocket.stream_request"
+                        | "responses.stream_request"
+                )
+            )
+        })
+        .filter_map(|s| {
+            Some((
+                number(&s["startTimeUnixNano"])?,
+                number(&s["endTimeUnixNano"])?,
+            ))
+        })
+        // Completion export can follow closure within the producer timestamp's millisecond.
+        .filter(|(start, end)| {
+            *start <= time && *start < *end && time / 1_000_000 <= end / 1_000_000
+        })
+        .min_by_key(|(_, end)| end.abs_diff(time))
+}
+
+fn string_attribute<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value["attributes"]
+        .as_array()?
+        .iter()
+        .find(|a| a["key"] == key)?["value"]["stringValue"]
+        .as_str()
+}
+
+fn numeric_attribute(value: &Value, key: &str) -> Option<u64> {
+    let value = &value["attributes"]
+        .as_array()?
+        .iter()
+        .find(|a| a["key"] == key)?["value"];
+    number(&value["intValue"]).or_else(|| number(&value["stringValue"]))
+}
+
+fn number(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+
 fn identity(span: &Value) -> (String, String) {
     (
         span["traceId"].as_str().unwrap().into(),
@@ -368,6 +721,436 @@ mod tests {
     };
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/spikes/s2/");
+
+    #[tokio::test]
+    async fn s2_claude_model_records_join_closed_turns_with_exact_intervals() {
+        for (logs, hooks_file, count) in [
+            ("baseline-logs.json", "baseline-hooks.jsonl", 2),
+            ("detailed-json-logs.json", "detailed-json-hooks.jsonl", 2),
+        ] {
+            let sandbox = tempfile::tempdir().unwrap();
+            let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+            let session = sessions.create(CreateSession::default()).unwrap();
+            let log = TelemetryLog::new(sandbox.path(), session.device_id);
+            let store = Arc::new(Mutex::new(sessions));
+            replay_hooks(&store, session.id, hooks_file).await;
+            drop(store);
+            let mut payload: Value = serde_json::from_str(
+                &std::fs::read_to_string(format!("{FIXTURES}{logs}")).unwrap(),
+            )
+            .unwrap();
+            replace_session(&mut payload, session.id);
+            log.append(Signal::Logs, vec![payload], 0).unwrap();
+            drop(Sessions::open(sandbox.path(), 0).unwrap());
+            let spans = stored_spans(&log);
+            let turn = spans
+                .iter()
+                .find(|s| s["name"] == semconv::TURN_SPAN)
+                .unwrap();
+            let models: Vec<_> = spans
+                .iter()
+                .filter(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+                .collect();
+            assert_eq!(models.len(), count, "{logs}");
+            for model in models {
+                assert_eq!(model["parentSpanId"], turn["spanId"]);
+                assert_eq!(model["traceId"], turn["traceId"]);
+                assert_eq!(model["kind"], 3);
+                assert_eq!(attribute(model, semconv::TIMING), "measured");
+                assert_eq!(
+                    attribute(model, semconv::GEN_AI_REQUEST_MODEL),
+                    "claude-haiku-5-5"
+                );
+            }
+            if logs == "baseline-logs.json" {
+                let model = spans
+                    .iter()
+                    .find(|s| {
+                        s["name"] == semconv::MODEL_CALL_SPAN
+                            && attribute(s, "request_id") == "synthetic-id-4"
+                    })
+                    .unwrap();
+                assert_eq!(model["startTimeUnixNano"], "1792185033284000000");
+                assert_eq!(model["endTimeUnixNano"], "1792185034243000000");
+                assert_eq!(
+                    attribute_value(model, semconv::GEN_AI_INPUT_TOKENS)["intValue"],
+                    "5058"
+                );
+                assert_eq!(
+                    attribute_value(model, semconv::GEN_AI_OUTPUT_TOKENS)["intValue"],
+                    "108"
+                );
+                assert_eq!(
+                    attribute_value(model, "cache_read_tokens")["intValue"],
+                    2135
+                );
+            }
+            let first = log.read().unwrap();
+            drop(Sessions::open(sandbox.path(), 0).unwrap());
+            assert_eq!(log.read().unwrap(), first);
+        }
+    }
+
+    #[tokio::test]
+    async fn s2_codex_completions_use_hook_gaps_and_skip_prewarm() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let session = sessions.create(CreateSession::default()).unwrap();
+        let log = TelemetryLog::new(sandbox.path(), session.device_id);
+        let mut payload: Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{FIXTURES}codex-baseline-logs.json")).unwrap(),
+        )
+        .unwrap();
+        replace_session(&mut payload, session.id);
+        // Move the captured prewarm inside the turn so time filtering cannot hide it.
+        for resource in payload["resourceLogs"].as_array_mut().unwrap() {
+            for scope in resource["scopeLogs"].as_array_mut().unwrap() {
+                for record in scope["logRecords"].as_array_mut().unwrap() {
+                    if record["attributes"].as_array().unwrap().iter().any(|a| {
+                        a["key"] == "output_token_count" && a["value"]["stringValue"] == "0"
+                    }) {
+                        record["observedTimeUnixNano"] = json!("1792185669800000000");
+                    }
+                }
+            }
+        }
+        log.append(Signal::Logs, vec![payload], 0).unwrap();
+        let store = Arc::new(Mutex::new(sessions));
+        replay_hooks(&store, session.id, "codex-baseline-hooks.jsonl").await;
+        let spans = stored_spans(&log);
+        let models: Vec<_> = spans
+            .iter()
+            .filter(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+            .collect();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["startTimeUnixNano"], "1792185669774019000");
+        assert_eq!(models[0]["endTimeUnixNano"], "1792185671889122000");
+        assert_eq!(models[1]["startTimeUnixNano"], "1792185671973413000");
+        assert_eq!(models[1]["endTimeUnixNano"], "1792185673297075000");
+        for model in models {
+            assert_eq!(attribute(model, semconv::TIMING), "estimated");
+            assert!(
+                !model["attributes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a["key"] == "request_id" || a["key"] == "duration_ms")
+            );
+        }
+        assert_eq!(
+            attribute_value(
+                spans
+                    .iter()
+                    .find(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+                    .unwrap(),
+                semconv::GEN_AI_OUTPUT_TOKENS
+            )["intValue"],
+            "54"
+        );
+        assert_eq!(
+            attribute_value(
+                spans
+                    .iter()
+                    .find(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+                    .unwrap(),
+                semconv::GEN_AI_INPUT_TOKENS
+            )["intValue"],
+            "14242"
+        );
+    }
+
+    #[tokio::test]
+    async fn s2_codex_native_streams_supply_measured_model_intervals() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let session = sessions.create(CreateSession::default()).unwrap();
+        let log = TelemetryLog::new(sandbox.path(), session.device_id);
+        for (name, signal) in [
+            ("codex-baseline-logs.json", Signal::Logs),
+            ("codex-baseline-traces.json", Signal::Traces),
+        ] {
+            let mut payload: Value = serde_json::from_str(
+                &std::fs::read_to_string(format!("{FIXTURES}{name}")).unwrap(),
+            )
+            .unwrap();
+            replace_session(&mut payload, session.id);
+            log.append(signal, vec![payload], 0).unwrap();
+        }
+        let store = Arc::new(Mutex::new(sessions));
+        replay_hooks(&store, session.id, "codex-baseline-hooks.jsonl").await;
+        let spans = stored_spans(&log);
+        let models: Vec<_> = spans
+            .iter()
+            .filter(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+            .collect();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["startTimeUnixNano"], "1792185669788480000");
+        assert_eq!(models[0]["endTimeUnixNano"], "1792185671853870000");
+        assert_eq!(models[1]["startTimeUnixNano"], "1792185672011128000");
+        assert_eq!(models[1]["endTimeUnixNano"], "1792185673259261000");
+        assert!(
+            models
+                .iter()
+                .all(|s| attribute(s, semconv::TIMING) == "measured")
+        );
+        let first = log.read().unwrap();
+        drop(store);
+        drop(Sessions::open(sandbox.path(), 0).unwrap());
+        assert_eq!(log.read().unwrap(), first);
+    }
+
+    #[test]
+    fn estimated_model_intervals_include_wait_hooks() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let session = sessions.create(CreateSession::default()).unwrap();
+        sessions
+            .append(session.id, "turn.started", json!({"observed_at_us":1000}))
+            .unwrap();
+        sessions
+            .append(session.id, "agent.waiting", json!({"observed_at_us":3000}))
+            .unwrap();
+        let log = TelemetryLog::new(sandbox.path(), session.device_id);
+        log.append(
+            Signal::Logs,
+            vec![codex_completion(session.id, 5_000_000)],
+            0,
+        )
+        .unwrap();
+        sessions
+            .append(session.id, "turn.ended", json!({"observed_at_us":9000}))
+            .unwrap();
+        let spans = stored_spans(&log);
+        let model = spans
+            .iter()
+            .find(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+            .unwrap();
+        assert_eq!(model["startTimeUnixNano"], "3000000");
+        assert_eq!(model["endTimeUnixNano"], "9000000");
+    }
+
+    #[test]
+    fn model_records_join_only_the_session_and_turn_that_contain_the_completion() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let a = sessions.create(CreateSession::default()).unwrap();
+        let b = sessions.create(CreateSession::default()).unwrap();
+        let log = TelemetryLog::new(sandbox.path(), a.device_id);
+        for (id, start, end) in [(a.id, 1000, 3000), (a.id, 5000, 9000), (b.id, 1000, 9000)] {
+            sessions
+                .append(id, "turn.started", json!({"observed_at_us":start}))
+                .unwrap();
+            sessions
+                .append(id, "turn.ended", json!({"observed_at_us":end}))
+                .unwrap();
+        }
+        log.append(
+            Signal::Logs,
+            vec![
+                codex_completion(a.id, 2_000_000),
+                codex_completion(a.id, 6_000_000),
+                codex_completion(a.id, 4_000_000),
+                codex_completion(b.id, 4_000_000),
+                codex_completion(Ulid::new(), 2_000_000),
+            ],
+            0,
+        )
+        .unwrap();
+        drop(sessions);
+        drop(Sessions::open(sandbox.path(), 0).unwrap());
+        let spans = stored_spans(&log);
+        let models: Vec<_> = spans
+            .iter()
+            .filter(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+            .collect();
+        assert_eq!(models.len(), 3);
+        let a_trace = format!("{:032x}", u128::from(a.id));
+        assert_eq!(models.iter().filter(|s| s["traceId"] == a_trace).count(), 2);
+        for model in models {
+            let turn = spans
+                .iter()
+                .find(|s| s["traceId"] == model["traceId"] && s["spanId"] == model["parentSpanId"])
+                .unwrap();
+            assert_eq!(model["startTimeUnixNano"], turn["startTimeUnixNano"]);
+            assert_eq!(model["endTimeUnixNano"], turn["endTimeUnixNano"]);
+        }
+    }
+
+    fn codex_completion(session: Ulid, time: u64) -> Value {
+        json!({"resourceLogs":[{"resource":{"attributes":[{"key":semconv::SESSION_ID,"value":{"stringValue":session.to_string()}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":time.to_string(),"attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"output_token_count","value":{"stringValue":"7"}}]}]}]}]})
+    }
+
+    #[test]
+    fn missing_native_timing_falls_back_to_an_estimate_when_the_session_exits() {
+        let sandbox = tempfile::tempdir().unwrap();
+        std::fs::write(
+            sandbox.path().join("config.toml"),
+            "[telemetry]\nnative_tracing = true\n",
+        )
+        .unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let session = sessions.create(CreateSession::default()).unwrap();
+        sessions
+            .append(session.id, "turn.started", json!({"observed_at_us":1000}))
+            .unwrap();
+        sessions
+            .append(session.id, "turn.ended", json!({"observed_at_us":9000}))
+            .unwrap();
+        let log = TelemetryLog::new(sandbox.path(), session.device_id);
+        let payload = json!({"resourceLogs":[{"resource":{"attributes":[{"key":semconv::SESSION_ID,"value":{"stringValue":session.id.to_string()}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"5000000","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"output_token_count","value":{"stringValue":"7"}}]}]}]}]});
+        log.append(Signal::Logs, vec![payload], 0).unwrap();
+        sessions
+            .append(session.id, "exit", json!({"observed_at_us":10000,"code":0}))
+            .unwrap();
+        let spans = stored_spans(&log);
+        let models: Vec<_> = spans
+            .iter()
+            .filter(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+            .collect();
+        assert_eq!(models.len(), 1);
+        assert_eq!(attribute(models[0], semconv::TIMING), "estimated");
+        assert_eq!(models[0]["startTimeUnixNano"], "1000000");
+        assert_eq!(models[0]["endTimeUnixNano"], "9000000");
+    }
+
+    #[test]
+    fn turn_segments_link_parent_dependencies_and_previous_segments() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let parent = sessions.create(CreateSession::default()).unwrap();
+        let dependency = sessions.create(CreateSession::default()).unwrap();
+        let child = sessions
+            .create(CreateSession {
+                parent_session_id: Some(parent.id),
+                ..Default::default()
+            })
+            .unwrap();
+        for (id, start) in [(parent.id, 100), (parent.id, 300), (dependency.id, 500)] {
+            sessions
+                .append(id, "turn.started", json!({"observed_at_us":start}))
+                .unwrap();
+            sessions
+                .append(id, "turn.ended", json!({"observed_at_us":start+50}))
+                .unwrap();
+        }
+        sessions
+            .append(child.id, "turn.started", json!({"observed_at_us":1000}))
+            .unwrap();
+        let edge = sessions
+            .append_entry(
+                child.id,
+                "edge.added",
+                json!({"target":dependency.id,"kind":"depends_on"}),
+            )
+            .unwrap();
+        sessions
+            .append(child.id, "turn.ended", json!({"observed_at_us":2000}))
+            .unwrap();
+        sessions
+            .append(child.id, "edge.removed", json!({"edge_id":edge.event_id}))
+            .unwrap();
+        sessions
+            .append(child.id, "turn.started", json!({"observed_at_us":3000}))
+            .unwrap();
+        sessions
+            .append(child.id, "turn.ended", json!({"observed_at_us":4000}))
+            .unwrap();
+        let log = TelemetryLog::new(sandbox.path(), child.device_id);
+        let spans = stored_spans(&log);
+        let child_trace = format!("{:032x}", u128::from(child.id));
+        let children: Vec<_> = spans
+            .iter()
+            .filter(|s| s["traceId"] == child_trace)
+            .collect();
+        let roots: Vec<_> = spans
+            .iter()
+            .filter(|s| s["traceId"] != child_trace)
+            .collect();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0]["links"].as_array().unwrap().len(), 3);
+        assert_eq!(children[1]["links"].as_array().unwrap().len(), 3);
+        assert!(children.iter().all(|s| s.get("parentSpanId").is_none()));
+        for root in roots {
+            assert!(
+                children[0]["links"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|link| link["traceId"] == root["traceId"]
+                        && link["spanId"] == root["spanId"])
+            );
+        }
+        let dependency_trace = format!("{:032x}", u128::from(dependency.id));
+        assert!(
+            !children[1]["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|link| link["traceId"] == dependency_trace)
+        );
+        assert!(
+            children[1]["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|link| link["traceId"] == child_trace
+                    && link["spanId"] == children[0]["spanId"])
+        );
+        let first = log.read().unwrap();
+        drop(sessions);
+        drop(Sessions::open(sandbox.path(), 0).unwrap());
+        assert_eq!(log.read().unwrap(), first);
+    }
+
+    async fn replay_hooks(store: &Arc<Mutex<Sessions>>, session: Ulid, name: &str) {
+        let samples = std::fs::read_to_string(format!("{FIXTURES}{name}")).unwrap();
+        for line in samples.lines() {
+            let sample: Value = serde_json::from_str(line).unwrap();
+            let state = match sample["payload"]["hook_event_name"].as_str().unwrap() {
+                "SessionStart" => continue,
+                "SessionEnd" => "exit",
+                "Stop" => "stop",
+                _ => "working",
+            };
+            hook(
+                store,
+                session,
+                sample["received_unix_ns"].as_u64().unwrap() / 1000,
+                state,
+                sample["payload"].clone(),
+            )
+            .await;
+        }
+    }
+
+    fn replace_session(value: &mut Value, session: Ulid) {
+        match value {
+            Value::Object(object) => {
+                if object.get("key").and_then(Value::as_str) == Some(semconv::SESSION_ID) {
+                    object.insert("value".into(), json!({"stringValue": session.to_string()}));
+                } else {
+                    for child in object.values_mut() {
+                        replace_session(child, session);
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    replace_session(child, session);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn attribute_value<'a>(span: &'a Value, name: &str) -> &'a Value {
+        &span["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["key"] == name)
+            .unwrap()["value"]
+    }
 
     #[tokio::test]
     async fn s2_shell_hooks_write_one_turn_and_one_child_tool() {

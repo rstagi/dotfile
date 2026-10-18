@@ -81,7 +81,8 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .join(".ws/state"),
     };
     let sessions = import::open_for_daemon(&state, &import::backend::home()?)?;
-    let mut telemetry = otlp::Receiver::bind(&state).await?;
+    let mut telemetry =
+        otlp::Receiver::bind_with_spans(&state, Some(sessions.spans.clone())).await?;
     let store = Arc::new(Mutex::new(sessions));
     supervisor::adopt(store.clone())
         .await
