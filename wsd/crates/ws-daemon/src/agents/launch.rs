@@ -293,6 +293,7 @@ impl Sessions {
             })
             .unwrap_or_default();
         let context = AgentSession {
+            claude_config_dir: env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             agent_program: None,
             state: self.state.clone(),
             parent_session_id: session.body["parent_session_id"]

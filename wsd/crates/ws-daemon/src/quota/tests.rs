@@ -82,6 +82,7 @@ fn shared_preparation_captures_the_launch_account_without_credentials() {
     )
     .unwrap();
     let mut context = AgentSession {
+        claude_config_dir: None,
         agent_program: Some("/fake/codex".into()),
         state: sandbox.path().join("state"),
         parent_session_id: None,
@@ -428,6 +429,7 @@ async fn daemon_collection_discovers_the_shared_launch_binding() {
     let mut sessions = Sessions::open(&state, 1).unwrap();
     let session = sessions.create(CreateSession::default()).unwrap();
     let context = AgentSession {
+        claude_config_dir: None,
         agent_program: Some(program),
         state: state.clone(),
         parent_session_id: None,
@@ -552,4 +554,362 @@ cat "$CODEX_HOME/response.json"
     response["id"] = json!(2);
     fs::write(directory.join("response.json"), format!("{response}\n")).unwrap();
     program
+}
+
+#[test]
+fn claude_s3_sources_normalize_percentages_and_fractions_to_ratios() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/claude.json")).unwrap();
+    let interactive = claude::parse_status_line(
+        &fixture["statusline_callbacks"][1]["input"],
+        "launch-account",
+        1_792_186_352_000,
+    );
+    let headless = claude::parse_stream_event(
+        &fixture["headless"]["stream_events"][0],
+        "launch-account",
+        1_792_186_416_000,
+    );
+    for readings in [&interactive, &headless] {
+        assert_eq!(readings.len(), 2);
+        assert_eq!(readings[0].window, "five_hour");
+        assert_eq!(readings[0].used_ratio, Some(0.0));
+        assert_eq!(readings[0].reset_ms, Some(1_792_203_600_000));
+        assert_eq!(readings[1].window, "weekly");
+        assert_eq!(readings[1].duration_secs, Some(604800));
+        assert_eq!(readings[1].used_ratio, Some(0.14));
+        assert_eq!(readings[1].remaining_ratio(), Some(0.86));
+        assert_eq!(readings[1].account_id, "launch-account");
+        assert_eq!(readings[1].source, Source::Reported);
+        assert_eq!(readings[1].reset_ms, Some(1_792_483_200_000));
+    }
+    assert_eq!(interactive[1].source_name, "status-line");
+    assert_eq!(headless[1].source_name, "stream-json");
+}
+
+#[test]
+fn claude_preparation_forwards_status_input_and_keeps_the_launch_account() {
+    use crate::agents::{AgentSession, Mode, prepare};
+    use std::fs;
+    let sandbox = tempfile::tempdir().unwrap();
+    let config = sandbox.path().join(".claude.json");
+    fs::write(&config, r#"{"oauthAccount":{"accountUuid":"account-a","emailAddress":"private"},"secret":"credential"}"#).unwrap();
+    let context = AgentSession {
+        claude_config_dir: None,
+        agent_program: Some("/fake/claude".into()),
+        state: sandbox.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox".into(),
+        id: ws_core::ids::Ulid::new().to_string(),
+        home: sandbox.path().into(),
+        codex_home: None,
+        grok_home: None,
+        ws_home: sandbox.path().join("ws"),
+        ws_bin: sandbox.path().join("ws with spaces"),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    for mode in [Mode::Interactive, Mode::Headless] {
+        let prepared = prepare("claude", mode, &context, Some("conversation-a")).unwrap();
+        let settings = prepared
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("claude-settings.json"))
+            .unwrap();
+        let settings: Value = serde_json::from_slice(&settings.contents).unwrap();
+        assert_eq!(settings["statusLine"]["type"], "command");
+        let command = settings["statusLine"]["command"].as_str().unwrap();
+        assert_eq!(
+            shell_words::split(command).unwrap(),
+            [context.ws_bin.to_str().unwrap(), "hook", "quota"]
+        );
+        let binding = prepared
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("quota-binding.json"))
+            .unwrap();
+        let original = binding.contents.clone();
+        let value: Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(value["runner"], "claude");
+        assert_eq!(value["account_id"], "account-a");
+        assert!(!String::from_utf8_lossy(&original).contains("private"));
+        assert!(!String::from_utf8_lossy(&original).contains("credential"));
+        prepared.write_files().unwrap();
+        fs::write(&config, r#"{"oauthAccount":{"accountUuid":"account-b"}}"#).unwrap();
+        let resumed = prepare("claude", mode, &context, None).unwrap();
+        assert_eq!(
+            resumed
+                .files
+                .iter()
+                .find(|f| f.path.ends_with("quota-binding.json"))
+                .unwrap()
+                .contents,
+            original
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_status_callbacks_become_durable_usage_without_changing_session_state() {
+    use crate::{
+        agents::{AgentSession, Mode, prepare},
+        hooks::{self, Callback, StopDecision},
+        sessions::{CreateSession, Sessions},
+    };
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    fs::write(
+        sandbox.path().join(".claude.json"),
+        r#"{"oauthAccount":{"accountUuid":"launch-account"}}"#,
+    )
+    .unwrap();
+    let state = sandbox.path().join("state");
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    let context = AgentSession {
+        claude_config_dir: None,
+        agent_program: Some("/fake/claude".into()),
+        state: state.clone(),
+        parent_session_id: None,
+        project: "sandbox".into(),
+        id: session.id.to_string(),
+        home: sandbox.path().into(),
+        codex_home: None,
+        grok_home: None,
+        ws_home: sandbox.path().join("ws"),
+        ws_bin: "/fake/ws".into(),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    prepare("claude", Mode::Interactive, &context, None)
+        .unwrap()
+        .write_files()
+        .unwrap();
+    let mut changes = sessions.changes.subscribe();
+    let log = ws_core::log::SessionLog::new(&state, session.id, session.device_id);
+    let store = Arc::new(Mutex::new(sessions));
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/claude.json")).unwrap();
+    hooks::ingest(
+        store.clone(),
+        Callback {
+            callback_id: ws_core::ids::Ulid::new(),
+            session_id: session.id,
+            observed_at_us: 1_792_186_352_000_000,
+            state: "quota".into(),
+            pane: None,
+            tmux_socket: None,
+            tmux_path: None,
+            payload: fixture["statusline_callbacks"][1]["input"].clone(),
+            notify: None,
+        },
+        StopDecision::Accept,
+    )
+    .await
+    .unwrap();
+    let collector = Collector::new(Arc::new(|| 1_792_186_360_000));
+    let service = Service::start_with_collector(store.clone(), collector).unwrap();
+    wait_for_usage(&log, &mut changes, 2).await;
+    store.lock().unwrap().shutdown.send_replace(true);
+    service.shutdown().await;
+    let entries = log.read().unwrap().entries;
+    let readings: Vec<_> = entries
+        .iter()
+        .filter(|e| e.event_type == "runner.usage.updated")
+        .collect();
+    assert_eq!(readings.len(), 2);
+    assert_eq!(readings[1].body[sc::RUNNER_USAGE_USED_RATIO], 0.14);
+    assert_eq!(readings[1].body[sc::RUNNER_ACCOUNT_ID], "launch-account");
+    assert_eq!(
+        readings[1].body[sc::RUNNER_USAGE_OBSERVED_AT],
+        1_792_186_352_000_u64
+    );
+    assert_eq!(
+        store
+            .lock()
+            .unwrap()
+            .get(&session.id.to_string(), None)
+            .unwrap()
+            .state,
+        session.state
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|e| ["turn.started", "turn.ended"].contains(&e.event_type.as_str()))
+    );
+}
+
+#[tokio::test]
+async fn claude_stream_reader_preserves_unknown_windows_and_the_first_receipt_time() {
+    use std::{fs, sync::Arc};
+    let sandbox = tempfile::tempdir().unwrap();
+    let id = ws_core::ids::Ulid::new();
+    let output = sandbox.path().join("stdout.log");
+    let log = ws_core::log::SessionLog::new(sandbox.path(), id, ws_core::ids::Ulid::nil());
+    log.writer()
+        .append_current(
+            "session.created",
+            json!({"kind":"headless", "stdout": output}),
+        )
+        .unwrap();
+    fs::write(
+        &output,
+        "{\"type\":\"system\"}\n{\"type\":\"result\",\"usage\":{\"output_tokens\":236}}\n",
+    )
+    .unwrap();
+    let mut reader = claude::ClaudeReader::new(
+        claude::Binding {
+            runner: "claude".into(),
+            account_id: Some("launch-account".into()),
+        },
+        sandbox.path().into(),
+        id,
+    );
+    let unknown = reader.read(Arc::new(|| 1_792_186_416_000)).await.unwrap();
+    assert_eq!(unknown.len(), 2);
+    assert!(
+        unknown
+            .iter()
+            .all(|r| r.used_ratio.is_none() && r.tokens.is_none())
+    );
+    assert_eq!(unknown[0].source_name, "stream-json");
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/claude.json")).unwrap();
+    let event = &fixture["headless"]["stream_events"][0];
+    fs::write(
+        &output,
+        format!("{{\"type\":\"system\"}}\n{event}\n{{partial"),
+    )
+    .unwrap();
+    let known = reader.read(Arc::new(|| 1_792_186_420_000)).await.unwrap();
+    assert_eq!(known[1].used_ratio, Some(0.14));
+    let repeated = reader.read(Arc::new(|| 1_792_186_480_000)).await.unwrap();
+    assert_eq!(repeated[1].observed_at_ms, 1_792_186_420_000);
+    assert_eq!(repeated[1].received_at_ms, 1_792_186_480_000);
+    let expired = reader.read(Arc::new(|| 1_792_483_200_000)).await.unwrap();
+    assert!(expired.iter().all(|r| r.used_ratio.is_none()));
+}
+
+#[test]
+fn claude_missing_malformed_and_expired_fields_never_imply_capacity() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/claude.json")).unwrap();
+    let missing =
+        claude::parse_status_line(&fixture["statusline_callbacks"][0]["input"], "account", 50);
+    assert_eq!(missing.len(), 2);
+    assert!(
+        missing
+            .iter()
+            .all(|r| r.used_ratio.is_none() && r.reset_ms.is_none())
+    );
+    for value in [
+        json!(null),
+        json!("0"),
+        json!(-1),
+        json!(101),
+        json!({}),
+        json!([]),
+    ] {
+        let input = json!({"rate_limits":{"five_hour":{"used_percentage":value,"resets_at":100}}});
+        let readings = claude::parse_status_line(&input, "account", 50);
+        assert!(
+            readings
+                .iter()
+                .all(|r| r.event_body().get(sc::RUNNER_USAGE_USED_RATIO).is_none())
+        );
+        assert_eq!(readings[0].reset_ms, Some(100_000));
+    }
+    for value in [
+        json!(null),
+        json!("0.14"),
+        json!(-0.1),
+        json!(14),
+        json!({}),
+    ] {
+        let input = json!({"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":value}}}});
+        assert!(
+            claude::parse_stream_event(&input, "account", 50)
+                .iter()
+                .all(|r| r.used_ratio.is_none())
+        );
+    }
+    let expired = json!({"rate_limits":{"five_hour":{"used_percentage":0,"resets_at":1},"seven_day":{"used_percentage":100,"resets_at":2}}});
+    let readings = claude::parse_status_line(&expired, "account", 1_000);
+    assert_eq!(readings[0].used_ratio, None);
+    assert_eq!(readings[1].used_ratio, Some(1.0));
+    assert_eq!(readings[1].remaining_ratio(), Some(0.0));
+    assert!(claude::parse_status_line(&expired, "", 0).is_empty());
+    assert!(
+        claude::parse_stream_event(
+            &json!({"type":"result","usage":{"output_tokens":99}}),
+            "account",
+            0
+        )
+        .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn repeated_status_callbacks_retain_the_observation_time_across_reader_restarts() {
+    use std::sync::Arc;
+    let sandbox = tempfile::tempdir().unwrap();
+    let id = ws_core::ids::Ulid::new();
+    let log = ws_core::log::SessionLog::new(sandbox.path(), id, ws_core::ids::Ulid::nil());
+    let input = json!({"rate_limits":{"five_hour":{"used_percentage":25,"resets_at":10000}}});
+    for time in [1_000_000_u64, 2_000_000] {
+        log.writer()
+            .append_current(
+                "hook.received",
+                json!({"state":"quota","observed_at_us":time,"payload":input}),
+            )
+            .unwrap();
+    }
+    for _ in 0..2 {
+        let mut reader = claude::ClaudeReader::new(
+            claude::Binding {
+                runner: "claude".into(),
+                account_id: Some("account".into()),
+            },
+            sandbox.path().into(),
+            id,
+        );
+        let readings = reader.read(Arc::new(|| 5000)).await.unwrap();
+        assert_eq!(readings[0].used_ratio, Some(0.25));
+        assert_eq!(readings[0].observed_at_ms, 1000);
+        assert_eq!(readings[0].received_at_ms, 5000);
+    }
+}
+
+#[tokio::test]
+async fn delayed_status_callbacks_do_not_replace_a_newer_reading() {
+    use std::sync::Arc;
+    let sandbox = tempfile::tempdir().unwrap();
+    let id = ws_core::ids::Ulid::new();
+    let log = ws_core::log::SessionLog::new(sandbox.path(), id, ws_core::ids::Ulid::nil());
+    for (time, used) in [(1_000_000_u64, 25), (3_000_000, 50), (2_000_000, 35)] {
+        log.writer()
+            .append_current(
+                "hook.received",
+                json!({"state":"quota","observed_at_us":time,
+            "payload":{"rate_limits":{"five_hour":{"used_percentage":used,"resets_at":10000}}}}),
+            )
+            .unwrap();
+    }
+    let mut reader = claude::ClaudeReader::new(
+        claude::Binding {
+            runner: "claude".into(),
+            account_id: Some("account".into()),
+        },
+        sandbox.path().into(),
+        id,
+    );
+    let readings = reader.read(Arc::new(|| 5000)).await.unwrap();
+    assert_eq!(readings[0].used_ratio, Some(0.5));
+    assert_eq!(readings[0].observed_at_ms, 3000);
 }

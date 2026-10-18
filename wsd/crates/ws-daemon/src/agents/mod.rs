@@ -30,6 +30,7 @@ pub struct AgentSession {
     pub home: PathBuf,
     pub grok_home: Option<PathBuf>,
     pub codex_home: Option<PathBuf>,
+    pub claude_config_dir: Option<PathBuf>,
     pub ws_home: PathBuf,
     pub ws_bin: PathBuf,
     pub spawned: bool,
@@ -219,6 +220,9 @@ pub fn prepare(
                 "agent must be one of: claude, codex, grok",
             ));
         }
+    }
+    if agent == "claude" {
+        crate::quota::claude::prepare(&mut prepared, session)?;
     }
     if agent == "codex" {
         prepared

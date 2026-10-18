@@ -6,6 +6,7 @@ use std::{future::Future, io, pin::Pin, sync::Arc};
 use ws_core::semconv as sc;
 
 pub mod binding;
+pub mod claude;
 pub mod codex;
 mod collector;
 pub(crate) use collector::Service;

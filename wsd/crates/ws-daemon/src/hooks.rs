@@ -98,6 +98,12 @@ async fn ingest_callback(
         let mut record = body(&raw);
         record["stop_reply"] = initial_reply;
         let mut captured = sessions.append_callback(&raw, "hook.received", record)?;
+        if raw.state == "quota" {
+            let _ = sessions
+                .quota_requests
+                .sender()
+                .send(crate::quota::Trigger::Boundary(raw.session_id));
+        }
         if let Some(decision) = sessions.delivery_decision(raw.session_id, raw.callback_id)? {
             captured["stop_reply"] = stop_reply(&decision);
         }
@@ -108,6 +114,9 @@ async fn ingest_callback(
     let Some(captured) = captured else {
         return Ok(json!({}));
     };
+    if callback.state == "quota" {
+        return Ok(json!({}));
+    }
     // A transport retry must retain a Stop decision that the daemon already recorded.
     let mut decision = if captured["stop_reply"]["decision"] == "block" {
         StopDecision::Block(
@@ -675,6 +684,7 @@ fn validate(callback: &Callback) -> crate::sessions::Result<()> {
         "waiting",
         "subagent-start",
         "subagent-stop",
+        "quota",
         "exit",
     ]
     .contains(&callback.state.as_str())

@@ -6,6 +6,7 @@ use ws_daemon::agents::{AgentSession, Mode, prepare};
 fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
     let home = tempfile::tempdir().unwrap();
     let context = AgentSession {
+        claude_config_dir: None,
         agent_program: None,
         state: home.path().join("state"),
         parent_session_id: None,
@@ -95,6 +96,13 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
                     .unwrap()
                     .ends_with(" hook working")
             );
+            let status = generated
+                .as_object_mut()
+                .unwrap()
+                .remove("statusLine")
+                .unwrap();
+            assert_eq!(status["type"], "command");
+            assert!(status["command"].as_str().unwrap().ends_with(" hook quota"));
             assert_eq!(generated, legacy);
         }
         if agent == "grok" {
@@ -123,6 +131,7 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::tempdir().unwrap();
     let session = AgentSession {
+        claude_config_dir: None,
         agent_program: None,
         state: home.path().join("state"),
         parent_session_id: None,
@@ -173,6 +182,7 @@ fn headless_prompt_precedes_variadic_flags_and_generated_files_are_private() {
 fn headless_resume_uses_each_agents_noninteractive_mode() {
     let home = tempfile::tempdir().unwrap();
     let context = AgentSession {
+        claude_config_dir: None,
         agent_program: None,
         state: home.path().join("state"),
         parent_session_id: None,
@@ -214,6 +224,7 @@ fn headless_resume_uses_each_agents_noninteractive_mode() {
 fn grok_hooks_follow_the_configured_home_inside_the_sandbox() {
     let home = tempfile::tempdir().unwrap();
     let context = AgentSession {
+        claude_config_dir: None,
         agent_program: None,
         state: home.path().join("state"),
         parent_session_id: None,
@@ -244,7 +255,8 @@ fn mcp_registration_extends_each_launch_mode_and_preserves_user_configuration() 
     let codex_contents = "[mcp_servers.own]\ncommand = 'own-server'\n";
     std::fs::write(&claude_config, claude_contents).unwrap();
     std::fs::write(&codex_config, codex_contents).unwrap();
-    let session = AgentSession {
+    let mut session = AgentSession {
+        claude_config_dir: None,
         agent_program: None,
         state: home.path().join("state"),
         parent_session_id: None,
@@ -259,9 +271,10 @@ fn mcp_registration_extends_each_launch_mode_and_preserves_user_configuration() 
         prompt: None,
         arguments: vec![],
     };
-    for mode in [Mode::Interactive, Mode::Headless] {
-        for resume in [None, Some("resume-123")] {
-            for agent in ["claude", "codex"] {
+    for agent in ["claude", "codex"] {
+        session.id = ws_core::ids::Ulid::new().to_string();
+        for mode in [Mode::Interactive, Mode::Headless] {
+            for resume in [None, Some("resume-123")] {
                 let prepared = prepare(agent, mode, &session, resume).unwrap();
                 prepared.write_files().unwrap();
                 if agent == "claude" {
@@ -328,6 +341,7 @@ fn telemetry_contract_covers_both_agents_in_fresh_and_resumed_launch_modes() {
     std::fs::write(state.join("otlp.endpoint"), "http://127.0.0.1:43123\n").unwrap();
     let parent = "01K7Q0K5M00000000000000002";
     let context = AgentSession {
+        claude_config_dir: None,
         agent_program: Some("/usr/bin/true".into()),
         state,
         parent_session_id: Some(parent.parse().unwrap()),
@@ -420,6 +434,7 @@ fn native_tracing_requires_explicit_config_and_uses_the_session_trace() {
     )
     .unwrap();
     let context = AgentSession {
+        claude_config_dir: None,
         agent_program: Some("/usr/bin/true".into()),
         state,
         parent_session_id: Some("01K7Q0K5M00000000000000002".parse().unwrap()),
@@ -488,6 +503,7 @@ fn setting_names_and_versions_match_the_captured_s2_contracts() {
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let context = AgentSession {
+            claude_config_dir: None,
             agent_program: Some(program),
             state: state.clone(),
             parent_session_id: None,
