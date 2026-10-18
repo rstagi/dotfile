@@ -58,9 +58,6 @@ cd loop-web && npm test && npm run build && cd ..
 # S1 transcript relocation tests
 python3 -I docs/ws-v6/spikes/s1/relocate-claude.test.py
 python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
-
-# S2 telemetry capture tests
-python3 -I -B -m unittest discover -s docs/ws-v6/spikes/s2 -p 'test_*.py'
 ```
 
 ## Architecture
@@ -94,7 +91,8 @@ ws/ws.sh                Terminal workspace dispatcher: Rust by default, explicit
 ws/lib/                 Embedded fzf picker UI and legacy zsh backend modules
 ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh, sourced in order per parallel group by run.sh
 wsd/                    Default ws implementation: ws-core durable data, ws-daemon runtime, ws CLI + MCP
-docs/ws-v6/             WS v6 architecture and spike reports, scripts, tests, and samples
+docs/ws-v6/             WS v6 architecture, semantic conventions and spike reports (S1 scripts stay)
+wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .claude/skills/visual-explainer/ Props JSON → one fixed, animated, self-contained HTML page (plan|ship), zero-dep render.mjs + schemas
 .zshrc                  Main shell config, sources extensions
