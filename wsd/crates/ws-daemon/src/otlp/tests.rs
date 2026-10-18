@@ -1,0 +1,375 @@
+use std::{net::SocketAddr, path::Path, time::Duration};
+
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
+use ws_core::{
+    device::Device,
+    semconv,
+    telemetry_log::{Signal, TelemetryLog},
+};
+
+use super::Receiver;
+
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/spikes/s2/");
+
+#[tokio::test]
+async fn accepts_the_claude_json_logs_and_persists_every_record() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-device").unwrap();
+    let receiver = Receiver::bind(sandbox.path()).await.unwrap();
+    assert_eq!(receiver.local_addr().ip().to_string(), "127.0.0.1");
+    assert_ne!(receiver.local_addr().port(), 0);
+    let response = post(
+        receiver.local_addr(),
+        "/v1/logs",
+        "application/json",
+        &std::fs::read(Path::new(FIXTURES).join("baseline-logs.json")).unwrap(),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("application/json"), "{response}");
+    let records = TelemetryLog::new(sandbox.path(), device.device_id)
+        .read()
+        .unwrap();
+    assert_eq!(records.len(), 11);
+    for record in &records {
+        assert_eq!(record.signal, Signal::Logs);
+        let resources = record.payload["resourceLogs"].as_array().unwrap();
+        assert_eq!(resources.len(), 1);
+        let attributes = resources[0]["resource"]["attributes"].as_array().unwrap();
+        assert!(attributes.iter().any(|a| a["key"] == semconv::DEVICE_ID
+            && a["value"]["stringValue"] == device.device_id.to_string()));
+        assert!(attributes.iter().any(|a| a["key"] == semconv::SESSION_ID
+            && a["value"]["stringValue"] == "s2-synthetic-session"));
+        assert_eq!(
+            resources[0]["scopeLogs"][0]["logRecords"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    receiver.shutdown().await.unwrap();
+    let persisted = TelemetryLog::new(sandbox.path(), device.device_id)
+        .read()
+        .unwrap();
+    assert_eq!(persisted, records);
+}
+
+#[tokio::test]
+async fn accepts_all_s2_signals_in_both_wire_formats() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-device").unwrap();
+    let cases = [
+        ("baseline-logs.json", Signal::Logs, 11),
+        ("baseline-metrics.json", Signal::Metrics, 3),
+        ("beta-json-traces.json", Signal::Traces, 5),
+        ("codex-baseline-logs.json", Signal::Logs, 24),
+        ("codex-baseline-metrics.json", Signal::Metrics, 16),
+        ("codex-baseline-traces.json", Signal::Traces, 38),
+        ("beta-protobuf-logs.pb", Signal::Logs, 7),
+        ("beta-protobuf-metrics.pb", Signal::Metrics, 3),
+        ("beta-protobuf-traces.pb", Signal::Traces, 4),
+        ("codex-protobuf-logs.pb", Signal::Logs, 24),
+        ("codex-protobuf-metrics.pb", Signal::Metrics, 16),
+        ("codex-protobuf-traces.pb", Signal::Traces, 38),
+    ];
+    let receiver = Receiver::bind(sandbox.path()).await.unwrap();
+    let log = TelemetryLog::new(sandbox.path(), device.device_id);
+    let mut offset = 0;
+    for (name, signal, count) in cases {
+        let path = match signal {
+            Signal::Logs => "/v1/logs",
+            Signal::Metrics => "/v1/metrics",
+            Signal::Traces => "/v1/traces",
+        };
+        let content_type = if name.ends_with(".pb") {
+            "application/x-protobuf"
+        } else {
+            "application/json"
+        };
+        let response = post(
+            receiver.local_addr(),
+            path,
+            content_type,
+            &std::fs::read(Path::new(FIXTURES).join(name)).unwrap(),
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{name}: {response}");
+        assert!(response.contains(content_type), "{name}: {response}");
+        let records = log.read().unwrap();
+        assert_eq!(records.len(), offset + count, "{name}");
+        for record in &records[offset..] {
+            assert_eq!(record.signal, signal, "{name}");
+            let resource = &record.payload[signal.resource_key()][0];
+            assert!(
+                resource["resource"]["attributes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a["key"] == semconv::DEVICE_ID
+                        && a["value"]["stringValue"] == device.device_id.to_string()),
+                "{name}"
+            );
+        }
+        let reference_name = if name.ends_with(".pb") {
+            format!("{name}.json")
+        } else {
+            name.to_owned()
+        };
+        let reference: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(Path::new(FIXTURES).join(reference_name)).unwrap(),
+        )
+        .unwrap();
+        let (scope_key, record_key) = match signal {
+            Signal::Logs => ("scopeLogs", "logRecords"),
+            Signal::Metrics => ("scopeMetrics", "metrics"),
+            Signal::Traces => ("scopeSpans", "spans"),
+        };
+        let expected = reference[signal.resource_key()]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|r| r[scope_key].as_array().unwrap())
+            .flat_map(|s| s[record_key].as_array().unwrap());
+        for (stored, original) in records[offset..].iter().zip(expected) {
+            let item = &stored.payload[signal.resource_key()][0][scope_key][0][record_key][0];
+            match signal {
+                Signal::Logs => assert_eq!(item["body"], original["body"], "{name}"),
+                Signal::Metrics => {
+                    assert_eq!(item["name"], original["name"], "{name}");
+                    for kind in [
+                        "sum",
+                        "gauge",
+                        "histogram",
+                        "exponentialHistogram",
+                        "summary",
+                    ] {
+                        if let Some(points) = original[kind]["dataPoints"].as_array() {
+                            let actual = item[kind]["dataPoints"]
+                                .as_array()
+                                .expect("The metric data points must survive ingestion.");
+                            assert_eq!(actual.len(), points.len(), "{name}");
+                            for (actual, point) in actual.iter().zip(points) {
+                                for key in ["asInt", "asDouble", "count", "sum", "timeUnixNano"] {
+                                    if let Some(value) = point.get(key) {
+                                        if matches!(key, "asInt" | "count") && value.is_number() {
+                                            assert_eq!(
+                                                actual[key].as_str().unwrap(),
+                                                value.to_string(),
+                                                "{name}: {key}"
+                                            );
+                                        } else if actual[key].is_number() && value.is_number() {
+                                            assert_eq!(
+                                                actual[key].as_f64(),
+                                                value.as_f64(),
+                                                "{name}: {key}"
+                                            );
+                                        } else {
+                                            assert_eq!(&actual[key], value, "{name}: {key}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Signal::Traces => {
+                    for key in ["name", "startTimeUnixNano", "endTimeUnixNano"] {
+                        assert_eq!(item[key], original[key], "{name}: {key}");
+                    }
+                    if name.ends_with(".json") {
+                        assert_eq!(item["traceId"], original["traceId"], "{name}");
+                        assert_eq!(item["spanId"], original["spanId"], "{name}");
+                    }
+                }
+            }
+        }
+        if name == "codex-protobuf-traces.pb" {
+            let span = &records[offset].payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+            assert_eq!(span["traceId"], "11111111111111111111111111111111");
+            assert_eq!(span["spanId"], "f04bc934bd1fbc98");
+            assert_eq!(span["parentSpanId"], "2222222222222222");
+        }
+        offset += count;
+    }
+    receiver.shutdown().await.unwrap();
+    assert_eq!(log.read().unwrap().len(), 189);
+}
+
+#[tokio::test]
+async fn startup_applies_configured_retention_and_publishes_the_bound_endpoint() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-device").unwrap();
+    std::fs::write(
+        sandbox.path().join("config.toml"),
+        "[telemetry]\nport = 0\nretention_days = 1\n",
+    )
+    .unwrap();
+    let log = TelemetryLog::new(sandbox.path(), device.device_id);
+    let payload = serde_json::json!({"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": "old"}}]}]}]});
+    log.append(
+        Signal::Logs,
+        vec![payload.clone()],
+        super::now_ms() - 2 * 86_400_000,
+    )
+    .unwrap();
+    let recent = log
+        .append(Signal::Logs, vec![payload], super::now_ms())
+        .unwrap();
+    let receiver = Receiver::bind(sandbox.path()).await.unwrap();
+    assert_eq!(log.read().unwrap(), recent);
+    let endpoint = sandbox.path().join("otlp.endpoint");
+    assert_eq!(
+        std::fs::read_to_string(&endpoint).unwrap().trim(),
+        format!("http://{}", receiver.local_addr())
+    );
+    receiver.shutdown().await.unwrap();
+    assert!(!endpoint.exists());
+}
+
+#[tokio::test]
+async fn default_retention_is_thirty_days_and_maintenance_prunes_without_a_restart() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-device").unwrap();
+    let log = TelemetryLog::new(sandbox.path(), device.device_id);
+    let payload = serde_json::json!({"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": "record"}}]}]}]});
+    log.append(
+        Signal::Logs,
+        vec![payload.clone()],
+        super::now_ms() - 31 * 86_400_000,
+    )
+    .unwrap();
+    let retained = log
+        .append(
+            Signal::Logs,
+            vec![payload.clone()],
+            super::now_ms() - 29 * 86_400_000,
+        )
+        .unwrap();
+    let receiver = Receiver::bind(sandbox.path()).await.unwrap();
+    assert_eq!(log.read().unwrap(), retained);
+    // An HTTP response proves that the server and its maintenance interval started.
+    assert!(
+        post(receiver.local_addr(), "/v1/logs", "application/json", b"{}")
+            .await
+            .starts_with("HTTP/1.1 200")
+    );
+    log.append(
+        Signal::Logs,
+        vec![payload],
+        super::now_ms() - 31 * 86_400_000,
+    )
+    .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if log.read().unwrap() == retained {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Maintenance must remove expired records.");
+    receiver.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn uses_the_configured_port_and_reports_a_bind_conflict() {
+    let sandbox = tempfile::tempdir().unwrap();
+    Device::init(sandbox.path(), "test-device").unwrap();
+    let occupied = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = occupied.local_addr().unwrap().port();
+    std::fs::write(
+        sandbox.path().join("config.toml"),
+        format!("[telemetry]\nport = {port}\n"),
+    )
+    .unwrap();
+    let error = match Receiver::bind(sandbox.path()).await {
+        Err(error) => error,
+        Ok(_) => panic!("The receiver must use the configured port."),
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+    assert!(!sandbox.path().join("otlp.endpoint").exists());
+}
+
+#[tokio::test]
+async fn rejects_invalid_requests_without_appending_records() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-device").unwrap();
+    let receiver = Receiver::bind(sandbox.path()).await.unwrap();
+    for (path, content_type, body, status) in [
+        ("/v1/logs", "application/json", b"{".as_slice(), "400"),
+        (
+            "/v1/metrics",
+            "application/json",
+            b"{\"resourceMetrics\":42}".as_slice(),
+            "400",
+        ),
+        (
+            "/v1/traces",
+            "application/x-protobuf",
+            b"\xff".as_slice(),
+            "400",
+        ),
+        ("/v1/logs", "text/plain", b"{}".as_slice(), "415"),
+    ] {
+        let response = post(receiver.local_addr(), path, content_type, body).await;
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "{response}"
+        );
+    }
+    assert!(
+        TelemetryLog::new(sandbox.path(), device.device_id)
+            .read()
+            .unwrap()
+            .is_empty()
+    );
+    receiver.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn reports_a_maintenance_failure_to_the_daemon() {
+    let sandbox = tempfile::tempdir().unwrap();
+    Device::init(sandbox.path(), "test-device").unwrap();
+    let mut receiver = Receiver::bind(sandbox.path()).await.unwrap();
+    assert!(
+        post(receiver.local_addr(), "/v1/logs", "application/json", b"{}")
+            .await
+            .starts_with("HTTP/1.1 200")
+    );
+    std::fs::write(
+        sandbox.path().join("telemetry/log.jsonl"),
+        b"invalid record\n",
+    )
+    .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let error = tokio::time::timeout(Duration::from_secs(30), receiver.wait())
+        .await
+        .expect("The receiver must report its maintenance failure.")
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    receiver.shutdown().await.unwrap();
+}
+
+async fn post(address: SocketAddr, path: &str, content_type: &str, body: &[u8]) -> String {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let headers = format!("POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        String::from_utf8(response).unwrap()
+    }).await.expect("The OTLP request exceeded the hang guard.")
+}

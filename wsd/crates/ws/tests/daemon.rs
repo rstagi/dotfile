@@ -339,3 +339,65 @@ fn hook_api_rejects_invalid_states_and_panes() {
         assert!(response.starts_with("HTTP/1.1 400"), "{response}");
     }
 }
+
+#[test]
+fn daemon_starts_the_configured_otlp_receiver_and_closes_it_on_shutdown() {
+    use std::io::{Read, Write};
+    use ws_core::{device::Device, telemetry_log::TelemetryLog};
+
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let state = sandbox.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        state.join("config.toml"),
+        "[telemetry]\nport = 0\nretention_days = 30\n",
+    )
+    .unwrap();
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    let endpoint_file = state.join("otlp.endpoint");
+    let endpoint = std::fs::read_to_string(&endpoint_file)
+        .expect("The daemon must publish the OTLP endpoint before it answers ping.");
+    let address: std::net::SocketAddr = endpoint
+        .trim()
+        .strip_prefix("http://")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(address.ip().to_string(), "127.0.0.1");
+    let body = include_bytes!("../../ws-daemon/tests/fixtures/spikes/s2/baseline-logs.json");
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    write!(stream, "POST /v1/logs HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let device = Device::load(&state).unwrap();
+    assert_eq!(
+        TelemetryLog::new(&state, device.device_id)
+            .read()
+            .unwrap()
+            .len(),
+        11
+    );
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &daemon.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while daemon.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "The daemon did not stop.");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!endpoint_file.exists());
+    assert!(std::net::TcpStream::connect(address).is_err());
+}

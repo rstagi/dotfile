@@ -214,6 +214,50 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn concurrent_append_and_prune_preserve_all_retained_records() {
+        use std::{
+            collections::BTreeSet,
+            sync::{Arc, Barrier},
+            thread,
+        };
+        let sandbox = tempfile::tempdir().unwrap();
+        let device = Ulid::new();
+        let log = TelemetryLog::new(sandbox.path(), device);
+        let payload = json!({"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": "record"}}]}]}]});
+        log.append(Signal::Logs, vec![payload.clone()], 0).unwrap();
+        let start = Arc::new(Barrier::new(5));
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                let start = start.clone();
+                let log = TelemetryLog::new(sandbox.path(), device);
+                let payload = payload.clone();
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..8 {
+                        log.append(Signal::Logs, vec![payload.clone()], 1000)
+                            .unwrap();
+                    }
+                });
+            }
+            start.wait();
+            for _ in 0..8 {
+                log.prune_before(1000).unwrap();
+            }
+        });
+        let records = log.read().unwrap();
+        assert_eq!(records.len(), 32);
+        assert!(records.iter().all(|record| record.received_at_ms == 1000));
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.event_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            32
+        );
+    }
+
+    #[test]
     fn append_repairs_an_incomplete_tail_without_losing_complete_records() {
         use std::fs::OpenOptions;
         let sandbox = tempfile::tempdir().unwrap();
