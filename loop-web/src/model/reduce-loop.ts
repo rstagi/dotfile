@@ -33,6 +33,8 @@ const TYPED_EVENTS = new Set([
   "phase.attempt.finish",
   "phase.merged",
   "merge.conflict",
+  // Timeline-only: the orchestrator reverts the merge and escalates; the next attempt owns the status.
+  "merge.verify-fail",
   "hil.raise",
   "hil.resolve",
   "sub.recycle",
