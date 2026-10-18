@@ -77,9 +77,8 @@ install_prerequisites() {
     echo "brew could not be found"
     echo "Installing brew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    echo >> "$HOME"/.zprofile
     # shellcheck disable=SC2016 # Write the command for the next shell.
-    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME"/.zprofile
+    append_line 'eval "$(/opt/homebrew/bin/brew shellenv)"' "$HOME/.zprofile"
     eval "$(/opt/homebrew/bin/brew shellenv)"
   else
     echo "brew is already installed"
@@ -123,8 +122,7 @@ setup_core() {
 
   # Configuring git
   link_gitconfig() {
-    [ -f "$HOME/.gitconfig" ] && mv "$HOME"/.gitconfig "$HOME"/.gitconfig.bak
-    ln -s "$HOME"/dotfile/.gitconfig "$HOME"/.gitconfig
+    replace_with_link "$HOME/dotfile/.gitconfig" "$HOME/.gitconfig"
   }
   
   if [ "$INTERACTIVE_MODE" = true ]; then
@@ -160,6 +158,39 @@ link_file() {
   else
     ln -s "$1" "$2"
   fi
+}
+
+# replace_with_link <source> <link> — make <link> a symbolic link to <source>.
+# Skip the step when <link> already points to <source>. Move a different file or folder to a new backup first.
+replace_with_link() {
+  if [ ! "$2" -ef "$1" ] && { [ -e "$2" ] || [ -L "$2" ]; }; then
+    backup_file "$2" || return 1
+  fi
+  link_file "$1" "$2"
+}
+
+# backup_file <path> — move <path> to the new backup path <path>.bak.<timestamp>.
+# Add a number when that backup path exists. Thus a backup never replaces an older backup or goes into a backup folder.
+backup_file() {
+  local base backup n=0
+  base="$1.bak.$(date +%Y%m%d%H%M%S)"
+  backup="$base"
+  while [ -e "$backup" ] || [ -L "$backup" ]; do
+    n=$((n + 1))
+    backup="$base.$n"
+  done
+  mv "$1" "$backup" || return 1
+  echo "Moved $1 to $backup"
+}
+
+# append_line <line> <file> — add <line> to the end of <file>. Skip the step when <file> already has that exact line.
+append_line() {
+  grep -qxF -- "$1" "$2" 2>/dev/null && return 0
+  # Start the line on a new line when the last line of <file> has no newline.
+  if [ -s "$2" ] && [ -n "$(tail -c 1 "$2")" ]; then
+    echo >> "$2"
+  fi
+  printf '%s\n' "$1" >> "$2"
 }
 
 read_yes() {
@@ -280,11 +311,12 @@ install_zsh() {
     
     # Link .zshrc
     link_zshrc() {
-      [ -f "$HOME/.zshrc" ] && mv "$HOME"/.zshrc "$HOME"/.zshrc.bak
-      ln -s "$HOME"/dotfile/.zshrc "$HOME"/.zshrc
+      replace_with_link "$HOME/dotfile/.zshrc" "$HOME/.zshrc"
     }
-    
-    if [ -f "$HOME/.zshrc" ]; then
+
+    if [ "$HOME/.zshrc" -ef "$HOME/dotfile/.zshrc" ]; then
+      echo "$HOME/.zshrc already links to $HOME/dotfile/.zshrc"
+    elif [ -f "$HOME/.zshrc" ]; then
       if [ "$INTERACTIVE_MODE" = true ]; then
         if read_yes ".zshrc already exists. Do you want to override it?"; then
           link_zshrc
@@ -307,7 +339,7 @@ install_python() {
     install_pkg_if_needed "pipx"
     configure_python() {
       brew update && brew upgrade pyenv
-      echo "source $HOME/dotfile/.zshrc_python_ext" >> "$HOME"/.zshrc_ext
+      append_line "source $HOME/dotfile/.zshrc_python_ext" "$HOME/.zshrc_ext"
       export PYENV_ROOT="$HOME/.pyenv"
       command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
       eval "$(pyenv init -)"
@@ -328,7 +360,9 @@ install_gh() {
   if install_pkg_if_needed "gh"; then
     configure_gh() {
       TARGET_PATH="$(brew --prefix)/share/zsh/site-functions"
-      [ ! -f "$TARGET_PATH/_gh" ] && mkdir -p "$TARGET_PATH" && gh completion -s zsh > "$TARGET_PATH/_gh" && chmod +x "$TARGET_PATH/_gh"
+      if [ ! -f "$TARGET_PATH/_gh" ]; then
+        mkdir -p "$TARGET_PATH" && gh completion -s zsh > "$TARGET_PATH/_gh" && chmod +x "$TARGET_PATH/_gh"
+      fi
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure gh?"; then
@@ -345,9 +379,9 @@ install_node() {
   if install_pkg_if_needed "nvm"; then
     configure_node() {
       nvm install --latest 
-      echo "plugins+=(npm)" >> "$HOME"/.zshrc_additional_plugins
-      echo "plugins+=(node)" >> "$HOME"/.zshrc_additional_plugins
-      echo "source $HOME/dotfile/.zshrc_node_ext" >> "$HOME"/.zshrc_ext
+      append_line "plugins+=(npm)" "$HOME/.zshrc_additional_plugins"
+      append_line "plugins+=(node)" "$HOME/.zshrc_additional_plugins"
+      append_line "source $HOME/dotfile/.zshrc_node_ext" "$HOME/.zshrc_ext"
       npm install --global yarn
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
@@ -380,7 +414,7 @@ install_terraform() {
     configure_terraform() {
       tfenv install latest
       terraform -install-autocomplete
-      echo "source $HOME/dotfile/.zshrc_terraform_ext" >> "$HOME"/.zshrc_ext
+      append_line "source $HOME/dotfile/.zshrc_terraform_ext" "$HOME/.zshrc_ext"
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure terraform?"; then
@@ -448,9 +482,7 @@ PLIST
       return 1
     fi
     ( cd "$HOME/dotfile/loop-web" && npm install && npm run build )
-    if ! grep -q "source.*\.zshrc_loop_web_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
-      echo "source $HOME/dotfile/.zshrc_loop_web_ext" >> "$HOME/.zshrc_ext"
-    fi
+    append_line "source $HOME/dotfile/.zshrc_loop_web_ext" "$HOME/.zshrc_ext"
     configure_loop_web_daemon
     echo "loop-web installed — the central daemon runs on login; open http://localhost:7717"
   }
@@ -472,18 +504,16 @@ install_ws() {
   cp "$HOME/dotfile/wsd/target/release/ws" "$ws_home/bin/ws-rs.new" || return 1
   chmod +x "$ws_home/bin/ws-rs.new" || return 1
   mv -f "$ws_home/bin/ws-rs.new" "$ws_home/bin/ws-rs" || return 1
-  ln -sfn "$HOME/dotfile/ws/ws.sh" "$ws_home/bin/ws" || return 1
+  link_file "$HOME/dotfile/ws/ws.sh" "$ws_home/bin/ws" || return 1
   install_ws_daemon || return 1
   install_pkg_if_needed "jq"
   install_pkg_if_needed "terminal-notifier"
   # Branded copy (own name + icon): allow "ws" in System Settings → Notifications
   "$HOME/dotfile/ws/ws.sh" _build-notifier || echo "ws: notifier app not built (osascript fallback)"
-  if ! grep -q "source.*\.zshrc_ws_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
-    echo "source $HOME/dotfile/.zshrc_ws_ext" >> "$HOME/.zshrc_ext"
-  fi
+  append_line "source $HOME/dotfile/.zshrc_ws_ext" "$HOME/.zshrc_ext"
   # Real executable (alias is interactive-only): agents' `zsh -lc` shells can run `ws done`
   mkdir -p "$HOME/.local/bin"
-  ln -sfn "$HOME/dotfile/ws/ws.sh" "$HOME/.local/bin/ws"
+  link_file "$HOME/dotfile/ws/ws.sh" "$HOME/.local/bin/ws"
   # Upgrades: re-point existing agent hook files (Claude settings, global Grok hooks) at this ws
   # Sourced: the zsh hooks_migrate runs even when the selector execs the Rust backend.
   zsh -c 'source "$1" && hooks_migrate --force' ws "$HOME/dotfile/ws/ws.sh" || echo "ws: could not re-point agent hooks (run: ws _migrate-hooks)"
@@ -536,8 +566,8 @@ install_grok() {
 install_gcloud() {
   if install_pkg_if_needed "google-cloud-sdk"; then
     configure_gcloud() {
-      echo "plugins+=(gcloud)" >> "$HOME"/.zshrc_additional_plugins
-      echo "source $HOME/dotfile/.zshrc_gcloud_ext" >> "$HOME"/.zshrc_ext
+      append_line "plugins+=(gcloud)" "$HOME/.zshrc_additional_plugins"
+      append_line "source $HOME/dotfile/.zshrc_gcloud_ext" "$HOME/.zshrc_ext"
       gcloud auth login --update-adc --enable-gdrive-access
       gcloud auth application-default login
       gcloud_installed=true
@@ -559,7 +589,7 @@ install_kubectl() {
       brew update && brew install krew
       kubectl krew install ctx
       kubectl krew install ns
-      echo "source $HOME/dotfile/.zshrc_k8s_ext" >> "$HOME"/.zshrc_ext
+      append_line "source $HOME/dotfile/.zshrc_k8s_ext" "$HOME/.zshrc_ext"
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
       if read_yes "Do you want to configure kubectl?"; then
@@ -578,10 +608,10 @@ install_docker() {
       # Install docker-buildx
       brew install docker-buildx
       mkdir -p ~/.docker/cli-plugins
-      ln -sfn "$(command -v docker-buildx)" ~/.docker/cli-plugins/docker-buildx
+      link_file "$(command -v docker-buildx)" "$HOME/.docker/cli-plugins/docker-buildx"
 
       # Extend zshrc
-      echo "source $HOME/dotfile/.zshrc_docker_ext" >> "$HOME"/.zshrc_ext
+      append_line "source $HOME/dotfile/.zshrc_docker_ext" "$HOME/.zshrc_ext"
 
       if [ "$gcloud_installed" = "true" ]; then
         gcloud auth configure-docker
@@ -622,15 +652,11 @@ install_tmux() {
 install_neovim() {
   if install_pkg_if_needed "neovim"; then
     configure_neovim() {
-      echo "source $HOME/dotfile/.zshrc_vim_ext" >> "$HOME"/.zshrc_ext
+      append_line "source $HOME/dotfile/.zshrc_vim_ext" "$HOME/.zshrc_ext"
 
       # Setup LazyVim config by symlinking from dotfile repo
       mkdir -p "$HOME"/.config
-      if [ -d "$HOME/.config/nvim" ] || [ -L "$HOME/.config/nvim" ]; then
-        echo "Backing up existing nvim config..."
-        mv "$HOME"/.config/nvim "$HOME"/.config/nvim.bak
-      fi
-      ln -s "$HOME"/dotfile/nvim "$HOME"/.config/nvim
+      replace_with_link "$HOME/dotfile/nvim" "$HOME/.config/nvim" || return 1
       echo "LazyVim config linked. Plugins will install on first nvim launch."
     }
     if [ "$INTERACTIVE_MODE" = true ]; then
@@ -714,13 +740,8 @@ install_claude_tools() {
   fi
 
   # Ensure Claude tools are sourced in .zshrc_ext
-  if ! grep -q "source.*\.zshrc_claude_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
-    echo "source $HOME/dotfile/.zshrc_claude_ext" >> "$HOME/.zshrc_ext"
-  fi
-
-  if ! grep -q "source.*\.zshrc_ralph_ext" "$HOME/.zshrc_ext" 2>/dev/null; then
-    echo "source $HOME/dotfile/.zshrc_ralph_ext" >> "$HOME/.zshrc_ext"
-  fi
+  append_line "source $HOME/dotfile/.zshrc_claude_ext" "$HOME/.zshrc_ext"
+  append_line "source $HOME/dotfile/.zshrc_ralph_ext" "$HOME/.zshrc_ext"
 }
 
 # Parallel web search MCP (https://search.parallel.ai/mcp) for Claude Code, Codex and Ratel Local.
@@ -747,14 +768,14 @@ configure_parallel_search() {
 install_claude_config() {
   configure_claude() {
     # Symlink entire agents and skills folders from dotfile
-    rm -rf ~/.claude/agents ~/.claude/skills
-    ln -sfn ~/dotfile/.claude/agents ~/.claude/agents
-    ln -sfn ~/dotfile/.claude/skills ~/.claude/skills
+    mkdir -p ~/.claude
+    replace_with_link "$HOME/dotfile/.claude/agents" "$HOME/.claude/agents" || return 1
+    replace_with_link "$HOME/dotfile/.claude/skills" "$HOME/.claude/skills" || return 1
 
     # Symlink global instruction files from dotfile repo
-    ln -sfn ~/dotfile/CLAUDE_GLOBAL.md ~/.claude/CLAUDE.md
+    replace_with_link "$HOME/dotfile/CLAUDE_GLOBAL.md" "$HOME/.claude/CLAUDE.md" || return 1
     mkdir -p ~/.codex
-    ln -sfn ~/dotfile/AGENTS_GLOBAL.md ~/.codex/AGENTS.md
+    replace_with_link "$HOME/dotfile/AGENTS_GLOBAL.md" "$HOME/.codex/AGENTS.md" || return 1
     # Share Loop, ws, asd-ste100 + visual-explainer skills through current/legacy Codex discovery and Ratel Local.
     if ! ~/dotfile/install-agent-skills.sh --source ~/dotfile/.claude/skills; then
       echo "Failed to install shared agent skills" >&2

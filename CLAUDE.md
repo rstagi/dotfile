@@ -116,7 +116,9 @@ Agents receive the same ULID in `WS_SESSION_ID` and the compatibility variable `
 `ws backend rust` returns to Rust and imports new legacy records. Both backends share the alias counter.
 The zsh suite selects zsh in each sandbox. `cargo test -p ws --test backend` also tests Rust through the dispatcher.
 
-**Extension system:** install.sh appends `source ~/dotfile/.zshrc_<tool>_ext` lines to `~/.zshrc_ext`. Main `.zshrc` sources that file if it exists.
+**Extension system:** install.sh adds each `source ~/dotfile/.zshrc_<tool>_ext` line to `~/.zshrc_ext` with `append_line`. `append_line` skips a line that is already in the file. Main `.zshrc` sources that file if it exists.
+
+**Idempotent install:** a second run of an install step changes no file. Links use `link_file` (keeps a different file and prints a warning) or `replace_with_link` (moves a different file to a new backup first). Each backup gets a unique `<path>.bak.<timestamp>` name. `tests/install-packages.test.sh` runs each package two times and compares the sandbox HOME.
 
 **Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx, ws→tmux+fzf+neovim).
 
