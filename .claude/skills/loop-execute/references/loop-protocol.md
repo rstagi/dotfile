@@ -83,6 +83,9 @@ Every new-format executable plan ends in `[kind: pr-review]`:
 - Completed last review: keep it in place, append new work after it, then append a new review.
 
 Merge new phase entries into `state.phases` as `todo`; never replace existing entries.
+A phase that an `[archived]` stub lists is an existing phase with status `done` (plan-format →
+Archived milestones). Never drop, reopen or renumber an archived phase. Keep its `state.phases`
+entry. Add a missing entry for it as `done`, never as `todo`.
 Edits that conflict with a live runner wait for a safe boundary or raise HIL. Push the fully
 reconciled document atomically to the daemon. Legacy no-kind plans
 continue to use one synthetic terminal review.
@@ -115,10 +118,17 @@ no stacking.
   backstop does not respawn while `state.awaitingMerge` is set; a SUB that sees it writes
   `sub/status.json{outcome:"blocked"}` and exits, which `loop-orchestrator.sh` handles as a
   parked loop (info notification, exit 2), not a crash.
-- **Resume (human only, `LOOP_SUB` unset).** `loop-milestone.sh check` → `advance`, then the
-  skill applies the printed patch to state, clears `REVIEW_READY`, logs `milestone.resumed`,
+- **Resume (human only, `LOOP_SUB` unset).** `loop-milestone.sh check` → archive → `advance`, then
+  the skill applies the printed patch to state, clears `REVIEW_READY`, logs `milestone.resumed`,
   and respawns the orchestrator. Then it starts the best-effort `plan` explainer for the new
   milestone (§ Milestone explainers).
+- **Archive (resume, after `check` exits 0, before `advance`).** For each M from 1 to the parked
+  milestone P, run `loop-plan.sh archive --milestone <M> --dir .loop`. The command moves the phase
+  blocks and the progress-log entries of M to `.loop/milestones/m<M>.md`, writes the `[archived]`
+  stub into `plan.md` and pushes the plan. It refuses unless every phase of M is `done` and every
+  gate PR of M is merged. It is atomic and idempotent: exit 0 means archived or already archived.
+  Any other exit stops the resume before `advance`. The archive never changes `state.json`.
+  Grammar: plan-format → Archived milestones.
 - **Reconciliation.** Phases of a milestone whose gate PRs are merged are permanently shipped;
   crash-resume never re-checks them against a later integration tip.
 
@@ -191,6 +201,8 @@ State lives in the launching coordinator checkout (add `.loop/` to
 .loop/
   state.json                 # orchestrator bookkeeping (loop-state.sh, atomic writes)
   plan.md                    # the plan document, beside state.json (register/push planText source)
+  milestones/m<N>.md         # archived milestone N: its section and progress-log entries, moved
+                             # without changes by `loop-plan.sh archive`. plan.md keeps a stub.
   progress.md                # progress stream (loop-plan.sh note / handoff --auto append)
   events.jsonl               # append-only journal: {ts, event, phase, repository?, detail}
   lock/                      # mkdir-lock; owner = run id (sessions have no stable pid);
@@ -1289,7 +1301,10 @@ truth for code, the plan/daemon for claims + phase status, state for attempt boo
   against a later integration tip (squash/rebase merges rewrite it) and never re-run them.
   Reconcile git against the current milestone's integration branches only.
 - `loop-milestone.sh advance` interrupted (state still has `awaitingMerge`, the next milestone
-  not yet applied) → re-run `check` then `advance`; prepare and retire are idempotent, state is
-  written once by the final `loop-state.sh set`.
+  not yet applied) → re-run `check`, the archive step, then `advance`; archive, prepare and
+  retire are idempotent, state is written once by the final `loop-state.sh set`.
+- Archived milestones: `plan.md` changes only by the final rename of `loop-plan.sh archive`. A
+  crash before it leaves the full milestone in `plan.md` (and at most an identical
+  `milestones/m<N>.md`, which the next run accepts). Re-run the archive step.
 - Runners are spawned detached, so they survive orchestrator death; never double-spawn a
   phase whose run dir has a live pid.

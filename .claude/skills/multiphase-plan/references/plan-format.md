@@ -77,6 +77,61 @@ milestones.
   branch), always created fresh from the fetched default
   branch (adoption of an existing branch/worktree applies to milestone 1 only).
 
+### Archived milestones
+
+A plan keeps full phase blocks only for milestones that have not shipped. The orchestrator and
+the AR plan reviewers read the full plan at each step. A shorter plan uses less of their context.
+After the gate PRs of milestone N merge, `loop-plan.sh archive --milestone N` moves milestone N
+out of `plan.md`.
+
+- **Archive file.** `milestones/m<N>.md` sits beside `plan.md` (in Loop mode:
+  `.loop/milestones/m<N>.md`). It holds the milestone section (heading, branch and PR lines,
+  phase blocks) and the progress-log entries of that milestone. The command moves them without
+  changes.
+- **Stub.** The milestone section in `plan.md` becomes a stub with this shape:
+
+  ```markdown
+  ## Milestone 1 — Backend ships behind a flag `[archived]`
+  - **Integration branch:** `feat/token-refresh-backend`
+  - **PR:** https://github.com/owner/api/pull/12
+  - **Outcome:** Backend ships behind a flag
+  - **Repositories:** `owner/api`
+  - **Phases (all done):** 1, 2
+  - **Gate:** Phase 2
+  - **Archive:** [milestones/m1.md](milestones/m1.md)
+  ```
+
+  - The heading keeps its text and ends with `` `[archived]` ``.
+  - The `Integration branch` and `PR` lines are the milestone's own lines, without changes.
+  - `Outcome:` is one line. The default is the milestone title. `--outcome <text>` sets it.
+  - `Repositories:` lists the participants.
+  - `Phases (all done):` lists every phase number of the milestone in document order.
+  - `Gate:` names the `[gate: merge]` review phase. The phase list contains it.
+  - `Archive:` is a relative link to the archive file.
+- **Progress log.** An entry is about milestone N when the text after its date and dash starts
+  with `Phase <n>` (n is a phase of N), `Milestone N` or `MN`. The command moves these entries
+  with their indented continuation lines. All other entries stay in `plan.md`.
+- **Readers.** A phase that an `[archived]` stub lists is an existing phase with status `done`.
+  - It needs no *Done when*, no `Repository:` and no `Estimate:`.
+  - A `Depends on` edge to it is satisfied.
+  - Its number stays reserved. Never reuse it.
+  - Never claim, reopen, renumber or drop it. Never copy its block back into `plan.md`.
+  - `.loop/state.json` keeps its entries.
+  - The Loop daemon gives it the title `(archived)` and a display-only dependency chain in stub
+    order.
+- **Command rules.**
+  - The command refuses with exit 3 in these conditions:
+    - A phase of N is not `done`.
+    - N has no `[gate: merge]` phase.
+    - A participant of N has no PR link.
+  - It reads the state of each PR link with the `loop-milestone.sh check` rule. An open PR
+    gives exit 3. A PR that is closed and not merged gives exit 4. A `gh` error gives exit 1.
+  - It is atomic. It writes the archive file first. It replaces `plan.md` last, with one
+    rename. On any failure, `plan.md` stays unchanged.
+  - It is idempotent. A second run on an archived milestone writes nothing and pushes nothing.
+  - After the write, it runs `loop-plan.sh push`.
+  - A final milestone that has no `[gate: merge]` phase cannot be archived.
+
 ## Document template
 
 > The template below shows four phases across two lanes purely to illustrate every marker.

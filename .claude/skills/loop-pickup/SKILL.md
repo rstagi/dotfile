@@ -51,7 +51,10 @@ and the launching checkout.
 
 Parse the plan's phases, lanes, `[status: …]`, and optional `[kind: pr-review]` marker.
 Review phases are orchestrator-owned barriers: never offer, claim, or execute one from a
-worktree. The `[status: …]` markers in `.loop/plan.md` are authoritative. Then:
+worktree. The `[status: …]` markers in `.loop/plan.md` are authoritative.
+A phase that an `[archived]` stub lists is an existing phase with status `done`. A `Depends on`
+edge to it is satisfied. Never offer or claim it. Its block is in `.loop/milestones/m<N>.md`.
+Read that file only when the chosen phase needs its history. Then:
 
 - **If the user named a lane/phase** → use it.
 - **Otherwise** show the lanes with their state and recommend the next **unblocked** one

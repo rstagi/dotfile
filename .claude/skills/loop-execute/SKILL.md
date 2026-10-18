@@ -81,7 +81,9 @@ Resolve the plan LOCAL → daemon: `.loop/plan.md` header → the daemon
 statuses, and per-phase `Verify`. Validate: DAG acyclic;
 every phase has *Done when*; every work phase has exactly one known repository; the final
 document phase is `[kind: pr-review]`. Legacy plans without explicit kinds retain their
-synthetic terminal review. Resolve each `owner/repo` through
+synthetic terminal review. A phase that an `[archived]` stub lists is an existing phase with status `done`.
+It needs no *Done when* and no repository. A `Depends on` edge to it is satisfied. Do not
+read the archive files (`.loop/milestones/m<N>.md`) for validation. Resolve each `owner/repo` through
 `loop-repo.sh get`; before autonomy ask once for missing checkout paths and persist them
 with `loop-repo.sh map`. Run `loop-repo.sh check` for origin/default-branch validation; it
 reports `mode` `create` or `adopt` (branch already exists, e.g. the ws worktree you run from —
@@ -95,7 +97,8 @@ of milestone N+1 must list that gate in `Depends on` **explicitly** — missing 
 infer it; milestones ≥2 declare their integration branch (milestone line or per-repository
 `(owner/repo)` line; no global fallback); a branch never repeats for the same repository
 across milestones; `[gate: merge]` on the final milestone → warn (nothing to park for; it runs
-as an ordinary terminal review). Branch precedence: milestone repository line > milestone line >
+as an ordinary terminal review). Do not apply the gate and root-phase checks inside an
+archived milestone. Its stub names its gate (plan-format → Archived milestones). Branch precedence: milestone repository line > milestone line >
 (milestone 1 only) `## Repositories` override > Loop config. Only milestone-1 participants
 go through `loop-repo.sh check`/adoption; M≥2 branch names are checked by name only — no
 `check`, no `prepare` (their branches and worktrees are created fresh at resume).
@@ -183,6 +186,8 @@ session hands the heavy work to a detached orchestrator and stays thin:
 At every safe scheduling boundary, re-read the newest plan (daemon)
 and reconcile it into `state.phases` without replacing existing entries. Phase numbers are
 stable identities; document order is the sequence. Add each new phase as `todo`, then repush. Preserve completed and running state.
+Never drop, reopen or renumber an archived phase. Keep its `state.phases` entry. If
+`state.phases` has no entry for an archived phase, add it as `done`, never as `todo`.
 
 Enforce review topology as one coherent plan edit:
 
@@ -518,8 +523,8 @@ milestone of a plan, or the final review of a plan with no milestones.
   register` (idempotent ensure-daemon + re-register) so the loop reappears in the observer —
   no per-loop observer to relaunch. **If `state.awaitingMerge` is set** the loop is parked at a
   milestone merge gate (step 8): a SUB (`LOOP_SUB=1`) writes `status.json{outcome:"blocked"}` and exits;
-  only a human resume (`LOOP_SUB` unset) leaves the park, via `loop-milestone.sh check`/`advance`
-  (protocol § Milestones). **If `LOOP_SUB=1` (you are a SUB instance):** FIRST, if
+  only a human resume (`LOOP_SUB` unset) leaves the park, via `loop-milestone.sh check`,
+  `loop-plan.sh archive` and `loop-milestone.sh advance` (protocol § Milestones). **If `LOOP_SUB=1` (you are a SUB instance):** FIRST, if
   `sub/handoff.md` exists, read it **once** and rename it to `sub/handoff.consumed-<k>.md`
   (single-consumption); then reconcile as above and run steps 4-7 under the recycle loop below.
 
@@ -558,7 +563,19 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    milestone's own review.)
 2. **Check.** `loop-milestone.sh check --state .loop/state.json`: exit 3 (open) → report each open
    PR, stop, change nothing; exit 4 (closed unmerged) → open a HIL for the human (reopen or
-   re-plan), stop; exit 1 (gh/state error) → report it, stop; exit 0 (all merged) → continue.
+   re-plan), stop; exit 1 (gh/state error) → report it, stop; exit 0 (all merged) → archive, then
+   continue.
+
+   **Archive.** Archive the shipped milestones before the next milestone starts. P is the parked
+   milestone. For each M from 1 to P, in order, run
+   `loop-plan.sh archive --milestone <M> --dir .loop`.
+   - The command checks that every phase of M is `done` and that every gate PR of M is merged.
+   - It moves the phase blocks and the progress-log entries of M to `.loop/milestones/m<M>.md`.
+   - It writes the `[archived]` stub into `.loop/plan.md` and pushes the plan.
+   - Exit 0 means archived or already archived. Go to the next M.
+   - Any other exit: report the command output and stop. Do not edit the plan to force the archive.
+     Do not advance. The human fixes the cause and runs `/loop-execute resume` again.
+   - Do not change `.loop/state.json`. It keeps the entries of the archived phases.
 3. **Advance.** Resolve the next milestone's branch per participant (precedence in preflight) and
    run `loop-milestone.sh advance --state .loop/state.json --next <N> --branches '<json slug→branch>'`.
    It prepares every next participant before retiring old non-adopted worktrees, so a failed

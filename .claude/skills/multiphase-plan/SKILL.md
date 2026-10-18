@@ -81,6 +81,7 @@ Author the plan in the **canonical plan format** (see
   refresh endpoint"), never "Phase 1" or a vague label — the title usually seeds the PR
   title.
 - **Milestones** — default to none (one `## Phases` list, one PR per repository). Propose milestones only when the effort is too big for one PR and each milestone leaves main shippable on its own; confirm in the step-1 question gate. Each non-final milestone ends with a `[kind: pr-review]` `[gate: merge]` phase, and the next milestone's root phases list that gate in `Depends on`; milestones ≥2 must declare their own integration branch; milestone 1 may fall back to Loop config. Grammar and template: `references/plan-format.md` → Milestones.
+  A plan keeps full phase blocks only for milestones that have not shipped. When the gate PRs of a milestone merge, `loop-execute` archives the milestone. Its phase blocks and its progress-log entries move to `.loop/milestones/m<N>.md`. `plan.md` keeps a short `[archived]` stub. When you edit an existing plan, do not copy archived blocks back into it. A phase that an `[archived]` stub lists is an existing phase with status `done`. Grammar: `references/plan-format.md` → Archived milestones.
 - **Terminal review phase** — every executable plan ends with one explicit
   `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
   It represents the bounded per-repository reviews run by `loop-execute`; it has no
