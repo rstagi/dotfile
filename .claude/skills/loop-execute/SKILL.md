@@ -492,6 +492,10 @@ final milestone is an ordinary terminal review (finish below):
    - Check that `.loop/milestones/m<n>.retro.md` exists. When it is missing, write the reason
      to `retro-error.txt` in the output directory. A missing retro never blocks the park.
    - Then supervise renders, publishes and writes `link.txt`, as the skill tells it.
+   - Video: the explainer runner also writes `narration.json`. Before the publish, supervise
+     runs the video step of the skill (`render-video.mjs --narration`, 15 min timeout).
+     The step 5 notification waits for the video or its timeout.
+     A failed video goes to `video-error.txt`, and the page goes out without it.
    - When the link is an artifact URL, add or replace one line in each gate PR body:
      `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
    - On any failure, write the reason to `error.txt` in the output directory and go on
@@ -526,6 +530,10 @@ milestone of a plan, or the final review of a plan with no milestones.
    - Check that `.loop/milestones/m<n>.retro.md` exists. When it is missing, write the reason
      to `retro-error.txt` in the output directory. A missing retro never blocks the finish.
    - Then supervise renders, publishes and writes `link.txt`, as the skill tells it.
+   - Video: the explainer runner also writes `narration.json`. Before the publish, supervise
+     runs the video step of the skill (`render-video.mjs --narration`, 15 min timeout).
+     The step 3 notification waits for the video or its timeout.
+     A failed video goes to `video-error.txt`, and the page goes out without it.
    - When the link is an artifact URL, add or replace one line in the PR body of each
      participating repository: `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
    - On any failure, write the reason to `error.txt` in the output directory and go on
@@ -630,6 +638,12 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    - Spawn one detached explainer runner after the respawn. Do not wait for it here.
    - At each later poll or tick, look for its `meta.json`. Then render, publish and write
      `link.txt`, as the skill tells you.
+   - Video: the explainer runner also writes `narration.json`. After that publish, start
+     `render-video.mjs --narration` detached (`nohup`), with its stderr in `video.log` and its
+     exit code in `video.exit`. The video never delays the respawn.
+     At a later poll or tick, when `video.exit` is 0, render the page again with
+     `--video video.mp4` and publish it to the URL in `link.txt` with the `files` map.
+     Otherwise write the reason to `video-error.txt`.
    - Notify once (`loop-notify.sh --level info --title "M<N> plan explainer"`) with the link
      (`--url`) or the failure.
    - A failed explainer never stops the resume or the orchestrator.

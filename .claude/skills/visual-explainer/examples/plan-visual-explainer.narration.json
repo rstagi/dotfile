@@ -1,0 +1,33 @@
+{
+  "mode": "plan",
+  "sections": [
+    {
+      "id": "intro",
+      "text": "This video explains the plan for a shared visual explainer. The plan has one milestone with four phases in one lane. It replaces the Remotion video that each run built on its own. Instead, one shared skill renders a fixed web page from a file of facts."
+    },
+    {
+      "id": "goal",
+      "text": "The goal is simple. Every plan, every milestone gate and every pull request review gets the same animated explainer page. The agent writes only one file of facts, the props file. A script with no dependencies checks that file and renders one self-contained page. So every page has the same look."
+    },
+    {
+      "id": "architecture",
+      "text": "Look at the three layers from top to bottom. At the top are the three callers: multiphase plan, loop execute and pr review. Each one changes, so that it calls the explainer. In the middle is the visual explainer skill, with its instructions and two schemas. A hand-test step must point at a line of code. At the bottom is the renderer. The render script checks the props and fills a fixed template. Two flows connect the parts. Loop execute gets the props from a detached runner. The render script puts escaped scene markup into fixed slots."
+    },
+    {
+      "id": "milestones",
+      "text": "The plan has one milestone: one explainer for plans, gates and reviews. It has four phases in lane A. Phase one adds the renderer, the schemas and the template, test first. Phase two writes the skill text and the example props. Phase three connects the three callers. Each work phase takes fifteen to twenty-five minutes. Phase four reviews the milestone. At the end, all three callers use the shared renderer, and no Remotion step remains."
+    },
+    {
+      "id": "decisions",
+      "text": "Three decisions shape the plan. First, the page animates with SVG and CSS. It opens anywhere and needs no render step. The plan rejects a Remotion video, because each run built a new project, and that was slow and fragile. It also rejects an MP4 render, because that needs extra tools on the machine. Second, the agent writes only props. Fixed scenes give the same look every run, and one escape function protects every field. Third, each hand-test step carries a code reference. That rule makes the author read the code, so the steps come in the right order."
+    },
+    {
+      "id": "risks",
+      "text": "Now the risks, highest impact first. The biggest risk is that a failed explainer blocks a milestone park or a resume. The mitigation: the explainer is best effort, and the notification states the failure. A medium risk is a wrong code reference that looks like proof. The skill tells the author to open each referenced line first. The last risk is a long page for a long plan. Sticky navigation and a Play tour help the reader."
+    },
+    {
+      "id": "outro",
+      "text": "That is the plan for the shared visual explainer. The page has every phase, every decision and every risk, with the full text. Open the page to read the details and to follow its links."
+    }
+  ]
+}

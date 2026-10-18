@@ -247,8 +247,14 @@ planId first. Use the output directory `.loop/explainers/plan/`.
   phases and the risks.
 - Use the step 3 dispositions for the rejected options and the risks.
 - Set `meta.planId` to the planId. Omit `meta.milestone`.
-- Publish the page as the skill tells you. The link goes to `.loop/explainers/plan/link.txt`.
-- A failed explainer does not block the report. State the failure in the report.
+- Write `.loop/explainers/plan/narration.json` beside `props.json`, as the skill tells you.
+  The narration explains the plan from the same facts.
+- Render the page, then the video with its voiceover (`render-video.mjs`, the video step of
+  the skill). Then render the page again with the video at the top.
+- Publish the page and the video as the skill tells you. The link goes to
+  `.loop/explainers/plan/link.txt`.
+- A failed explainer does not block the report. State the failure in the report. A failed
+  video does not block the page: publish the page without it and state the video failure.
 
 ### 6. Report
 

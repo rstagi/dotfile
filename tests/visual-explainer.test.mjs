@@ -309,7 +309,7 @@ test("usage errors exit 2", () => {
 
 test("the committed example props stay valid and render, one per mode at least", () => {
   const modes = new Set();
-  for (const file of fs.readdirSync(path.join(SKILL, "examples"))) {
+  for (const file of fs.readdirSync(path.join(SKILL, "examples")).filter((f) => f.endsWith(".props.json"))) {
     const props = JSON.parse(fs.readFileSync(path.join(SKILL, "examples", file), "utf8"));
     const r = render(props);
     assert.equal(r.status, 0, `${file}: ${r.stderr}`);
