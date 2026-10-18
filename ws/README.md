@@ -434,6 +434,20 @@ Delivery can repeat after a lost response or a daemon crash.
 Log records keep their `event_id` attributes. A log without that attribute uses its durable telemetry event ID.
 Spans keep their span IDs. The sink must deduplicate repeated records.
 
+The daemon collects Codex quota every minute and at each phase boundary.
+The shared launch preparation saves the account binding in a private `quota-binding.json` beside the session log.
+A resumed WS session retains that binding after an account change. The file contains no credential.
+The collector initializes `codex app-server`, then calls the read-only `account/rateLimits/read` method.
+It also reads `token_count` quota snapshots from the session's associated rollout.
+Rollout snapshots retain their original event time and a separate collection receipt time.
+Unrelated rollouts cannot supply an account binding.
+
+The collector writes durable `runner.usage.updated` events through the existing session writer and OTLP emitter.
+Each reading retains its account, bucket, window duration, reset time and `reported` source.
+Window duration selects the window: 300 minutes means five hours, and 10080 minutes means one week.
+Other durations remain separate. Missing windows and invalid or expired values remain unknown.
+Unknown values produce no numeric quota attribute.
+
 `POST /v1/phases/spawn` starts a local phase as a headless child:
 
 ```json
