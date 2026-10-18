@@ -38,6 +38,8 @@ Claude model intervals use `duration_ms` and the API record timestamp.
 Codex completion records with zero output tokens are prewarm and do not create model spans.
 Without native timing, a Codex model span uses surrounding hooks and carries `ws.timing=estimated`.
 Native spans can supply measured timing. They must not duplicate canonical turn, tool or model spans.
+With native tracing enabled, retain a completion until its stream timing arrives or the session exits.
+At exit, use the hook interval if native timing remains absent.
 Retain available model, request id, input/output tokens and cache tokens from agent records as producer attributes.
 Do not invent missing request ids, durations or token fields.
 
@@ -93,6 +95,26 @@ These attributes describe events or spans unless a row specifies a metric point.
 | `ws.session.tool` | span (INTERNAL) | Required for each observed tool start | `tool.pre` to matching `tool.post`, or turn closure |
 | `ws.session.model_call` | span (CLIENT) | Optional, when model-call evidence exists | `claude_code.api_request`, or non-prewarm `codex.sse_event` response completion |
 | `ws.session.phase_attempt` | span (INTERNAL) | Required for each phase attempt | `phase.started` to `phase.finished`, normalized from `phase.spawned` and `process.exited` |
+
+## GenAI attributes
+
+Model-call spans use the [OpenTelemetry GenAI attribute names](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/registry/attributes/gen-ai.md).
+Retain the available producer fields beside these attributes, including `request_id` and the original token counts.
+Do not create a request id when the producer omits it.
+Input tokens include cached input.
+For Claude, add `input_tokens`, `cache_read_tokens` and `cache_creation_tokens`.
+Codex already includes cached input in `input_token_count`.
+Omit a token attribute when its source count is absent.
+
+| Name | Type | Requirement | Source log event or value |
+|---|---|---|---|
+| `gen_ai.operation.name` | string | Required on model-call spans | `chat` |
+| `gen_ai.provider.name` | string | Required on model-call spans | `anthropic` for Claude, `openai` for Codex |
+| `gen_ai.request.model` | string | Optional, when the agent supplies a model | Agent `model` |
+| `gen_ai.usage.input_tokens` | int64 | Optional, when input tokens exist | Claude input plus cache counts, or Codex `input_token_count` |
+| `gen_ai.usage.output_tokens` | int64 | Optional, when output tokens exist | Claude `output_tokens` or Codex `output_token_count` |
+| `gen_ai.usage.cache_read.input_tokens` | int64 | Optional, when cache read tokens exist | Claude `cache_read_tokens` or Codex `cached_token_count` |
+| `gen_ai.usage.cache_creation.input_tokens` | int64 | Optional, when cache creation tokens exist | Claude `cache_creation_tokens` or Codex `cache_write_token_count` |
 
 ## Log records and span events
 

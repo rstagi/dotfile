@@ -65,13 +65,13 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
     let cases = [
         ("baseline-logs.json", Signal::Logs, 11),
         ("baseline-metrics.json", Signal::Metrics, 3),
-        ("beta-json-traces.json", Signal::Traces, 3),
+        ("beta-json-traces.json", Signal::Traces, 1),
         ("codex-baseline-logs.json", Signal::Logs, 24),
         ("codex-baseline-metrics.json", Signal::Metrics, 16),
         ("codex-baseline-traces.json", Signal::Traces, 29),
         ("beta-protobuf-logs.pb", Signal::Logs, 7),
         ("beta-protobuf-metrics.pb", Signal::Metrics, 3),
-        ("beta-protobuf-traces.pb", Signal::Traces, 2),
+        ("beta-protobuf-traces.pb", Signal::Traces, 1),
         ("codex-protobuf-logs.pb", Signal::Logs, 24),
         ("codex-protobuf-metrics.pb", Signal::Metrics, 16),
         ("codex-protobuf-traces.pb", Signal::Traces, 29),
@@ -141,6 +141,7 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
                         Some(
                             "claude_code.tool"
                                 | "claude_code.tool.execution"
+                                | "claude_code.llm_request"
                                 | "run_turn"
                                 | "session_task.turn"
                                 | "handle_tool_call_with_source"
@@ -214,7 +215,7 @@ async fn accepts_all_s2_signals_in_both_wire_formats() {
         offset += count;
     }
     receiver.shutdown().await.unwrap();
-    assert_eq!(log.read().unwrap().len(), 167);
+    assert_eq!(log.read().unwrap().len(), 164);
 }
 
 #[tokio::test]
@@ -470,7 +471,7 @@ async fn redacts_codex_tool_content_and_email_before_storage_in_both_encodings()
 }
 
 #[tokio::test]
-async fn native_boundaries_do_not_duplicate_canonical_turns_or_tools() {
+async fn native_boundaries_do_not_duplicate_canonical_turns_tools_or_models() {
     let sandbox = tempfile::tempdir().unwrap();
     let device = Device::init(sandbox.path(), "test-device").unwrap();
     let receiver = Receiver::bind(sandbox.path()).await.unwrap();
@@ -480,7 +481,7 @@ async fn native_boundaries_do_not_duplicate_canonical_turns_or_tools() {
             {"name":"handle_tool_call_with_source"}, {"name":"dispatch_tool_call_with_state"},
             {"name":"exec_command"}, {"name":"unified_exec.exec_command"},
             {"name":"code_mode.broker.invoke_tool"}, {"name":"exec"},
-            {"name":"ws.session.turn"}, {"name":"ws.session.tool"},
+            {"name":"ws.session.turn"}, {"name":"ws.session.tool"}, {"name":"ws.session.model_call"},
             {"name":"responses_websocket.stream_request"}
         ]},
         {"scope":{"name":"com.anthropic.claude_code.tracing"}, "spans":[
@@ -512,10 +513,146 @@ async fn native_boundaries_do_not_duplicate_canonical_turns_or_tools() {
         names,
         [
             "responses_websocket.stream_request",
-            "claude_code.llm_request",
             "claude_code.tool.blocked_on_user",
             "exec"
         ]
+    );
+    receiver.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn late_model_logs_reach_the_shared_span_pipeline_without_a_restart() {
+    use crate::sessions::{CreateSession, Sessions};
+    use std::sync::{Arc, Mutex};
+
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    sessions
+        .append(
+            session.id,
+            "turn.started",
+            serde_json::json!({"observed_at_us":1000}),
+        )
+        .unwrap();
+    sessions
+        .append(
+            session.id,
+            "turn.ended",
+            serde_json::json!({"observed_at_us":9000}),
+        )
+        .unwrap();
+    let shared = sessions.spans.clone();
+    let store = Arc::new(Mutex::new(sessions));
+    let receiver = Receiver::bind_with_spans(sandbox.path(), Some(shared))
+        .await
+        .unwrap();
+    let body = serde_json::json!({"resourceLogs":[{"resource":{"attributes":[{"key":semconv::SESSION_ID,"value":{"stringValue":session.id.to_string()}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"5000000","body":{"stringValue":"claude_code.api_request"},"attributes":[{"key":"duration_ms","value":{"intValue":"2"}},{"key":"output_tokens","value":{"intValue":"7"}}]}]}]}]});
+    assert!(
+        post(
+            receiver.local_addr(),
+            "/v1/logs",
+            "application/json",
+            &serde_json::to_vec(&body).unwrap()
+        )
+        .await
+        .starts_with("HTTP/1.1 200")
+    );
+    let log = TelemetryLog::new(sandbox.path(), session.device_id);
+    let models: Vec<_> = log
+        .read()
+        .unwrap()
+        .into_iter()
+        .filter(|r| {
+            r.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"]
+                == semconv::MODEL_CALL_SPAN
+        })
+        .collect();
+    assert_eq!(models.len(), 1);
+    let span = &models[0].payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+    assert_eq!(span["startTimeUnixNano"], "3000000");
+    assert_eq!(span["endTimeUnixNano"], "5000000");
+    receiver.shutdown().await.unwrap();
+    drop(store);
+    let first = log.read().unwrap();
+    drop(Sessions::open(sandbox.path(), 0).unwrap());
+    assert_eq!(log.read().unwrap(), first);
+}
+
+#[tokio::test]
+async fn native_tracing_waits_for_late_stream_timing_instead_of_duplicating_a_model() {
+    use crate::sessions::{CreateSession, Sessions};
+    use serde_json::json;
+
+    let sandbox = tempfile::tempdir().unwrap();
+    std::fs::write(
+        sandbox.path().join("config.toml"),
+        "[telemetry]\nnative_tracing = true\n",
+    )
+    .unwrap();
+    let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    sessions
+        .append(session.id, "turn.started", json!({"observed_at_us":1000}))
+        .unwrap();
+    sessions
+        .append(session.id, "turn.ended", json!({"observed_at_us":9000}))
+        .unwrap();
+    let receiver = Receiver::bind_with_spans(sandbox.path(), Some(sessions.spans.clone()))
+        .await
+        .unwrap();
+    let resource = json!({"attributes":[{"key":semconv::SESSION_ID,"value":{"stringValue":session.id.to_string()}}]});
+    let logs = json!({"resourceLogs":[{"resource":resource,"scopeLogs":[{"logRecords":[{"timeUnixNano":"5000000","attributes":[{"key":"event.name","value":{"stringValue":"codex.sse_event"}},{"key":"event.kind","value":{"stringValue":"response.completed"}},{"key":"output_token_count","value":{"stringValue":"7"}}]}]}]}]});
+    let traces = json!({"resourceSpans":[{"resource":resource,"scopeSpans":[{"scope":{"name":"codex_exec"},"spans":[{"name":"responses_websocket.stream_request","startTimeUnixNano":"3000000","endTimeUnixNano":"5000000","traceId":"11111111111111111111111111111111","spanId":"2222222222222222"}]}]}]});
+    assert!(
+        post(
+            receiver.local_addr(),
+            "/v1/logs",
+            "application/json",
+            &serde_json::to_vec(&logs).unwrap()
+        )
+        .await
+        .starts_with("HTTP/1.1 200")
+    );
+    let log = TelemetryLog::new(sandbox.path(), session.device_id);
+    let count_models = || {
+        log.read()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                r.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"]
+                    == semconv::MODEL_CALL_SPAN
+            })
+            .count()
+    };
+    assert_eq!(count_models(), 0);
+    assert!(
+        post(
+            receiver.local_addr(),
+            "/v1/traces",
+            "application/json",
+            &serde_json::to_vec(&traces).unwrap()
+        )
+        .await
+        .starts_with("HTTP/1.1 200")
+    );
+    assert_eq!(count_models(), 1);
+    let records = log.read().unwrap();
+    let model = records
+        .iter()
+        .find(|r| {
+            r.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"]
+                == semconv::MODEL_CALL_SPAN
+        })
+        .unwrap();
+    let model = &model.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+    assert_eq!(model["startTimeUnixNano"], "3000000");
+    assert!(
+        model["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["key"] == semconv::TIMING && a["value"]["stringValue"] == "measured")
     );
     receiver.shutdown().await.unwrap();
 }

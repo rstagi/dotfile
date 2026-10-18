@@ -6,6 +6,7 @@ use std::{
     fs::{File, TryLockError},
     io,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ pub struct Sessions {
     pub(crate) device_id: DeviceId,
     pub(crate) registry: Registry,
     needs_rebuild: bool,
-    spans: crate::spans::Spans,
+    pub(crate) spans: crate::spans::SharedSpans,
     writers: HashMap<SessionId, LogWriter>,
     pub(crate) headless_hooks: HashMap<SessionId, crate::hooks::HookState>,
     pub(crate) changes: tokio::sync::watch::Sender<()>,
@@ -91,7 +92,10 @@ impl Sessions {
             device_id: device.device_id,
             registry,
             needs_rebuild: false,
-            spans: crate::spans::Spans::open(state, device.device_id)?,
+            spans: Arc::new(Mutex::new(crate::spans::Spans::open(
+                state,
+                device.device_id,
+            )?)),
             writers: HashMap::new(),
             headless_hooks: HashMap::new(),
             changes: tokio::sync::watch::channel(()).0,
@@ -254,7 +258,7 @@ impl Sessions {
         self.needs_rebuild = true;
         let entry = writer.append_current(event_type, body)?;
         self.registry.apply(&entry)?;
-        self.spans.observe(&entry)?;
+        self.spans.lock().unwrap().observe(&entry)?;
         self.needs_rebuild = false;
         self.apply_trigger_entry(&entry);
         if self.process_complete(id, event_type)?
@@ -269,6 +273,7 @@ impl Sessions {
     }
 
     fn recover_spans(&mut self) -> Result<()> {
+        let mut shared = self.spans.lock().unwrap();
         let mut spans = crate::spans::Spans::open(&self.state, self.device_id)?;
         for session in self.registry.sessions()? {
             for entry in SessionLog::new(&self.state, session.id, session.device_id)
@@ -278,7 +283,7 @@ impl Sessions {
                 spans.observe(&entry)?;
             }
         }
-        self.spans = spans;
+        *shared = spans;
         Ok(())
     }
 

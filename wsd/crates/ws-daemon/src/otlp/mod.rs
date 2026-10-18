@@ -41,6 +41,7 @@ enum Encoding {
 #[derive(Clone)]
 struct Ingestion {
     log: TelemetryLog,
+    spans: Option<crate::spans::SharedSpans>,
     content: bool,
 }
 
@@ -60,6 +61,13 @@ pub struct Receiver {
 impl Receiver {
     /// Binds only to IPv4 localhost. The listener is ready when this function returns.
     pub async fn bind(state: &Path) -> io::Result<Self> {
+        Self::bind_with_spans(state, None).await
+    }
+
+    pub(crate) async fn bind_with_spans(
+        state: &Path,
+        spans: Option<crate::spans::SharedSpans>,
+    ) -> io::Result<Self> {
         let config = Config::load(state)?.telemetry;
         let device = Device::load(state)?;
         let log = TelemetryLog::new(state, device.device_id);
@@ -76,6 +84,7 @@ impl Receiver {
             .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
             .with_state(Ingestion {
                 log,
+                spans,
                 content: config.content,
             });
         let (shutdown, stopped) = oneshot::channel();
@@ -218,7 +227,16 @@ async fn ingest(state: Ingestion, signal: Signal, headers: HeaderMap, body: Byte
         redact(payload, state.content, false);
     }
     let log = state.log;
-    match tokio::task::spawn_blocking(move || log.append(signal, payloads, now_ms())).await {
+    match tokio::task::spawn_blocking(move || {
+        let mut spans = state.spans.as_ref().map(|spans| spans.lock().unwrap());
+        log.append(signal, payloads, now_ms())?;
+        if let Some(spans) = spans.as_mut() {
+            spans.synthesize_models()?;
+        }
+        Ok::<_, io::Error>(())
+    })
+    .await
+    {
         Ok(Ok(_)) => match encoding {
             Encoding::Json => ([("content-type", "application/json")], "{}").into_response(),
             // All three Export*ServiceResponse messages encode an empty success as zero bytes.
