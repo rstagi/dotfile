@@ -79,6 +79,24 @@ Read `schema/<mode>.schema.json` and the example of that mode. Then collect thes
   `missed`. Take the evidence from the progress log, the ledger and the review.
 - `deviations`: each difference between the plan and the result. Use an empty array when
   there is no difference.
+- `process`: the process numbers. This field is optional. In a Loop run, the caller gives
+  the output file of `loop-retro.mjs --json` (the retro facts). Copy each number from its
+  `totals`. Omit a number that you do not know. Do not count by hand.
+- `setbacks`: the process costs. This field is optional. A deviation is a result that is
+  different from the plan. A setback is a cost on the way to the result, also when the result
+  agrees with the plan. Examples: a retry, a failed test run, a timeout, a rate limit, a
+  question, a HIL, a review fix round.
+  - In a Loop run, take every setback from the `setbackCandidates` of the retro facts. Do
+    not add a setback that is not in that list. Put candidates of one phase with one cause
+    into one entry.
+  - The evidence paths of a candidate are relative to the `.loop` directory.
+  - Find the cause in the evidence files of the candidate: the `status.json` or `last.md` of
+    the run, or the HIL brief and its answer. Write the cause in `what`. When no file gives
+    the cause, write `Cause: unknown`.
+  - Write `cost` from the candidate facts: attempts, minutes, rounds. Do not invent a count.
+  - Write `lesson` only when the evidence supports a rule that an agent can apply.
+  - The page shows the `process` numbers and the `setbacks` in one scene after the
+    deviations. The page omits that scene when both fields are absent.
 - `reviews`: one entry for each repository or PR. `verdict` is the posted GitHub event.
   Copy the findings of the final review. Set each finding to `open`, `fixed` or `deferred`.
 - `handTest`: the ordered steps for a human. Each step has `command`, `ref` and `why`.
