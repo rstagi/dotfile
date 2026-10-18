@@ -392,7 +392,15 @@ fn telemetry_contract_covers_both_agents_in_fresh_and_resumed_launch_modes() {
                             "{setting}"
                         );
                     }
-                    assert!(prepared.files.is_empty());
+                    assert_eq!(prepared.files.len(), 1);
+                    assert_eq!(
+                        prepared.files[0].path,
+                        context
+                            .state
+                            .join("sessions")
+                            .join(&context.id)
+                            .join("quota-binding.json")
+                    );
                 }
             }
         }
