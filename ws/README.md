@@ -366,6 +366,8 @@ Configure it in the same file:
 [telemetry]
 port = 0
 retention_days = 30
+native_tracing = false
+content = false
 ```
 
 These are the defaults. Port zero selects an available port.
@@ -375,7 +377,9 @@ A nonzero port selects a fixed port. Restart the daemon after a configuration ch
 The receiver replaces incoming `ws.device.id` resource attributes with the local device ID.
 It appends one durable record per log record, metric or span to `$WS_STATE/telemetry/log.jsonl`.
 Each record has an event ID, its receipt time, the signal type and an OTLP export payload.
-The payload preserves the resource, scope, schema URLs and signal data.
+The receiver removes `user.email` from all signals before storage.
+It also removes `arguments` and `output` from `codex.tool_result` records unless `content = true`.
+Other fields preserve the resource, scope, schema URLs and signal data.
 The receiver syncs each accepted batch before it returns HTTP 200.
 It repairs incomplete crash tails before the next append.
 Retention uses receipt time. The daemon prunes expired records at startup and every minute.

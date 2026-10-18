@@ -38,6 +38,12 @@ enum Encoding {
     Protobuf,
 }
 
+#[derive(Clone)]
+struct Ingestion {
+    log: TelemetryLog,
+    content: bool,
+}
+
 struct EndpointFile {
     path: PathBuf,
     device: u64,
@@ -68,7 +74,10 @@ impl Receiver {
             .route("/v1/metrics", post(metrics))
             .route("/v1/traces", post(traces))
             .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
-            .with_state(log);
+            .with_state(Ingestion {
+                log,
+                content: config.content,
+            });
         let (shutdown, stopped) = oneshot::channel();
         let task = tokio::spawn(async move {
             let server = axum::serve(listener, app)
@@ -160,19 +169,19 @@ async fn prune(log: TelemetryLog, retention_ms: u64) -> io::Result<()> {
     Ok(())
 }
 
-async fn logs(State(log): State<TelemetryLog>, headers: HeaderMap, body: Bytes) -> Response {
-    ingest(log, Signal::Logs, headers, body).await
+async fn logs(State(state): State<Ingestion>, headers: HeaderMap, body: Bytes) -> Response {
+    ingest(state, Signal::Logs, headers, body).await
 }
 
-async fn metrics(State(log): State<TelemetryLog>, headers: HeaderMap, body: Bytes) -> Response {
-    ingest(log, Signal::Metrics, headers, body).await
+async fn metrics(State(state): State<Ingestion>, headers: HeaderMap, body: Bytes) -> Response {
+    ingest(state, Signal::Metrics, headers, body).await
 }
 
-async fn traces(State(log): State<TelemetryLog>, headers: HeaderMap, body: Bytes) -> Response {
-    ingest(log, Signal::Traces, headers, body).await
+async fn traces(State(state): State<Ingestion>, headers: HeaderMap, body: Bytes) -> Response {
+    ingest(state, Signal::Traces, headers, body).await
 }
 
-async fn ingest(log: TelemetryLog, signal: Signal, headers: HeaderMap, body: Bytes) -> Response {
+async fn ingest(state: Ingestion, signal: Signal, headers: HeaderMap, body: Bytes) -> Response {
     let content_type = headers
         .get("content-type")
         .and_then(|value| value.to_str().ok())
@@ -201,7 +210,11 @@ async fn ingest(log: TelemetryLog, signal: Signal, headers: HeaderMap, body: Byt
             return (StatusCode::BAD_REQUEST, "The OTLP request body is invalid.").into_response();
         }
     };
-    let payloads = split_records(payload, signal);
+    let mut payloads = split_records(payload, signal);
+    for payload in &mut payloads {
+        redact(payload, state.content, false);
+    }
+    let log = state.log;
     match tokio::task::spawn_blocking(move || log.append(signal, payloads, now_ms())).await {
         Ok(Ok(_)) => match encoding {
             Encoding::Json => ([("content-type", "application/json")], "{}").into_response(),
@@ -259,6 +272,40 @@ fn split_records(mut payload: Value, signal: Signal) -> Vec<Value> {
         }
     }
     records
+}
+
+// Remove private attributes before the append-only log receives a record.
+fn redact(value: &mut Value, content: bool, tool_result: bool) {
+    match value {
+        Value::Object(object) => {
+            let tool_result = tool_result
+                || object
+                    .get("attributes")
+                    .and_then(Value::as_array)
+                    .is_some_and(|attributes| {
+                        attributes.iter().any(|a| {
+                            a["key"] == "event.name"
+                                && a["value"]["stringValue"] == "codex.tool_result"
+                        })
+                    });
+            object.remove("user.email");
+            for child in object.values_mut() {
+                redact(child, content, tool_result);
+            }
+        }
+        Value::Array(values) => {
+            values.retain(|value| {
+                value["key"] != "user.email"
+                    && (content
+                        || !tool_result
+                        || !matches!(value["key"].as_str(), Some("arguments" | "output")))
+            });
+            for child in values {
+                redact(child, content, tool_result);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn now_ms() -> u64 {
