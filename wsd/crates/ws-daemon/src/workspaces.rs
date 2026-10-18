@@ -712,6 +712,7 @@ impl Sessions {
                 "The tmux session {session_name} belongs to another workspace."
             )));
         }
+        let pending = crate::agents::launch::PendingLaunch::new(id)?;
         let slot = crate::agents::slots::register(wt, preferred_slot, agent, &id.to_string())?;
         if let Some(session) = resume {
             if ["finished", "failed"].contains(&session.state.as_str()) {
@@ -806,6 +807,7 @@ impl Sessions {
             existed: existing.is_some(),
             run_pane: run.map(|run| run.pane.clone()),
             was_running: resume.is_some_and(|session| session.state == "running"),
+            pending,
             args,
         })
     }
@@ -827,6 +829,7 @@ impl Sessions {
             existed,
             run_pane,
             was_running,
+            pending: _pending,
             args: _,
         } = plan;
         let (name, wt, agent) = (name.as_str(), wt.as_path(), agent.as_str());
@@ -962,6 +965,7 @@ pub(crate) struct AgentLaunch {
     existed: bool,
     run_pane: Option<String>,
     was_running: bool,
+    pending: crate::agents::launch::PendingLaunch,
     args: Vec<String>,
 }
 

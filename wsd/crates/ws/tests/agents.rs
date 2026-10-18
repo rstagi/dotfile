@@ -22,6 +22,45 @@ struct Sandbox {
 }
 
 #[test]
+fn an_agent_launch_waits_for_its_workspace_commit() {
+    let sandbox = Sandbox::with_launch_observation();
+    let repo = sandbox.repo();
+    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("tmux"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let wrapper = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(&wrapper, format!(
+        "#!/bin/sh\ncase \" $* \" in *' new-window '*|*' new-session '*) window=$({tmux} \"$@\") || exit $?; {tmux} -S {socket} wait-for agent-commit; printf '%s\\n' \"$window\";; *) exec {tmux} \"$@\";; esac\n",
+        tmux = shell_words::quote(&real_tmux.to_string_lossy()),
+        socket = shell_words::quote(&sandbox.server),
+    )).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let child = sandbox
+        .command()
+        .args([
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "feature",
+            "--detach",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    sandbox.wait_for(|| sandbox.home.path().join("launch-requested").exists());
+    sandbox.tmux(&["wait-for", "-S", "agent-commit"]);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let (agent, _running) = sandbox.capture();
+    let id = agent["id"].as_str().unwrap();
+    assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+    assert!(!sandbox.window(id).is_empty());
+}
+
+#[test]
 fn an_exit_self_trigger_reopens_after_the_old_launch_retires() {
     for code in [0, 7] {
         let sandbox = Sandbox::new();
@@ -1032,6 +1071,12 @@ impl Sandbox {
     }
     /// Runs `setup(home, tmux server)` before the daemon starts and imports legacy state.
     fn with_setup(config: &str, setup: impl FnOnce(&Path, &str)) -> Self {
+        Self::with_options(config, setup, false)
+    }
+    fn with_launch_observation() -> Self {
+        Self::with_options("", |_, _| {}, true)
+    }
+    fn with_options(config: &str, setup: impl FnOnce(&Path, &str), observe_launch: bool) -> Self {
         let home = common::SandboxRoot::new();
         fs::create_dir(home.path().join("state")).unwrap();
         fs::write(home.path().join("state/config.toml"), config).unwrap();
@@ -1039,6 +1084,12 @@ impl Sandbox {
         let server = home.tmux_socket();
         setup(home.path(), &server);
         let mut command = common::ws(home.path(), &socket);
+        if observe_launch {
+            command.env(
+                "WS_TEST_AGENT_LAUNCH_OBSERVED",
+                home.path().join("launch-requested"),
+            );
+        }
         let listener = UnixListener::bind(home.path().join("agent.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
         fs::write(
