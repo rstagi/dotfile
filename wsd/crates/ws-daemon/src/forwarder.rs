@@ -34,6 +34,10 @@ struct Options {
     interval: Duration,
     #[cfg(test)]
     before_commit: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    pass: Option<tokio::sync::mpsc::UnboundedSender<bool>>,
+    #[cfg(test)]
+    retry: Option<Arc<tokio::sync::Notify>>,
 }
 
 /// Owns one independent delivery worker per configured sink.
@@ -92,7 +96,20 @@ impl Forwarder {
                 tokio::spawn(async move {
                     loop {
                         // A failed sink cannot block another sink. The durable log is the retry queue.
-                        let _ = deliver(&client, &sink, &log, &store, retention_ms, &options).await;
+                        let result =
+                            deliver(&client, &sink, &log, &store, retention_ms, &options).await;
+                        #[cfg(test)]
+                        if let Some(pass) = &options.pass {
+                            let _ = pass.send(result.is_ok());
+                        }
+                        #[cfg(test)]
+                        if result.is_err()
+                            && let Some(retry) = &options.retry
+                        {
+                            retry.notified().await;
+                            continue;
+                        }
+                        let _ = result;
                         tokio::time::sleep(options.interval).await;
                     }
                 })
@@ -116,6 +133,10 @@ impl Default for Options {
             interval: Duration::from_secs(1),
             #[cfg(test)]
             before_commit: None,
+            #[cfg(test)]
+            pass: None,
+            #[cfg(test)]
+            retry: None,
         }
     }
 }
@@ -250,10 +271,10 @@ fn batch_payload(records: &[TelemetryRecord]) -> Value {
                         if item.get("attributes").is_none_or(Value::is_null) {
                             item["attributes"] = json!([]);
                         }
-                        if let Some(attributes) = item["attributes"].as_array_mut() {
-                            if !attributes.iter().any(|a| a["key"] == "event_id") {
-                                attributes.push(json!({"key": "event_id", "value": {"stringValue": record.event_id.to_string()}}));
-                            }
+                        if let Some(attributes) = item["attributes"].as_array_mut()
+                            && !attributes.iter().any(|a| a["key"] == "event_id")
+                        {
+                            attributes.push(json!({"key": "event_id", "value": {"stringValue": record.event_id.to_string()}}));
                         }
                     }
                 }
@@ -288,6 +309,17 @@ mod tests {
         device::Device,
         telemetry_log::{Signal, TelemetryLog},
     };
+
+    struct TestSink {
+        address: std::net::SocketAddr,
+        task: Option<JoinHandle<()>>,
+    }
+
+    struct Request {
+        path: String,
+        payload: Value,
+        reply: tokio::sync::oneshot::Sender<Option<Value>>,
+    }
 
     #[tokio::test]
     async fn every_sink_receives_retained_records_with_stable_identities() {
@@ -341,5 +373,381 @@ mod tests {
         for task in tasks {
             task.abort();
         }
+    }
+    #[tokio::test]
+    async fn sink_restart_loses_no_records() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let (sink, mut received) = TestSink::bind(None).await;
+        let address = sink.address;
+        sink.stop().await;
+        configure(sandbox.path(), &[format!("http://{address}")]);
+        let log = test_log(sandbox.path());
+        append_log(&log, "before downtime", None);
+        let (options, mut passes, retry) = controlled();
+        let forwarder = Forwarder::start_with_options(sandbox.path(), options).unwrap();
+        assert!(!receive(&mut passes).await);
+        append_log(&log, "during downtime", None);
+        let (sink, replacement) = TestSink::bind(Some(address)).await;
+        received.close();
+        received = replacement;
+        retry.notify_one();
+        let request = receive(&mut received).await;
+        assert_eq!(request.path, "/v1/logs");
+        assert_eq!(
+            bodies(&request.payload),
+            ["before downtime", "during downtime"]
+        );
+        request.reply.send(Some(json!({}))).unwrap();
+        assert!(receive(&mut passes).await);
+        drop(forwarder);
+        sink.stop().await;
+    }
+
+    #[tokio::test]
+    async fn accepted_batch_with_dropped_response_repeats_with_the_same_log_and_span_ids() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let (sink, mut received) = TestSink::bind(None).await;
+        configure(sandbox.path(), &[sink.url()]);
+        let log = test_log(sandbox.path());
+        append_log(&log, "source", Some("source-event"));
+        append_span(&log);
+        let (options, mut passes, retry) = controlled();
+        let forwarder = Forwarder::start_with_options(sandbox.path(), options).unwrap();
+        let first = receive(&mut received).await;
+        let original = first.payload.clone();
+        first.reply.send(None).unwrap();
+        assert!(!receive(&mut passes).await);
+        retry.notify_one();
+        let repeated = receive(&mut received).await;
+        assert_eq!(repeated.payload, original);
+        assert_eq!(log_ids(&repeated.payload), ["source-event"]);
+        repeated.reply.send(Some(json!({}))).unwrap();
+        let span = receive(&mut received).await;
+        assert_eq!(span.path, "/v1/traces");
+        assert_eq!(
+            span.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["spanId"],
+            "0102030405060708"
+        );
+        let original_span = span.payload.clone();
+        span.reply.send(None).unwrap();
+        assert!(!receive(&mut passes).await);
+        retry.notify_one();
+        let repeated_span = receive(&mut received).await;
+        assert_eq!(repeated_span.payload, original_span);
+        repeated_span.reply.send(Some(json!({}))).unwrap();
+        assert!(receive(&mut passes).await);
+        drop(forwarder);
+        // An acknowledged cursor survives a restart. Only the new record is delivered.
+        append_log(&log, "after restart", None);
+        let (options, mut passes, _) = controlled();
+        let restarted = Forwarder::start_with_options(sandbox.path(), options).unwrap();
+        let next = receive(&mut received).await;
+        assert_eq!(bodies(&next.payload), ["after restart"]);
+        next.reply.send(Some(json!({}))).unwrap();
+        assert!(receive(&mut passes).await);
+        drop(restarted);
+        sink.stop().await;
+    }
+
+    #[tokio::test]
+    async fn process_crash_after_ack_before_cursor_commit_replays_the_batch() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let (sink, mut received) = TestSink::bind(None).await;
+        configure(sandbox.path(), &[sink.url()]);
+        let log = test_log(sandbox.path());
+        append_log(&log, "crash boundary", None);
+        let gate_path = sandbox.path().join("commit.sock");
+        let gate = tokio::net::UnixListener::bind(&gate_path).unwrap();
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "forwarder::tests::crash_child", "--nocapture"])
+            .env("P45_CHILD_STATE", sandbox.path())
+            .env("P45_CHILD_GATE", &gate_path)
+            .kill_on_drop(true)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let first = receive(&mut received).await;
+        let original = first.payload.clone();
+        first.reply.send(Some(json!({}))).unwrap();
+        // The child announces this boundary after it reads the acknowledgement.
+        let _connection = tokio::time::timeout(Duration::from_secs(30), gate.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        child.kill().await.unwrap();
+        let (options, mut passes, _) = controlled();
+        let restarted = Forwarder::start_with_options(sandbox.path(), options).unwrap();
+        let replay = receive(&mut received).await;
+        assert_eq!(replay.payload, original);
+        replay.reply.send(Some(json!({}))).unwrap();
+        assert!(receive(&mut passes).await);
+        drop(restarted);
+        sink.stop().await;
+    }
+
+    #[tokio::test]
+    async fn crash_child() {
+        let Some(state) = std::env::var_os("P45_CHILD_STATE") else {
+            return;
+        };
+        let gate = std::env::var_os("P45_CHILD_GATE").unwrap();
+        let options = Options {
+            before_commit: Some(Arc::new(move || {
+                let _connection = std::os::unix::net::UnixStream::connect(&gate).unwrap();
+                loop {
+                    std::thread::park();
+                }
+            })),
+            ..Options::default()
+        };
+        let _forwarder = Forwarder::start_with_options(Path::new(&state), options).unwrap();
+        std::future::pending::<()>().await;
+    }
+
+    #[tokio::test]
+    async fn sink_cursors_are_independent_per_device_and_new_sinks_replay_retention() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let (blocked, mut blocked_requests) = TestSink::bind(None).await;
+        let (healthy, mut healthy_requests) = TestSink::bind(None).await;
+        configure(sandbox.path(), &[blocked.url(), healthy.url()]);
+        let local = test_log(sandbox.path());
+        let remote = TelemetryLog::new(sandbox.path(), ws_core::ids::Ulid::new());
+        append_log(&local, "local old", None);
+        append_log(&remote, "remote old", None);
+        let expired = json!({"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": "expired"}}]}]}]});
+        local.append(Signal::Logs, vec![expired], 0).unwrap();
+        let (options, mut passes, _) = controlled();
+        let forwarder = Forwarder::start_with_options(sandbox.path(), options).unwrap();
+        // Hold one sink's response while the other sink acknowledges both devices.
+        let held = receive(&mut blocked_requests).await;
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let request = receive(&mut healthy_requests).await;
+            seen.extend(bodies(&request.payload));
+            request.reply.send(Some(json!({}))).unwrap();
+        }
+        seen.sort();
+        assert_eq!(seen, ["local old", "remote old"]);
+        assert!(receive(&mut passes).await);
+        drop(forwarder);
+        drop(held);
+        blocked.stop().await;
+        let (new, mut new_requests) = TestSink::bind(None).await;
+        // Sink order changes. The healthy sink retains both device cursors.
+        configure(sandbox.path(), &[new.url(), healthy.url()]);
+        append_log(&local, "local new", None);
+        append_log(&remote, "remote new", None);
+        let (options, mut passes, _) = controlled();
+        let restarted = Forwarder::start_with_options(sandbox.path(), options).unwrap();
+        let mut incremental = Vec::new();
+        let mut replay = Vec::new();
+        for _ in 0..2 {
+            let request = receive(&mut healthy_requests).await;
+            incremental.extend(bodies(&request.payload));
+            request.reply.send(Some(json!({}))).unwrap();
+            let request = receive(&mut new_requests).await;
+            replay.extend(bodies(&request.payload));
+            request.reply.send(Some(json!({}))).unwrap();
+        }
+        incremental.sort();
+        replay.sort();
+        assert_eq!(incremental, ["local new", "remote new"]);
+        assert_eq!(
+            replay,
+            ["local new", "local old", "remote new", "remote old"]
+        );
+        assert!(receive(&mut passes).await);
+        assert!(receive(&mut passes).await);
+        drop(restarted);
+        healthy.stop().await;
+        new.stop().await;
+    }
+
+    #[tokio::test]
+    async fn partial_rejection_keeps_the_cursor_and_metric_identity_for_retry() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let (sink, mut received) = TestSink::bind(None).await;
+        configure(sandbox.path(), &[sink.url()]);
+        let log = test_log(sandbox.path());
+        log.append(Signal::Metrics, vec![json!({"resourceMetrics": [{"scopeMetrics": [{"metrics": [{"name": "tokens", "sum": {"dataPoints": [{"asInt": "12", "timeUnixNano": "1000000000"}]}}]}]}]})], now_ms()).unwrap();
+        let (options, mut passes, retry) = controlled();
+        let forwarder = Forwarder::start_with_options(sandbox.path(), options).unwrap();
+        let first = receive(&mut received).await;
+        assert_eq!(first.path, "/v1/metrics");
+        let original = first.payload.clone();
+        first
+            .reply
+            .send(Some(json!({"partialSuccess": {"rejectedDataPoints": "1"}})))
+            .unwrap();
+        assert!(!receive(&mut passes).await);
+        retry.notify_one();
+        let replay = receive(&mut received).await;
+        assert_eq!(replay.payload, original);
+        replay
+            .reply
+            .send(Some(json!({"partialSuccess": {"rejectedDataPoints": "0"}})))
+            .unwrap();
+        assert!(receive(&mut passes).await);
+        drop(forwarder);
+        sink.stop().await;
+    }
+
+    impl TestSink {
+        async fn bind(
+            address: Option<std::net::SocketAddr>,
+        ) -> (Self, mpsc::UnboundedReceiver<Request>) {
+            use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+            let listener =
+                TcpListener::bind(address.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap()))
+                    .await
+                    .unwrap();
+            let address = listener.local_addr().unwrap();
+            let (tx, rx) = mpsc::unbounded_channel();
+            let task = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    let path = line.split_whitespace().nth(1).unwrap().to_owned();
+                    let mut length = 0;
+                    loop {
+                        line.clear();
+                        reader.read_line(&mut line).await.unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.eq_ignore_ascii_case("content-length")
+                        {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    let mut bytes = vec![0; length];
+                    reader.read_exact(&mut bytes).await.unwrap();
+                    let (reply, response) = tokio::sync::oneshot::channel();
+                    if tx
+                        .send(Request {
+                            path,
+                            payload: serde_json::from_slice(&bytes).unwrap(),
+                            reply,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    if let Ok(Some(response)) = response.await {
+                        let body = response.to_string();
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = reader.get_mut().write_all(response.as_bytes()).await;
+                    }
+                }
+            });
+            (
+                Self {
+                    address,
+                    task: Some(task),
+                },
+                rx,
+            )
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}", self.address)
+        }
+
+        async fn stop(mut self) {
+            let task = self.task.take().unwrap();
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    impl Drop for TestSink {
+        fn drop(&mut self) {
+            if let Some(task) = &self.task {
+                task.abort();
+            }
+        }
+    }
+
+    fn configure(state: &Path, sinks: &[String]) {
+        fs::write(
+            state.join("config.toml"),
+            format!(
+                "[telemetry]\nsinks = {}\n",
+                serde_json::to_string(sinks).unwrap()
+            ),
+        )
+        .unwrap();
+    }
+
+    fn test_log(state: &Path) -> TelemetryLog {
+        TelemetryLog::new(state, Device::init(state, "test-device").unwrap().device_id)
+    }
+
+    fn append_log(log: &TelemetryLog, body: &str, id: Option<&str>) {
+        let attributes = id
+            .map(|id| vec![json!({"key": "event_id", "value": {"stringValue": id}})])
+            .unwrap_or_default();
+        log.append(Signal::Logs, vec![json!({"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": body}, "attributes": attributes}]}]}]})], now_ms()).unwrap();
+    }
+
+    fn append_span(log: &TelemetryLog) {
+        log.append(Signal::Traces, vec![json!({"resourceSpans": [{"scopeSpans": [{"spans": [{"name": "turn", "traceId": "01020304050607080910111213141516", "spanId": "0102030405060708"}]}]}]})], now_ms()).unwrap();
+    }
+
+    fn bodies(payload: &Value) -> Vec<String> {
+        payload["resourceLogs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|r| r["scopeLogs"].as_array().unwrap())
+            .flat_map(|s| s["logRecords"].as_array().unwrap())
+            .map(|r| r["body"]["stringValue"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn log_ids(payload: &Value) -> Vec<String> {
+        payload["resourceLogs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|r| r["scopeLogs"].as_array().unwrap())
+            .flat_map(|s| s["logRecords"].as_array().unwrap())
+            .flat_map(|r| r["attributes"].as_array().unwrap())
+            .filter(|a| a["key"] == "event_id")
+            .map(|a| a["value"]["stringValue"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn controlled() -> (
+        Options,
+        mpsc::UnboundedReceiver<bool>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let retry = Arc::new(tokio::sync::Notify::new());
+        (
+            Options {
+                interval: Duration::from_secs(3600),
+                pass: Some(tx),
+                retry: Some(retry.clone()),
+                ..Options::default()
+            },
+            rx,
+            retry,
+        )
+    }
+
+    async fn receive<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
+        tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
     }
 }
