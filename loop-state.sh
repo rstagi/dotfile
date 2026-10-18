@@ -13,6 +13,8 @@ set -u -o pipefail
 #   loop-state.sh get [--dir <d>] '<jq filter>'
 #   loop-state.sh set [--dir <d>] '<jq expression>'   # state.json | jq expr, atomic mv
 #   loop-state.sh log [--dir <d>] <event> [<phase>] [<detail>]
+#   loop-state.sh hil-resolve [--dir <d>] <phase> <slug> <answer>
+#     Write hil/<slug>.answer.md, then log hil.resolve for the phase.
 #   loop-state.sh note [--dir <d>] [--force] <key> [text]
 #   loop-state.sh note [--dir <d>] --clear <key>
 #   loop-state.sh notes [--dir <d>]
@@ -72,6 +74,20 @@ emit_register() {
 emit_state() {
   local run_id; run_id="$(state_run_id)"; [[ -n "$run_id" ]] || return 0
   loop_emit "$run_id" state < "$STATE"
+}
+
+# Append the event to the journal before the best-effort daemon emission.
+log_event() {
+  local line run_id
+  mkdir -p "$DIR" || return 1
+  line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg event "$1" --arg phase "$2" --arg repository "$REPOSITORY" --arg detail "$3" \
+    '{ts: $ts, event: $event, phase: $phase,
+      repository:(if ($repository|length)>0 then $repository else null end), detail: $detail}')" || return 1
+  printf '%s\n' "$line" >> "$DIR/events.jsonl" || return 1
+  run_id="$(state_run_id)"
+  [[ -n "$run_id" ]] && printf '%s' "$line" | loop_emit "$run_id" event
+  return 0
 }
 
 case "$CMD" in
@@ -134,15 +150,24 @@ set)
   emit_state
   ;;
 log)
-  mkdir -p "$DIR"
-  line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg event "${ARGS[1]:-}" --arg phase "${ARGS[2]:-}" --arg repository "$REPOSITORY" \
-    --arg detail "${ARGS[3]:-}" \
-    '{ts: $ts, event: $event, phase: $phase,
-      repository:(if ($repository|length)>0 then $repository else null end), detail: $detail}')"
-  printf '%s\n' "$line" >> "$DIR/events.jsonl"
-  run_id="$(state_run_id)"
-  [[ -n "$run_id" ]] && printf '%s' "$line" | loop_emit "$run_id" event
+  log_event "${ARGS[1]:-}" "${ARGS[2]:-}" "${ARGS[3]:-}"
+  ;;
+hil-resolve)
+  [[ ${#ARGS} -eq 3 ]] || die "hil-resolve requires <phase> <slug> <answer>"
+  phase="${ARGS[1]}" slug="${ARGS[2]}" answer="${ARGS[3]}"
+  [[ "$phase" == <1-> ]] || die "hil-resolve: phase must be a positive integer"
+  slug_re='^[A-Za-z0-9_-][A-Za-z0-9._-]*$'
+  [[ "$slug" =~ $slug_re ]] || die "hil-resolve: invalid slug"
+  [[ -n "$answer" ]] || die "hil-resolve: answer must not be empty"
+  mkdir -p "$DIR/hil" || die "hil-resolve: cannot create $DIR/hil"
+  answer_file="$DIR/hil/$slug.answer.md"
+  [[ ! -d "$answer_file" ]] || die "hil-resolve: answer path is a directory"
+  tmp="$(mktemp "$DIR/hil/.answer.XXXXXX")" || die "hil-resolve: cannot create a temporary answer file"
+  if ! printf '%s\n' "$answer" > "$tmp" || ! mv "$tmp" "$answer_file"; then
+    rm -f "$tmp"
+    die "hil-resolve: cannot write $answer_file"
+  fi
+  log_event hil.resolve "$phase" "$answer"
   ;;
 note)
   key="${ARGS[1]:-}"
@@ -234,6 +259,6 @@ occupancy)
   exit 0
   ;;
 *)
-  die "unknown command '${CMD}' (init|lock|unlock|get|set|log|note|notes|register|finish|occupancy)"
+  die "unknown command '${CMD}' (init|lock|unlock|get|set|log|hil-resolve|note|notes|register|finish|occupancy)"
   ;;
 esac

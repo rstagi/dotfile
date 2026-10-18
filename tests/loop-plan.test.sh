@@ -11,8 +11,15 @@ FAKE="$HERE/fake"
 TMP="$(mktemp -d)"
 DAEMON_PID=""
 STORE=""
-cleanup() { [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; rm -rf "$TMP" "$STORE"; }
+cleanup() {
+  [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null
+  [[ -n "$DAEMON_PID" ]] && wait "$DAEMON_PID" 2>/dev/null
+  rm -rf "$TMP" "$STORE"
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 plan() { zsh "$ROOT/loop-plan.sh" "$@"; }
 
@@ -432,6 +439,31 @@ EOF
       "$LOOP_DAEMON_URL/api/loops/$CTL_PID/state" >/dev/null
     ctl() { curl -s -o "$TMP/ctl.out" -w '%{http_code}' -X POST --data-binary "$2" "$LOOP_DAEMON_URL/api/loops/$1/control"; }
     snap() { curl -sf "$LOOP_DAEMON_URL/api/loops/$CTL_PID/snapshot" | jq -r "$1"; }
+
+    echo "loop-plan: HIL answer clears the phase pause in the daemon snapshot"
+    jq -cn --arg runId "$CTL_PID" '{runId:$runId,phases:{"1":{slug:"p1-started",status:"running",attempt:1},"2":{slug:"p2-later",status:"todo"}}}' > "$CTL/state.json"
+    mkdir -p "$CTL/hil"
+    print -r -- 'Choose the next step.' > "$CTL/hil/p1-started.md"
+    wait_hil() {
+      local expected="$1" deadline=$(( SECONDS + 30 ))
+      until [[ "$(snap '.graph.nodes[] | select(.id=="1") | .runtime.hilOpen')" == "$expected" ]]; do
+        (( SECONDS < deadline )) || return 1
+        sleep 0.05
+      done
+    }
+    zsh "$ROOT/loop-state.sh" log --dir "$CTL" hil.raise 1 'Choose the next step.'
+    wait_hil true; assert_exit "$?" "0" "the daemon reads the HIL brief"
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$CTL_PID" '.[] | select(.runId==$id) | .status')" "paused" "hil.raise pauses the loop"
+    assert_eq "$(snap '.graph.nodes[] | select(.id=="1") | "\(.runtime.hilOpen) \(.ui)"')" "true awaiting" "the phase awaits a HIL answer"
+    TOP="$(LOOP_STORE_DIR="$STORE" node "$ROOT/loop-top.mjs" "$CTL_PID" --once)"
+    assert_contains "$TOP" "waiting on you (orchestrator)" "loop-top displays the unanswered HIL"
+    zsh "$ROOT/loop-state.sh" hil-resolve --dir "$CTL" 1 p1-started 'Use option B.'
+    wait_hil false; assert_exit "$?" "0" "the daemon reads the HIL answer"
+    assert_eq "$(cat "$CTL/hil/p1-started.answer.md")" "Use option B." "the HIL answer persists"
+    assert_eq "$(curl -sf "$LOOP_DAEMON_URL/api/loops" | jq -r --arg id "$CTL_PID" '.[] | select(.runId==$id) | .status')" "active" "hil-resolve clears the daemon pause"
+    assert_eq "$(snap '.graph.nodes[] | select(.id=="1") | "\(.runtime.hilOpen) \(.ui)"')" "false running" "hil-resolve clears the pause in the loop-top snapshot"
+    TOP="$(LOOP_STORE_DIR="$STORE" node "$ROOT/loop-top.mjs" "$CTL_PID" --once)"
+    assert_eq "$([[ "$TOP" == *'waiting on you (orchestrator)'* ]] && echo yes || echo no)" "no" "loop-top clears the answered HIL"
 
     assert_eq "$(ctl "$CTL_PID" '{"action":"pause"}')" "200" "pause loop → 200"
     assert_eq "$([[ -f "$CTL/control/pause" ]] && echo yes)" "yes" "pause loop writes control/pause"
