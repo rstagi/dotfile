@@ -17,9 +17,34 @@ const ELEVENLABS_MODEL = "eleven_multilingual_v2";
 const SAMPLE_RATE = 24000;
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
 const RETRY_DELAY_MS = 2000;
+const REQUEST_TIMEOUT_MS = 90_000; // one section of 1500 characters takes about 15 s
+const ERROR_STATUS = /^[a-z_]{1,40}$/; // an ElevenLabs error status, for example quota_exceeded
+const ERROR_CODE = /^[A-Z_]{1,40}$/; // a Node network error code, for example ENOTFOUND
 const SAY_MODEL = "say";
 // Known good standard voices, best first. A Premium or Enhanced English voice comes before all of them.
 const SAY_VOICES = ["Samantha", "Ava", "Allison", "Susan", "Tom", "Alex", "Daniel", "Serena", "Karen", "Moira", "Tessa"];
+
+// speak(sections, option, opts) -> { clips, sentChars, cached, settings, fallback }. It speaks the
+// narration with the engine that `option` selects (auto, elevenlabs, say). In `auto` mode, when
+// ElevenLabs fails for any clip, it speaks the whole narration again with say: one video has one
+// voice. `fallback` is then the short reason, for example "HTTP 401", else null. It calls
+// `onFallback(reason)` before the say pass. An explicit engine never falls back, and the end of
+// `signal` (the run deadline) stops the run. VE_TTS_VOICE names the ElevenLabs voice in `auto`
+// mode, so the say pass uses the best installed say voice.
+// `opts`: { dir, env, signal, sayVoices, onFallback } and the test seams { engines, fetch, retryDelayMs, requestTimeoutMs }.
+export async function speak(sections, option, opts) {
+  const engine = chooseEngine(option, opts.env);
+  const settings = ttsSettings(engine, opts.env, opts);
+  try {
+    return { ...(await synthesize(sections, settings, opts)), settings, fallback: null };
+  } catch (err) {
+    if (option !== "auto" || engine !== "elevenlabs" || opts.signal?.aborted) throw err;
+    const reason = err.reason ?? "error";
+    opts.onFallback?.(reason);
+    const say = ttsSettings("say", { ...opts.env, VE_TTS_VOICE: "" }, opts);
+    return { ...(await synthesize(sections, say, opts)), settings: say, fallback: reason };
+  }
+}
 
 // chooseEngine(option, env) -> "elevenlabs" | "say". `auto` uses ElevenLabs when the key is set.
 export function chooseEngine(option, env) {
@@ -59,10 +84,13 @@ export function clipKey({ engine, voice, model, text }) {
   return createHash("sha256").update(JSON.stringify([engine, voice, model, text])).digest("hex");
 }
 
-// synthesize(sections, settings, { dir, env, signal, engines }) -> { clips, sentChars, cached }.
+// synthesize(sections, settings, { dir, env, signal, engines, fetch, retryDelayMs }) -> { clips, sentChars, cached }.
 // One clip for each { id, text } section: { id, file, seconds }. A cached clip costs nothing.
-// `sentChars` counts the characters sent to the engine. `engines` replaces the real engines in tests.
-export async function synthesize(sections, settings, { dir, env, signal, engines = ENGINES }) {
+// `sentChars` counts the characters sent to the engine. In tests, `engines` replaces real engines
+// by name, and `fetch` and `retryDelayMs` go to the ElevenLabs engine. A failure is an Error with
+// a redacted message and a short `reason`.
+export async function synthesize(sections, settings, { dir, env, signal, engines: fakes, fetch, retryDelayMs, requestTimeoutMs }) {
+  const engines = { ...ENGINES, ...fakes };
   fs.mkdirSync(dir, { recursive: true });
   const clips = [];
   let sentChars = 0;
@@ -74,12 +102,12 @@ export async function synthesize(sections, settings, { dir, env, signal, engines
     } else {
       const tmp = `${file}.tmp-${process.pid}`;
       try {
-        await engines[settings.engine]({ text, voice: settings.voice, model: settings.model, out: tmp, env, signal });
+        await engines[settings.engine]({ text, voice: settings.voice, model: settings.model, out: tmp, env, signal, fetch, retryDelayMs, requestTimeoutMs });
         wavSeconds(tmp);
         fs.renameSync(tmp, file);
       } catch (err) {
         fs.rmSync(tmp, { force: true });
-        throw new Error(redact(`text to speech failed for section ${id}: ${err.message}`, env));
+        throw Object.assign(new Error(redact(`text to speech failed for section ${id}: ${err.message}`, env)), { reason: err.reason });
       }
       sentChars += text.length;
     }
@@ -105,22 +133,46 @@ export function wavSeconds(file) {
 
 const ENGINES = { elevenlabs: elevenlabsClip, say: sayClip };
 
-async function elevenlabsClip({ text, voice, model, out, env, signal }) {
+// One retry for a busy or failing server. Each request has its own timeout. Each error has a short
+// `reason`: "HTTP <status>" with the ElevenLabs error status when the body has one (for example
+// "HTTP 401 quota_exceeded"), "timeout" or "network error <code>".
+async function elevenlabsClip({ text, voice, model, out, env, signal, fetch = globalThis.fetch, retryDelayMs = RETRY_DELAY_MS, requestTimeoutMs = REQUEST_TIMEOUT_MS }) {
   const url = `${ELEVENLABS_URL}/${encodeURIComponent(voice)}?output_format=pcm_${SAMPLE_RATE}`;
-  const request = {
+  const request = () => ({
     method: "POST",
     headers: { "xi-api-key": env.ELEVENLABS_API_KEY, "content-type": "application/json" },
     body: JSON.stringify({ text, model_id: model }),
-    signal,
-  };
-  let res = await fetch(url, request);
-  if (RETRY_STATUS.has(res.status)) {
-    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-    res = await fetch(url, request);
+    signal: AbortSignal.any([AbortSignal.timeout(requestTimeoutMs), ...(signal ? [signal] : [])]),
+  });
+  try {
+    let res = await fetch(url, request());
+    if (RETRY_STATUS.has(res.status)) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      res = await fetch(url, request());
+    }
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 300);
+      const status = errorStatus(body);
+      throw Object.assign(new Error(`ElevenLabs returned HTTP ${res.status}: ${body}`), { reason: `HTTP ${res.status}${status ? ` ${status}` : ""}` });
+    }
+    const pcm = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(out, Buffer.concat([wavHeader(pcm.length), pcm]));
+  } catch (err) {
+    if (err.reason) throw err;
+    const code = err.cause?.code;
+    const reason = err.name === "TimeoutError" ? "timeout" : `network error${ERROR_CODE.test(code) ? ` ${code}` : ""}`;
+    throw Object.assign(new Error(`ElevenLabs request failed: ${err.message}`), { reason });
   }
-  if (!res.ok) throw new Error(`ElevenLabs returned HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const pcm = Buffer.from(await res.arrayBuffer());
-  fs.writeFileSync(out, Buffer.concat([wavHeader(pcm.length), pcm]));
+}
+
+// The ElevenLabs error status in a JSON error body ({ detail: { status } }), when it is a plain token.
+function errorStatus(body) {
+  try {
+    const status = JSON.parse(body)?.detail?.status;
+    return ERROR_STATUS.test(status) ? status : null;
+  } catch {
+    return null;
+  }
 }
 
 // say writes AIFF. afconvert turns it into the same WAV format as the ElevenLabs clips.

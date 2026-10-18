@@ -220,7 +220,9 @@ The video is an addition to the page. Do these steps in this order:
 
 Exit codes of `render-video.mjs`:
 
-- Exit 0: stdout is the absolute path of `<output-dir>/video.mp4`.
+- Exit 0: stdout has two lines. Line 1 is the absolute path of `<output-dir>/video.mp4`.
+  Line 2 names the voice engine: `tts: elevenlabs`, `tts: say`, or
+  `tts: say (fallback: <reason>)`.
 - Exit 1: the props or the narration are not valid. Each stderr line is
   `<field path>: <error>`.
 - Exit 2: a usage error or an I/O error.
@@ -231,8 +233,20 @@ Text to speech:
 
 - `--tts auto` uses ElevenLabs when the environment has `ELEVENLABS_API_KEY`. Else it uses
   the macOS `say` command, which works offline.
-- `--tts elevenlabs` and `--tts say` select one engine.
-- `VE_TTS_VOICE` sets the voice. `VE_TTS_MODEL` sets the ElevenLabs model.
+- In `auto` mode, when ElevenLabs fails for one clip, the script speaks the whole narration
+  again with `say`. A video has one voice only. These failures cause the fallback: an HTTP
+  error after the one retry, a quota error, a network error, and a request above 90 s.
+  Examples of HTTP errors are 401, 402, 429 and 5xx. The script writes one stderr line, for
+  example
+  `render-video: ElevenLabs failed (HTTP 401 quota_exceeded): the video uses the macOS voice`.
+  Line 2 of stdout is then `tts: say (fallback: HTTP 401 quota_exceeded)`.
+- When the `--timeout-min` deadline stops the text to speech, the script does not use
+  `say`. It exits 3.
+- `--tts elevenlabs` and `--tts say` select one engine. `--tts elevenlabs` never uses
+  `say`: a failed ElevenLabs call exits 3, and the command writes no `video.mp4`.
+- `VE_TTS_VOICE` sets the voice. `VE_TTS_MODEL` sets the ElevenLabs model. In `auto` mode
+  with the key, `VE_TTS_VOICE` is the ElevenLabs voice, so the `say` fallback uses the best
+  installed English voice.
 - The script caches each clip by the engine, the voice, the model and the text. A
   re-render of the same narration sends no text again. The log line `tts:` gives the
   number of characters sent.
@@ -259,7 +273,8 @@ only. Its caller renders the page and the video, and publishes them.
 ### 9. Report
 
 Report one line: the mode, then the artifact URL or the absolute path of `index.html`.
-Add the video result: `video: embedded`, or `video: failed` with the reason. When a step
+Add the video result: `video: embedded`, or `video: failed` with the reason. When line 2 of
+the `render-video.mjs` stdout starts with `tts: say`, write `video: embedded (macOS voice)`. When a step
 fails, report the failure and the last stderr lines. A failed explainer never blocks the
 work of the caller. A failed video never blocks the page.
 
@@ -306,9 +321,17 @@ symlinked git checkout or a Loop integration worktree. The script copies `video/
 characters of a SHA-256 over the lock file and the video sources. The script runs
 `npm ci`, the browser download and the bundle there, one time for each key. The voiceover
 clips go to `${XDG_CACHE_HOME:-$HOME/.cache}/visual-explainer/tts/`. The script writes the
-MP4 to a temporary file in the output directory, then renames it to `video.mp4`. When the
-file is larger than `--max-mb`, the script renders again at a lower quality, then at
-1280x720. Each run removes the caches of other keys that no run used for 7 days.
+MP4 to a temporary file in the output directory, then renames it to `video.mp4`. Each run
+removes the caches of other keys that no run used for 7 days.
+
+The first render uses an x264 quality (CRF) that the script chooses from the video length
+and `--max-mb`. A size model from measurements of the ship example predicts the file size.
+The script uses the best CRF from 23 to 30 whose predicted file fits 90% of `--max-mb`. With
+`--max-mb 14`, a video of up to about 6 minutes gets CRF 23. A video of about 10 minutes
+gets CRF 28. Measurements: a 548 s ship video had 15.5 MB at CRF 23 and 12.1 MB at CRF 27.
+A 599 s ship video had 12.4 MB at CRF 28. The plan example has fewer scenes and smaller
+files, so its first CRF can be higher than necessary. When the file is larger than
+`--max-mb`, the script renders again at CRF 30, then at 1280x720.
 
 Encoder settings: the defaults are the fastest combination of a measurement on an Apple M4
 with 10 cores. The text stays sharp. The browser frame capture takes most of the time, so
