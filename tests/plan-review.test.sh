@@ -54,6 +54,8 @@ prompt="$(cat "${report:h}/prompt.md" 2>/dev/null)"
 assert_contains "$prompt" "$LOOP/plan.md" 'prompt names the drafted plan'
 assert_contains "$prompt" 'Independence' 'reviewer keeps plan checklist'
 assert_contains "$prompt" 'Role: review (A.2.3)' 'shared AR reviewer prompt'
+assert_contains "$prompt" 'An `[archived]` milestone stub lists shipped phases.' 'reviewer reads archived stubs'
+assert_contains "$prompt" "$LOOP/milestones/m<N>.md" 'reviewer knows where archived blocks live'
 critic_prompt="$(sed -n '2p' "$FAKE_LOG" | cut -f3)"
 assert_contains "$(cat "$critic_prompt" 2>/dev/null)" 'Scripted report 1' 'critic receives prior review'
 

@@ -19,11 +19,20 @@ set -u -o pipefail
 #   loop-plan.sh note --plan-id <id> [--phase <n>] --body <text>
 #     POST a progress.note event — a phase progress comment,
 #     visible cross-worktree on the loop timeline (jq-built, injection-safe).
+#   loop-plan.sh archive --milestone <N> [--dir .loop] [--plan-file <f>] [--outcome <text>]
+#     Move shipped milestone N out of plan.md: its section (branch/PR lines + phase blocks) and
+#     its progress-log entries go unchanged into <plan dir>/milestones/m<N>.md; plan.md keeps a
+#     stub (grammar: multiphase-plan/references/plan-format.md → Archived milestones). Then push.
+#     Refuses unless every phase of N is done and every gate PR in the plan is merged (the
+#     loop-milestone.sh check rule). Atomic: plan.md changes by one rename, last; any failure
+#     leaves it unchanged. Idempotent: an archived milestone is a no-op (no write, no push).
+#     Exit 0 archived or already archived; 3 refused (phase not done, no gate, no PR link, PR
+#     open); 4 a gate PR closed unmerged; 1 usage, gh or write error. Needs Node >= 22.18.
 
 DIR=".loop"
 CMD="${1:-}"; [[ -n "$CMD" ]] && shift
 
-PLAN_FILE="" PLAN_ID="" EFFORT="" OUT="" PHASE="" BODY=""
+PLAN_FILE="" PLAN_ID="" EFFORT="" OUT="" PHASE="" BODY="" MILESTONE="" OUTCOME=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --dir) DIR="$2"; shift 2 ;;
@@ -33,6 +42,8 @@ while [[ $# -gt 0 ]]; do
   --out) OUT="$2"; shift 2 ;;
   --phase) PHASE="$2"; shift 2 ;;
   --body) BODY="$2"; shift 2 ;;
+  --milestone) MILESTONE="$2"; shift 2 ;;
+  --outcome) OUTCOME="$2"; shift 2 ;;
   *) echo "loop-plan: unknown arg $1" >&2; exit 1 ;;
   esac
 done
@@ -99,9 +110,73 @@ do_register() {
   printf '%s\n' "$pid"
 }
 
+# archive: compute in a temp dir beside plan.md → check the gate PRs → place the archive file →
+# rename the new plan.md over the old one (the only change to plan.md) → push.
+ARCHIVE_TMP=""
+do_archive() {
+  [[ "$MILESTONE" =~ '^[1-9][0-9]*$' ]] || die "archive requires --milestone <N>"
+  local plan="${PLAN_FILE:-$DIR/plan.md}" result plan_sum target created=false
+  [[ -f "$plan" ]] || die "archive: no plan at $plan"
+  plan_sum="$(shasum < "$plan")"
+  ARCHIVE_TMP="$(mktemp -d "${plan:h}/.archive.XXXXXX" 2>/dev/null)" || die "archive: cannot create a temp dir in ${plan:h}"
+  result="$(node "$SCRIPT_DIR/loop-plan-archive.mjs" --plan "$plan" --milestone "$MILESTONE" \
+    --out "$ARCHIVE_TMP" ${OUTCOME:+--outcome "$OUTCOME"})" \
+    || die "archive: cannot compute the archive (needs Node >= 22.18)"
+  case "$(jq -r '.status' <<< "$result")" in
+  already)
+    print -r -- "loop-plan: milestone $MILESTONE already archived ($(jq -r '.archiveFile // "?"' <<< "$result"))"
+    return 0 ;;
+  refused) die "archive refused: $(jq -r '.reason' <<< "$result")" 3 ;;
+  archived) ;;
+  *) die "archive: unexpected result: $result" ;;
+  esac
+  check_gate_prs "$result"
+
+  target="${plan:h}/$(jq -r '.archiveFile' <<< "$result")"
+  mkdir -p "${target:h}" 2>/dev/null || die "archive: cannot create ${target:h}"
+  if [[ -e "$target" ]]; then
+    cmp -s "$ARCHIVE_TMP/archive.md" "$target" || die "archive: $target exists with other content; move it away first"
+  else
+    mv "$ARCHIVE_TMP/archive.md" "$target" 2>/dev/null || die "archive: cannot write $target"
+    created=true
+  fi
+  if [[ "$(shasum < "$plan")" != "$plan_sum" ]] || ! mv "$ARCHIVE_TMP/plan.md" "$plan" 2>/dev/null; then
+    $created && rm -f "$target"
+    die "archive: $plan changed or cannot be replaced; nothing archived"
+  fi
+  print -r -- "loop-plan: archived milestone $MILESTONE → $target"
+  PLAN_FILE="$plan"
+  do_register >/dev/null
+}
+
+# The loop-milestone.sh check rule on the plan's gate PRs: one "slug<TAB>url<TAB>state" row each;
+# any closed unmerged → exit 4, any open → exit 3, any unreadable → exit 1.
+check_gate_prs() {
+  local slug url state open=false closed=false failed=false
+  while IFS=$'\t' read -r slug url; do
+    [[ -n "$slug" ]] || continue
+    if ! state="$("$SCRIPT_DIR/loop-repo.sh" pr-state --pr "$url" </dev/null 2>/dev/null)"; then
+      print -u2 "loop-plan: cannot read PR state: $url"
+      failed=true
+      continue
+    fi
+    print -r -- "$slug"$'\t'"$url"$'\t'"$state"
+    [[ "$state" == open ]] && open=true
+    [[ "$state" == closed ]] && closed=true
+  done < <(jq -r '.prs | to_entries | sort_by(.key)[] | "\(.key)\t\(.value)"' <<< "$1")
+  $failed && die "archive refused: cannot read every gate PR state"
+  $closed && die "archive refused: a gate PR is closed unmerged" 4
+  $open && die "archive refused: a gate PR is still open" 3
+  return 0
+}
+
 case "$CMD" in
 register|push)
   do_register
+  ;;
+archive)
+  trap '[[ -n "$ARCHIVE_TMP" ]] && rm -rf "$ARCHIVE_TMP"' EXIT
+  do_archive
   ;;
 get)
   [[ -n "$PLAN_ID" ]] || die "get requires --plan-id <id>"
@@ -125,6 +200,6 @@ note)
     | loop_emit "$PLAN_ID" event
   ;;
 *)
-  die "unknown command '${CMD}' (register|push|get|list|note)"
+  die "unknown command '${CMD}' (register|push|get|list|note|archive)"
   ;;
 esac

@@ -137,6 +137,31 @@ out2="$($ROOT/loop-milestone.sh advance --state "$STATE" --next 2 --branches "$B
 assert_exit "$rc" "0" "repeat advance"
 assert_eq "$out2" "$out" "same patch on repeat"
 
+echo "loop-milestone: check and advance on a stubbed plan (milestone 1 archived)"
+# Coordinator .loop: the 3-milestone fixture plan (acme/api#1 + acme/web#2 gate milestone 1) beside the parked state.
+COORD="$TMP/coord/.loop"; mkdir -p "$COORD"
+cp "$HERE/fixtures/milestones/plan.md" "$COORD/plan.md"
+cp "$STATE" "$COORD/state.json"
+export FAKE_PR_STATES="$API_PR=MERGED
+$WEB_PR=MERGED"
+LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" zsh "$ROOT/loop-plan.sh" archive --milestone 1 --dir "$COORD" >/dev/null
+assert_exit "$?" "0" "milestone 1 archived beside the parked state"
+assert_contains "$(cat "$COORD/plan.md")" '- **Phases (all done):** 1, 2, 9, 3' "plan.md now carries the milestone 1 stub"
+assert_eq "$(cat "$COORD/state.json")" "$(cat "$STATE")" "archive leaves state.json and its phase entries unchanged"
+out3="$($ROOT/loop-milestone.sh check --state "$COORD/state.json")"; rc=$?
+assert_exit "$rc" "0" "check: all gate PRs merged"
+assert_eq "$out3" "acme/api	$API_PR	merged
+acme/web	$WEB_PR	merged" "check rows unchanged by the archive"
+next_web="$(node --input-type=module -e '
+  import fs from "node:fs";
+  const { parsePlan } = await import(process.argv[1]);
+  process.stdout.write(parsePlan(fs.readFileSync(process.argv[2], "utf8")).milestones[1].integrationBranches["acme/web"]);
+' "$ROOT/loop-web/src/model/parse-plan.ts" "$COORD/plan.md")"
+assert_eq "$next_web" "feat/m2-web" "the next milestone's branch still resolves from the stubbed plan"
+out3="$($ROOT/loop-milestone.sh advance --state "$COORD/state.json" --next 2 --branches "$BRANCHES")"; rc=$?
+assert_exit "$rc" "0" "advance succeeds"
+assert_eq "$out3" "$out" "advance prints the same patch"
+
 echo "loop-milestone: advance validation"
 $ROOT/loop-milestone.sh advance --state "$STATE" --next 1 --branches "$BRANCHES" >/dev/null 2>&1
 assert_exit "$?" "1" "next must follow the parked milestone"

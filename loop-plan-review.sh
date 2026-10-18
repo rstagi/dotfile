@@ -112,6 +112,12 @@ do not commit, push, or call any network mutation. The plan and code are frozen 
 round. Use only the prior exchange in this prompt; do not read other plan-review runs under
 $DIR/runs. Verify every claim against the code — cite file paths and lines as evidence.
 
+Archived milestones: An \`[archived]\` milestone stub lists shipped phases. Each listed phase
+exists and its status is done. Its full block and its progress-log entries are in
+${PLAN_FILE:h}/milestones/m<N>.md. Do not read these files unless a finding needs them. Do not
+report a missing Done when, Repository or Estimate for an archived phase. A Depends on edge to
+an archived phase is satisfied. Do not propose edits to archived phases.
+
 Checklist:
 1. Codebase assumptions — files, modules, APIs, commands the plan relies on actually exist and
    behave as the plan assumes.

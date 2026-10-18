@@ -157,10 +157,12 @@ export function phaseRows(snapshot, state) {
     });
 }
 
-/** Milestone headers from the snapshot graph (`M<n> — <title>`); empty unless there are ≥2. */
+/** Milestone headers from the snapshot graph (`M<n> — <title>`, archived stubs flagged); empty unless there are ≥2. */
 export function milestoneTitles(snapshot) {
   const milestones = snapshot?.graph?.milestones ?? [];
-  return milestones.length > 1 ? new Map(milestones.map((m) => [m.number, m.title])) : new Map();
+  return milestones.length > 1
+    ? new Map(milestones.map((m) => [m.number, m.archived ? `${m.title} · archived` : m.title]))
+    : new Map();
 }
 
 /** A parked merge gate's second line: `acme/api #12 · acme/web #7 · /loop-execute resume`. */

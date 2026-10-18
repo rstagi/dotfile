@@ -79,6 +79,20 @@ describe("computeLayout — milestones", () => {
     expect(layout.positions.get("3")!.x).toBeGreaterThanOrEqual(m2.x);
   });
 
+  it("labels an archived milestone band", () => {
+    const stub = MILESTONES.replace(/## Milestone 1 — Ship the core[\s\S]*?(?=## Milestone 2)/, [
+      "## Milestone 1 — Ship the core `[archived]`",
+      "- **Repositories:** `primary`",
+      "- **Phases (all done):** 1, 2",
+      "- **Gate:** Phase 2",
+      "- **Archive:** [milestones/m1.md](milestones/m1.md)",
+      "",
+    ].join("\n"));
+    const [m1, m2] = computeLayout(buildGraph(parsePlan(stub), null)).milestones;
+    expect(m1.label).toBe("M1 · Ship the core · archived");
+    expect(m2.label).toBe("M2 · Ship the API");
+  });
+
   it("leaves single-milestone layouts unchanged", () => {
     const layout = computeLayout(buildGraph(parsePlan(REVIEW_ROUNDS), null));
     expect(layout.milestones).toEqual([]);

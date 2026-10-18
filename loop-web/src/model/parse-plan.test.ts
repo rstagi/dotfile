@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import { parsePlan } from "./parse-plan.ts";
+import type { PlanPhase } from "./types.ts";
 
 const MULTI_LANE = `<!-- loop-plan
 planId: loop-widget-revamp-2026-08-01
@@ -652,5 +654,52 @@ ${REPOS}
   it("warns when a milestone has no work phases", () => {
     const md = "# P\n\n## Milestone 1 — A\n\n### Phase 1 — W [lane: A]\n\n### Phase 2 — R [kind: pr-review] [gate: merge]\n- **Depends on:** Phase 1\n\n## Milestone 2 — Empty\n- **Integration branch:** `feat/b`\n\n### Phase 3 — R [kind: pr-review]\n- **Depends on:** Phase 2\n";
     expect(parsePlan(md).warnings.join("\n")).toMatch(/Milestone 2.*no work phases/i);
+  });
+});
+
+describe("parsePlan — archived milestone stubs", () => {
+  const fixture = (name: string) => readFileSync(new URL(`../../../tests/fixtures/milestones/${name}`, import.meta.url), "utf8");
+  const shape = (phase: PlanPhase) => [phase.phase, phase.milestone, phase.status, phase.kind, phase.gate];
+
+  it("lists every stub phase as an existing done phase of its milestone", () => {
+    const plan = parsePlan(fixture("archived-m1/plan.md"));
+    expect(plan.phases.map(shape)).toEqual([
+      ["1", 1, "done", "work", null],
+      ["2", 1, "done", "work", null],
+      ["9", 1, "done", "work", null],
+      ["3", 1, "done", "pr-review", "merge"],
+      ["4", 2, "in-progress", "work", null],
+      ["10", 2, "todo", "work", null],
+      ["5", 2, "todo", "pr-review", "merge"],
+      ["6", 3, "todo", "work", null],
+      ["7", 3, "todo", "pr-review", null],
+    ]);
+    expect(plan.phases.filter((phase) => phase.archived).map((phase) => phase.phase)).toEqual(["1", "2", "9", "3"]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("keeps the archived milestone's branches, PRs, participants, gate and archive link", () => {
+    expect(parsePlan(fixture("archived-m1/plan.md")).milestones[0]).toEqual({
+      number: 1,
+      title: "Core API and web shell ship",
+      gatePhase: "3",
+      integrationBranches: { "acme/api": "feat/m1-api", "acme/web": "feat/m1-web" },
+      prs: { "acme/api": "https://github.com/acme/api/pull/1", "acme/web": "https://github.com/acme/web/pull/2" },
+      participants: ["acme/api", "acme/web"],
+      archive: { file: "milestones/m1.md", outcome: "Core API and web shell ship" },
+    });
+  });
+
+  it("shows readers the same phases and statuses as the full plan", () => {
+    expect(parsePlan(fixture("archived-m1/plan.md")).phases.map(shape))
+      .toEqual(parsePlan(fixture("plan.md")).phases.map(shape));
+  });
+
+  it("warns on a stub without a phase list or with a gate outside it", () => {
+    const stubbed = fixture("archived-m1/plan.md");
+    expect(parsePlan(stubbed.replace("- **Phases (all done):** 1, 2, 9, 3\n", "")).warnings.join("\n"))
+      .toMatch(/Milestone 1.*archived.*Phases \(all done\)/i);
+    expect(parsePlan(stubbed.replace("- **Gate:** Phase 3", "- **Gate:** Phase 8")).warnings.join("\n"))
+      .toMatch(/Milestone 1.*gate Phase 8.*not.*listed/i);
   });
 });

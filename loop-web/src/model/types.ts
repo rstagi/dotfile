@@ -211,6 +211,10 @@ export interface PlanPhase {
   notes: string | null;
   /** PR-review phases only: defaults to standard with two outer rounds. */
   review: ReviewConfig | null;
+  /** True for a phase listed by an archived milestone stub: it exists, it is `done`, and its
+   * block lives in the archive file. Archived phases carry no body fields; their `dependsOn`
+   * is a display-only chain in stub order. */
+  archived?: boolean;
 }
 
 /** Historical tiers remain readable; execution only accepts standard|max. */
@@ -250,6 +254,14 @@ export interface PlanMilestone {
   prs: Record<string, string | null>;
   /** Repositories assigned to this milestone's work phases, in document order. */
   participants: string[];
+  /** Present only for a shipped milestone archived to a stub (`[archived]` heading). */
+  archive?: MilestoneArchive;
+}
+
+export interface MilestoneArchive {
+  /** Archive file path relative to plan.md, e.g. `milestones/m1.md`. */
+  file: string | null;
+  outcome: string | null;
 }
 
 export interface Plan {
@@ -524,6 +536,8 @@ export interface GraphEdge {
 export interface GraphMilestone {
   number: number;
   title: string;
+  /** Shipped and archived to a stub: its phases are all done and carry no body. */
+  archived?: boolean;
 }
 
 export interface Graph {

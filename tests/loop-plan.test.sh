@@ -68,6 +68,118 @@ echo "loop-plan: usage errors"
 plan get >/dev/null 2>&1; assert_exit "$?" "1" "get without --plan-id fails"
 plan note --plan-id x >/dev/null 2>&1; assert_exit "$?" "1" "note without --body fails"
 plan bogus >/dev/null 2>&1; assert_exit "$?" "1" "unknown command fails"
+plan archive --dir "$D1" >/dev/null 2>&1; assert_exit "$?" "1" "archive without --milestone fails"
+
+# ---------------------------------------------------------------------------------------
+# Archive — fixture plan with 3 milestones, milestone 1 shipped (fake gh + fake emit)
+# ---------------------------------------------------------------------------------------
+FIX="$HERE/fixtures/milestones"
+API_PR=https://github.com/acme/api/pull/1
+WEB_PR=https://github.com/acme/web/pull/2
+mkdir -p "$TMP/bin"
+# Fake gh: PR state from FAKE_PR_STATES ("<url>=<STATE>" lines); FAKE_GH_FAIL=1 fails every call.
+cat > "$TMP/bin/gh" <<'GH'
+#!/bin/sh
+[ "${FAKE_GH_FAIL:-0}" = 0 ] || exit 1
+state="$(printf '%s\n' "$FAKE_PR_STATES" | sed -n "s|^$3=||p")"
+[ -n "$state" ] || exit 1
+printf '{"state":"%s"}\n' "$state"
+GH
+chmod +x "$TMP/bin/gh"
+OLD_PATH="$PATH"
+export PATH="$TMP/bin:$PATH"
+merged() { export FAKE_PR_STATES="$API_PR=MERGED
+$WEB_PR=MERGED"; }
+
+# fresh_loop <name>: a .loop dir holding the fixture plan and a state.json with phase entries.
+fresh_loop() {
+  local d="$TMP/$1/.loop"
+  mkdir -p "$d"
+  cp "$FIX/plan.md" "$d/plan.md"
+  print -r -- '{"runId":"loop-archive-fixture-2026-10-01-000000","milestone":2,"phases":{"1":{"status":"done"},"3":{"status":"done"},"4":{"status":"running"}}}' > "$d/state.json"
+  print -r -- "$d"
+}
+files_in() { (cd "$1" && print -l -- *(DN)) }
+
+echo "loop-plan: archive — moves milestone 1 into milestones/m1.md, leaves the stub, pushes once"
+A="$(fresh_loop archive-ok)"
+STATE_BEFORE="$(cat "$A/state.json")"
+merged
+export EMIT_LOG="$TMP/emit-archive.log"; : > "$EMIT_LOG"
+OUT="$(plan archive --milestone 1 --dir "$A" 2>&1)"; rc=$?
+assert_exit "$rc" "0" "archive succeeds"
+assert_eq "$(cat "$A/plan.md")" "$(cat "$FIX/archived-m1/plan.md")" "plan.md is the index with the milestone 1 stub"
+assert_eq "$(cat "$A/milestones/m1.md")" "$(cat "$FIX/archived-m1/milestones/m1.md")" "milestones/m1.md holds the moved blocks and log entries"
+assert_eq "$(cat "$A/state.json")" "$STATE_BEFORE" "state.json keeps its entries for archived phases"
+assert_contains "$OUT" "archived milestone 1" "reports the archive"
+assert_eq "$(grep -c ' register ' "$EMIT_LOG")" "1" "pushes the plan once"
+assert_contains "$(cat "$EMIT_LOG")" "loop-archive-fixture-2026-10-01-000000 register" "pushes under the header planId"
+assert_eq "$(files_in "$A")" "milestones
+plan.md
+state.json" "leaves no temp files"
+
+echo "loop-plan: archive — a second run is a no-op"
+: > "$EMIT_LOG"
+PLAN_AFTER="$(cat "$A/plan.md")"; ARCHIVE_AFTER="$(cat "$A/milestones/m1.md")"
+OUT="$(plan archive --milestone 1 --dir "$A" 2>&1)"; rc=$?
+assert_exit "$rc" "0" "second run succeeds"
+assert_contains "$OUT" "already archived" "says the milestone is already archived"
+assert_eq "$(cat "$A/plan.md")" "$PLAN_AFTER" "plan.md unchanged"
+assert_eq "$(cat "$A/milestones/m1.md")" "$ARCHIVE_AFTER" "archive file unchanged"
+assert_eq "$(cat "$EMIT_LOG")" "" "no push"
+
+echo "loop-plan: archive — refuses while a phase of the milestone is not done"
+R="$(fresh_loop archive-open)"
+: > "$EMIT_LOG"
+OUT="$(plan archive --milestone 2 --dir "$R" 2>&1)"; rc=$?
+assert_exit "$rc" "3" "refused"
+assert_contains "$OUT" "Phase 4 (in-progress)" "names the open phase"
+assert_eq "$(cat "$R/plan.md")" "$(cat "$FIX/plan.md")" "plan.md unchanged"
+assert_eq "$(files_in "$R")" "plan.md
+state.json" "no archive file, no temp files"
+assert_eq "$(cat "$EMIT_LOG")" "" "no push"
+
+echo "loop-plan: archive — refuses unless every gate PR is merged"
+export FAKE_PR_STATES="$API_PR=MERGED
+$WEB_PR=OPEN"
+OUT="$(plan archive --milestone 1 --dir "$R" 2>&1)"; rc=$?
+assert_exit "$rc" "3" "an open gate PR refuses"
+assert_contains "$OUT" "acme/web	$WEB_PR	open" "names the open PR"
+export FAKE_PR_STATES="$API_PR=CLOSED
+$WEB_PR=OPEN"
+plan archive --milestone 1 --dir "$R" >/dev/null 2>&1
+assert_exit "$?" "4" "a closed unmerged gate PR wins over open"
+merged
+FAKE_GH_FAIL=1 plan archive --milestone 1 --dir "$R" >/dev/null 2>&1
+assert_exit "$?" "1" "a gh failure refuses"
+assert_eq "$(cat "$R/plan.md")" "$(cat "$FIX/plan.md")" "plan.md unchanged after every refusal"
+assert_eq "$(files_in "$R")" "plan.md
+state.json" "no archive file after every refusal"
+assert_eq "$(cat "$EMIT_LOG")" "" "no push after any refusal"
+
+echo "loop-plan: archive — atomic: a failed write leaves plan.md unchanged"
+F="$(fresh_loop archive-fail)"
+print -r -- "not a directory" > "$F/milestones"
+plan archive --milestone 1 --dir "$F" >/dev/null 2>&1
+assert_exit "$?" "1" "an archive dir that cannot be created fails"
+assert_eq "$(cat "$F/plan.md")" "$(cat "$FIX/plan.md")" "plan.md unchanged"
+assert_eq "$(files_in "$F")" "milestones
+plan.md
+state.json" "no temp files left"
+rm -f "$F/milestones"; mkdir "$F/milestones"; chmod 555 "$F"
+plan archive --milestone 1 --dir "$F" >/dev/null 2>&1; rc=$?
+chmod 755 "$F"
+assert_exit "$rc" "1" "a read-only loop dir fails"
+assert_eq "$(cat "$F/plan.md")" "$(cat "$FIX/plan.md")" "plan.md unchanged"
+assert_eq "$(files_in "$F/milestones")" "" "no archive file written"
+print -r -- "other content" > "$F/milestones/m1.md"
+plan archive --milestone 1 --dir "$F" >/dev/null 2>&1
+assert_exit "$?" "1" "an archive file with other content is never overwritten"
+assert_eq "$(cat "$F/plan.md")" "$(cat "$FIX/plan.md")" "plan.md unchanged"
+assert_eq "$(cat "$F/milestones/m1.md")" "other content" "existing archive file kept"
+assert_eq "$(cat "$EMIT_LOG")" "" "no push after a failed write"
+export PATH="$OLD_PATH"
+unset FAKE_PR_STATES
 
 # ---------------------------------------------------------------------------------------
 # Part 2 — real daemon end-to-end (skipped when node < 22.18)
@@ -242,6 +354,24 @@ EOF
       "2 2 null null" "HTTP snapshot never falls back to the prior milestone or repository PR"
     assert_eq "$(print -r -- "$milestone_snap" | jq -r '.graph.nodes[] | select(.id=="2") | .prs["acme/api"]')" \
       "https://github.com/acme/api/pull/1" "historical gate retains its recorded PR through HTTP"
+
+    echo "loop-plan: archive end-to-end — the daemon reads stub phases as existing done phases"
+    ARCH="$(fresh_loop archive-e2e)"
+    ARCH_PID="$(plan register --dir "$ARCH")"
+    curl -sf -X POST --data-binary @"$ARCH/state.json" "$LOOP_DAEMON_URL/api/loops/$ARCH_PID/state" >/dev/null
+    PATH="$TMP/bin:$PATH" FAKE_PR_STATES="$API_PR=MERGED
+$WEB_PR=MERGED" plan archive --milestone 1 --dir "$ARCH" >/dev/null
+    assert_eq "$?" "0" "archive pushes to the daemon"
+    arch_plan="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$ARCH_PID/plan" | jq -r '.planText')"
+    assert_contains "$arch_plan" '## Milestone 1 — Core API and web shell ship `[archived]`' "the daemon holds the stubbed plan"
+    arch_snap="$(curl -sf "$LOOP_DAEMON_URL/api/loops/$ARCH_PID/snapshot")"
+    assert_eq "$(print -r -- "$arch_snap" | jq -r '[.graph.nodes[] | select(.milestone==1) | "\(.id):\(.status)"] | join(" ")')" \
+      "1:done 2:done 9:done 3:done" "archived phases stay in the graph as done"
+    assert_eq "$(print -r -- "$arch_snap" | jq -r '.graph.edges[] | select(.id=="3->4") | .blocking')" \
+      "false" "the dependency on the archived gate is satisfied"
+    assert_eq "$(print -r -- "$arch_snap" | jq -r '[.graph.milestones[] | .archived // false] | map(tostring) | join(" ")')" \
+      "true false false" "milestone 1 is marked archived"
+    assert_eq "$(print -r -- "$arch_snap" | jq -r '.warnings | type, length' | paste -sd' ' -)" "array 0" "the stubbed plan parses without warnings"
 
     echo "loop-plan: control — pause/resume (loop + phase) and model override via POST /control"
     CTL="$TMP/control/.loop"; mkdir -p "$CTL"

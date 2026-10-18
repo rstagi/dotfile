@@ -700,6 +700,21 @@ test("--once: a single-milestone plan renders unchanged (no headers, no M<n> in 
   assert.doesNotMatch(out.stdout, /M1 — |M\d\/\d/);
 });
 
+test("--once: an archived milestone stub renders its phases as done under an archived heading", async (t) => {
+  const { parsePlan } = await import("../loop-web/src/model/parse-plan.ts");
+  const { buildGraph } = await import("../loop-web/src/model/build-graph.ts");
+  const text = fs.readFileSync(path.join(import.meta.dirname, "fixtures", "milestones", "archived-m1", "plan.md"), "utf8");
+  const snapshot = { effort: { milestone: 2, milestoneTotal: 3, integrationBranch: "feat/m2-web" }, graph: buildGraph(parsePlan(text), null) };
+  const fx = fixture({ snapshot });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store, COLUMNS: "160", LINES: "80" } });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /^ +M1 — Core API and web shell ship · archived$/m);
+  assert.match(out.stdout, /^ +M2 — The web shell calls the API$/m);
+  for (const id of ["1", "2", "9", "3"]) assert.match(out.stdout, new RegExp(`✓ ${id} +\\(archived\\) .*done`));
+  assert.match(out.stdout, / 4 +Call the API from the web shell /);
+});
+
 test("pickerRows: awaiting-merge sits after active, before finished; the runId stays the 2nd field", () => {
   const rows = pickerRows([
     { runId: "fin", status: "finished", updatedAt: "2026-09-04T00:00:00Z" },

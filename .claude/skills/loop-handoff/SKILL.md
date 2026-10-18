@@ -54,6 +54,7 @@ Gather what actually moved this session and map it onto the plan's phases:
   execution starts.
 - In a plan with milestones, never mark a phase of a later milestone than `state.milestone` `done` — a later milestone only starts after the gate merge and `/loop-execute resume`. Read `state.milestone` from `.loop/state.json`; when absent, `GET /api/loops/<id>/plan` → `.milestone`, else (daemon down) read the plan: when plan `**Status:**` is `awaiting merge`, the current milestone is the one whose gate is the last `done` gate (parked there; nothing later is promotable), otherwise the lowest milestone whose gate phase is not `done`. If neither state nor daemon is available and the status is unclear, promote nothing of a later milestone.
 - Likewise never change the status of a phase of an earlier (shipped) milestone — its gate PRs are merged; reading it is fine.
+- A phase that an `[archived]` stub lists is an existing phase with status `done`. Never drop, reopen or renumber an archived phase. Do not edit the stub. Do not copy the archived block back from `.loop/milestones/m<N>.md`. Count its number as used when you allocate the next phase number.
 - Reconcile a phase only against its declared `Repository:` checkout. Work in another
   repository cannot complete it. Preserve repository blocks and never write checkout paths
   into the plan.
