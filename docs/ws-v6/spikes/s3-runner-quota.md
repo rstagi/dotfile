@@ -11,7 +11,7 @@ What must ws estimate when a source omits a value?
 
 Test date: **2026-10-16**. Host: macOS arm64.
 Installed versions: Claude Code **2.1.302**, Codex **0.159.2**, Grok Build **1.0.52**.
-The [manifest](s3/manifest.json) records all **10 CLI invocations**, including failed inspection calls.
+The [manifest](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s3/manifest.json) records all **10 CLI invocations**, including failed inspection calls.
 Four calls completed synthetic inference turns. None executed an agent tool.
 
 Agent-home mode: **sandbox**. No live-home fallback was necessary.
@@ -70,7 +70,7 @@ The spike did not establish the cause or a maximum consistency delay.
 
 ### Codex
 
-Evidence: [codex.json](s3/codex.json).
+Evidence: [codex.json](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s3/codex.json).
 
 #### Sources and fields
 
@@ -135,7 +135,7 @@ Keep readings separate by account, bucket, duration, and reset time.
 
 ### Claude Code
 
-Evidence: [claude.json](s3/claude.json).
+Evidence: [claude.json](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s3/claude.json).
 
 #### Status-line input
 
@@ -219,7 +219,7 @@ Repeated callbacks alone must not make an idle reading appear fresh.
 
 ### Grok Build
 
-Evidence: [grok.json](s3/grok.json).
+Evidence: [grok.json](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s3/grok.json).
 
 #### Billing sources and missing windows
 
