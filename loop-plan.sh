@@ -127,10 +127,11 @@ do_archive() {
   retro="${plan:h}/milestones/m${MILESTONE}.retro.md"
   [[ -n "$OUTCOME" ]] && extra+=(--outcome "$OUTCOME")
   [[ -f "$retro" ]] && extra+=(--retro "$retro")
+  node --version >/dev/null 2>&1 || die "archive: cannot start node (needs Node >= 22.18)"
   ARCHIVE_TMP="$(mktemp -d "${plan:h}/.archive.XXXXXX" 2>/dev/null)" || die "archive: cannot create a temp dir in ${plan:h}"
   result="$(node "$SCRIPT_DIR/loop-plan-archive.mjs" --plan "$plan" --milestone "$MILESTONE" \
     --out "$ARCHIVE_TMP" "${extra[@]}")" \
-    || die "archive: cannot compute the archive (needs Node >= 22.18)"
+    || return $?
   case "$(jq -r '.status' <<< "$result")" in
   already)
     print -r -- "loop-plan: milestone $MILESTONE already archived ($(jq -r '.archiveFile // "?"' <<< "$result"))"

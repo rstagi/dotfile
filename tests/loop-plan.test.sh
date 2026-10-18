@@ -108,6 +108,27 @@ fresh_loop() {
 }
 files_in() { (cd "$1" && print -l -- *(DN)) }
 
+echo "loop-plan: archive preserves the tool error and exit status"
+FAILED_TOOL="$TMP/failing-tool"; mkdir -p "$FAILED_TOOL"
+cp "$ROOT/loop-plan.sh" "$FAILED_TOOL/loop-plan.sh"
+cat > "$FAILED_TOOL/loop-plan-archive.mjs" <<'JS'
+console.error('archive: fixture read failed');
+process.exit(42);
+JS
+FT="$(fresh_loop archive-tool-error)"
+OUT="$(zsh "$FAILED_TOOL/loop-plan.sh" archive --milestone 1 --dir "$FT" 2>&1)"; rc=$?
+assert_exit "$rc" "42" "archive returns the tool status"
+assert_eq "$OUT" "archive: fixture read failed" "archive preserves the tool error without a Node requirement"
+assert_eq "$(cat "$FT/plan.md")" "$(cat "$FIX/plan.md")" "tool failure leaves the plan unchanged"
+assert_eq "$(files_in "$FT")" $'plan.md\nstate.json' "tool failure removes temporary files"
+
+echo "loop-plan: archive explains a missing node"
+MN="$(fresh_loop archive-no-node)"
+OUT="$(PATH="$(path_without_command node)" plan archive --milestone 1 --dir "$MN" 2>&1)"; rc=$?
+assert_exit "$rc" "1" "archive fails when node is missing"
+assert_contains "$OUT" "needs Node >= 22.18" "missing node produces the Node requirement"
+assert_eq "$(cat "$MN/plan.md")" "$(cat "$FIX/plan.md")" "missing node leaves the plan unchanged"
+
 echo "loop-plan: archive — moves milestone 1 into milestones/m1.md, leaves the stub, pushes once"
 A="$(fresh_loop archive-ok)"
 STATE_BEFORE="$(cat "$A/state.json")"
