@@ -913,3 +913,445 @@ async fn delayed_status_callbacks_do_not_replace_a_newer_reading() {
     assert_eq!(readings[0].used_ratio, Some(0.5));
     assert_eq!(readings[0].observed_at_ms, 3000);
 }
+
+#[test]
+fn grok_billing_preserves_the_weekly_period_and_missing_percentage() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/grok.json")).unwrap();
+    let result = &fixture["acp_responses"][0]["response"]["result"];
+    let now = 1_792_186_404_245;
+    let readings = grok::parse_billing(result, "user-a", now);
+    assert_eq!(readings.len(), 1);
+    let reading = &readings[0];
+    assert_eq!(reading.window, "weekly");
+    assert_eq!(reading.duration_secs, Some(604800));
+    assert_eq!(reading.start_ms, Some(1_791_972_561_510));
+    assert_eq!(reading.reset_ms, Some(1_792_577_361_510));
+    assert_eq!(reading.remaining_ratio(), None);
+    assert_eq!(reading.source, Source::Reported);
+    assert_eq!(reading.observed_at_ms, now);
+    assert!(
+        reading
+            .event_body()
+            .get(sc::RUNNER_USAGE_USED_RATIO)
+            .is_none()
+    );
+    let mut reported = result.clone();
+    reported["config"]["creditUsagePercent"] = json!(25);
+    assert_eq!(
+        grok::parse_billing(&reported, "user-a", now)[0].remaining_ratio(),
+        Some(0.75)
+    );
+    reported["config"]["currentPeriod"]["type"] = json!("USAGE_PERIOD_TYPE_MONTHLY");
+    assert_eq!(
+        grok::parse_billing(&reported, "user-a", now)[0].window,
+        "monthly"
+    );
+    assert!(grok::parse_billing(result, "", now).is_empty());
+}
+
+#[tokio::test]
+async fn grok_initializes_then_reads_billing_without_inference_and_rejects_account_changes() {
+    use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+    let sandbox = tempfile::tempdir().unwrap();
+    let program = sandbox.path().join("fake-grok");
+    fs::write(&program, r#"#!/bin/sh
+[ "$1 $2" = 'agent stdio' ] || exit 1
+while IFS= read -r request; do
+  printf '%s\n' "$request" >> "$GROK_HOME/requests"
+  case "$request" in
+    *'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}' ;;
+    *'"method":"_x.ai/billing"'*) cat "$GROK_HOME/billing-response" ;;
+    *) exit 1 ;;
+  esac
+done
+"#).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/grok.json")).unwrap();
+    fs::write(
+        sandbox.path().join("billing-response"),
+        format!("{}\n", fixture["acp_responses"][0]["response"]),
+    )
+    .unwrap();
+    fs::write(
+        sandbox.path().join("auth.json"),
+        json!({"issuer::client":fixture["identity"]["entry"]}).to_string(),
+    )
+    .unwrap();
+    let context = crate::agents::AgentSession {
+        agent_program: Some(program),
+        state: sandbox.path().join("state"),
+        parent_session_id: None,
+        project: "sandbox".into(),
+        id: ws_core::ids::Ulid::new().to_string(),
+        home: sandbox.path().into(),
+        grok_home: Some(sandbox.path().into()),
+        codex_home: None,
+        claude_config_dir: None,
+        ws_home: sandbox.path().join("ws"),
+        ws_bin: "/fake/ws".into(),
+        spawned: false,
+        prompt: None,
+        arguments: vec![],
+    };
+    let prepared =
+        crate::agents::prepare("grok", crate::agents::Mode::Headless, &context, None).unwrap();
+    let file = prepared
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("quota-binding.json"))
+        .unwrap();
+    let binding: grok::Binding = serde_json::from_slice(&file.contents).unwrap();
+    assert!(!String::from_utf8_lossy(&file.contents).contains("redacted-email"));
+    prepared.write_files().unwrap();
+    let mut reader = grok::GrokReader::new(binding);
+    let readings = reader.read(Arc::new(|| 1_792_186_404_245)).await.unwrap();
+    assert_eq!(readings.len(), 1);
+    assert_eq!(readings[0].window, "weekly");
+    assert_eq!(readings[0].used_ratio, None);
+    let requests: Vec<Value> = fs::read_to_string(sandbox.path().join("requests"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["method"], "initialize");
+    assert_eq!(requests[0]["params"]["protocolVersion"], 1);
+    assert_eq!(requests[1], fixture["acp_requests"][0]);
+    fs::write(
+        sandbox.path().join("auth.json"),
+        r#"{"issuer::client":{"user_id":"another-account"}}"#,
+    )
+    .unwrap();
+    assert!(reader.read(Arc::new(|| 1_792_186_404_246)).await.is_err());
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("requests"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    let resumed =
+        crate::agents::prepare("grok", crate::agents::Mode::Headless, &context, None).unwrap();
+    assert_eq!(
+        resumed
+            .files
+            .iter()
+            .find(|f| f.path == file.path)
+            .unwrap()
+            .contents,
+        file.contents
+    );
+}
+
+#[test]
+fn token_estimates_deduplicate_model_records_and_keep_unknown_denominators() {
+    use std::fs;
+    use ws_core::{
+        device::Device,
+        ids::Ulid,
+        telemetry_log::{Signal, TelemetryLog},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-host").unwrap();
+    let log = TelemetryLog::new(sandbox.path(), device.device_id);
+    let session = Ulid::new().to_string();
+    let other = Ulid::new().to_string();
+    for (id, account) in [(&session, "account-a"), (&other, "account-b")] {
+        let path = sandbox.path().join("sessions").join(id);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(
+            path.join("quota-binding.json"),
+            json!({"runner":"claude","account_id":account}).to_string(),
+        )
+        .unwrap();
+    }
+    let model = |id: &str, span: &str, at: u64, input: u64, output: u64| {
+        json!({
+            "resourceSpans":[{"resource":{"attributes":[{"key":sc::SESSION_ID,"value":{"stringValue":id}}]},
+            "scopeSpans":[{"spans":[{"name":sc::MODEL_CALL_SPAN,"traceId":id,"spanId":span,
+            "startTimeUnixNano":(at - 1).to_string(),"endTimeUnixNano":at.to_string(),"attributes":[
+                {"key":sc::GEN_AI_INPUT_TOKENS,"value":{"intValue":input.to_string()}},
+                {"key":sc::GEN_AI_OUTPUT_TOKENS,"value":{"intValue":output.to_string()}},
+                {"key":sc::GEN_AI_CACHE_READ_INPUT_TOKENS,"value":{"intValue":"999"}},
+                {"key":sc::GEN_AI_REQUEST_MODEL,"value":{"stringValue":"model-a"}}
+            ]}]}]}]
+        })
+    };
+    let first = model(&session, "call-a", 2_000_000_000, 1000, 100);
+    for payload in [
+        first.clone(),
+        first,
+        model(&session, "call-b", 3_000_000_000, 2000, 200),
+        model(&other, "call-c", 3_000_000_000, 9000, 900),
+        model(&session, "old", 999_000_000, 8000, 800),
+        model(&session, "next-window", 5_000_000_000, 7000, 700),
+    ] {
+        log.append(Signal::Traces, vec![payload], 4000).unwrap();
+    }
+    let missing = Reading {
+        runner: "claude".into(),
+        account_id: "account-a".into(),
+        bucket: None,
+        window: "five_hour".into(),
+        duration_secs: Some(4),
+        start_ms: Some(1000),
+        reset_ms: Some(5000),
+        source: Source::Reported,
+        source_name: "status-line".into(),
+        observed_at_ms: 4000,
+        received_at_ms: 4000,
+        used_ratio: None,
+        tokens: None,
+        coverage: None,
+    };
+    let mut reported = missing.clone();
+    reported.used_ratio = Some(0.25);
+    let estimates = estimator::estimate_missing(
+        sandbox.path(),
+        vec![missing.clone(), reported.clone()],
+        4000,
+    )
+    .unwrap();
+    // A valid report for this window takes precedence over token estimates.
+    assert!(estimates.iter().all(|r| r.source == Source::Reported));
+    let estimate = estimator::estimate_missing(sandbox.path(), vec![missing], 4000)
+        .unwrap()
+        .remove(0);
+    assert_eq!(estimate.tokens, Some(3300));
+    assert_eq!(estimate.source, Source::Estimated);
+    assert_eq!(estimate.remaining_ratio(), None);
+    let coverage = estimate.coverage.as_deref().unwrap();
+    assert!(coverage.contains("2 model records"));
+    assert!(coverage.contains("1000..5000"));
+    assert!(coverage.contains("other devices"));
+    assert!(coverage.contains("incomplete"));
+    let body = estimate.event_body();
+    assert_eq!(body[sc::RUNNER_USAGE_TOKENS], 3300);
+    assert_eq!(body[sc::RUNNER_USAGE_SOURCE], "estimated");
+    assert!(body.get(sc::RUNNER_USAGE_REMAINING_RATIO).is_none());
+    assert!(body.get(sc::RUNNER_USAGE_USED_RATIO).is_none());
+}
+
+#[tokio::test]
+async fn grok_collector_discovers_billing_and_persists_an_estimate_with_coverage() {
+    use crate::sessions::{CreateSession, Sessions};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::{Arc, Mutex},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    let program = sandbox.path().join("grok");
+    fs::write(
+        &program,
+        r#"#!/bin/sh
+IFS= read -r request || exit 1
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+IFS= read -r request || exit 1
+printf '%s\n' "$request" > "$GROK_HOME/billing-request"
+cat "$GROK_HOME/billing-response"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/spikes/s3/grok.json")).unwrap();
+    fs::write(
+        sandbox.path().join("billing-response"),
+        format!("{}\n", fixture["acp_responses"][0]["response"]),
+    )
+    .unwrap();
+    fs::write(
+        sandbox.path().join("auth.json"),
+        r#"{"issuer::client":{"user_id":"account-a","auth_mode":"oidc"}}"#,
+    )
+    .unwrap();
+    let state = sandbox.path().join("state");
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    let binding = grok::Binding {
+        runner: "grok".into(),
+        account_id: Some("account-a".into()),
+        identity: Some(grok::Identity {
+            user_id: "account-a".into(),
+            principal_type: None,
+            principal_id: None,
+            team_id: None,
+        }),
+        grok_home: sandbox.path().into(),
+        program,
+    };
+    fs::write(
+        state
+            .join("sessions")
+            .join(session.id.to_string())
+            .join("quota-binding.json"),
+        serde_json::to_vec(&binding).unwrap(),
+    )
+    .unwrap();
+    let log = ws_core::log::SessionLog::new(&state, session.id, session.device_id);
+    let mut changes = sessions.changes.subscribe();
+    let store = Arc::new(Mutex::new(sessions));
+    let collector = Collector::new(Arc::new(|| 1_792_186_404_245));
+    let service = Service::start_with_collector(store.clone(), collector).unwrap();
+    wait_for_usage(&log, &mut changes, 1).await;
+    store.lock().unwrap().shutdown.send_replace(true);
+    service.shutdown().await;
+    let entries = log.read().unwrap().entries;
+    let event = entries
+        .iter()
+        .find(|entry| entry.event_type == "runner.usage.updated")
+        .unwrap();
+    assert_eq!(event.body[sc::RUNNER_USAGE_WINDOW], "weekly");
+    assert_eq!(event.body[sc::RUNNER_USAGE_SOURCE], "estimated");
+    assert_eq!(
+        event.body[sc::RUNNER_USAGE_WINDOW_START],
+        1_791_972_561_510_u64
+    );
+    assert_eq!(event.body[sc::RUNNER_USAGE_TOKENS], 0);
+    assert!(
+        event.body[sc::RUNNER_USAGE_COVERAGE]
+            .as_str()
+            .unwrap()
+            .contains("incomplete")
+    );
+    assert!(event.body.get(sc::RUNNER_USAGE_REMAINING_RATIO).is_none());
+    let request: Value =
+        serde_json::from_slice(&fs::read(sandbox.path().join("billing-request")).unwrap()).unwrap();
+    assert_eq!(request["method"], "_x.ai/billing");
+}
+
+#[tokio::test]
+async fn unavailable_quota_sources_still_persist_token_estimates() {
+    use crate::sessions::{CreateSession, Sessions};
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    let binding = binding::Binding {
+        runner: "codex".into(),
+        account_id: Some("launch-account".into()),
+        codex_home: sandbox.path().join("absent-home"),
+        program: sandbox.path().join("absent-program"),
+        resume_id: None,
+    };
+    fs::write(
+        sandbox
+            .path()
+            .join("sessions")
+            .join(session.id.to_string())
+            .join("quota-binding.json"),
+        serde_json::to_vec(&binding).unwrap(),
+    )
+    .unwrap();
+    let log = ws_core::log::SessionLog::new(sandbox.path(), session.id, session.device_id);
+    let mut changes = sessions.changes.subscribe();
+    let store = Arc::new(Mutex::new(sessions));
+    let service = Service::start_with_collector(
+        store.clone(),
+        Collector::new(Arc::new(|| 1_792_186_404_245)),
+    )
+    .unwrap();
+    wait_for_usage(&log, &mut changes, 2).await;
+    store.lock().unwrap().shutdown.send_replace(true);
+    service.shutdown().await;
+    let events: Vec<_> = log
+        .read()
+        .unwrap()
+        .entries
+        .into_iter()
+        .filter(|entry| entry.event_type == "runner.usage.updated")
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(
+        events
+            .iter()
+            .all(|event| event.body[sc::RUNNER_USAGE_SOURCE] == "estimated")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.body[sc::RUNNER_ACCOUNT_ID] == "launch-account")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.body.get(sc::RUNNER_USAGE_REMAINING_RATIO).is_none())
+    );
+}
+
+#[tokio::test]
+async fn grok_rejects_an_account_change_during_the_billing_request() {
+    use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+    let sandbox = tempfile::tempdir().unwrap();
+    let program = sandbox.path().join("grok");
+    fs::write(&program, r#"#!/bin/sh
+IFS= read -r request || exit 1
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+IFS= read -r request || exit 1
+printf '%s\n' '{"issuer::client":{"user_id":"account-b","auth_mode":"oidc"}}' > "$GROK_HOME/auth.json"
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"config":{"creditUsagePercent":0}}}'
+"#).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(
+        sandbox.path().join("auth.json"),
+        r#"{"issuer::client":{"user_id":"account-a","auth_mode":"oidc"}}"#,
+    )
+    .unwrap();
+    let mut reader = grok::GrokReader::new(grok::Binding {
+        runner: "grok".into(),
+        account_id: Some("account-a".into()),
+        identity: Some(grok::Identity {
+            user_id: "account-a".into(),
+            principal_type: None,
+            principal_id: None,
+            team_id: None,
+        }),
+        grok_home: sandbox.path().into(),
+        program,
+    });
+    assert!(reader.read(Arc::new(|| 100)).await.is_err());
+}
+
+#[test]
+fn grok_keeps_unverified_or_ambiguous_authentication_unknown() {
+    use crate::agents::{AgentSession, Mode, prepare};
+    use std::fs;
+    let sandbox = tempfile::tempdir().unwrap();
+    for auth in [
+        json!({"issuer::client":{"user_id":"a","auth_mode":"unverified"}}),
+        json!({"issuer::client":{"user_id":"a"}}),
+        json!({"issuer::one":{"user_id":"a","auth_mode":"oidc"},"issuer::two":{"user_id":"b","auth_mode":"oidc"}}),
+    ] {
+        fs::write(sandbox.path().join("auth.json"), auth.to_string()).unwrap();
+        let context = AgentSession {
+            agent_program: None,
+            state: sandbox.path().join("state"),
+            parent_session_id: None,
+            project: "sandbox".into(),
+            id: ws_core::ids::Ulid::new().to_string(),
+            home: sandbox.path().into(),
+            grok_home: Some(sandbox.path().into()),
+            codex_home: None,
+            claude_config_dir: None,
+            ws_home: sandbox.path().join("ws"),
+            ws_bin: "/fake/ws".into(),
+            spawned: false,
+            prompt: None,
+            arguments: vec![],
+        };
+        let prepared = prepare("grok", Mode::Headless, &context, None).unwrap();
+        let file = prepared
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("quota-binding.json"))
+            .unwrap();
+        let binding: Value = serde_json::from_slice(&file.contents).unwrap();
+        assert!(binding["account_id"].is_null());
+    }
+}

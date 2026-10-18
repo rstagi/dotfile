@@ -434,7 +434,7 @@ Delivery can repeat after a lost response or a daemon crash.
 Log records keep their `event_id` attributes. A log without that attribute uses its durable telemetry event ID.
 Spans keep their span IDs. The sink must deduplicate repeated records.
 
-The daemon collects Codex and Claude quota every minute and at each phase boundary.
+The daemon collects Codex, Claude and Grok quota every minute and at each phase boundary.
 The shared launch preparation saves the account binding in a private `quota-binding.json` beside the session log.
 A resumed WS session retains that binding after an account change. The file contains no credential.
 The collector initializes `codex app-server`, then calls the read-only `account/rateLimits/read` method.
@@ -447,10 +447,24 @@ The hook transport spools callbacks when the daemon is unavailable. Quota callba
 The reader also checks the headless session's stdout for optional `rate_limit_event` records.
 Status-line used percentages divide by 100. Stream utilization fractions already use the stored 0–1 ratio unit.
 The reader binds both sources to the launch account. Repeated callbacks do not refresh an unchanged reading.
-A stream without quota records leaves both windows unknown. Token estimation belongs to a separate collector.
+A stream without quota records leaves both windows without a reported value.
+
+The Grok reader initializes `grok agent stdio`, then calls the read-only `_x.ai/billing` extension.
+It records the reported period type and dates. It does not invent a five-hour window.
+A missing `creditUsagePercent` stays unknown. Zero on-demand balances do not establish the included allowance.
+The launch binding keeps the OIDC user and principal context. Unverified authentication modes stay unknown.
+The reader checks the account before and after each billing request.
+
+For a window without a reported value, the collector sums completed canonical model spans from the local telemetry log.
+It deduplicates records by trace and span identity and adds normalized input and output tokens once.
+It groups tokens by the frozen launch account and runner. Cache and reasoning subsets do not count twice.
+Coverage records the interval, observed record range and count, and gaps outside local WS telemetry.
+Without provider boundaries, a known duration supplies an explicitly labeled rolling interval.
+Without a known duration or boundaries, the token total stays unknown.
+An estimate has source `estimated`. Without a calibrated denominator, both quota ratios stay unknown.
 
 The collector writes durable `runner.usage.updated` events through the existing session writer and OTLP emitter.
-Each reading retains its account, bucket, window duration, reset time and `reported` source.
+Each reading retains its account, bucket, window duration, reset time and `reported` or `estimated` source.
 Window duration selects the window: 300 minutes means five hours, and 10080 minutes means one week.
 Other durations remain separate. Missing windows and invalid or expired values remain unknown.
 Unknown values produce no numeric quota attribute.
