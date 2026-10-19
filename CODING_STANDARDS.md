@@ -58,7 +58,7 @@ All other items are deferred issues. They never block. Examples: names, style, e
 
 Process:
 
-- An adversarial review has exactly one round. Do not review the same PR again to find new small issues.
+- An adversarial review has at most 2 rounds by default. A round that finds no blocking item ends the review. A later round checks only the fix of the blocking items. It does not look for new deferred issues.
 - Keep the deferred list short and concrete. Remove each item that does not deserve a follow-up ticket.
 - Do not widen the scope of a PR to fix deferred items.
 - Triage deferred issues one time each week, not in the PR.

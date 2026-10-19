@@ -11,7 +11,8 @@
 # recover replays next with the supplied configuration (defaults match next).
 # Fix status: {outcome:"done", result:"PUSHED|NOOP", headBefore, headAfter, remote,
 # branch, worktree?}; runner meta headBefore/headAfter may supply the SHAs instead.
-# Final status: {event:"REQUEST_CHANGES|COMMENT|APPROVE", commentUrl, outcome, summary}.
+# Final status: {event:"REQUEST_CHANGES|APPROVE" (the verdict, or legacy COMMENT), postedEvent,
+# commentUrl, outcome, summary}. postedEvent is COMMENT on a PR that the posting user opened.
 set -u
 SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/loop-ar.sh"
@@ -174,7 +175,7 @@ Use the full pr-review checkout/run/checklist methodology. Use a separate detach
 at exactly the frozen head (fetch that commit if needed); never switch or edit the integration
 checkout. Install dependencies, build, run the project's tests and exercise the changed behavior.
 Record actual commands and validation failures. Inspect surrounding code as well as the diff.
-The following inspection checklist is verbatim from pr-review; AR's finding IDs, severities,
+The following inspection checklist is verbatim from pr-review. AR's finding IDs, classes,
 role-specific verdict lines and output files override its reporting conventions.
 FRAME
       awk '/^## Step 2 / {copy=1} /^## Posting to GitHub/ {exit} copy {print}' "$methodology" || return 1
@@ -194,6 +195,7 @@ report or invoke its posting workflow. Each run is fresh; never resume a provide
 Read only the current exchange inlined below; do not read unrelated runs or existing GitHub
 reviews/comments. A critic/confirm audits the last reviewer against this same full PR context.
 LOCAL
+        review_fix_scope "$ledger" >> "$framing" || return 1
         ar_prompt --role "$role" --framing "$framing" --ledger "$ledger" --run-dir "$run_dir" ;;
       fix|final)
         cat -- "$framing" || return 1
@@ -204,6 +206,9 @@ LOCAL
 ## Remediation
 Invoke /pr-review-fix-all for the converged review above and the current disputed sidecar, if
 present. Verify every finding against current code, including every critic-added disputed item.
+Fix only blocking findings (security, unprotected-breakage or failing-check, with evidence).
+Never accept a deferred finding. Record it as rejected with the reason "deferred". Do not widen
+the PR scope to fix deferred findings.
 Read the integration worktree/branch/remote and repository verify command from the loop plan
 and project context. Stay in that integration worktree; do not create PRs or post GitHub reviews.
 Account for every finding in RUN_DIR/remediation-plan.md, implement accepted fixes with TDD
@@ -247,6 +252,41 @@ review_evidence() {
   printf '\n'
 }
 
+# A round after a fix checks only the fix diff and the blocking items of the round before it.
+review_fix_scope() {
+  local ledger="$1" line report="" disputed=0 fix_dir="" prior="" prior_disputed=0 range meta
+  local loop_dir="${1:a:h:h}"
+  local -a columns
+  [[ -f "$ledger" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    columns=(${(ps:\t:)line})
+    case "$columns[3]" in
+      review) report="$columns[6]"; disputed=0 ;;
+      respond) report="$columns[6]" ;;
+      disputed) disputed=1 ;;
+      fix) fix_dir="$columns[6]"; prior="$report"; prior_disputed="$disputed" ;;
+    esac
+  done < "$ledger"
+  [[ -n "$fix_dir" ]] || return 0
+  meta="$loop_dir/$fix_dir/meta.json"
+  range="$(jq -ers '(.[1] // {}) as $m | .[0] as $s |
+    "\($m.headBefore // $s.headBefore)..\($m.headAfter // $s.headAfter)"' \
+    "$loop_dir/$fix_dir/status.json" <([[ -f "$meta" ]] && cat -- "$meta" || print '{}'))" || return 1
+  printf '\n## Scope after a fix\n'
+  cat <<SCOPE
+A fix ran after the previous round. This round checks only the fix diff and the blocking
+findings of the previous round. Fix diff: git diff $range. Report a previous blocking finding
+again only when it stays open. Add no new deferred finding. Add a new blocking finding only
+when the fix diff caused it.
+SCOPE
+  printf '\n### Previous converged review (%s)\n\n' "$loop_dir/$prior"
+  cat -- "$loop_dir/$prior/report.md" || return 1
+  if (( prior_disputed )) && [[ -f "${ledger%.tsv}.disputed.md" ]]; then
+    printf '\n### Previous disputed items (%s)\n\n' "${ledger%.tsv}.disputed.md"
+    cat -- "${ledger%.tsv}.disputed.md" || return 1
+  fi
+}
+
 review_final_instructions() {
   local ledger="$1" stem="${${1:t}%.ledger.tsv}" phase repo run_id="<runId>"
   phase="${stem#review-p}"; phase="${phase%%-*}"; repo="${stem#review-p$phase-}"
@@ -263,8 +303,16 @@ Independently verify and deduplicate the converged review against the current co
 PR head. Verify disputed items against code; never accept or dismiss them solely by consensus.
 Earlier rounds are stale remediation history. Do not edit code, commit, push, or open a PR.
 Write the reconciled review to RUN_DIR/report.md. Use the GitHub CLI for GitHub operations.
-Select event from unresolved validated severities: any [blocker] -> REQUEST_CHANGES;
-otherwise any [major] -> COMMENT; otherwise APPROVE (minor findings may remain).
+Give each verified finding one class. A blocking finding has one category with evidence:
+security, unprotected-breakage or failing-check. All other findings are deferred. When you are
+not sure, the finding is deferred. Do not raise the class of a finding to make it blocking.
+The report has exactly two finding sections, "## Blocking" and "## Deferred". Keep the
+deferred list short and concrete. Then add "## Footprint": the existing files that the PR edits
+outside its feature folder, and their count. More than 3 files is a point for discussion only.
+The verdict is REQUEST_CHANGES when at least one blocking finding stays open. Otherwise the
+verdict is APPROVE. Deferred findings never change the verdict.
+GitHub rejects APPROVE and REQUEST_CHANGES on a PR that the authenticated user opened. On such
+a PR, post the event COMMENT, and start the body with "Verdict: <verdict>".
 Pin commit_id to the reviewed PR head. Use the real unified PR diff for inline anchors
 (added RIGHT-side lines, never cumulative format-patch offsets). Put findings inline where
 possible, keep the body concise, and end it with :).
@@ -273,10 +321,12 @@ FINAL
   cat <<'FINAL'
 Resolve <runId>, if still a placeholder, from the loop plan's canonical planId before posting.
 Before posting, query all existing PR reviews for that exact marker. If present, reuse its URL
-and event; do not post again. Otherwise post exactly one review with that marker in the body.
-Write RUN_DIR/status.json only after confirming the posted event, with event (REQUEST_CHANGES,
-COMMENT, or APPROVE), commentUrl (html_url), summary, and outcome (blocked for REQUEST_CHANGES,
-question for COMMENT, done for APPROVE). An existing marked review is a completed final run.
+and verdict, and do not post again. Otherwise post exactly one review with that marker in the body.
+Write RUN_DIR/status.json only after you check the posted review. Include event (the verdict:
+REQUEST_CHANGES or APPROVE), postedEvent (the event that GitHub shows), commentUrl (html_url),
+summary, and outcome (blocked for REQUEST_CHANGES, done for APPROVE). An existing marked review
+is a completed final run. Its verdict is its "Verdict:" line. Without that line, its verdict is
+its event, and an old COMMENT review gives the outcome question.
 FINAL
 }
 

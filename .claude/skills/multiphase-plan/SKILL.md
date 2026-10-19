@@ -7,7 +7,7 @@ description: >-
   source of truth. Use when asked to "plan this out", "make a multi-phase plan", "break
   this into parallel phases", or before spinning up parallel worktrees for a larger effort.
   For Loop plans, estimate and size phases to fit one 30-minute execution attempt where the
-  work can be bounded. The draft gets one reviewer/critic plan-review round (Codex, Claude, Grok) unless invoked as `light <goal>`. Only security, unprotected breakage or a failing check blocks a plan. Other items go to its Deferred / Not now list.
+  work can be bounded. The draft gets at most 2 reviewer/critic plan-review rounds (Codex, Claude, Grok) unless invoked as `light <goal>`. Only security, unprotected breakage or a failing check blocks a plan. Other items go to its Deferred / Not now list.
 argument-hint: "[light] <goal> (optional)"
 ---
 
@@ -38,9 +38,9 @@ Every other item is a deferred item. Write each deferred item as one line in the
 `## Deferred / Not now` section of the plan. Then continue. Write only what a runner needs to
 pass the 3 rules. A short plan is better.
 
-**Modes.** By default the drafted plan goes through **one reviewer/critic plan-review
-round** (step 3) before step 4 registers it. `LOOP_PLAN_REVIEW_ROUNDS` (default 1) can allow
-more rounds. If the argument starts with the word `light` (e.g.
+**Modes.** By default the drafted plan goes through **at most 2 reviewer/critic plan-review
+rounds** (step 3) before step 4 registers it. `LOOP_PLAN_REVIEW_ROUNDS` (a maximum, default 2)
+sets the limit. Round 2 runs only when a blocking finding changed the plan. If the argument starts with the word `light` (e.g.
 `/multiphase-plan light add a --json flag`), strip it from the goal and skip step 3. Use
 `light` for small or low-risk plans. A `light` plan also skips the visual explainer (step 5).
 
@@ -197,7 +197,7 @@ exists to prevent.
 ### 3. Adversarial plan review (skipped in `light` mode)
 
 Write the draft to `.loop/plan.md` (with the header from step 4). Read
-`LOOP_PLAN_REVIEW_ROUNDS` from `loop-models.conf` (default 1, range 1..5), then run round 1:
+`LOOP_PLAN_REVIEW_ROUNDS` from `loop-models.conf` (a maximum, default 2, range 1..5), then run round 1:
 
     ~/dotfile/loop-plan-review.sh run --round 1
     # defaults: --dir .loop, --plan-file .loop/plan.md, --worktree .
@@ -205,10 +205,9 @@ Write the draft to `.loop/plan.md` (with the header from step 4). Read
 
 Each call synchronously drives **one independent round**, with the plan and code frozen
 throughout that round. The shared AR protocol runs reviewer R → critic C → on disagreement,
-R response → C again, up to the inner cap. A first `APPROVE` + `AGREE` needs an `AGREE`
-confirmation from the third provider T to stop clean; a T veto takes over the critic slot.
-Providers rotate: round 1 Sol → Opus (T = Grok), round 2 Opus → Grok (T = Sol), round 3
-Grok → Sol (T = Opus), repeating thereafter. Plan review always uses the standard providers
+R response → C again, up to the inner cap. The round ends when R and C agree. There is
+no third-provider confirmation. Providers rotate: round 1 Sol → Opus, round 2 Opus → Grok,
+round 3 Grok → Sol, repeating thereafter. Plan review always uses the standard providers
 at effort `high`, regardless of the plan's terminal PR-review tier. Chains and per-call
 timeouts are configured in `loop-models.conf` (`CHAIN_PLAN_REVIEW_GPT|CLAUDE|GROK`). Every
 call is a fresh runner with the prior exchange inlined. Grok sends the repository to xAI.
@@ -244,11 +243,15 @@ Do not edit the plan during an inner exchange. Show a compact disposition table
 needs a **user decision** (scope, product trade-off, a missing gate) goes back to the user.
 Put all such findings into one question. Settle everything else yourself.
 
-The default is one round. Run the next round (`--round 2`, then higher) only when both
-conditions are true:
+`LOOP_PLAN_REVIEW_ROUNDS` is a maximum. Run the next round (`--round 2`, then higher) only
+when both conditions are true:
 
 - `LOOP_PLAN_REVIEW_ROUNDS` allows it.
 - You edited the plan for a blocking finding in this round.
+
+Give the next round the converged review of this round:
+`--round 2 --prior <converged review path>`. That round checks only your edits for the
+blocking findings. It adds no new deferred finding.
 
 Do not run a round only to find more small issues. After the last round, continue to step 4.
 

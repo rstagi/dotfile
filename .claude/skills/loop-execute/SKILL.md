@@ -390,7 +390,7 @@ configuration, and prompt references. A pipeline failure follows HIL; do not sil
 to the old workflow.
 
 Read the review phase's tags: `[review: standard|max]` (default `LOOP_REVIEW_TIER_DEFAULT`,
-standard), `[rounds: N]` (default `LOOP_REVIEW_ROUNDS_DEFAULT` (2)), and `[inner: N]` (default
+standard), `[rounds: N]` (a maximum, default `LOOP_REVIEW_ROUNDS_DEFAULT` (2)), and `[inner: N]` (default
 `LOOP_REVIEW_INNER_DEFAULT` (2)). Both limits are 1..5, with rounds capped by
 `LOOP_REVIEW_ROUNDS_CAP`. Legacy tiers shallow and medium are rejected, never translated.
 For a new phase persist each `repositories[slug].reviewPipeline` using
@@ -439,14 +439,22 @@ answer; continue the same logical step/head without advancing the ledger. R/C/T 
 call with prior exchange and answer inlined, never `--resume`; retain the original artifacts.
 
 The CLI owns rotation (round 1 gpt→claude, round 2 claude→grok, round 3 grok→gpt), inner caps,
-and the fix rule. R reviews/responds, C audits against code, and T confirms a candidate clean
-opening pair (the first R review is `APPROVE` and C answers `AGREE`). R/C/T
-**never post or mutate GitHub** or edit the artifact. T `AGREE` skips remaining outer rounds
-and jumps to `final`; no skipped ledger rows are written. A T veto makes T the active critic
-for the remaining inner loop. At the inner cap the disputed sidecar preserves both positions,
+and the fix rule. R reviews/responds, and C audits against code. R/C
+**never post or mutate GitHub** or edit the artifact. A round in which R and C agree that no blocking finding is open goes straight to `final`, in every round.
+No skipped ledger rows are written. New pipelines never run a third provider T (`confirm`).
+Legacy ledgers with `confirm` rows still replay. At the inner cap the disputed sidecar preserves both positions,
 including critic-added issues; disputed > findings > clean. Only the fixer edits code between
-outer rounds. For r < N, run `fix<r>` iff the last R verdict is `NEEDS_CHANGES` or the round is disputed;
-otherwise proceed without a fix. The last round always goes to final, not another fix.
+outer rounds. For r < N, run `fix<r>` iff the last R verdict is `NEEDS_CHANGES` or the round is disputed.
+The last round always goes to final, not another fix.
+
+R gives each finding one class: blocking, with the category `security`, `unprotected-breakage`
+or `failing-check` and evidence, or deferred. When R is not sure, the finding is deferred.
+R ends with `NEEDS_CHANGES` only when at least one blocking finding stays.
+C also checks the classes. A deferred finding is never a disagreement.
+Deferred findings never cause a fix, a dispute or `REQUEST_CHANGES`.
+A round after a fix checks only the fix diff and the blocking findings of the round before it.
+It adds no new deferred finding, and a new blocking finding only when the fix caused it.
+`loop-review.sh prompt` adds this scope to the R/C prompts of that round.
 
 - `fix<r>` (`review-fix`): its prompt invokes `/pr-review-fix-all` with exactly one converged
   review, the current disputed sidecar only when that round has a dispute row, and these inputs:
@@ -462,7 +470,8 @@ otherwise proceed without a fix. The last round always goes to final, not anothe
   - verify: <repository verify command, verbatim>
   ```
 
-  Do not implement remediation outside that skill. The Opus coordinator verifies every finding
+  Do not implement remediation outside that skill. The fixer fixes only blocking findings.
+  It never accepts a deferred finding. The Opus coordinator verifies every finding
   and disputed item against current code before accepting/rejecting it, delegates accepted fix
   groups to Opus fixers (max 3), integrates, verifies, commits, and fast-forward pushes.
   Dispositions require evidence; no accepted finding may be silently skipped. Status must
@@ -471,14 +480,20 @@ otherwise proceed without a fix. The last round always goes to final, not anothe
 - `final` (`review-final`): receives the last converged review + current disputed items and
   current code at that round's pinned head. Earlier-round reports are stale history. It
   independently verifies each finding and disputed item, then posts the pipeline's **only**
-  GitHub review: `REQUEST_CHANGES` for unresolved `[blocker]`; otherwise `COMMENT` for
-  unresolved `[major]`; otherwise `APPROVE`. Minor/nit/style findings do not prevent approval.
+  GitHub review. The verdict is `REQUEST_CHANGES` when at least one blocking finding stays
+  open. Otherwise the verdict is `APPROVE`. Deferred findings never change the verdict.
+  GitHub rejects `APPROVE` and `REQUEST_CHANGES` on a PR that the authenticated user opened.
+  On such a PR, the final posts `COMMENT` and starts the body with `Verdict: <verdict>`.
+  The report has exactly two finding sections, `## Blocking` and `## Deferred`. Then
+  `## Footprint` gives the existing files that the PR edits outside its feature folder,
+  and their count. More than 3 files is a point for discussion, not a blocking finding.
   Include the protocol's phase-scoped idempotency marker; query all PR reviews for it before
   posting, reusing an existing marked review. Save the API response URL in
-  `status.json.commentUrl` and actual event in `status.json.event`.
+  `status.json.commentUrl`, the verdict in `status.json.event`, and the posted event in
+  `status.json.postedEvent`.
 
-After `final`, promote its outcome (`REQUEST_CHANGES → blocked`, `COMMENT → question`,
-`APPROVE → done`), report path, and comment URL into `state.repositories[slug].review`, clear
+After `final`, promote its outcome (`REQUEST_CHANGES → blocked`, `APPROVE → done`, legacy
+`COMMENT → question`), report path, and comment URL into `state.repositories[slug].review`, clear
 that repository's review note, and emit one aggregate `review.finish` after aggregation.
 A complete ledger does not imply approval.
 
@@ -586,7 +601,8 @@ never rerun a live pid, repeat a remediation push, or duplicate the final review
 - Query all PR reviews for the protocol's exact phase-scoped final marker. If found,
   recover its actual event/URL into the final run status and record idempotently, then promote
   the repository result. Do this even when the process crashed before writing status; never
-  repost. The actual GitHub event determines outcome, not a stale process exit or stage flag.
+  repost. The posted review determines outcome, not a stale process exit or stage flag.
+  When the review has a `Verdict:` line, that line is the verdict in `status.json.event`.
 - Only then call `next` with persisted tier/rounds/inner/ledger. Keep the current round's
   artifact: keep the persisted `headSha` within the inner loop, refreshing only for a new
   outer round after any verified fix. Preserve prior reports and retry evidence. The ledger

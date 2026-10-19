@@ -56,8 +56,8 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   a frozen artifact. R also handles `respond`, with the prior exchange inlined in its prompt.
 - **Critic C** — a fresh read-only runner from a different provider auditing R's review
   against the artifact and codebase. C references finding IDs and grounds disagreement in code.
-- **Third provider T** — the provider outside R/C for this outer round. Its `confirm` run
-  uses the critic prompt to audit an initially clean review; a veto makes T the active critic
+- **Third provider T** — legacy ledgers only. New pipelines never run T. An old `confirm` row
+  is T's audit of an initially clean review. On replay, a T veto makes T the active critic
   for the rest of that round's inner loop. R/C/T rotate (§ PR review phase pipeline).
 - **Remediation coordinator** — Opus through Claude Code, only between outer rounds and
   only when the fix rule requires it. Through `/pr-review-fix-all` it verifies the converged
@@ -1007,7 +1007,7 @@ you must stop early, skip the handoff and write status.json with outcome questio
 
 Every explicit `[kind: pr-review]` phase runs one Adversarial Review (AR) pipeline per
 repository. The heading accepts `[review: standard|max]` (default
-`LOOP_REVIEW_TIER_DEFAULT=standard`), `[rounds: N]` (default `LOOP_REVIEW_ROUNDS_DEFAULT=2`),
+`LOOP_REVIEW_TIER_DEFAULT=standard`), `[rounds: N]` (a maximum, default `LOOP_REVIEW_ROUNDS_DEFAULT=2`),
 and `[inner: M]` (default `LOOP_REVIEW_INNER_DEFAULT=2`). Both counts are integers 1..5;
 `LOOP_REVIEW_ROUNDS_CAP=5`. Legacy tiers shallow and medium are rejected by execution paths;
 historical Observatory/loop-top displays may still render them with a warning.
@@ -1052,11 +1052,16 @@ the opening `review` + `critic` is inner round 1; each later `respond` + `critic
 The default cap 2 therefore permits one response. Different repository pipelines may advance
 concurrently under `LOOP_MAX_PARALLEL`.
 
-R writes at most ten numbered findings, `F1`…`F10`, with severity
-`[blocker]`, `[major]`, or `[minor]`. Its last non-empty line must be exactly
-`APPROVE` or `NEEDS_CHANGES: <top issue>`. C has the frozen artifact, codebase, and R's review,
+R writes at most ten numbered findings, `F1`…`F10`. Each finding has one class:
+`[blocking: security]`, `[blocking: unprotected-breakage]`, `[blocking: failing-check]`, or
+`[deferred]`. A blocking finding gives evidence for its category. When R is not sure, the
+finding is deferred. R's last non-empty line must be exactly
+`APPROVE` or `NEEDS_CHANGES: <top issue>`. R uses `NEEDS_CHANGES` only when at least one
+blocking finding stays. C has the frozen artifact, codebase, and R's review,
 references finding IDs, and ends with exactly one of
 `AGREE`, `DISAGREE_EVIDENCE: <summary>`, or `DISAGREE_CONCERN: <summary>`.
+C also checks the classes. A blocking finding outside the three categories is a
+disagreement. A deferred finding is never a disagreement.
 Evidence disagreement cites code; a concern requires R to find the confirming or refuting code.
 On `AGREE`, R keeps every flag. On `DISAGREE_EVIDENCE`, R revises the flagged finding against
 C's cited code. On `DISAGREE_CONCERN`, R must cite code confirming the bug to keep it, or code
@@ -1078,11 +1083,14 @@ same head, using a fresh R/C/T call with the exchange inlined. Do not advance be
 
 ### Early stop, cap, and fix rule
 
-If R's first review is `APPROVE` and C answers `AGREE`, run T as `confirm` with the same
-critic prompt and full context. T `AGREE` skips every remaining outer round and goes straight
-to `final` (plan review: done). No `skipped` ledger rows are written; consumers infer skips
-from the clean `confirm`. If T disagrees, T becomes the critic for the rest of that inner loop;
-the cap still applies and the round can no longer be clean, even if R later approves.
+`[rounds: N]` is a maximum. When R and C agree that no blocking finding is open, the review
+skips every remaining outer round and goes straight to `final` (plan review: done). They agree
+when the last R verdict is `APPROVE`, C answers `AGREE`, and the round has no dispute.
+This holds for every round. No `skipped` ledger rows are written. Consumers infer skips from
+the clean round.
+New pipelines never run a third provider T. Replay treats a round as complete when a later
+round has rows, because old engines started a round after a clean round. A legacy ledger can contain `confirm` rows. On
+replay, T `AGREE` is a clean end. After a T veto, T becomes the critic for the rest of that inner loop.
 The `confirm` does not consume another inner round; a veto at inner cap 1 goes directly to disputed.
 
 At the inner cap without agreement, `ar_write_disputed` writes
@@ -1091,13 +1099,21 @@ last R report and last critic report verbatim and unresolved finding IDs, includ
 The sidecar uses the ledger filename without `.tsv` as its stem. A disputed round is never
 clean. The fixer/final reviewer/planner must verify disputed items against code; reaching the
 cap alone does not pause for HIL. Round status precedence is `disputed` > `findings` > `clean`.
+`findings` means that a blocking finding stays: the last R verdict is `NEEDS_CHANGES`, or a
+legacy T veto has no answer yet.
 The ledger's dispute row associates the sidecar with its round; an older sidecar must not make
 a later round disputed.
 
 After round r < N, run `fix<r>` iff the last R verdict is `NEEDS_CHANGES` or the round's
-`.disputed.md` exists (as identified by that round's dispute row). Otherwise advance without
-a fix. A clean confirmed early stop bypasses fixes and later rounds. Round N always proceeds
+`.disputed.md` exists (as identified by that round's dispute row). The fix covers only blocking
+findings. A clean round bypasses fixes and later rounds. Round N always proceeds
 to `final`, with its converged review and any current disputed items, rather than fixing again.
+A blocking finding that stays open after round N makes the final request changes.
+Deferred findings never cause a fix, a dispute or `REQUEST_CHANGES`.
+A round after a fix checks only the fix diff and the blocking findings of the round before it.
+It adds no new deferred finding, and a new blocking finding only when the fix caused it.
+`loop-review.sh prompt` adds this scope (the fix diff range and the previous converged review)
+to every R/C prompt of that round.
 
 ### Ledger and CLI
 
@@ -1125,6 +1141,9 @@ Verdicts are tokens only, without the report's colon/summary:
 | `disputed` | `DISPUTED` |
 | `fix` | `PUSHED` or `NOOP` |
 | `final` | `REQUEST_CHANGES`, `COMMENT`, or `APPROVE` |
+
+A new `final` row records the verdict, `REQUEST_CHANGES` or `APPROVE`. `COMMENT` stays valid
+for old ledgers.
 
 ```sh
 loop-review.sh next --tier <T> --rounds <N> --inner <M> --ledger <F>
@@ -1165,8 +1184,9 @@ reset the allowance. A second invalid verdict blocks that repository pipeline an
 the normal HIL path. This rule also applies when `recover` encounters an invalid verdict;
 never treat malformed output as agreement or advance the ledger past it.
 
-Example: standard, two outer rounds, inner cap 2. R revises once in round 1, fixes are pushed,
-and round 2 is confirmed clean (a first-round clean confirmation would instead jump to final):
+Example: standard, at most two rounds, inner cap 2. R revises once in round 1 and keeps a
+blocking finding. The fix is pushed, and round 2 is clean. A clean round 1 would instead go
+straight to final:
 
 | Run | Stage | Role | Provider | Chain | Verdict |
 |-----|-------|------|----------|-------|---------|
@@ -1177,8 +1197,7 @@ and round 2 is confirmed clean (a first-round clean confirmation would instead j
 | `a5` | `fix1` | `fix` | claude | `review-fix` | `PUSHED` |
 | `a6` | `round2` | `review` | claude | `review-claude` | `APPROVE` |
 | `a7` | `round2` | `critic` | grok | `review-grok` | `AGREE` |
-| `a8` | `round2` | `confirm` | gpt | `review-gpt` | `AGREE` |
-| `a9` | `final` | `final` | claude | `review-final` | `APPROVE` |
+| `a8` | `final` | `final` | claude | `review-final` | `APPROVE` |
 
 ### Remediation (`fix<r>`)
 
@@ -1202,6 +1221,7 @@ Follow that skill through its final status.json. Do not implement remediation ou
 
 The coordinator verifies every finding and disputed item (including critic-only concerns)
 against code before accepting or rejecting it, recording dispositions in `remediation-plan.md`.
+It fixes only blocking findings. It never accepts a deferred finding or widens the PR scope.
 It groups independent work and spawns at most three `pr-review-fixer` subagents (latest Opus),
 serializing overlapping files or dependencies. Subagents edit/test only; the coordinator owns
 integration, verification, commits, and fast-forward push. Do not create an empty commit or
@@ -1210,25 +1230,31 @@ the next round. Unresolved accepted findings or failed verification block that r
 
 ### Final review (`final`)
 
-Run `review-final` after the last outer round or a confirmed clean early stop, at the same
+Run `review-final` after the last outer round or a clean early stop, at the same
 current head reviewed by that round. It reads one converged review (last R report), the current
 `.disputed.md` when the round is disputed, and current code. It independently verifies and
 deduplicates findings, including critic-added disputed items, saving the reconciled review in
 `report.md`. Earlier-round reports are stale remediation history, not verdict inputs.
 
 Post exactly one review using `gh api --method POST repos/<owner>/<repo>/pulls/<n>/reviews`,
-pinning `commit_id` to the reviewed head and selecting `event` from unresolved validated severities:
+pinning `commit_id` to the reviewed head and selecting the verdict from the open findings:
 
-- one or more `[blocker]` findings → `REQUEST_CHANGES`;
-- otherwise one or more `[major]` findings → `COMMENT`;
-- otherwise → `APPROVE` (minor/nit/style findings may remain).
+- at least one blocking finding stays open → `REQUEST_CHANGES`.
+- otherwise → `APPROVE`. Deferred findings never change the verdict.
+
+GitHub rejects `APPROVE` and `REQUEST_CHANGES` on a PR that the authenticated user opened. On such
+a PR, post `COMMENT` and start the body with `Verdict: <verdict>`. The report has exactly two
+finding sections, `## Blocking` and `## Deferred`. Then `## Footprint` gives the existing files
+that the PR edits outside its feature folder, and their count. More than 3 files is a point for
+discussion, not a blocking finding.
 
 Put findings in inline review comments where the diff permits and keep the overall body
 concise. End the body with `:)` and include
 `<!-- loop-review:<runId>:p<N>:<owner--repo>:final -->`. Before posting, query all existing PR reviews
-for that marker; if it exists, reuse its URL and actual event instead of posting again. Save
-`html_url` as `status.json.commentUrl` and the posted event as `status.json.event`. Map the event
-to repository outcome: `REQUEST_CHANGES → blocked`, `COMMENT → question`, `APPROVE → done`.
+for that marker. If it exists, reuse its URL and verdict instead of posting again. Save
+`html_url` as `status.json.commentUrl`, the verdict as `status.json.event`, and the posted event
+as `status.json.postedEvent`. Map the verdict to repository outcome: `REQUEST_CHANGES → blocked`,
+`APPROVE → done`. A legacy `COMMENT` verdict maps to `question`.
 Record the final row even when its outcome is question/blocked: the posted review is complete.
 Promote `report.md`, summary, and comment URL to `repositories[slug].review`, then emit one
 aggregate `review.finish` event. Do not equate a completed ledger with an approving verdict.
@@ -1240,7 +1266,8 @@ run-directory pids and reattach to any live call without spawning a duplicate. R
 for completed metadata/results that have no row; a live process is never a completed run.
 Then query all PR reviews on GitHub for the phase-scoped final marker. If present, recover its actual event/URL
 into the final run's status, record it idempotently, and promote the repository result; do not
-post again even if the process crashed before writing status. Only then call `next`.
+post again even if the process crashed before writing status. When the review has a `Verdict:`
+line, that line is the verdict in `status.json.event`. Only then call `next`.
 
 Trust the phase-scoped ledger, completed artifacts, and git/GitHub evidence over stale
 bookkeeping: never rerun a live pid, repeat a remediation push, or duplicate the final review.
@@ -1252,12 +1279,20 @@ outer-round boundary after any verified fix. Replay, rather than a cached stage,
 
 ### Plan review uses the same AR core
 
-`loop-plan-review.sh run --round r [--inner M]` drives one independent outer round synchronously
+`loop-plan-review.sh run --round r [--inner M] [--prior F]` drives one independent outer round synchronously
 with its own ledger and `ar_next --start-round r --single-round`. It prints TSV
 `status <converged review path> <ledger>`, status precedence `disputed` > `findings` > `clean`;
 exit 2 means no usable review. Plan review uses standard provider slots at effort `high`.
 The planner verifies the converged review and disputed items against code, edits the plan
-between outer rounds, and runs up to `LOOP_PLAN_REVIEW_ROUNDS=2`, stopping early on `clean`.
+between outer rounds, and runs at most `LOOP_PLAN_REVIEW_ROUNDS=2` rounds, stopping early on `clean`.
+A later round runs only when a blocking finding changed the plan. It gets
+`--prior <converged review of round 1>` and checks only those plan edits and blocking findings.
+For a plan, a finding is blocking only in these cases:
+- The plan ships a security problem.
+- The plan ships a breaking change with no flag or off switch, or with no wiring point.
+- A phase cannot pass a deterministic check.
+
+The planner puts deferred findings in the plan's `Deferred / Not now` section.
 The reviewer/critic never edit the plan; only the planner does. Provider failure is reported,
 never substituted. The PR final-post workflow does not apply to plan review.
 

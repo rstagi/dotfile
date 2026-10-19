@@ -39,15 +39,15 @@ review() {
   RC=$?; OUT="$(cat "$TMP/out")"
 }
 
-printf '%s\n' APPROVE AGREE AGREE > "$FAKE_SCRIPT"
-echo 'plan-review: clean stop requires both critics'
+printf '%s\n' APPROVE AGREE > "$FAKE_SCRIPT"
+echo 'plan-review: a clean pair ends the round without a third provider'
 review --round 1
 assert_exit "$RC" 0 'clean review succeeds'
 assert_eq "$(cut -f1 <<< "$OUT")" clean 'clean status'
 report="$(cut -f2 <<< "$OUT")"; ledger="$(cut -f3 <<< "$OUT")"
 assert_eq "$(tail -n 1 "$report" 2>/dev/null)" APPROVE 'result points at reviewer report'
-assert_eq "$(cut -f1 "$FAKE_LOG" | tr '\n' ' ')" 'plan-review-gpt plan-review-claude plan-review-grok ' 'review, critic, third-provider confirmation'
-assert_eq "$(cut -f2-5 "$ledger" 2>/dev/null | tr '\t\n' ' |')" 'round1 review gpt APPROVE|round1 critic claude AGREE|round1 confirm grok AGREE|' 'six-column ledger records protocol order'
+assert_eq "$(cut -f1 "$FAKE_LOG" | tr '\n' ' ')" 'plan-review-gpt plan-review-claude ' 'review and critic only'
+assert_eq "$(cut -f2-5 "$ledger" 2>/dev/null | tr '\t\n' ' |')" 'round1 review gpt APPROVE|round1 critic claude AGREE|' 'six-column ledger records protocol order'
 assert_contains "$report" "$LOOP/runs/plan-review-" 'runs live beside ledger'
 assert_contains "$report" '-r1-1/report.md' 'run path carries round and attempt'
 prompt="$(cat "${report:h}/prompt.md" 2>/dev/null)"
@@ -56,10 +56,14 @@ assert_contains "$prompt" 'Independence' 'reviewer keeps plan checklist'
 assert_contains "$prompt" 'Role: review (A.2.3)' 'shared AR reviewer prompt'
 assert_contains "$prompt" 'An `[archived]` milestone stub lists shipped phases.' 'reviewer reads archived stubs'
 assert_contains "$prompt" "$LOOP/milestones/m<N>.md" 'reviewer knows where archived blocks live'
+assert_contains "$prompt" 'security: the plan ships a security or safety problem.' 'plan blocking: security'
+assert_contains "$prompt" 'no feature flag or off switch, or no wiring point' 'plan blocking: unprotected breaking change'
+assert_contains "$prompt" 'a phase cannot pass a deterministic check' 'plan blocking: failing check'
+assert_contains "$prompt" 'the "Deferred / Not now" section of the plan' 'deferred plan findings go to the plan section'
 critic_prompt="$(sed -n '2p' "$FAKE_LOG" | cut -f3)"
 assert_contains "$(cat "$critic_prompt" 2>/dev/null)" 'Scripted report 1' 'critic receives prior review'
 
-echo 'plan-review: findings converge without a third-provider confirmation'
+echo 'plan-review: findings converge with reviewer and critic'
 printf '%s\n' 'NEEDS_CHANGES: missing command' AGREE > "$FAKE_SCRIPT"
 review --round 1
 assert_exit "$RC" 0 'findings round succeeds'
@@ -77,15 +81,6 @@ assert_eq "$(cut -f1 "$FAKE_LOG" | tr '\n' ' ')" 'plan-review-gpt plan-review-cl
 response_prompt="$(sed -n '3p' "$FAKE_LOG" | cut -f3)"
 assert_contains "$(cat "$response_prompt")" 'DISAGREE_EVIDENCE: F1' 'response includes critic evidence'
 assert_contains "$(cat "$response_prompt")" 'Role: respond (A.2.3)' 'response uses shared response binding'
-
-echo 'plan-review: third-provider veto takes over critic slot'
-printf '%s\n' APPROVE AGREE 'DISAGREE_CONCERN: F2 missing verification at tests/run.sh:1' 'NEEDS_CHANGES: F2 missing verification' AGREE > "$FAKE_SCRIPT"
-review --round 1
-assert_exit "$RC" 0 'veto round converges'
-assert_eq "$(cut -f1 <<< "$OUT")" findings 'third-provider veto prevents clean result'
-assert_eq "$(cut -f1 "$FAKE_LOG" | tr '\n' ' ')" 'plan-review-gpt plan-review-claude plan-review-grok plan-review-gpt plan-review-grok ' 'third provider remains critic'
-ledger="$(cut -f3 <<< "$OUT")"
-assert_eq "$(cut -f3 "$ledger" | tr '\n' ' ')" 'review critic confirm respond critic ' 'sequential inner exchange'
 
 echo 'plan-review: unresolved critic-only findings produce disputed evidence'
 printf '%s\n' APPROVE 'DISAGREE_CONCERN: F9 missing test at tests/run.sh:1' APPROVE 'DISAGREE_EVIDENCE: F9 remains at tests/run.sh:1' > "$FAKE_SCRIPT"
@@ -107,16 +102,31 @@ assert_eq "$(cut -f1 <<< "$OUT")" disputed 'disputed outranks findings'
 assert_eq "$(wc -l < "$FAKE_LOG" | tr -d ' ')" 2 'inner cap prevents response'
 
 echo 'plan-review: round 2 starts independently with rotated providers'
-printf '%s\n' APPROVE AGREE AGREE > "$FAKE_SCRIPT"
+printf '%s\n' APPROVE AGREE > "$FAKE_SCRIPT"
 review --round 2
 assert_exit "$RC" 0 'independent round 2 succeeds'
-assert_eq "$(cut -f1 "$FAKE_LOG" | tr '\n' ' ')" 'plan-review-claude plan-review-grok plan-review-gpt ' 'round 2 rotation'
+assert_eq "$(cut -f1 "$FAKE_LOG" | tr '\n' ' ')" 'plan-review-claude plan-review-grok ' 'round 2 rotation'
 assert_contains "$(cut -f2 <<< "$OUT")" '-r2-1/report.md' 'round 2 path'
 ledger="$(cut -f3 <<< "$OUT")"
 assert_eq "$(cut -f2 "$ledger" | sort -u)" round2 'independent ledger contains only round 2'
-assert_eq "$(wc -l < "$ledger" | tr -d ' ')" 3 'no fix or final in a plan round'
+assert_eq "$(wc -l < "$ledger" | tr -d ' ')" 2 'no fix or final in a plan round'
 opening_prompt="$(head -n 1 "$FAKE_LOG" | cut -f3)"
 assert_eq "$(rg -c 'Scripted report' "$opening_prompt" || print 0)" 0 'opening review excludes previous rounds'
+assert_eq "$([[ "$(cat "$opening_prompt")" == *'## Scope after blocking fixes'* ]] && echo scoped || echo full)" full 'round without --prior is a full review'
+
+echo 'plan-review: round 2 checks only the blocking fixes of round 1'
+print -r -- $'## Blocking\nF1 [blocking: failing-check] Phase 2 Verify command missing\nNEEDS_CHANGES: F1' > "$TMP/prior.md"
+printf '%s\n' APPROVE AGREE > "$FAKE_SCRIPT"
+review --round 2 --prior "$TMP/prior.md"
+assert_exit "$RC" 0 'scoped round 2 succeeds'
+for k in 1 2; do
+  prompt="$(cat "$(sed -n "${k}p" "$FAKE_LOG" | cut -f3)")"
+  assert_contains "$prompt" '## Scope after blocking fixes' "round 2 call $k is scoped"
+  assert_contains "$prompt" 'Phase 2 Verify command missing' "round 2 call $k gets the previous blocking findings"
+  assert_contains "$prompt" 'Add no new deferred finding.' "round 2 call $k adds no deferred findings"
+done
+review --round 2 --prior "$TMP/missing.md"
+assert_exit "$RC" 1 'unreadable --prior rejected'
 
 echo 'plan-review: provider failure aborts instead of substituting'
 printf '%s\n' APPROVE fail > "$FAKE_SCRIPT"
@@ -129,16 +139,12 @@ printf '%s\n' fail > "$FAKE_SCRIPT"
 review --round 2
 assert_exit "$RC" 2 'opening reviewer failure is unusable'
 assert_contains "$(cat "$TMP/err")" 'claude review failed (exit 40)' 'rotated reviewer failure reported'
-printf '%s\n' APPROVE AGREE fail > "$FAKE_SCRIPT"
-review --round 1
-assert_exit "$RC" 2 'confirmation failure cannot pass as clean'
-assert_contains "$(cat "$TMP/err")" 'grok confirm failed (exit 40)' 'confirmation failure reported'
 
 echo 'plan-review: invalid verdict gets one format retry'
-printf '%s\n' 'No valid verdict' APPROVE AGREE AGREE > "$FAKE_SCRIPT"
+printf '%s\n' 'No valid verdict' APPROVE AGREE > "$FAKE_SCRIPT"
 review --round 1
 assert_exit "$RC" 0 'one retry can recover format'
-assert_eq "$(wc -l < "$FAKE_LOG" | tr -d ' ')" 4 'retry is a fresh runner call'
+assert_eq "$(wc -l < "$FAKE_LOG" | tr -d ' ')" 3 'retry is a fresh runner call'
 retry_prompt="$(sed -n '2p' "$FAKE_LOG" | cut -f3)"
 assert_contains "$(cat "$retry_prompt")" 'FORMAT REMINDER' 'retry explains required output'
 ledger="$(cut -f3 <<< "$OUT")"
