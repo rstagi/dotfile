@@ -514,9 +514,6 @@ install_ws() {
   # Real executable (alias is interactive-only): agents' `zsh -lc` shells can run `ws done`
   mkdir -p "$HOME/.local/bin"
   link_file "$HOME/dotfile/ws/ws.sh" "$HOME/.local/bin/ws"
-  # Upgrades: re-point existing agent hook files (Claude settings, global Grok hooks) at this ws
-  # Sourced: the zsh hooks_migrate runs even when the selector execs the Rust backend.
-  zsh -c 'source "$1" && hooks_migrate --force' ws "$HOME/dotfile/ws/ws.sh" || echo "ws: could not re-point agent hooks (run: ws _migrate-hooks)"
   # Grok Build: optional third agent, never a hard dep (it sends repo content to xAI)
   if ! command -v grok &> /dev/null && read_yes "Install Grok Build (optional ws agent; sends code to xAI)?"; then
     install_grok

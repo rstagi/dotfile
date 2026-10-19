@@ -26,9 +26,9 @@ shellcheck install.sh afk-ralph.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh ws/ws.sh ws/lib/*.sh ws/tests/*.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh
 
-# Loop engineering shell tests (occupancy + orchestrator + loop-top + ws suite, run concurrently; also runs zsh -n over the loop-*.sh and ws files)
+# Loop shell tests and picker smoke test, including zsh syntax checks
 zsh tests/run.sh
 
 # AR review pipeline ledger only
@@ -46,7 +46,7 @@ node --test tests/visual-explainer.test.mjs
 # loop-retro milestone facts collector
 node --test tests/loop-retro.test.mjs
 
-# ws (terminal workspaces) tests: 4 groups in parallel; one group: zsh ws/tests/run.sh core|send|triggers|misc
+# ws picker shell smoke test with a private tmux server
 zsh ws/tests/run.sh
 
 # Loop Observatory (loop-web) tests + build
@@ -87,10 +87,9 @@ loop-models.conf        Loop engineering: model chains, budgets, timeouts
 loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model controls)
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
-ws/ws.sh                Terminal workspace dispatcher: Rust by default, explicit zsh fallback (see ws/README.md)
-ws/lib/                 Legacy zsh backend modules and picker wrapper
+ws/ws.sh                Rust CLI launcher (see ws/README.md)
 wsd/crates/ws/src/cmd/picker.zsh  Embedded fzf picker UI
-ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh, sourced in order per parallel group by run.sh
+ws/tests/               Picker smoke test and Rust picker integration shell checks
 wsd/                    Default ws implementation: ws-core durable data, ws-daemon runtime, ws CLI + MCP
 docs/ws-v6/             WS v6 architecture, semantic conventions and spike reports (S1 scripts stay)
 wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
@@ -101,7 +100,7 @@ wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
 ```
 
-**Terminal workspaces (`ws`):** `ws/ws.sh` selects Rust when `$WS_HOME/backend` is absent and the Rust binary exists. Without the binary, it selects zsh.
+**Terminal workspaces (`ws`):** `ws/ws.sh` always runs Rust. It ignores old backend selector files.
 It executes `${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}`. Rust state uses `$WS_STATE` (default `~/.ws/state`).
 The daemon socket uses `$WS_SOCK` (default `~/.ws/wsd.sock`).
 The first daemon start imports existing `$WS_HOME/sessions` when Rust has no session logs.
@@ -116,9 +115,10 @@ Agents receive the same ULID in `WS_SESSION_ID` and the compatibility variable `
 `ws inbox` lists unread messages. `ws ack [<event_id>...]` marks selected messages, or all visible messages, as read.
 `ws done [--output <file>|-]` publishes completion. `ws wait <target> --for done|exit` waits through the daemon.
 `ws mcp` serves local stdio MCP tools. `ws session create --headless … -- <cmd>` starts a supervised process.
-`ws backend zsh` restores the legacy implementation and reports unreachable Rust-only sessions.
-`ws backend rust` returns to Rust and imports new legacy records. Both backends share the alias counter.
-The zsh suite selects zsh in each sandbox. `cargo test -p ws --test backend` also tests Rust through the dispatcher.
+`ws backend rust` imports remaining legacy records. Rust is the only backend.
+Alias allocation retains the legacy counter lock.
+Cargo tests cover the CLI and daemon. `zsh ws/tests/run.sh` tests the embedded picker shell glue.
+`cargo test -p ws --test backend` also tests Rust through the launcher.
 
 **Extension system:** install.sh adds each `source ~/dotfile/.zshrc_<tool>_ext` line to `~/.zshrc_ext` with `append_line`. `append_line` skips a line that is already in the file. Main `.zshrc` sources that file if it exists.
 

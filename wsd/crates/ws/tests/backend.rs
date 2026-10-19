@@ -33,7 +33,7 @@ fn dispatcher(home: &Path, socket: &Path) -> Command {
 }
 
 #[tokio::test]
-async fn dispatcher_smoke_covers_rust_sessions_messages_wait_mcp_and_rollback() {
+async fn dispatcher_smoke_covers_rust_sessions_messages_wait_and_mcp() {
     use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
     use std::time::Duration;
 
@@ -159,17 +159,43 @@ async fn dispatcher_smoke_covers_rust_sessions_messages_wait_mcp_and_rollback() 
     assert_eq!(listed[0]["id"], id);
     assert_eq!(listed[0]["state"], "finished");
     client.cancel().await.unwrap();
-    let output = dispatcher(home.path(), &socket)
-        .args(["backend", "zsh"])
-        .output()
-        .unwrap();
+}
+
+#[test]
+fn zsh_backend_is_rejected() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("ws.sock");
+    let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    let mut command = dispatcher(home.path(), &socket);
+    let output = command.args(["backend", "zsh"]).output().unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Only the rust backend is available."),
+        "{output:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(home.path().join(".ws/backend")).unwrap(),
+        "rust\n"
+    );
+    let response = common::request(
+        &socket, "POST", "/v1/backend",
+        &json!({"backend":"zsh", "home":home.path().join(".ws"), "root":home.path().join(".ws/worktrees")}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+}
+
+#[test]
+fn dispatcher_ignores_a_retired_zsh_selector() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("ws.sock");
+    let mut command = dispatcher(home.path(), &socket);
+    fs::write(home.path().join(".ws/backend"), "zsh\n").unwrap();
+    let output = command.args(["--help"]).output().unwrap();
     assert!(output.status.success(), "{output:?}");
-    let output = dispatcher(home.path(), &socket)
-        .args(["help"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("terminal Conductor"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("daemon"),
+        "{output:?}"
+    );
 }
 
 #[test]
@@ -339,12 +365,12 @@ fn first_start_imports_legacy_state_once_before_serving_commands() {
 }
 
 #[test]
-fn selector_dispatches_internal_commands_without_backend_environment_variables() {
+fn launcher_dispatches_internal_commands_without_backend_environment_variables() {
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::tempdir_in("/tmp").unwrap();
     let directory = home.path().join(".ws");
     fs::create_dir_all(directory.join("bin")).unwrap();
-    fs::write(directory.join("backend"), "rust\n").unwrap();
+    fs::write(directory.join("backend"), "zsh\n").unwrap();
     let binary = directory.join("bin/ws-rs");
     fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
@@ -370,133 +396,6 @@ fn selector_dispatches_internal_commands_without_backend_environment_variables()
             format!("{command}\nliteral argument\n")
         );
     }
-}
-
-#[test]
-fn switches_backends_and_imports_new_zsh_sessions_without_losing_rust_messages() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
-    let socket = home.path().join("ws.sock");
-    let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
-    let output = dispatcher(home.path(), &socket)
-        .args(["backend", "rust"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(home.path().join(".ws/backend")).unwrap(),
-        "rust\n"
-    );
-    let response = common::request(
-        &socket,
-        "POST",
-        "/v1/sessions",
-        &json!({"name":"first"}).to_string(),
-    );
-    let first: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-    assert_eq!(first["alias"], 1);
-    let output = dispatcher(home.path(), &socket)
-        .args(["send", "first", "retained Rust message"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(75), "{output:?}");
-    let output = dispatcher(home.path(), &socket)
-        .args(["backend", "zsh"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("2 Rust-only sessions"),
-        "{output:?}"
-    );
-    fixtures::copy("backend", &home.path().join(".ws"));
-    assert_eq!(
-        fs::read_to_string(home.path().join(".ws/sessions/counter"))
-            .unwrap()
-            .trim(),
-        "3"
-    );
-    let output = dispatcher(home.path(), &socket)
-        .args(["backend", "rust"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let output = dispatcher(home.path(), &socket)
-        .args(["sessions", "--json"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let sessions: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(sessions.as_array().unwrap().len(), 3);
-    for (target, expected) in [
-        (first["id"].as_str().unwrap(), "retained Rust message"),
-        ("#3", "created under zsh"),
-    ] {
-        let response = common::get(
-            &socket,
-            &format!("/v1/sessions/{}", target.replace('#', "%23")),
-        );
-        let session: Value =
-            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        let output = dispatcher(home.path(), &socket)
-            .env("WS_SESSION_ID", session["id"].as_str().unwrap())
-            .args(["inbox", "--json"])
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        let inbox: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(inbox.as_array().unwrap().len(), 1);
-        assert_eq!(inbox[0]["body"], expected);
-    }
-    let response = common::request(
-        &socket,
-        "POST",
-        "/v1/sessions",
-        r#"{"name":"after-return"}"#,
-    );
-    let last: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
-    assert_eq!(last["alias"], 4);
-    let legacy = sessions
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|session| session["alias"] == 3)
-        .unwrap();
-    for (sender, target, expected_first, message) in [
-        (
-            last["id"].as_str().unwrap(),
-            legacy,
-            "created under zsh",
-            "after return to Rust",
-        ),
-        (
-            legacy["id"].as_str().unwrap(),
-            &first,
-            "retained Rust message",
-            "reply after return",
-        ),
-    ] {
-        let output = dispatcher(home.path(), &socket)
-            .env("WS_SESSION_ID", sender)
-            .args(["send", target["id"].as_str().unwrap(), message])
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(75), "{output:?}");
-        let output = dispatcher(home.path(), &socket)
-            .env("WS_SESSION_ID", target["id"].as_str().unwrap())
-            .args(["inbox", "--json"])
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        let inbox: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(inbox.as_array().unwrap().len(), 2);
-        assert_eq!(inbox[0]["body"], expected_first);
-        assert_eq!(inbox[1]["body"], message);
-    }
-    let output = dispatcher(home.path(), &socket)
-        .args(["backend", "rust"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
 }
 
 #[test]

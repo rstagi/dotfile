@@ -1,4 +1,4 @@
-//! Coordinates backend selection, delivery, and the shared alias counter.
+//! Coordinates legacy import, delivery and alias allocation.
 
 use crate::{
     api::{self, ApiError, Store},
@@ -55,23 +55,8 @@ async fn prepare(
                     super::incremental(sessions, &home, &request.root)?;
                     Ok(json!({}))
                 }
-                "zsh" => {
-                    let count = sessions
-                        .registry
-                        .sessions()?
-                        .iter()
-                        .filter(|session| {
-                            !home
-                                .join("sessions")
-                                .join(session.alias.to_string())
-                                .join("meta")
-                                .is_file()
-                        })
-                        .count();
-                    Ok(json!({"rust_only":count}))
-                }
                 _ => Err(crate::sessions::Error::InvalidRequest(
-                    "Select the rust or zsh backend.",
+                    "Only the rust backend is available.",
                 )),
             }
         })
@@ -97,7 +82,7 @@ impl Sessions {
         Ok(reserve_counter(home, floor, true)?)
     }
 
-    /// Returns a shared switch lock while Rust can inject. A switch in progress suppresses injection.
+    /// Returns a shared import lock. An import in progress suppresses injection.
     pub(crate) fn delivery_guard(&self) -> io::Result<Option<File>> {
         let Some(home) = &self.legacy_home else {
             return Ok(Some(ws_core::lockfile::open_lock_file(
@@ -142,7 +127,7 @@ fn reserve_counter(home: &Path, floor: i64, allocate: bool) -> io::Result<i64> {
     Ok(alias)
 }
 
-/// Holds a shared switch lock until the caller finishes physical delivery.
+/// Holds a shared import lock until the caller finishes physical delivery.
 pub fn delivery_guard(home: &Path) -> io::Result<Option<File>> {
     let lock = ws_core::lockfile::open_lock_file(&home.join("backend.lock"))?;
     match lock.try_lock_shared() {
@@ -150,13 +135,5 @@ pub fn delivery_guard(home: &Path) -> io::Result<Option<File>> {
         Err(TryLockError::WouldBlock) => return Ok(None),
         Err(TryLockError::Error(error)) => return Err(error),
     }
-    match fs::read_to_string(home.join("backend")) {
-        Ok(value) if value.trim() == "zsh" => Ok(None),
-        Ok(value) if value.trim() == "rust" => Ok(Some(lock)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some(lock)),
-        Ok(_) => Err(io::Error::other(
-            "The backend selector must contain rust or zsh.",
-        )),
-        Err(error) => Err(error),
-    }
+    Ok(Some(lock))
 }

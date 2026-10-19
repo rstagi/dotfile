@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Run every tests/*.test.sh and, concurrently, the ws suite (ws/tests/run.sh); exit non-zero if any fails. Also
-# syntax-checks the loop-*.sh + ws scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
+# Run every shell suite and the picker smoke test. Fail if any suite fails.
+# Check the Loop scripts, launcher and picker syntax first.
 # Discard caller loop/color settings; each suite configures its own environment.
 set -u
 for inherited in ${(k)parameters}; do
@@ -45,14 +45,14 @@ else # copied-runner fixtures (runner.test.sh) ship run.sh alone: sandbox HOME, 
 fi
 
 echo "== zsh -n (syntax) =="
-ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh ws/lib/*.sh(N) ws/tests/*.sh(N))"}) # relative to $ROOT
+ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh(N))"}) # relative to $ROOT
 for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh $ws_scripts; do
   [[ -f "$ROOT/$s" ]] || continue
   if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; failed_suites+=("zsh -n: $s"); fi
 done
 echo
 
-# The ws suite (the slowest, own sandboxes) runs in the background alongside the loop suites.
+# The picker smoke test uses its own sandbox and runs with the Loop suites.
 ws_pid=""
 if [[ -f "$ROOT/ws/tests/run.sh" ]]; then # needs the repo's ws/; absent from copied-runner fixtures
   zsh "$ROOT/ws/tests/run.sh" > "$TEST_HOME_DIR/ws.log" 2>&1 &
@@ -70,9 +70,6 @@ if [[ -n "$ws_pid" ]]; then
   wait "$ws_pid" || failed_suites+=("ws/tests/run.sh")
   ws_pid=""
   cat "$TEST_HOME_DIR/ws.log"
-  echo "== ws Rust smoke =="
-  source "$HERE/lib.sh"
-  require_ws_test_binary && run_suite "$ROOT/ws/tests/run.sh" rust || failed_suites+=("ws Rust smoke")
   echo
 fi
 

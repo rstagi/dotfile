@@ -14,7 +14,7 @@ Invoke this skill as `/ws-sessions` in Claude or `$ws-sessions` in Codex.
 
 ## Backend and identity
 
-The shell dispatcher selects Rust when `$WS_HOME/backend` is absent.
+The shell launcher always runs Rust. It ignores old backend selector files.
 Rust stores its logs and registry in `$WS_STATE`, which defaults to `~/.ws/state`.
 The daemon socket uses `$WS_SOCK`, which defaults to `~/.ws/wsd.sock`.
 
@@ -152,12 +152,10 @@ ws session stop <session-ULID>
 The daemon supervises each headless process group and records its exit.
 `ws session run --headless … -- <command>` waits in the foreground and returns the command's exit code.
 
-## Return to zsh
+## Legacy import
 
-`ws backend zsh` selects the legacy backend and reports unreachable Rust-only sessions.
-`ws backend rust` selects Rust again and imports new legacy sessions, messages and triggers.
-Both backends share the alias counter. Source artifacts remain in `$WS_HOME/sessions` and `$WS_HOME/triggers`.
+Rust is the only backend. `ws backend rust` imports any remaining legacy records.
+Source artifacts remain in `$WS_HOME/sessions` and `$WS_HOME/triggers`.
 The first Rust daemon start imports existing legacy state when Rust has no session logs.
 The import includes pending messages, triggers, listed branch workspaces and pins.
 Its journal resumes interrupted imports. A completed startup import does not repeat.
-The zsh backend uses numeric session IDs in `WS_SESSION`. It does not support the Rust-only commands above.
