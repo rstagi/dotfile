@@ -13,6 +13,9 @@ use super::{AgentSession, Prepared, TelemetryMetadata};
 
 const CLAUDE_SETTINGS_VERSION: &str = "2.1.302";
 const CODEX_SETTINGS_VERSION: &str = "0.159.2";
+/// The version is optional metadata. A launch runs the probe under the store
+/// lock, so the probe must stay far below the 30 s client create deadline.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) fn extend(
     prepared: &mut Prepared,
@@ -171,7 +174,7 @@ fn agent_version(agent: &str, session: &AgentSession) -> Option<String> {
     .stderr(Stdio::null())
     .spawn()
     .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + VERSION_PROBE_TIMEOUT;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -210,4 +213,38 @@ fn exporter(setting: &str, endpoint: &str, signal: &str) -> String {
     format!(
         "otel.{setting}={{otlp-http={{endpoint=\"{endpoint}/v1/{signal}\",protocol=\"json\"}}}}"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn telemetry_version_probe_gives_up_within_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("claude");
+        fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let session = AgentSession {
+            agent_program: Some(program),
+            state: dir.path().into(),
+            parent_session_id: None,
+            project: "project".into(),
+            id: Ulid::new().to_string(),
+            home: dir.path().into(),
+            grok_home: None,
+            codex_home: None,
+            claude_config_dir: None,
+            ws_home: dir.path().into(),
+            ws_bin: dir.path().join("ws"),
+            spawned: false,
+            prompt: None,
+            arguments: Vec::new(),
+        };
+        let started = Instant::now();
+        assert_eq!(agent_version("claude", &session), None);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 }
