@@ -936,7 +936,7 @@ pub(crate) async fn tmux_server(
         ));
     }
     let output = tokio::time::timeout(
-        TMUX_DEADLINE,
+        tmux_deadline(),
         command.args(args).kill_on_drop(true).output(),
     )
     .await
@@ -954,4 +954,14 @@ pub(crate) async fn tmux_server(
     String::from_utf8(output.stdout)
         .map(|text| text.trim_end_matches('\n').to_owned())
         .map_err(io::Error::other)
+}
+
+// Sandboxes can extend the hang guard without changing the production deadline.
+fn tmux_deadline() -> Duration {
+    std::env::var("WS_TEST_HOOK_TMUX_DEADLINE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .filter(|deadline| *deadline >= TMUX_DEADLINE)
+        .unwrap_or(TMUX_DEADLINE)
 }

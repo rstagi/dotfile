@@ -150,7 +150,8 @@ impl HookSandbox {
         let mut command = ws(home.path(), &socket);
         command.env("WS_TMUX_SOCKET", &server);
         configure_daemon(&mut command);
-        let daemon = Daemon::start(command, &socket);
+        let mut daemon = Daemon::spawn(command);
+        daemon.wait_ready_for(&socket, std::time::Duration::from_secs(30));
         let created = request(&socket, "POST", "/v1/sessions", "{}");
         let created: Value =
             serde_json::from_str(created.split_once("\r\n\r\n").unwrap().1).unwrap();
@@ -679,6 +680,32 @@ fn slow_tmux_lookup_has_a_deadline_and_preserves_the_callback() {
 }
 
 #[test]
+fn a_sandbox_can_extend_the_hook_tmux_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = HookSandbox::start(|command| {
+        command.env("WS_TEST_HOOK_TMUX_DEADLINE_MS", "30000");
+    });
+    let real_tmux = std::process::Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .unwrap();
+    let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
+    let fake_tmux = sandbox.home.path().join("fake-agents/tmux");
+    // Inject a command delay beyond the production deadline. This is not a readiness wait.
+    fs::write(
+        &fake_tmux,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *' show-options '*) /bin/sleep 3 ;; esac\nexec {} \"$@\"\n",
+            shell_words::quote(real_tmux.trim())
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_tmux, fs::Permissions::from_mode(0o755)).unwrap();
+    sandbox.post("waiting", json!({}), 100);
+    assert_eq!(sandbox.options(), "waiting|||||");
+}
+
+#[test]
 fn a_slow_but_live_tmux_lookup_still_applies_the_callback() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = HookSandbox::new();
@@ -1124,6 +1151,15 @@ impl HookSandbox {
 
 #[test]
 fn recovery_preserves_a_turn_that_starts_after_the_window_snapshot() {
+    recovery_preserves_newer_turn(false);
+}
+
+#[test]
+fn recovery_retries_a_timed_out_snapshot_and_preserves_a_newer_turn() {
+    recovery_preserves_newer_turn(true);
+}
+
+fn recovery_preserves_newer_turn(timeout_snapshot: bool) {
     use std::{
         io::{BufRead, BufReader},
         os::unix::{fs::PermissionsExt, net::UnixListener},
@@ -1132,7 +1168,6 @@ fn recovery_preserves_a_turn_that_starts_after_the_window_snapshot() {
     let gate_home = tempfile::tempdir_in("/tmp").unwrap();
     let gate_path = gate_home.path().join("gate.sock");
     let gate = UnixListener::bind(&gate_path).unwrap();
-    // The wrapper makes the first window snapshot after this marker exceed the tmux deadline.
     let slow_marker = gate_home.path().join("slow-snapshot");
     let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|path| path.join("tmux"))
@@ -1147,7 +1182,8 @@ import os, socket, subprocess, sys, time
 if 'show-options' in sys.argv[1:]:
     try:
         os.rename({slow:?}, {slow:?} + '.used')
-        time.sleep(5)
+        # Fault injection: exceed the sandbox deadline once to exercise recovery retries.
+        time.sleep(31)
     except FileNotFoundError:
         pass
 if any('display-message -p released' in arg for arg in sys.argv[1:]):
@@ -1179,11 +1215,14 @@ os.execv({tmux:?}, [{tmux:?}] + sys.argv[1:])
             .to_string_lossy()
             .into_owned();
         command.env("PATH", format!("{}:{path}", gate_home.path().display()));
+        command.env("WS_TEST_HOOK_TMUX_DEADLINE_MS", "30000");
     });
     sandbox.queue("keep the newer turn");
     assert_eq!(sandbox.unconfirmed_stop()["decision"], "block");
-    fs::write(&slow_marker, "").unwrap();
-    // Wait on the connection, not on a spin: the first recovery attempt times out and retries.
+    if timeout_snapshot {
+        fs::write(&slow_marker, "").unwrap();
+    }
+    // The connection proves that recovery read the snapshot and reached the window guard.
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = sender.send(gate.accept().map(|(stream, _)| stream));
@@ -1192,7 +1231,10 @@ os.execv({tmux:?}, [{tmux:?}] + sys.argv[1:])
         .recv_timeout(Duration::from_secs(90))
         .expect("Recovery did not reach its window guard.")
         .unwrap();
-    assert!(slow_marker.with_extension("used").exists());
+    assert_eq!(
+        slow_marker.with_extension("used").exists(),
+        timeout_snapshot
+    );
     control
         .set_read_timeout(Some(Duration::from_secs(60)))
         .unwrap();

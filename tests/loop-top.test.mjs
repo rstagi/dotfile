@@ -465,20 +465,69 @@ test("--once: a running review phase shows its sub-stage pipeline under the row"
 
 const SERVER = path.join(import.meta.dirname, "..", "loop-web", "server", "index.mjs");
 
-async function realDaemon(store) {
+async function realDaemon(store, server = SERVER) {
   const port = 7900 + Math.floor(Math.random() * 500);
-  const child = spawn(process.execPath, [SERVER, "--daemon", "--port", String(port)], {
-    env: { PATH: process.env.PATH, LOOP_STORE_DIR: store }, stdio: "ignore",
+  const child = spawn(process.execPath, [server, "--daemon", "--port", String(port)], {
+    env: { PATH: process.env.PATH, LOOP_STORE_DIR: store }, stdio: ["ignore", "ignore", "pipe"],
   });
+  let stderr = "";
+  let spawnError;
+  child.stderr.on("data", (data) => { stderr += data; });
+  child.on("error", (error) => { spawnError = error; });
+  const closed = new Promise((resolve) => child.once("close", resolve));
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await closed;
+  };
   const url = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 50; i++) {
-    const ok = await fetch(`${url}/api/health`).then((r) => r.ok).catch(() => false);
-    if (ok) return { url, stop: () => new Promise((r) => { child.once("exit", r); child.kill(); }) };
-    await new Promise((r) => setTimeout(r, 100));
+  const healthGuard = AbortSignal.timeout(30000);
+  try {
+    await waitFor(async () => {
+      if (spawnError) throw spawnError;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        await closed;
+        throw new Error(`The daemon exited with ${child.exitCode ?? child.signalCode}: ${stderr}`);
+      }
+      return fetch(`${url}/api/health`, { signal: healthGuard })
+        .then((response) => response.ok).catch(() => false);
+    }, "The daemon did not answer its health check.");
+    return { url, stop };
+  } catch (error) {
+    await stop();
+    throw new Error(`${error.message}\n${stderr}`, { cause: error });
   }
-  child.kill();
-  throw new Error("daemon did not start");
 }
+
+async function waitFor(ready, message) {
+  const deadline = performance.now() + 30000;
+  while (!(await ready())) {
+    assert.ok(performance.now() < deadline, message);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+test("realDaemon: waits for health after slow startup", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loop-top-start-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const server = path.join(root, "slow.mjs");
+  // Inject startup work beyond the old five-second limit.
+  fs.writeFileSync(server, `
+    import http from "node:http";
+    const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+    setTimeout(() => http.createServer((req, res) => res.end("ok")).listen(port, "127.0.0.1"), 6000);
+  `);
+  const daemon = await realDaemon(root, server);
+  t.after(daemon.stop);
+  assert.equal((await fetch(daemon.url + "/api/health")).status, 200);
+});
+
+test("realDaemon: reports a process exit before readiness", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loop-top-start-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const server = path.join(root, "failed.mjs");
+  fs.writeFileSync(server, 'console.error("fixture start failure"); process.exit(23);\n');
+  await assert.rejects(realDaemon(root, server), /exited.*23.*fixture start failure/s);
+});
 
 const listed = async (url) => Object.fromEntries((await (await fetch(`${url}/api/loops`)).json()).map((l) => [l.runId, l.status]));
 const stored = (fx) => JSON.parse(fs.readFileSync(path.join(fx.store, "loop-demo.json"), "utf8"));
@@ -494,7 +543,7 @@ test("loop-top archive: archives the inferred loop on the daemon (persisted); un
   assert.equal(out.code, 0, out.stderr);
   assert.match(out.stdout, /archived loop-demo/);
   assert.equal((await listed(daemon.url))["loop-demo"], "archived");
-  await new Promise((r) => setTimeout(r, 700)); // store writes are debounced
+  await waitFor(() => stored(fx).archived === true, "The archive flag did not persist.");
   assert.equal(stored(fx).archived, true);
   assert.ok(fs.existsSync(path.join(fx.coord, ".loop")), "worktree untouched");
 
