@@ -112,6 +112,15 @@ intentional re-run mints `<planId>-r<K>`. Take the lock now —
 this effort; surface it and stop (never `--force` silently). This happens before the confirm
 gate so the gate's no-further-contact promise holds.
 
+Before the start, check runner quota:
+
+```sh
+"${WS_BIN:-ws}" usage --preflight --plan .loop/plan.md \
+  --models-conf "${RUNTIME_ROOT:-$HOME/dotfile}/loop-models.conf" || printf '%s\n' 'Warning: no quota data. Continue the plan.' >&2
+```
+
+The check only reports. Continue when quota data or the `usage` command is unavailable.
+
 ### 2. One confirm gate, then autonomy
 
 Show the user: the plan id, repository → checkout/default
@@ -172,10 +181,12 @@ session hands the heavy work to a detached orchestrator and stays thin:
    backstop). It does not respawn while `state.awaitingMerge` is set: the loop is parked at a
    milestone merge gate and only a human `/loop-execute resume` continues it. While `.loop/control/pause` exists, report "paused" and spawn no
    review/remediation runners (protocol § Pause & live control).
-4. **HIL asker.** Each poll, scan `hil/*.md` lacking a sibling `.answer.md`. For each: read the
-   brief, `AskUserQuestion` (the ONLY user contact besides completion), write the reply to
-   `hil/<slug>.answer.md`. The `sub` picks it up and requeues that lane — the human-facing HIL
-   lives HERE in supervise, never in the SUB.
+4. **HIL asker.** Each poll, scan `hil/*.md` for briefs without a sibling `.answer.md`. Exclude answer files.
+   Read each brief. Use `AskUserQuestion` (the ONLY user contact besides completion).
+   Record the reply with `loop-state.sh hil-resolve --dir .loop <phase> <slug> "<answer>"`.
+   This operation writes `hil/<slug>.answer.md` and logs `hil.resolve` for the phase.
+   Never write the answer file directly. The `sub` reads the answer and requeues that lane.
+   Supervise asks the human. The SUB never asks the human.
 5. On `sub/REVIEW_READY` → reconcile the plan once more, then go to **step 8**. A late edit
    that makes the review no longer ready clears the marker and respawns the orchestrator.
    Legacy `sub/PHASES_DONE` uses the legacy final-review path. On `fatal`/`blocked` with no
@@ -342,12 +353,16 @@ Ladder per protocol: L0/L1 live inside loop-runner. Yours: **L2** answer-and-res
 post-mortem of prior attempts (last.md + verify tails, never raw transcripts), one shot;
 **L4** HIL — write `hil/<phase-slug>.md` per protocol, post it as a task comment, flip
 `[status: blocked]` + repush, `loop-notify.sh --level question --run-id <runId> --event
-hil.raise`. **Only that lane pauses; other lanes keep running.** Then, to get the answer:
-**`sub` mode NEVER `AskUserQuestion`** — it poll-waits for `hil/<slug>.answer.md` (which the
-supervise main writes via its HIL asker, step 3b), staying on other lanes meanwhile; if HIL is
-the *only* thing left and no lane can progress, write `status.json{outcome:"blocked"}` and let
-supervise carry it. **single-tier:** ask the user in-session (`AskUserQuestion`). On answer,
-requeue the phase with it in context.
+hil.raise --phase <phase>`. **Only that lane pauses. Other lanes keep running.**
+Then obtain the answer:
+
+- **`sub` mode:** Never use `AskUserQuestion`. Wait for `hil/<slug>.answer.md`.
+  The supervise HIL asker records this file through `loop-state.sh hil-resolve` (step 3b).
+  Continue other lanes. If only HIL remains and no lane can progress, write `status.json{outcome:"blocked"}`.
+  Supervise handles the HIL.
+- **single-tier:** Ask the user in-session (`AskUserQuestion`).
+  Record the answer with `loop-state.sh hil-resolve --dir .loop <phase> <slug> "<answer>"`.
+  Never write the answer file directly. Then requeue the phase with the answer in context.
 
 ### 8. Execute the review phase *(supervise / single-tier — never the `sub`)*
 

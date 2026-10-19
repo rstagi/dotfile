@@ -529,7 +529,7 @@ impl Sessions {
             .recursive(true)
             .mode(0o700)
             .create(&directory)?;
-        let mut command = headless_command(&request, id)?;
+        let mut command = headless_command(&request, id, &self.state)?;
         let stdout = request
             .stdout
             .unwrap_or_else(|| directory.join("stdout.log"));
@@ -568,9 +568,8 @@ impl Sessions {
         self.append(id, "session.created", body)?;
         command
             .current_dir(cwd)
-            .envs(&request.env)
             .env("WS_SESSION_ID", id.to_string())
-            .env("WS_SESSION", id.to_string())
+            .env_remove("WS_SESSION")
             .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
             .stdout(output)
             .stderr(errors)
@@ -614,8 +613,9 @@ impl Sessions {
     }
 }
 
-fn headless_command(request: &CreateHeadless, id: SessionId) -> io::Result<Command> {
+fn headless_command(request: &CreateHeadless, id: SessionId, state: &Path) -> io::Result<Command> {
     let mut command = Command::new(&request.command[0]);
+    command.envs(&request.env);
     let agent = Path::new(&request.command[0])
         .file_name()
         .and_then(|s| s.to_str())
@@ -641,11 +641,22 @@ fn headless_command(request: &CreateHeadless, id: SessionId) -> io::Result<Comma
             arguments.remove(0);
         }
         let context = AgentSession {
+            claude_config_dir: environment("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+            agent_program: Some(request.command[0].clone().into()),
+            state: state.into(),
+            parent_session_id: request.parent_session_id,
+            project: request
+                .cwd
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
             id: id.to_string(),
             ws_home: environment("WS_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".ws")),
             grok_home: environment("GROK_HOME").map(PathBuf::from),
+            codex_home: environment("CODEX_HOME").map(PathBuf::from),
             home,
             ws_bin: std::env::current_exe()?,
             spawned: false,
@@ -654,6 +665,9 @@ fn headless_command(request: &CreateHeadless, id: SessionId) -> io::Result<Comma
         };
         let prepared = agents::prepare(agent, Mode::Headless, &context, None)?;
         prepared.write_files()?;
+        for key in prepared.unset_env {
+            command.env_remove(key);
+        }
         command.args(prepared.argv).envs(prepared.env);
     } else {
         command.args(&request.command[1..]);

@@ -12,6 +12,7 @@ use ws_core::ids::Ulid;
 
 pub mod launch;
 pub mod slots;
+mod telemetry;
 pub(crate) use launch::router;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -21,9 +22,15 @@ pub enum Mode {
 }
 
 pub struct AgentSession {
+    pub agent_program: Option<PathBuf>,
+    pub state: PathBuf,
+    pub parent_session_id: Option<Ulid>,
+    pub project: String,
     pub id: String,
     pub home: PathBuf,
     pub grok_home: Option<PathBuf>,
+    pub codex_home: Option<PathBuf>,
+    pub claude_config_dir: Option<PathBuf>,
     pub ws_home: PathBuf,
     pub ws_bin: PathBuf,
     pub spawned: bool,
@@ -36,7 +43,18 @@ pub struct Prepared {
     pub program: String,
     pub argv: Vec<String>,
     pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub unset_env: Vec<String>,
     pub files: Vec<GeneratedFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryMetadata>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TelemetryMetadata {
+    pub agent_version: Option<String>,
+    pub settings_version: String,
+    pub version_covered: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -55,11 +73,10 @@ pub fn prepare(
     let mut prepared = Prepared {
         program: agent.into(),
         argv: vec![],
-        env: BTreeMap::from([
-            ("WS_SESSION".into(), session.id.clone()),
-            ("WS_SESSION_ID".into(), session.id.clone()),
-        ]),
+        env: BTreeMap::from([("WS_SESSION_ID".into(), session.id.clone())]),
+        unset_env: vec!["WS_SESSION".into()],
         files: vec![],
+        telemetry: None,
     };
     let preamble = if session.spawned {
         format!(
@@ -201,6 +218,20 @@ pub fn prepare(
             ));
         }
     }
+    if agent == "claude" {
+        crate::quota::claude::prepare(&mut prepared, session)?;
+    }
+    if agent == "codex" {
+        prepared
+            .files
+            .push(crate::quota::binding::prepare_file(session, resume)?);
+    }
+    if agent == "grok" {
+        prepared
+            .files
+            .push(crate::quota::grok::prepare_file(session)?);
+    }
+    telemetry::extend(&mut prepared, agent, session)?;
     prepared.argv.extend(session.arguments.iter().cloned());
     if agent != "claude"
         && !(agent == "grok" && matches!(mode, Mode::Headless))
@@ -252,6 +283,7 @@ fn hooks(agent: &str, command: &str) -> Value {
     let hooks = settings["hooks"].as_object_mut().unwrap();
     if agent == "claude" {
         hooks.insert("SessionEnd".into(), run("exit"));
+        hooks.insert("PostToolUseFailure".into(), run("working"));
         hooks.insert("SubagentStart".into(), run("subagent-start"));
         hooks.insert("SubagentStop".into(), run("subagent-stop"));
     } else {

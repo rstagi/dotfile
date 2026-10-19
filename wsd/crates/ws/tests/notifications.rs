@@ -17,7 +17,7 @@ use common::{Daemon, request, ws};
 const HANG_GUARD: Duration = Duration::from_secs(30);
 
 struct Sandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     server: String,
     socket: PathBuf,
     pane: String,
@@ -35,13 +35,13 @@ struct AdapterSignals {
 
 impl Sandbox {
     fn new() -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = common::SandboxRoot::new();
         let signals = AdapterSignals::new(home.path());
-        let server = format!("ws-notify-{}", ws_core::ids::Ulid::new());
+        let server = home.tmux_socket();
         let socket = home.path().join("wsd.sock");
         let output = Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 &server,
                 "-f",
                 "/dev/null",
@@ -146,9 +146,6 @@ impl Sandbox {
 impl Drop for Sandbox {
     fn drop(&mut self) {
         self.daemon.take();
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .output();
     }
 }
 

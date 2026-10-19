@@ -13,6 +13,10 @@ The reports below record the results for milestone 1.
 S4 runs at the start of roadmap phase 6, outside this milestone.
 The human recorded the verdicts at the milestone 1 merge gate on 2026-10-17.
 
+The [S2 telemetry fixtures](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/)
+and [S3 quota fixtures](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s3/) supply inputs for daemon tests.
+The S1 scripts and observation files stay beside the reports.
+
 ## Report template
 
 Use the following headings in each report.

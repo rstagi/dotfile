@@ -98,6 +98,12 @@ async fn ingest_callback(
         let mut record = body(&raw);
         record["stop_reply"] = initial_reply;
         let mut captured = sessions.append_callback(&raw, "hook.received", record)?;
+        if raw.state == "quota" {
+            let _ = sessions
+                .quota_requests
+                .sender()
+                .send(crate::quota::Trigger::Boundary(raw.session_id));
+        }
         if let Some(decision) = sessions.delivery_decision(raw.session_id, raw.callback_id)? {
             captured["stop_reply"] = stop_reply(&decision);
         }
@@ -108,6 +114,9 @@ async fn ingest_callback(
     let Some(captured) = captured else {
         return Ok(json!({}));
     };
+    if callback.state == "quota" {
+        return Ok(json!({}));
+    }
     // A transport retry must retain a Stop decision that the daemon already recorded.
     let mut decision = if captured["stop_reply"]["decision"] == "block" {
         StopDecision::Block(
@@ -119,7 +128,15 @@ async fn ingest_callback(
     } else {
         StopDecision::Accept
     };
-    let mut window = window(&callback).await?;
+    let mut window = match window(&callback).await {
+        Ok(window) => window,
+        Err(error) if event_type(&callback, &decision) == Some("exit") => {
+            // Exit recording must not depend on a pane that tmux can already have removed.
+            eprintln!("Cannot read the exiting agent window: {error}");
+            None
+        }
+        Err(error) => return Err(error.into()),
+    };
     if callback.pane.is_none() {
         let callback = callback.clone();
         window = Some(
@@ -549,7 +566,9 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         .or_else(|| callback.payload["turn_id"].as_str())
         .unwrap_or("");
     if event == "cancel" {
-        if turn.is_empty() || turn != window.turn {
+        if (!turn.is_empty() && !window.turn.is_empty() && turn != window.turn)
+            || (turn.is_empty() && !matches!(window.state.as_str(), "working" | "waiting"))
+        {
             result.event_type = None;
             return result;
         }
@@ -665,6 +684,7 @@ fn validate(callback: &Callback) -> crate::sessions::Result<()> {
         "waiting",
         "subagent-start",
         "subagent-stop",
+        "quota",
         "exit",
     ]
     .contains(&callback.state.as_str())
@@ -716,7 +736,9 @@ fn event_type(callback: &Callback, decision: &StopDecision) -> Option<&'static s
         "SessionEnd" | "session_end" => "exit",
         "UserPromptSubmit" | "user_prompt_submit" => "turn.started",
         "PreToolUse" | "pre_tool_use" => "tool.pre",
-        "PostToolUse" | "post_tool_use" => "tool.post",
+        "PostToolUse" | "post_tool_use" | "PostToolUseFailure" | "post_tool_use_failure" => {
+            "tool.post"
+        }
         "PermissionRequest" | "Notification" | "permission_request" | "notification" => {
             "agent.waiting"
         }
@@ -763,6 +785,9 @@ fn body(callback: &Callback) -> Value {
             body[target] = value.clone();
         }
     }
+    if event_type(callback, &StopDecision::Accept) == Some("tool.post") {
+        body["tool_status"] = json!(crate::spans::tool_status(&callback.payload));
+    }
     body
 }
 
@@ -783,7 +808,7 @@ pub(crate) async fn tmux_server(
 ) -> io::Result<String> {
     let mut command = tokio::process::Command::from(crate::tmux::client());
     if let Some(socket) = socket {
-        command.args(["-L", socket]);
+        command.args([crate::tmux::socket_flag(socket), socket]);
     } else if let Some(path) = path {
         command.args(["-S", path]);
     } else {

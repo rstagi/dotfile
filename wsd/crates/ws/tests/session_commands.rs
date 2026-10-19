@@ -12,7 +12,7 @@ use ws_daemon::tmux::Tmux;
 mod common;
 
 struct Sandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     socket: PathBuf,
     server: String,
     ids: Vec<String>,
@@ -50,6 +50,118 @@ fn sessions_matches_the_zsh_golden_output_and_resolves_names() {
 }
 
 #[test]
+fn sessions_keep_legacy_window_activity() {
+    let sandbox = Sandbox::new();
+    let tmux = Tmux::named(&sandbox.server);
+    for identity in ["1", "#1", &sandbox.ids[0]] {
+        tmux.set_window_option(&sandbox.window, "@ws_session", identity)
+            .unwrap();
+        for state in ["working", "idle"] {
+            tmux.set_state(&sandbox.window, state).unwrap();
+            sandbox.assert_golden(
+                &["sessions", "#1"],
+                &format!("#1\t\tapi/seed\tclaude\t{state}\tactive\n"),
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_agents_create_children_with_their_resolved_parent() {
+    let sandbox = Sandbox::new();
+    for (legacy, current, expected) in [
+        ("1", None, &sandbox.ids[0]),
+        ("#1", None, &sandbox.ids[0]),
+        (sandbox.ids[0].as_str(), None, &sandbox.ids[0]),
+        ("1", Some(""), &sandbox.ids[0]),
+        ("1", Some(sandbox.ids[1].as_str()), &sandbox.ids[1]),
+    ] {
+        for headless in [false, true] {
+            let mut command = sandbox.command();
+            command
+                .env("WS_SESSION", legacy)
+                .args(["session", "create", "--json"]);
+            if let Some(current) = current {
+                command.env("WS_SESSION_ID", current);
+            }
+            if headless {
+                command.args(["--headless", "--", "/usr/bin/true"]);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let child: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(child["parent_session_id"], *expected);
+            if headless {
+                let exited = sandbox.run(&[
+                    "wait",
+                    child["id"].as_str().unwrap(),
+                    "--for",
+                    "event=process.exited",
+                    "--timeout",
+                    "30",
+                ]);
+                assert!(exited.status.success(), "{exited:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn readme_session_create_examples_use_supported_name_and_headless_options() {
+    let sandbox = Sandbox::new();
+    let readme = include_str!("../../../../ws/README.md");
+    let row = readme
+        .lines()
+        .find(|line| line.starts_with("| `session_create` |"))
+        .unwrap();
+    for example in row
+        .split('`')
+        .filter(|example| example.starts_with("ws session create"))
+    {
+        // Exercise every optional flag in each documented command form.
+        let expanded = example
+            .replace(['[', ']'], "")
+            .replace("<name>", "doc-example")
+            .replace('…', "")
+            .replace("<cmd>", "/usr/bin/true");
+        let args: Vec<_> = expanded.split_whitespace().skip(1).collect();
+        let output = sandbox.run(&args);
+        assert!(output.status.success(), "{example}: {output:?}");
+        let child: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if args.contains(&"--headless") {
+            assert!(child["name"].is_null());
+            let exited = sandbox.run(&[
+                "wait",
+                child["id"].as_str().unwrap(),
+                "--for",
+                "event=process.exited",
+                "--timeout",
+                "30",
+            ]);
+            assert!(exited.status.success(), "{exited:?}");
+        } else {
+            assert_eq!(child["name"], "doc-example");
+        }
+    }
+    for option in ["--name", "--workspace-id"] {
+        let rejected = sandbox.run(&[
+            "session",
+            "create",
+            "--headless",
+            option,
+            "unused",
+            "--",
+            "/usr/bin/true",
+        ]);
+        assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr)
+                .contains("does not accept name or workspace_id")
+        );
+    }
+}
+
+#[test]
 fn whoami_uses_environment_precedence_then_the_tmux_window() {
     let sandbox = Sandbox::new();
     let output = sandbox
@@ -77,7 +189,7 @@ fn whoami_uses_environment_precedence_then_the_tmux_window() {
     assert_eq!(identity["alias"], 2);
     let pane = Command::new("tmux")
         .args([
-            "-L",
+            "-S",
             &sandbox.server,
             "display-message",
             "-p",
@@ -220,9 +332,9 @@ fn name_is_unique_validated_and_durable_across_daemon_restart() {
 
 impl Sandbox {
     fn new() -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = common::SandboxRoot::new();
         let socket = home.path().join("wsd.sock");
-        let server = format!("ws-cli-{}-{}", std::process::id(), Ulid::new());
+        let server = home.tmux_socket();
         let mut ids = Vec::new();
         let device = Ulid::new();
         for (alias, name, agent, state) in [
@@ -256,7 +368,7 @@ impl Sandbox {
         let tmux = Tmux::named(&server);
         let created = Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 &server,
                 "-f",
                 "/dev/null",
@@ -321,13 +433,5 @@ impl Sandbox {
         let output = self.run(args);
         assert!(output.status.success(), "{output:?}");
         serde_json::from_slice(&output.stdout).unwrap()
-    }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .output();
     }
 }

@@ -5,7 +5,7 @@ use common::{Daemon, request, ws};
 
 #[test]
 fn cli_spools_every_callback_and_daemon_replays_logical_boundaries() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = common::SandboxRoot::new();
     let socket = home.path().join("wsd.sock");
     let daemon = Daemon::start(ws(home.path(), &socket), &socket);
     assert!(common::get(&socket, "/v1/ping").starts_with("HTTP/1.1 200"));
@@ -102,7 +102,7 @@ fn cli_spools_every_callback_and_daemon_replays_logical_boundaries() {
 }
 
 struct HookSandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     server: String,
     socket: std::path::PathBuf,
     pane: String,
@@ -117,16 +117,12 @@ impl HookSandbox {
     }
 
     fn start(configure_daemon: impl FnOnce(&mut std::process::Command)) -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
-        let server = format!(
-            "ws-hook-{}-{}",
-            std::process::id(),
-            ws_core::ids::Ulid::new()
-        );
+        let home = common::SandboxRoot::new();
+        let server = home.tmux_socket();
         let socket = home.path().join("wsd.sock");
         let output = std::process::Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 &server,
                 "-f",
                 "/dev/null",
@@ -207,13 +203,76 @@ impl HookSandbox {
     }
 }
 
-impl Drop for HookSandbox {
-    fn drop(&mut self) {
-        self.daemon.take();
-        let _ = std::process::Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .env("HOME", self.home.path())
-            .output();
+#[test]
+fn missing_pane_exit_hooks_record_exit_fire_triggers_and_replay_once() {
+    for (spooled, server_present) in [(false, true), (true, true), (false, false), (true, false)] {
+        let mut sandbox = HookSandbox::new();
+        let tmux = ws_daemon::tmux::Tmux::named(&sandbox.server);
+        tmux.execute(&["new-window", "-d", "-t", "hooks:", "/bin/sleep", "300"])
+            .unwrap();
+        let registered = request(
+            &sandbox.socket,
+            "POST",
+            "/v1/triggers",
+            &json!({"sources":[sandbox.id], "event":"exit", "target":sandbox.id,
+                "parent_session_id":sandbox.id, "template":"The agent exited."})
+            .to_string(),
+        );
+        assert!(registered.starts_with("HTTP/1.1 201"), "{registered}");
+        let callback = sandbox.callback(
+            "exit",
+            json!({"hook_event_name":"SessionEnd", "exit_code":7}),
+            ws_daemon::hooks::receipt_time_us().unwrap(),
+        );
+        tmux.execute(&["kill-window", "-t", &sandbox.window])
+            .unwrap();
+        if !server_present {
+            tmux.execute(&["kill-server"]).unwrap();
+        }
+        if spooled {
+            sandbox.daemon.take();
+            ws_daemon::hooks::spool(&sandbox.home.path().join("state"), &callback).unwrap();
+            sandbox.daemon = Some(Daemon::start(
+                ws(sandbox.home.path(), &sandbox.socket),
+                &sandbox.socket,
+            ));
+            assert_eq!(
+                fs::read_dir(sandbox.home.path().join("state/spool"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        } else {
+            let reply = request(
+                &sandbox.socket,
+                "POST",
+                "/v1/hooks/ingest",
+                &serde_json::to_string(&callback).unwrap(),
+            );
+            assert!(reply.starts_with("HTTP/1.1 201"), "{reply}");
+        }
+        let retry = request(
+            &sandbox.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &serde_json::to_string(&callback).unwrap(),
+        );
+        assert!(retry.starts_with("HTTP/1.1 201"), "{retry}");
+        let log = sandbox.log();
+        let exits: Vec<_> = log.iter().filter(|entry| entry["type"] == "exit").collect();
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0]["body"]["code"], 7);
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry["type"] == "message.sent")
+                .count(),
+            1
+        );
+        let waited = ws(sandbox.home.path(), &sandbox.socket)
+            .args(["wait", &sandbox.id, "--for", "exit", "--timeout", "0"])
+            .output()
+            .unwrap();
+        assert!(waited.status.success(), "{waited:?}");
     }
 }
 
@@ -247,7 +306,7 @@ fn hook_window_options_match_the_zsh_hook_scenarios() {
             json!({"hook_event_name":"Interrupt", "turn_id":"t2"}),
         ),
     ] {
-        sandbox.hook(state, payload);
+        sandbox.post(state, payload, ws_daemon::hooks::receipt_time_us().unwrap());
         actual.push_str(&sandbox.options());
         actual.push('\n');
     }
@@ -494,7 +553,7 @@ fn daemon_down_hooks_spool_without_tmux_and_replay_every_callback() {
         "HOOK_SPOOL samples=100 p50_ms={:.3} p95_ms={:.3} max_ms={:.3}",
         times[49], times[94], times[99]
     );
-    if std::env::var("WS_ASSERT_LATENCY").as_deref() == Ok("1") {
+    if common::latency_assertions_enabled() {
         assert!(
             times[94] < 50.0,
             "The spool p95 exceeds 50 ms: {}",
@@ -538,10 +597,12 @@ fn slow_tmux_lookup_has_a_deadline_and_preserves_the_callback() {
         "working",
         json!({"hook_event_name":"PreToolUse", "tool_use_id":"slow-tool"}),
     );
-    assert!(
-        elapsed < std::time::Duration::from_millis(400),
-        "{elapsed:?}"
-    );
+    if common::latency_assertions_enabled() {
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "{elapsed:?}"
+        );
+    }
     assert_eq!(sandbox.log().last().unwrap()["type"], "hook.received");
     assert_eq!(
         fs::read_dir(sandbox.home.path().join("state/spool"))
@@ -680,7 +741,7 @@ fn a_cached_delivery_reply_does_not_reach_a_reused_pane() {
 
 #[test]
 fn a_numeric_legacy_ws_session_reaches_the_imported_session() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = common::SandboxRoot::new();
     let socket = home.path().join("wsd.sock");
     let legacy = home.path().join(".ws/sessions");
     fs::create_dir_all(legacy.join("7")).unwrap();

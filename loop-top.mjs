@@ -12,7 +12,7 @@
 // Status comes from the daemon's materialized snapshot (never re-derived here). Phase worktree
 // paths aren't in the snapshot, so they're read from the coordinator's .loop/state.json, else
 // the store record's lastState.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -22,6 +22,9 @@ const DAEMON_URL = process.env.LOOP_DAEMON_URL || "http://localhost:7717";
 const STORE_DIR = process.env.LOOP_STORE_DIR || path.join(os.homedir(), ".loop", "loops");
 const HTTP_TIMEOUT_MS = 1500;
 const POLL_MS = 2000;
+const QUOTA_TIMEOUT_MS = 1500;
+let quotaRead = null;
+let quotaReadAt = 0;
 const SELF = new URL(import.meta.url).pathname;
 const MODELS_CONF = process.env.LOOP_MODELS_CONF || path.join(path.dirname(new URL(import.meta.url).pathname), "loop-models.conf");
 const DEFAULT_CHAIN = "default (loop-models.conf chain)";
@@ -395,15 +398,26 @@ function followLoop(runId, getLoops, onFrame) {
   let stopped = false;
   let req = null;
   let timer = null;
+  let lastFrame = null;
+  const publish = (frame) => {
+    if (stopped) return;
+    lastFrame = frame;
+    onFrame(frame);
+  };
+  const quotaTimer = setInterval(async () => {
+    if (!lastFrame) return;
+    const quota = await loadQuota();
+    if (!stopped) publish({ ...lastFrame, quota });
+  }, POLL_MS);
 
   const poll = async () => {
     if (stopped) return;
-    onFrame(await fetchFrame(runId, getLoops(), null));
+    publish(await fetchFrame(runId, getLoops(), null));
     timer = setTimeout(poll, POLL_MS);
   };
 
   // Immediate first frame (also covers a loop the daemon streams as `null`: store fallback).
-  fetchFrame(runId, getLoops(), null).then((f) => !stopped && onFrame(f), () => {});
+  fetchFrame(runId, getLoops(), null).then((f) => !stopped && publish(f), () => {});
 
   req = http.get(`${DAEMON_URL}/events?runId=${encodeURIComponent(runId)}`, (res) => {
     if (res.statusCode !== 200) return fallback();
@@ -416,7 +430,7 @@ function followLoop(runId, getLoops, onFrame) {
         const block = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         const snapshot = parseSseSnapshot(block);
-        if (snapshot) onFrame(frameFrom(runId, getLoops(), snapshot, "live"));
+        if (snapshot) frameFrom(runId, getLoops(), snapshot, "live").then((frame) => !stopped && publish(frame), () => {});
       }
     });
     res.on("end", fallback);
@@ -435,6 +449,7 @@ function followLoop(runId, getLoops, onFrame) {
       stopped = true;
       req?.destroy();
       clearTimeout(timer);
+      clearInterval(quotaTimer);
     },
   };
 }
@@ -501,9 +516,28 @@ async function fetchFrame(runId, loops, online) {
   return frameFrom(runId, loops, record.lastSnapshot, "store");
 }
 
-function frameFrom(runId, loops, snapshot, source) {
+async function frameFrom(runId, loops, snapshot, source) {
   const ref = loops.find((l) => l.runId === runId) ?? loopRef(storeSummary(readStoreRecord(runId) ?? { runId }), null);
-  return { ref, snapshot, state: readPhaseState(ref), source, at: new Date() };
+  return { ref, snapshot, state: readPhaseState(ref), source, at: new Date(), quota: await loadQuota() };
+}
+
+/** Read quota through the CLI. Older installations can omit this command. */
+function loadQuota() {
+  if (quotaRead && Date.now() - quotaReadAt < POLL_MS) return quotaRead;
+  quotaReadAt = Date.now();
+  quotaRead = new Promise((resolve) => {
+    execFile("ws", ["usage", "--json"], { timeout: QUOTA_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error) return resolve(null);
+      try {
+        const data = JSON.parse(stdout);
+        const valid = Array.isArray(data?.windows) && data.windows.every((w) =>
+          w && typeof w.runner === "string" && typeof w.window === "string" &&
+          ["available", "unknown", "unavailable"].includes(w.status));
+        resolve(valid ? data.windows : null);
+      } catch { resolve(null); }
+    });
+  });
+  return quotaRead;
 }
 
 /** Normalize a daemon summary + store record into what inferLoop/picker/header need. */
@@ -682,7 +716,7 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
   const paint = (style, s) => (color ? `${ESC}${style}m${s}${ESC}0m` : s);
   const { ref, snapshot, state, source, at } = frame;
   const elapsed = ref.startedAt ? formatAge(((ref.finishedAt ? Date.parse(ref.finishedAt) : Date.now()) - Date.parse(ref.startedAt)) / 1000) : "—";
-  const out = [...renderHeader(frame, width, paint), ""];
+  const out = [...renderHeader(frame, width, paint), ...renderQuota(frame.quota, width, paint), ""];
 
   const rows = phaseRows(snapshot, state);
   const layout = graph ? graphLayout(rows, snapshot?.graph?.edges ?? []) : null;
@@ -762,13 +796,24 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
   return out.join("\n");
 }
 
+function renderQuota(windows, width, paint) {
+  if (!windows?.length) return [];
+  return ["", paint(STYLE.bold, "Quota"), ...windows.map((w) => {
+    const known = w.status === "available" && Number.isFinite(w.remaining_ratio) && w.remaining_ratio >= 0 && w.remaining_ratio <= 1;
+    const remaining = known ? `${(w.remaining_ratio * 100).toFixed(1)}% remaining` : w.status === "unavailable" ? "unavailable" : "unknown";
+    const age = Number.isFinite(w.age_secs) && w.age_secs >= 0 ? `${formatAge(w.age_secs)} ago` : "age unknown";
+    const identity = [w.runner, w.account_id, w.bucket, w.window].filter(Boolean).join(" · ");
+    return truncate(`  ${identity} · ${remaining} · ${w.source ?? "source unknown"} · ${age}`, width);
+  })];
+}
+
 /** Phase detail pane for the selected row: everything the snapshot + state know about it. */
 export function renderDetails(frame, id, { width, height, color, banner }) {
   const paint = (style, s) => (color ? `${ESC}${style}m${s}${ESC}0m` : s);
   const { snapshot, state } = frame;
   const node = snapshot?.graph?.nodes?.find((n) => n.id === id);
   const row = phaseRows(snapshot, state).find((r) => r.id === id);
-  const out = [...renderHeader(frame, width, paint), ""];
+  const out = [...renderHeader(frame, width, paint), ...renderQuota(frame.quota, width, paint), ""];
   if (!node || !row) {
     out.push(paint(STYLE.dim, "  (phase not found)"));
   } else {

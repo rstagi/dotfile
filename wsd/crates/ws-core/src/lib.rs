@@ -6,7 +6,9 @@ pub mod ids;
 pub mod lockfile;
 pub mod log;
 pub mod registry;
+pub mod semconv;
 pub mod state;
+pub mod telemetry_log;
 
 use std::{fs, io, os::unix::fs::DirBuilderExt, path::Path};
 

@@ -2,11 +2,12 @@
 
 use std::{
     fs::{self, File, TryLockError},
+    future::IntoFuture,
     io,
     os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use axum::{Json, Router, extract::State, routing::get};
@@ -16,17 +17,26 @@ use tokio::{
 };
 use ws_core::{PingResponse, VERSION};
 
+#[cfg(test)]
+#[path = "../../ws/tests/common/sandbox.rs"]
+mod test_sandbox;
+
 pub mod agents;
 pub mod api;
 pub mod bus;
 pub mod edges;
+pub mod forwarder;
 pub mod hooks;
 pub mod import;
 pub mod limits;
 pub mod loops;
 pub mod notify;
+pub mod otlp;
 pub mod phases;
+pub mod quota;
+mod semconv_emit;
 pub mod sessions;
+pub mod spans;
 pub mod supervisor;
 pub mod tail;
 pub mod tmux;
@@ -57,11 +67,11 @@ pub async fn run(socket: &Path) -> io::Result<()> {
     let _lock = lock_socket(socket)?;
     let listener = bind(socket)?;
     let metadata = fs::symlink_metadata(socket)?;
-    let _socket_file = SocketFile {
+    let _socket_file = Arc::new(SocketFile {
         path: socket.to_owned(),
         device: metadata.dev(),
         inode: metadata.ino(),
-    };
+    });
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
     let state = match std::env::var_os("WS_STATE") {
         Some(path) => PathBuf::from(path),
@@ -74,7 +84,11 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .join(".ws/state"),
     };
     let sessions = import::open_for_daemon(&state, &import::backend::home()?)?;
+    let mut telemetry =
+        otlp::Receiver::bind_with_spans(&state, Some(sessions.spans.clone())).await?;
+    let _forwarder = forwarder::Forwarder::start(&state)?;
     let store = Arc::new(Mutex::new(sessions));
+    let quota = quota::Service::start(store.clone())?;
     supervisor::adopt(store.clone())
         .await
         .map_err(|error| io::Error::other(error.0))?;
@@ -90,21 +104,32 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         })
         .merge(api::router_with_store(store.clone()));
     let shutdown_store = store.clone();
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                _ = terminate.recv() => {}
-                _ = interrupt.recv() => {}
-            }
-            let _ = api::call(shutdown_store, |sessions| {
-                sessions.shutdown.send_replace(true);
-                Ok(())
-            })
-            .await;
+    let socket_file = Arc::clone(&_socket_file);
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+            _ = socket_file.wait_removed() => {}
+        }
+        let _ = api::call(shutdown_store, |sessions| {
+            sessions.shutdown.send_replace(true);
+            Ok(())
         })
         .await;
+    });
+    let result = tokio::select! {
+        result = server.into_future() => result,
+        result = telemetry.wait() => result,
+    };
+    let _ = api::call(store, |sessions| {
+        sessions.shutdown.send_replace(true);
+        Ok(())
+    })
+    .await;
+    quota.shutdown().await;
     delivery.shutdown().await;
-    result
+    let telemetry_result = telemetry.shutdown().await;
+    result.and(telemetry_result)
 }
 
 fn lock_socket(socket: &Path) -> io::Result<File> {
@@ -147,12 +172,26 @@ async fn ping(State(state): State<AppState>) -> Json<PingResponse> {
     })
 }
 
+impl SocketFile {
+    async fn wait_removed(&self) {
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            poll.tick().await;
+            if !self.is_current() {
+                return;
+            }
+        }
+    }
+
+    fn is_current(&self) -> bool {
+        fs::symlink_metadata(&self.path)
+            .is_ok_and(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+    }
+}
+
 impl Drop for SocketFile {
     fn drop(&mut self) {
-        if let Ok(metadata) = fs::symlink_metadata(&self.path)
-            && metadata.dev() == self.device
-            && metadata.ino() == self.inode
-        {
+        if self.is_current() {
             let _ = fs::remove_file(&self.path);
         }
     }

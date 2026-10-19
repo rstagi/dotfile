@@ -27,13 +27,15 @@ The total was **10 CLI invocations**, with eight inference runs.
 Every inference run returned `S2_DONE`, made two assistant/model turns, and executed exactly one Bash tool call.
 The command printed a synthetic marker and its `TRACEPARENT` environment variable.
 
-The [capture sink](s2/capture-sink.py) uses only Python's standard library.
-It binds to `127.0.0.1` and saves each POST entity body without decoding it.
-It writes separate metadata with the path, encoding, length, timestamp, and SHA-256.
-It accepts Content-Length and chunked requests, including binary protobuf and compressed bodies.
-It preserves duplicates and excludes authorization headers from metadata.
-Its HTTP response is `{}` for JSON and an empty protobuf message for protobuf.
-The sink does not implement gRPC or decode protobuf.
+The spike used a Python capture sink with only standard-library dependencies.
+Phase 39 removed that sink and its tests. The production OTLP receiver replaces it.
+The [captured fixtures](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/) remain as test inputs.
+The sink bound to `127.0.0.1` and saved each POST entity body without decoding it.
+It wrote separate metadata with the path, encoding, length, timestamp, and SHA-256.
+It accepted Content-Length and chunked requests, including binary protobuf and compressed bodies.
+It preserved duplicates and excluded authorization headers from metadata.
+Its HTTP response was `{}` for JSON and an empty protobuf message for protobuf.
+The sink did not implement gRPC or decode protobuf.
 
 The probes used these common settings:
 
@@ -56,7 +58,7 @@ The detailed runs also added `ENABLE_BETA_TRACING_DETAILED=1` and
 `BETA_TRACING_ENDPOINT=http://127.0.0.1:<port>`.
 Beta and detailed runs enabled `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`,
 and `OTEL_LOG_TOOL_CONTENT`, each with value `1`.
-The [manifest](s2/samples/manifest.json) records every run's settings and request counts.
+The [manifest](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/manifest.json) records every run's settings and request counts.
 
 A command hook recorded stdin JSON and receipt time for each of these events:
 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
@@ -68,7 +70,7 @@ It used permission bypass for the synthetic command.
 
 The sink stopped two seconds after each CLI process exited.
 A decoder in a temporary virtual environment inspected protobuf bodies.
-The sink and its tests do not need that decoder.
+The original sink and its tests did not need that decoder.
 
 The official [monitoring reference](https://code.claude.com/docs/en/monitoring-usage)
 and [hook reference](https://code.claude.com/docs/en/hooks) supplied the configuration names.
@@ -242,7 +244,7 @@ Every run produced exactly this callback sequence:
 SessionStart → UserPromptSubmit → PreToolUse → PostToolUse → Stop → SessionEnd
 ```
 
-The [detailed hook sample](s2/samples/detailed-json-hooks.jsonl) preserves the payload shapes.
+The [detailed hook sample](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/detailed-json-hooks.jsonl) preserves the payload shapes.
 `UserPromptSubmit`, tool callbacks, and `Stop` shared `prompt_id`.
 `PreToolUse` and `PostToolUse` shared `tool_use_id` and `tool_input`.
 `PostToolUse` included `tool_response` and `duration_ms`.
@@ -272,7 +274,7 @@ These results establish the successful non-interactive path only.
 
 #### Evidence and reproduction
 
-The [sample manifest](s2/samples/manifest.json) lists selected request bodies and their original hashes.
+The [sample manifest](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/manifest.json) lists selected request bodies and their original hashes.
 Samples preserve full selected payload structures after redaction.
 JSON samples use readable formatting.
 The sample transformation decoded, redacted, and serialized protobuf again. The samples differ from the original wire bytes.
@@ -282,13 +284,9 @@ User and runtime identifiers use stable synthetic replacements.
 The transformation removed paths, account data, email addresses, and context content.
 Raw authenticated captures remain only in the temporary sandbox.
 
-Start the sink with:
-
-```sh
-python3 -I docs/ws-v6/spikes/s2/capture-sink.py --output /tmp/s2-capture --port 0
-```
-
-The first stdout line reports the selected port as JSON.
+The original sink selected a free localhost port and reported it as JSON.
+For a new probe, use an OTLP/HTTP receiver that accepts JSON and protobuf.
+The committed fixtures preserve the evidence without a new authenticated capture.
 In a sandbox project, apply the common environment above and the chosen mode's additions.
 For hook evidence, use the recorder and settings below.
 Set `S2_TMP` to a fresh temporary directory.
@@ -322,15 +320,8 @@ claude -p 'Run exactly one Bash tool call. Print a synthetic marker and run prin
   --strict-mcp-config --mcp-config '{"mcpServers":{}}' --output-format json
 ```
 
-Run the sink's behavioral checks with:
-
-```sh
-python3 -I -m unittest discover -s docs/ws-v6/spikes/s2 -p 'test_*.py'
-python3 -I -m py_compile docs/ws-v6/spikes/s2/capture-sink.py
-```
-
-The tests cover raw JSON, chunked binary bodies, compressed bodies, duplicate requests,
-and omission of authorization headers from saved metadata.
+The retired sink tests covered raw JSON, chunked binary bodies, compressed bodies and duplicate requests.
+They also checked that saved metadata omitted authorization headers.
 
 ### Codex CLI
 
@@ -453,8 +444,8 @@ The hooks therefore did not cover every OTel tool operation.
 Wrapper operations need their own tool-result policy if WS represents them as spans.
 Match its `call_id` to `tool_use_id` rather than counting both results as shell executions.
 
-The [failure excerpt](s2/samples/codex-failure-logs.json) reports `success="true"` for the shell tool.
-The [exec output](s2/samples/codex-failure-exec.jsonl) records command exit code 7 and status `failed`.
+The [failure excerpt](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/codex-failure-logs.json) reports `success="true"` for the shell tool.
+The [exec output](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/codex-failure-exec.jsonl) records command exit code 7 and status `failed`.
 The PostToolUse callback still fired and supplied an empty output string.
 This result distinguishes tool transport success from shell command success.
 Neither that callback nor its OTel tool-result record supplied the command exit code.
@@ -467,7 +458,7 @@ Every probe produced this callback sequence, including the failed shell command:
 UserPromptSubmit → PreToolUse → PostToolUse → Stop
 ```
 
-The [baseline hook sample](s2/samples/codex-baseline-hooks.jsonl) preserves all callback fields.
+The [baseline hook sample](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/codex-baseline-hooks.jsonl) preserves all callback fields.
 Every callback carried `session_id`, `turn_id`, `hook_event_name`, `model`, and `permission_mode`.
 Prompt submission included `prompt`.
 Both tool callbacks included `tool_name=Bash`, `tool_input.command`, and the same `tool_use_id`.
@@ -501,7 +492,7 @@ and process termination remain untested.
 
 #### Evidence and reproduction
 
-The [Codex manifest](s2/samples/codex-manifest.json) records each run's flags, counts, and trace totals.
+The [Codex manifest](../../../wsd/crates/ws-daemon/tests/fixtures/spikes/s2/codex-manifest.json) records each run's flags, counts, and trace totals.
 It records source request hashes for each selected signal.
 The Codex OTLP samples merge decoded requests and retain selected records.
 Trace excerpts include execution spans and their captured ancestors.
@@ -518,7 +509,7 @@ To reproduce the baseline:
 
 1. Create a temporary agent home and an empty project.
 2. Copy Codex authentication and the model cache into the temporary `CODEX_HOME`.
-3. Start the capture sink and use its port in the three exporter flags above.
+3. Start a sandbox OTLP/HTTP receiver and use its port in the three exporter flags above.
 4. Apply the resource attributes and trace context above.
 5. Create the recorder from the Claude reproduction section.
 6. Construct the six hook flags with this zsh loop:

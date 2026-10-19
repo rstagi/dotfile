@@ -14,11 +14,125 @@ use std::{
 };
 
 struct Sandbox {
-    home: tempfile::TempDir,
+    home: common::SandboxRoot,
     socket: PathBuf,
     server: String,
     listener: UnixListener,
     _daemon: common::Daemon,
+}
+
+#[test]
+fn an_agent_launch_waits_for_its_workspace_commit() {
+    let sandbox = Sandbox::with_launch_observation();
+    let repo = sandbox.repo();
+    let gate = UnixListener::bind(sandbox.home.path().join("commit-gate.sock")).unwrap();
+    gate.set_nonblocking(true).unwrap();
+    let mut running = Vec::new();
+    for arguments in [
+        vec![
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "feature",
+            "--detach",
+        ],
+        vec!["add", "api/feature", "--detach"],
+    ] {
+        let observed = sandbox.home.path().join("launch-requested");
+        let _ = fs::remove_file(&observed);
+        let child = sandbox
+            .command()
+            .args(arguments)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut commit = None;
+        sandbox.wait_for(|| match gate.accept() {
+            Ok((stream, _)) => {
+                commit = Some(stream);
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(error) => panic!("{error}"),
+        });
+        sandbox.wait_for(|| observed.exists());
+        commit.unwrap().write_all(b"c").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let (agent, connection) = sandbox.capture();
+        let id = agent["id"].as_str().unwrap();
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert!(!sandbox.window(id).is_empty());
+        running.push(connection);
+    }
+}
+
+#[test]
+fn a_failed_workspace_commit_releases_the_session_and_slot() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feature",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let (owner, _running) = sandbox.capture();
+    let slots = fs::read_to_string(sandbox.slots()).unwrap();
+    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("tmux"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let wrapper = sandbox.home.path().join("fake-agents/tmux");
+    fs::write(&wrapper, format!(
+        "#!/bin/sh\ncase \" $* \" in *' rename-window '*) echo 'synthetic commit failure' >&2; exit 1;; esac\nexec {} \"$@\"\n",
+        shell_words::quote(&real_tmux.to_string_lossy()),
+    )).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = sandbox.output(&["add", "api/feature", "--detach"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("synthetic commit failure"));
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let failed: Vec<_> = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|session| session["body"]["agent"] == "claude" && session["id"] != owner["id"])
+        .collect();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["state"], "failed");
+    let preparation = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/agents/launch",
+        &json!({"id": failed[0]["id"], "pane": owner["pane"]}).to_string(),
+    );
+    assert!(
+        preparation.contains("This pane does not own the agent session."),
+        "{preparation}"
+    );
+    assert_eq!(fs::read_to_string(sandbox.slots()).unwrap(), slots);
+    assert_eq!(
+        sandbox
+            .tmux(&["list-windows", "-t", "api/feature", "-F", "#{window_id}"])
+            .lines()
+            .count(),
+        1
+    );
+
+    // The next launch can reuse the released slot and complete its preparation.
+    fs::remove_file(wrapper).unwrap();
+    let output = sandbox.output(&["add", "api/feature", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let (agent, _new_running) = sandbox.capture();
+    let id = agent["id"].as_str().unwrap();
+    assert_ne!(agent["id"], failed[0]["id"]);
+    assert_eq!(sandbox.json(&["show", id, "--json"])["body"]["slot"], 2);
 }
 
 #[test]
@@ -66,17 +180,22 @@ fn an_exit_self_trigger_reopens_after_the_old_launch_retires() {
         old_agent
             .write_all(if code == 0 { b"0" } else { b"7" })
             .unwrap();
-        assert!(
-            sandbox
-                .output(&["wait", id, "--for", "event=message.sent", "--timeout", "30"])
-                .status
-                .success()
-        );
-        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
-        assert_ne!(sandbox.window(id), old_window);
         let (reopened, _running) = sandbox.capture();
         assert_eq!(reopened["id"], id);
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert_ne!(sandbox.window(id), old_window);
         assert_eq!(sandbox.events(id, "message.sent").len(), 1);
+        let waited = sandbox.output(&["wait", id, "--for", "event=message.sent", "--timeout", "0"]);
+        assert_eq!(waited.status.code(), Some(1), "{waited:?}");
+        let waited = sandbox.output(&[
+            "wait",
+            id,
+            "--for",
+            "event=session.running",
+            "--timeout",
+            "0",
+        ]);
+        assert!(waited.status.success(), "{waited:?}");
     }
 }
 
@@ -276,7 +395,7 @@ fn trigger_spawn_preserves_a_literal_prompt_and_closes_the_child_on_done() {
 }
 
 #[test]
-fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
+fn a_closed_pane_cannot_consume_the_reopened_sessions_message() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo();
     assert!(
@@ -318,13 +437,9 @@ fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
         "{}",
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert_eq!(
-        sandbox
-            .output(&["send", id, "only for the new window"])
-            .status
-            .code(),
-        Some(75)
-    );
+    sandbox.tmux(&["kill-window", "-t", &old_window]);
+    let sent = sandbox.output(&["send", id, "only for the new window"]);
+    assert_eq!(sent.status.code(), Some(75), "{sent:?}");
     let (resumed, _resumed) = sandbox.capture();
     assert_eq!(resumed["id"], id);
     let new_window = sandbox.tmux(&[
@@ -341,6 +456,53 @@ fn a_finished_live_window_cannot_consume_the_reopened_sessions_message() {
     assert!(sandbox.events(id, "hook.delivery").is_empty());
     assert_eq!(sandbox.window(id), new_window);
     assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+}
+
+#[test]
+fn reopening_a_done_agent_keeps_its_live_process_and_delivers_the_message() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    for args in [
+        vec![
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "feature",
+            "--detach",
+        ],
+        vec!["add", "api/feature", "--detach"],
+    ] {
+        let output = sandbox.output(&args);
+        assert!(output.status.success(), "{output:?}");
+        let (first, mut running) = sandbox.capture();
+        let id = first["id"].as_str().unwrap();
+        let original_window = sandbox.window(id);
+        let done = sandbox
+            .command()
+            .env("WS_SESSION_ID", id)
+            .arg("done")
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "{done:?}");
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "finished");
+        let sent = sandbox.output(&["send", id, "continue this conversation"]);
+        assert_eq!(sent.status.code(), Some(75), "{sent:?}");
+        assert_eq!(sandbox.window(id), original_window);
+        assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+        assert_eq!(
+            sandbox.listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        running.write_all(b"d").unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(running.try_clone().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        assert!(line.contains("continue this conversation"), "{line}");
+    }
 }
 
 #[test]
@@ -467,7 +629,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         let (capture, _running) = sandbox.capture();
         assert_eq!(capture["agent"], agent);
         assert_eq!(capture["shell"], "ready");
-        assert_eq!(capture["id"], capture["legacy_id"]);
+        assert_eq!(capture["legacy_id"], Value::Null);
         assert_eq!(
             capture["cwd"],
             sandbox.worktree().canonicalize().unwrap().to_str().unwrap()
@@ -507,6 +669,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         }
         let id = session["id"].as_str().unwrap();
         assert_mcp_registration(&args, agent, id);
+        assert_agent_telemetry(&sandbox, &capture, agent, id);
         let rows = rows.replace(
             &format!("\t{agent}\t\t{id}"),
             &format!("\t{agent}\tresume-{agent}\t{id}"),
@@ -521,6 +684,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         assert_eq!(resumed["id"], id);
         let resumed_args: Vec<String> = serde_json::from_value(resumed["argv"].clone()).unwrap();
         assert_mcp_registration(&resumed_args, agent, id);
+        assert_agent_telemetry(&sandbox, &resumed, agent, id);
         let args = resumed["argv"].as_array().unwrap();
         assert!(args.windows(2).any(|p| p
             == [
@@ -661,7 +825,7 @@ fn legacy_agent_and_end_wrappers_run_an_imported_zsh_session() {
         );
         let ids = Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 server,
                 "-f",
                 "/dev/null",
@@ -679,7 +843,7 @@ fn legacy_agent_and_end_wrappers_run_an_imported_zsh_session() {
         pane = legacy_pane.into();
         for (key, value) in [("@ws_session", "7"), ("@ws_pane", legacy_pane)] {
             let status = Command::new("tmux")
-                .args(["-L", server, "set-option", "-w", "-t", window, key, value])
+                .args(["-S", server, "set-option", "-w", "-t", window, key, value])
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -767,7 +931,7 @@ fn legacy_end_records_the_exit_of_a_zsh_launched_agent() {
         );
         let ids = Command::new("tmux")
             .args([
-                "-L",
+                "-S",
                 server,
                 "-f",
                 "/dev/null",
@@ -785,7 +949,7 @@ fn legacy_end_records_the_exit_of_a_zsh_launched_agent() {
         pane = legacy_pane.into();
         for (key, value) in [("@ws_session", "7"), ("@ws_pane", legacy_pane)] {
             let status = Command::new("tmux")
-                .args(["-L", server, "set-option", "-w", "-t", window, key, value])
+                .args(["-S", server, "set-option", "-w", "-t", window, key, value])
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -1032,17 +1196,30 @@ impl Sandbox {
     }
     /// Runs `setup(home, tmux server)` before the daemon starts and imports legacy state.
     fn with_setup(config: &str, setup: impl FnOnce(&Path, &str)) -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        Self::with_options(config, setup, false)
+    }
+    fn with_launch_observation() -> Self {
+        Self::with_options("", |_, _| {}, true)
+    }
+    fn with_options(config: &str, setup: impl FnOnce(&Path, &str), observe_launch: bool) -> Self {
+        let home = common::SandboxRoot::new();
         fs::create_dir(home.path().join("state")).unwrap();
         fs::write(home.path().join("state/config.toml"), config).unwrap();
         let socket = home.path().join("wsd.sock");
-        let server = format!(
-            "ws-agents-{}-{}",
-            std::process::id(),
-            home.path().file_name().unwrap().to_str().unwrap()
-        );
+        let server = home.tmux_socket();
         setup(home.path(), &server);
         let mut command = common::ws(home.path(), &socket);
+        if observe_launch {
+            command
+                .env(
+                    "WS_TEST_AGENT_LAUNCH_OBSERVED",
+                    home.path().join("launch-requested"),
+                )
+                .env(
+                    "WS_TEST_AGENT_COMMIT_GATE",
+                    home.path().join("commit-gate.sock"),
+                );
+        }
         let listener = UnixListener::bind(home.path().join("agent.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
         fs::write(
@@ -1063,9 +1240,12 @@ impl Sandbox {
             let script = format!(
                 r#"#!/usr/bin/python3
 import json, os, socket, subprocess, sys, tty
+if sys.argv[1:] == ['--version']:
+    print({agent:?} + ' ' + ('2.1.302' if {agent:?} == 'claude' else '0.159.2'))
+    sys.exit(0)
 s = socket.socket(socket.AF_UNIX)
 s.connect({:?})
-s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE')))+'\n').encode())
+s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE'), otel=dict(resource=os.getenv('OTEL_RESOURCE_ATTRIBUTES'), endpoint=os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT'), protocol=os.getenv('OTEL_EXPORTER_OTLP_PROTOCOL'), enabled=os.getenv('CLAUDE_CODE_ENABLE_TELEMETRY'), traceparent=os.getenv('TRACEPARENT'), beta=os.getenv('CLAUDE_CODE_ENHANCED_TELEMETRY_BETA'), prompt=os.getenv('OTEL_LOG_USER_PROMPTS'), detail=os.getenv('OTEL_LOG_TOOL_DETAILS'), content=os.getenv('OTEL_LOG_TOOL_CONTENT'))))+'\n').encode())
 control = s.recv(1)
 if control == b'd':
     tty.setraw(0)
@@ -1145,7 +1325,7 @@ sys.exit(int(control or b'0'))
     }
     fn tmux(&self, args: &[&str]) -> String {
         let out = Command::new("tmux")
-            .args(["-L", &self.server])
+            .args(["-S", &self.server])
             .args(args)
             .output()
             .unwrap();
@@ -1243,13 +1423,6 @@ sys.exit(int(control or b'0'))
             .unwrap()
     }
 }
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.server, "kill-server"])
-            .output();
-    }
-}
 fn git(path: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -1280,5 +1453,40 @@ fn assert_mcp_registration(args: &[String], agent: &str, id: &str) {
             args.iter()
                 .any(|arg| arg == &format!("mcp_servers.ws.env.WS_SESSION_ID=\"{id}\""))
         );
+    }
+}
+
+fn assert_agent_telemetry(sandbox: &Sandbox, capture: &Value, agent: &str, id: &str) {
+    use ws_core::{device::Device, semconv};
+    if agent == "grok" {
+        return;
+    }
+    let state = sandbox.home.path().join("state");
+    let device = Device::load(&state).unwrap();
+    let resources: std::collections::BTreeMap<_, _> = capture["otel"]["resource"]
+        .as_str()
+        .unwrap()
+        .split(',')
+        .map(|part| part.split_once('=').unwrap())
+        .collect();
+    assert_eq!(resources[semconv::SESSION_ID], id);
+    assert_eq!(resources[semconv::PARENT_SESSION_ID], "");
+    assert_eq!(resources[semconv::DEVICE_ID], device.device_id.to_string());
+    assert_eq!(resources[semconv::PROJECT], "api/feature");
+    for key in ["traceparent", "beta", "prompt", "detail", "content"] {
+        assert!(capture["otel"][key].is_null(), "{key}");
+    }
+    let endpoint = fs::read_to_string(state.join("otlp.endpoint")).unwrap();
+    if agent == "claude" {
+        assert_eq!(capture["otel"]["endpoint"], endpoint.trim());
+        assert_eq!(capture["otel"]["protocol"], "http/json");
+        assert_eq!(capture["otel"]["enabled"], "1");
+    } else {
+        let args: Vec<String> = serde_json::from_value(capture["argv"].clone()).unwrap();
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains(&format!("{}/v1/logs", endpoint.trim())))
+        );
+        assert!(args.iter().any(|arg| arg == "otel.trace_exporter=\"none\""));
     }
 }

@@ -10,6 +10,63 @@ mod common;
 use common::{Daemon, create_stale_socket, get, request, ws};
 
 #[test]
+fn test_commands_pin_tmux_to_their_sandbox() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let command = ws(sandbox.path(), &socket);
+    let tmux = command.get_envs().find(|(key, _)| *key == "WS_TMUX_SOCKET");
+    assert_eq!(
+        tmux.and_then(|(_, value)| value),
+        Some(sandbox.path().join("tmux.sock").as_os_str())
+    );
+}
+
+#[test]
+fn daemon_stops_when_its_socket_is_removed() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    std::fs::remove_file(&socket).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = daemon.child.try_wait().unwrap() {
+            assert!(status.success(), "{status}: {}", daemon.stderr());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The daemon did not stop after its socket disappeared."
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn daemon_stops_without_removing_a_replacement_at_its_socket_path() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    std::fs::remove_file(&socket).unwrap();
+    std::fs::write(&socket, "Keep the replacement.").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = daemon.child.try_wait().unwrap() {
+            assert!(status.success(), "{status}: {}", daemon.stderr());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The daemon did not stop after its socket changed."
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_to_string(socket).unwrap(),
+        "Keep the replacement."
+    );
+}
+
+#[test]
 fn daemon_serves_the_session_lifecycle_and_restores_it_after_restart() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     let socket = sandbox.path().join("wsd.sock");
@@ -281,4 +338,66 @@ fn hook_api_rejects_invalid_states_and_panes() {
         let response = request(&socket, "POST", "/v1/hooks/ingest", &body.to_string());
         assert!(response.starts_with("HTTP/1.1 400"), "{response}");
     }
+}
+
+#[test]
+fn daemon_starts_the_configured_otlp_receiver_and_closes_it_on_shutdown() {
+    use std::io::{Read, Write};
+    use ws_core::{device::Device, telemetry_log::TelemetryLog};
+
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sandbox.path().join("wsd.sock");
+    let state = sandbox.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        state.join("config.toml"),
+        "[telemetry]\nport = 0\nretention_days = 30\n",
+    )
+    .unwrap();
+    let mut daemon = Daemon::start(ws(sandbox.path(), &socket), &socket);
+    let endpoint_file = state.join("otlp.endpoint");
+    let endpoint = std::fs::read_to_string(&endpoint_file)
+        .expect("The daemon must publish the OTLP endpoint before it answers ping.");
+    let address: std::net::SocketAddr = endpoint
+        .trim()
+        .strip_prefix("http://")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(address.ip().to_string(), "127.0.0.1");
+    let body = include_bytes!("../../ws-daemon/tests/fixtures/spikes/s2/baseline-logs.json");
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    write!(stream, "POST /v1/logs HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let device = Device::load(&state).unwrap();
+    assert_eq!(
+        TelemetryLog::new(&state, device.device_id)
+            .read()
+            .unwrap()
+            .len(),
+        11
+    );
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &daemon.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while daemon.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "The daemon did not stop.");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!endpoint_file.exists());
+    assert!(std::net::TcpStream::connect(address).is_err());
 }

@@ -4,16 +4,28 @@ use super::{AgentSession, Mode, Prepared, prepare, slots};
 use crate::{
     api::{self, ApiError, Store},
     sessions::{Error, Result, Sessions},
-    tmux::Tmux,
+    tmux::{PaneStatus, Tmux},
 };
 use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     env,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
+    time::Duration,
 };
+use tokio::sync::watch;
 use ws_core::{ids::SessionId, log::SessionLog, registry::Session};
+
+// Removing a sender releases every request that waits for this launch to commit.
+static PENDING: LazyLock<Mutex<HashMap<SessionId, watch::Sender<()>>>> =
+    LazyLock::new(Default::default);
+// The completion signal controls readiness. This deadline only bounds a stalled commit.
+const COMMIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(crate) struct PendingLaunch(SessionId);
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +80,30 @@ async fn launch(
     State(store): State<Store>,
     Json(request): Json<LaunchRequest>,
 ) -> std::result::Result<Json<Launch>, ApiError> {
+    let (request, pending) = api::call(store.clone(), move |sessions| {
+        let session = sessions.get_record(&request.id)?;
+        let pending = PENDING
+            .lock()
+            .map_err(|_| Error::InvalidRequest("Cannot lock the pending agent launches."))?
+            .get(&session.id)
+            .map(watch::Sender::subscribe);
+        Ok((request, pending))
+    })
+    .await?;
+    if let Some(path) = env::var_os("WS_TEST_AGENT_LAUNCH_OBSERVED") {
+        std::fs::write(path, b"requested").map_err(|error| ApiError(Error::Io(error)))?;
+    }
+    if let Some(mut pending) = pending {
+        // The commit needs the store lock. Wait without that lock, then check pane ownership.
+        tokio::time::timeout(COMMIT_TIMEOUT, pending.changed())
+            .await
+            .map_err(|_| {
+                ApiError(Error::InvalidRequest(
+                    "The agent launch did not commit before the deadline.",
+                ))
+            })?
+            .ok();
+    }
     Ok(Json(
         api::call(store, move |sessions| sessions.prepare_agent(request)).await?,
     ))
@@ -79,6 +115,25 @@ async fn exited(
 ) -> std::result::Result<Json<Value>, ApiError> {
     api::call(store, move |sessions| sessions.agent_exited(request)).await?;
     Ok(Json(json!({})))
+}
+
+impl PendingLaunch {
+    pub(crate) fn new(id: SessionId) -> Result<Self> {
+        let (completion, _) = watch::channel(());
+        PENDING
+            .lock()
+            .map_err(|_| Error::InvalidRequest("Cannot lock the pending agent launches."))?
+            .insert(id, completion);
+        Ok(Self(id))
+    }
+}
+
+impl Drop for PendingLaunch {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = PENDING.lock() {
+            pending.remove(&self.0);
+        }
+    }
 }
 
 impl Sessions {
@@ -106,6 +161,30 @@ impl Sessions {
             .filter(|window| window["session_id"] == session.id.to_string())
             .filter_map(|window| window["window_id"].as_str().map(str::to_owned))
             .collect();
+        let tmux = Tmux::from_env();
+        if !self.process_exited(session.id)? {
+            for window in &old_windows {
+                let Some(pane) = tmux.window_option(window, "@ws_pane").ok().flatten() else {
+                    continue;
+                };
+                if self.owns_agent_window(session, &pane)?
+                    && tmux.pane_status(&pane)? == PaneStatus::Running
+                {
+                    // Completion ends the task. The existing agent still owns its conversation.
+                    self.transition(
+                        &session.id.to_string(),
+                        ws_core::state::SessionState::Reopened,
+                        caller,
+                    )?;
+                    self.transition(
+                        &session.id.to_string(),
+                        ws_core::state::SessionState::Running,
+                        caller,
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
         let launched = self.start_workspace_session(
             workspace,
             &directory,
@@ -114,7 +193,6 @@ impl Sessions {
             Some(session),
             None,
         )?;
-        let tmux = Tmux::from_env();
         for window in old_windows {
             if launched["window_id"] == window
                 || tmux
@@ -126,7 +204,7 @@ impl Sessions {
             {
                 continue;
             }
-            // A finished agent can still own a live pane. Retire that launch generation.
+            // A wrapper can retain its pane after the agent exits.
             for key in [
                 "@ws_session",
                 "@ws_pane",
@@ -215,9 +293,17 @@ impl Sessions {
             })
             .unwrap_or_default();
         let context = AgentSession {
+            claude_config_dir: env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+            agent_program: None,
+            state: self.state.clone(),
+            parent_session_id: session.body["parent_session_id"]
+                .as_str()
+                .and_then(|id| id.parse().ok()),
+            project: session.workspace_id.clone().unwrap_or_default(),
             id: session.id.to_string(),
             home,
             grok_home: env::var_os("GROK_HOME").map(PathBuf::from),
+            codex_home: env::var_os("CODEX_HOME").map(PathBuf::from),
             ws_home,
             ws_bin: env::current_exe()?,
             spawned: session.body["spawned"].as_bool().unwrap_or(false),

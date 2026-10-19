@@ -434,7 +434,8 @@ completed phase ranks remain monotone.
 | `phase.merged` | loop-merge.sh (EXIT trap, rc==0) | phase, repository |
 | `merge.conflict` | loop-merge.sh (conflict branch) | phase, repository, detail |
 | `merge.verify-fail` | loop-merge.sh (exit 4) and orchestrator (loop-state.sh log) | phase, repository, detail |
-| `hil.raise` / `hil.resolve` | orchestrator (loop-state.sh log) | phase |
+| `hil.raise` | orchestrator (loop-state.sh log) | phase |
+| `hil.resolve` | supervise HIL asker or single-tier orchestrator (loop-state.sh hil-resolve) | phase, detail = answer |
 | `review.finish` | orchestrator | phase, repository, outcome, summary |
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
 | `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |
@@ -1378,12 +1379,17 @@ on their ~2s watchdog tick.
 ## HIL pause
 
 1. Write `hil/<phase-slug>.md`: context, attempt table (engine → outcome), ONE blocking
-   question, options A/B/C + recommendation, "reply in the orchestrator chat or write
-   `hil/<phase-slug>.answer.md`".
+   question, options A/B/C + recommendation. Include these reply instructions:
+   Reply in the orchestrator chat or run:
+   `loop-state.sh hil-resolve --dir .loop <phase> <phase-slug> "<answer>"`.
 2. Flip the phase to `[status: blocked]` and repush the plan doc.
-3. `loop-notify.sh --level question --run-id <runId> --event hil.raise --title "HIL: <phase>" --body "<question>"`.
-4. Ask in-session (AskUserQuestion / plain question). Other lanes keep running. On answer:
-   phase back to ready with the answer injected; status back to `in-progress`.
+3. `loop-notify.sh --level question --run-id <runId> --event hil.raise --phase <phase> --title "HIL: <phase>" --body "<question>"`.
+4. Supervise asks in-session (AskUserQuestion / plain question). Single-tier mode asks in its orchestrator session.
+   Other lanes keep running. Record the answer with:
+   `loop-state.sh hil-resolve --dir .loop <phase> <phase-slug> "<answer>"`.
+   The operation writes `hil/<phase-slug>.answer.md`, then logs `hil.resolve` for the phase.
+   Never write the answer file directly. The daemon clears the HIL pause when it receives this event.
+5. Requeue the phase with the answer in context. Set its status to `in-progress`.
 
 ## Backend mapping
 

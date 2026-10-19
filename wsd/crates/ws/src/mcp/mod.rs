@@ -31,10 +31,14 @@ impl Control {
             .ok()
             .map(|id| id.parse())
             .transpose()?;
-        Ok(Self {
+        Ok(Self::for_caller(socket, caller))
+    }
+
+    pub fn for_caller(socket: &Path, caller: Option<SessionId>) -> Self {
+        Self {
             socket: socket.into(),
             caller,
-        })
+        }
     }
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {

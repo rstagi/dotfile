@@ -47,10 +47,23 @@ pub fn prepare(command: Command) -> Result<()> {
     let ws_home = env::var_os("WS_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".ws"));
+    let state = env::var_os("WS_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".ws/state"));
     let context = AgentSession {
+        claude_config_dir: env::var_os("CLAUDE_CONFIG_DIR").map(|path| directory.join(path)),
+        agent_program: None,
+        state: directory.join(state),
+        parent_session_id: None,
+        project: directory
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
         id: session.to_string(),
         home,
         grok_home: env::var_os("GROK_HOME").map(|path| directory.join(path)),
+        codex_home: env::var_os("CODEX_HOME").map(|path| directory.join(path)),
         ws_home: directory.join(ws_home),
         ws_bin: env::current_exe()?,
         spawned: false,
@@ -70,6 +83,9 @@ pub fn prepare(command: Command) -> Result<()> {
                     .map(|file| file.path.to_string_lossy()),
             );
             println!("WS_AGENT_FILES={}", shell_words::quote(&paths));
+            for key in &prepared.unset_env {
+                println!("unset {key}");
+            }
             for (key, value) in &prepared.env {
                 println!("export {key}={}", shell_words::quote(value));
             }
@@ -120,7 +136,11 @@ pub async fn execute(socket: &Path, id: &str, user_tab: bool) -> Result<ExitCode
             std::iter::once(launch.prepared.program.as_str())
                 .chain(launch.prepared.argv.iter().map(String::as_str)),
         );
-        let status = ProcessCommand::new(shell_program)
+        let mut process = ProcessCommand::new(shell_program);
+        for key in &launch.prepared.unset_env {
+            process.env_remove(key);
+        }
+        let status = process
             .args(&shell[1..])
             .arg(command)
             .envs(&launch.prepared.env)

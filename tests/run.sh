@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Run every tests/*.test.sh and, concurrently, the ws suite (ws/tests/run.sh); exit non-zero if any fails. Also
-# syntax-checks the loop-*.sh + ws scripts (zsh -n) first. Companion to `cd loop-web && npm test` for JS.
+# Run every shell suite and the picker smoke test. Fail if any suite fails.
+# Check the Loop scripts, launcher and picker syntax first.
 # Discard caller loop/color settings; each suite configures its own environment.
 set -u
 for inherited in ${(k)parameters}; do
@@ -10,10 +10,31 @@ for inherited in ${(k)parameters}; do
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-fail=0
+failed_suites=()
 # Every suite runs under a private HOME; the real agent hooks/config must stay byte-identical.
 TEST_HOME_DIR="$(mktemp -d)"
-trap 'rm -rf "$TEST_HOME_DIR"' EXIT
+ws_pid="" suite_pid=""
+runner_cleanup() {
+  trap '' INT TERM HUP
+  [[ -z "$suite_pid" ]] || kill -TERM "$suite_pid" 2>/dev/null
+  [[ -z "$ws_pid" ]] || kill -TERM "$ws_pid" 2>/dev/null
+  [[ -z "$suite_pid" ]] || wait "$suite_pid" 2>/dev/null
+  [[ -z "$ws_pid" ]] || wait "$ws_pid" 2>/dev/null
+  rm -rf "$TEST_HOME_DIR"
+}
+trap runner_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+run_suite() {
+  zsh "$@" &
+  suite_pid=$!
+  wait "$suite_pid"
+  local result=$?
+  suite_pid=""
+  return "$result"
+}
 REAL_HOME="${TESTS_REAL_HOME:-$HOME}"
 if [[ -f "$HERE/home-guard.sh" ]]; then
   source "$HERE/home-guard.sh"
@@ -24,14 +45,14 @@ else # copied-runner fixtures (runner.test.sh) ship run.sh alone: sandbox HOME, 
 fi
 
 echo "== zsh -n (syntax) =="
-ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh ws/lib/*.sh(N) ws/tests/*.sh(N))"}) # relative to $ROOT
+ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh(N))"}) # relative to $ROOT
 for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh $ws_scripts; do
   [[ -f "$ROOT/$s" ]] || continue
-  if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; fail=1; fi
+  if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; failed_suites+=("zsh -n: $s"); fi
 done
 echo
 
-# The ws suite (the slowest, own sandboxes) runs in the background alongside the loop suites.
+# The picker smoke test uses its own sandbox and runs with the Loop suites.
 ws_pid=""
 if [[ -f "$ROOT/ws/tests/run.sh" ]]; then # needs the repo's ws/; absent from copied-runner fixtures
   zsh "$ROOT/ws/tests/run.sh" > "$TEST_HOME_DIR/ws.log" 2>&1 &
@@ -40,28 +61,25 @@ fi
 
 for t in "$HERE"/*.test.sh; do
   echo "== ${t:t} =="
-  zsh "$t" || fail=1
+  run_suite "$t" || failed_suites+=("${t:t}")
   echo
 done
 
 if [[ -n "$ws_pid" ]]; then
   echo "== ws/tests/run.sh =="
-  wait "$ws_pid" || fail=1
+  wait "$ws_pid" || failed_suites+=("ws/tests/run.sh")
+  ws_pid=""
   cat "$TEST_HOME_DIR/ws.log"
-  if [[ -x "$ROOT/wsd/target/debug/ws" ]]; then
-    echo "== ws Rust smoke =="
-    zsh "$ROOT/ws/tests/run.sh" rust || fail=1
-  fi
   echo
 fi
 
 if [[ -n "${real_home_snapshot+set}" ]]; then
   echo "== real HOME guard ($REAL_HOME) =="
-  if home_guard_check "$real_home_snapshot"; then echo "  ok: agent hooks/config/settings untouched"; else fail=1; fi
+  if home_guard_check "$real_home_snapshot"; then echo "  ok: agent hooks/config/settings untouched"; else failed_suites+=("real HOME guard"); fi
   echo
 fi
 
-if [[ $fail -eq 0 ]]; then
+if [[ ${#failed_suites} -eq 0 ]]; then
   echo "ALL SHELL TESTS PASSED"; exit 0
 fi
-echo "SHELL TESTS FAILED"; exit 1
+echo "SHELL TESTS FAILED: ${(j:, :)failed_suites}"; exit 1

@@ -1,3 +1,6 @@
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
 use std::{fs, path::Path, process::Command};
 
 use axum::{
@@ -13,27 +16,11 @@ use super::from_zsh_with_root;
 use crate::{api, sessions::Sessions};
 
 #[test]
-fn delivery_defaults_to_rust_without_a_selector() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
-    assert!(
-        super::backend::delivery_guard(home.path())
-            .unwrap()
-            .is_some()
-    );
-    fs::write(home.path().join("backend"), "zsh\n").unwrap();
-    assert!(
-        super::backend::delivery_guard(home.path())
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
 fn incremental_resume_imports_changes_after_the_interrupted_snapshot() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture(&source, root.path());
+    load_fixture(&source, "exit");
     let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
     fs::write(
         source.join("sessions/2/inbox"),
@@ -62,25 +49,10 @@ fn incremental_import_distinguishes_identical_messages_after_zsh_consumes_an_inb
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture(&source, root.path());
+    load_fixture(&source, "exit");
     let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
     for expected in 1..=2 {
-        let output = Command::new("zsh")
-            .args([
-                "-fc",
-                r#"
-            source "$1/ws/ws.sh"
-            : > "$WS_SESSIONS/2/inbox"
-            with_lock "$WS_SESSIONS/2/inbox" ws_bus_enqueue 2 'same message'
-        "#,
-                "enqueue",
-            ])
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.."))
-            .env("HOME", root.path())
-            .env("WS_HOME", &source)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
+        fixtures::copy(&format!("message-{expected}"), &source);
         super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
         let target = sessions.get("#2", None).unwrap().id;
         assert_eq!(sessions.inbox(target).unwrap().len(), expected);
@@ -92,7 +64,7 @@ fn incremental_import_keeps_ids_and_imports_replaced_inboxes_and_new_triggers() 
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture(&source, root.path());
+    load_fixture(&source, "exit");
     from_zsh_with_root(&source, &state, &source.join("worktrees"), false).unwrap();
     let mut sessions = Sessions::open_with_home(&state, 1, &source).unwrap();
     let target = sessions.get("#2", None).unwrap().id;
@@ -128,7 +100,7 @@ fn incremental_import_keeps_output_published_by_rust() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture_mode(&source, root.path(), "done");
+    load_fixture(&source, "done");
     let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
     super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
     let id = sessions.get("#1", None).unwrap().id;
@@ -160,7 +132,7 @@ fn incremental_import_cancels_triggers_removed_in_zsh() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture(&source, root.path());
+    load_fixture(&source, "exit");
     let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
     super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
     assert_eq!(sessions.triggers.len(), 1);
@@ -181,7 +153,7 @@ fn incremental_import_completes_triggers_fired_in_zsh() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture(&source, root.path());
+    load_fixture(&source, "exit");
     let mut sessions = Sessions::open_with_home(&state, 3, &source).unwrap();
     super::incremental(&mut sessions, &source, &source.join("worktrees")).unwrap();
     assert_eq!(sessions.triggers.len(), 1);
@@ -202,7 +174,7 @@ async fn imported_exit_trigger_ignores_exits_before_registration() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture(&source, root.path());
+    load_fixture(&source, "exit");
     from_zsh_with_root(&source, &state, &source.join("worktrees"), false).unwrap();
     let mut sessions = Sessions::open(&state, 1).unwrap();
     let source_id = sessions.get("#1", None).unwrap().id;
@@ -265,7 +237,7 @@ async fn imported_exit_after_registration_satisfies_the_pending_trigger() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture(&source, root.path());
+    load_fixture(&source, "exit");
     let mut events = fs::read_to_string(source.join("sessions/1/events")).unwrap();
     events.push_str("{\"event\":\"exit\",\"code\":7}\n");
     fs::write(source.join("sessions/1/events"), events).unwrap();
@@ -300,7 +272,7 @@ async fn imported_done_trigger_reads_output_and_keeps_its_sender() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    capture_mode(&source, root.path(), "done");
+    load_fixture(&source, "done");
     fs::create_dir(source.join("triggers/archive")).unwrap();
     fs::copy(
         source.join("triggers/2.json"),
@@ -457,16 +429,7 @@ async fn imports_spawn_actions_and_resumes_from_the_frozen_workspace_snapshot() 
             branch.to_str().unwrap(),
         ],
     );
-    let output = Command::new("zsh")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/import/fixtures/triggers.zsh"
-        ))
-        .args([source.to_str().unwrap(), "exit", branch.to_str().unwrap()])
-        .env("HOME", sandbox.path())
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
+    fixtures::copy("spawn", &source);
     from_zsh_with_root(&source, &state, &root, false).unwrap();
     let app = api::router(Sessions::open(&state, 1).unwrap());
     let triggers = request(&app, "GET", "/v1/triggers", Value::Null).await;
@@ -564,22 +527,8 @@ fn imports_legacy_slot_windows_for_idle_delivery() {
     );
 }
 
-fn capture(source: &Path, home: &Path) {
-    capture_mode(source, home, "exit");
-}
-
-fn capture_mode(source: &Path, home: &Path, mode: &str) {
-    let output = Command::new("zsh")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/import/fixtures/triggers.zsh"
-        ))
-        .arg(source)
-        .arg(mode)
-        .env("HOME", home)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
+fn load_fixture(source: &Path, mode: &str) {
+    fixtures::copy(mode, source);
     assert!(
         fs::read_to_string(source.join("triggers/1.json"))
             .unwrap()

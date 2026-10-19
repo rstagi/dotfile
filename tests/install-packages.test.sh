@@ -83,8 +83,8 @@ reset_home() {
   done
   cp "$ROOT/wsd/launchd/com.rstagi.wsd.plist" "$dot/wsd/launchd/"
   print -r -- binary > "$dot/wsd/target/release/ws"
-  # The installer runs ws.sh and also sources it in zsh to call hooks_migrate.
-  printf '#!/bin/sh\nhooks_migrate() { :; }\n' > "$dot/ws/ws.sh"
+  # The installer runs the launcher to build the notifier.
+  printf '#!/bin/sh\nexit 0\n' > "$dot/ws/ws.sh"
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$HOME/fzf.calls"\n' > "$home/brew/opt/fzf/install"
   chmod +x "$dot/ws/ws.sh" "$home/brew/opt/fzf/install"
 }

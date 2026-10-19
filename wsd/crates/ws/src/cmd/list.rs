@@ -20,7 +20,7 @@ pub async fn run(socket: &Path, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string(&workspaces)?);
         return Ok(());
     }
-    for row in workspace_rows(workspaces) {
+    for row in workspace_rows(workspaces, client::sessions(socket).await?) {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             row.state,
@@ -37,7 +37,10 @@ pub async fn run(socket: &Path, json: bool) -> Result<()> {
 }
 
 pub(super) async fn rows(socket: &Path) -> Result<Vec<Row>> {
-    Ok(workspace_rows(workspaces(socket).await?))
+    Ok(workspace_rows(
+        workspaces(socket).await?,
+        client::sessions(socket).await?,
+    ))
 }
 
 pub(super) async fn workspaces(socket: &Path) -> Result<Vec<Workspace>> {
@@ -50,7 +53,10 @@ pub(super) async fn workspaces(socket: &Path) -> Result<Vec<Workspace>> {
     Ok(serde_json::from_slice(&body)?)
 }
 
-fn workspace_rows(workspaces: Vec<Workspace>) -> Vec<Row> {
+fn workspace_rows(
+    workspaces: Vec<Workspace>,
+    sessions: Vec<ws_core::registry::Session>,
+) -> Vec<Row> {
     let live = ws_daemon::tmux::Tmux::from_env()
         .execute(&[
             "list-windows",
@@ -71,7 +77,12 @@ fn workspace_rows(workspaces: Vec<Workspace>) -> Vec<Row> {
                 .find(|fields| {
                     fields.len() == 5
                         && Some(fields[0]) == window["window_id"].as_str()
-                        && Some(fields[1]) == window["session_id"].as_str()
+                        && (Some(fields[1]) == window["session_id"].as_str()
+                            || sessions.iter().any(|session| {
+                                Some(session.id.to_string().as_str())
+                                    == window["session_id"].as_str()
+                                    && super::sessions::matches_identity(session, fields[1])
+                            }))
                 })
             else {
                 continue;

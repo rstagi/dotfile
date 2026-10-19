@@ -1,3 +1,8 @@
+#[allow(dead_code)]
+pub mod sandbox;
+#[allow(unused_imports)]
+pub use sandbox::SandboxRoot;
+
 use std::{
     io::{self, Read, Write},
     os::unix::net::UnixStream,
@@ -10,6 +15,11 @@ use std::{
 pub struct Daemon {
     pub child: Child,
     stderr: tempfile::NamedTempFile,
+}
+
+#[allow(dead_code)]
+pub fn latency_assertions_enabled() -> bool {
+    std::env::var("WS_ASSERT_LATENCY").as_deref() == Ok("1")
 }
 
 impl Daemon {
@@ -96,12 +106,22 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
         .env("CODEX_HOME", home.join(".codex"))
         .env("CLAUDE_CONFIG_DIR", home.join(".claude"));
     command
+        .env_remove("WS_SESSION_ID")
+        .env_remove("WS_SESSION")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
         .env("HOME", home)
         .env("WS_HOME", home.join(".ws"))
         .env("WS_ROOT", home.join(".ws/worktrees"))
         .env("WS_NOTIFY", "0")
         .env("WS_STATE", home.join("state"))
-        .env("WS_SOCK", socket);
+        .env("WS_SOCK", socket)
+        .env("WS_TMUX_SOCKET", home.join("tmux.sock"));
+    if !latency_assertions_enabled() {
+        // Hang guard, not the production deadline: a loaded sandbox must wait for the reply.
+        // Latency tests keep the production deadline.
+        command.env("WS_HOOK_TRANSPORT_DEADLINE_MS", "30000");
+    }
     command
 }
 

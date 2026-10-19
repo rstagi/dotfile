@@ -18,7 +18,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Select the active local backend.
+    /// Show runner quota windows and their sources.
+    Usage {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, requires = "plan")]
+        preflight: bool,
+        #[arg(long, requires = "preflight")]
+        plan: Option<PathBuf>,
+        #[arg(long, requires = "preflight")]
+        models_conf: Option<PathBuf>,
+        #[arg(long, requires = "preflight")]
+        milestone: Option<u64>,
+    },
+    /// Import remaining legacy state with the Rust backend.
     Backend { backend: String },
     /// Select a workspace or tab with fzf.
     Pick,
@@ -281,6 +294,26 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         return cmd::attach::run(&socket_path()?).await;
     };
     match command {
+        Command::Usage {
+            json,
+            preflight,
+            plan,
+            models_conf,
+            milestone,
+        } => {
+            if preflight {
+                cmd::usage::preflight(
+                    &socket_path()?,
+                    json,
+                    plan.as_deref().unwrap(),
+                    models_conf.as_deref(),
+                    milestone,
+                )
+                .await;
+            } else {
+                cmd::usage::run(&socket_path()?, json).await?;
+            }
+        }
         Command::Backend { backend } => cmd::backend::run(&socket_path()?, &backend).await?,
         Command::Pick => return cmd::pick::run(),
         Command::PickFocus { window } => cmd::pick::focus(&window)?,

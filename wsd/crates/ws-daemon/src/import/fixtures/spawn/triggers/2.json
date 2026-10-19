@@ -1,0 +1,17 @@
+{
+  "id": "2",
+  "sources": [
+    "1"
+  ],
+  "event": "exit",
+  "action": "spawn",
+  "target": "",
+  "template": "continue {id}: {output}",
+  "sender": "",
+  "path": "@WS_HOME@/worktrees/project/feature",
+  "agent": "codex",
+  "status": "pending",
+  "event_offsets": {
+    "1": 1
+  }
+}

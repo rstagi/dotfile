@@ -1,0 +1,12 @@
+{
+  "id": "2",
+  "name": "",
+  "workspace": "repo/main",
+  "path": "/repo",
+  "slot": "2",
+  "agent": "claude",
+  "resume_id": "",
+  "window": "",
+  "status": "active",
+  "spawned": false
+}

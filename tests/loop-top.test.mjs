@@ -126,6 +126,8 @@ function fixture({ snapshot = null } = {}) {
   const store = path.join(root, "store");
   fs.mkdirSync(path.join(coord, ".loop"), { recursive: true });
   fs.mkdirSync(store);
+  fs.mkdirSync(path.join(root, "bin"));
+  fs.writeFileSync(path.join(root, "bin", "ws"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   const snap = (title) => ({ graph: { nodes: [
     node({ id: "plan", kind: "plan", phase: null, title: "The plan", ui: "running" }),
     node({ id: "1", phase: "1", title, ui: "done", status: "merged", runtime: rt({ engine: "codex" }) }),
@@ -158,7 +160,7 @@ function fakeDaemon(snapshot) {
 
 function runCli(args, { cwd, env }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { PATH: process.env.PATH, ...env } });
+    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { HOME: path.dirname(env.LOOP_STORE_DIR), WS_SOCK: path.join(env.LOOP_STORE_DIR, "wsd.sock"), PATH: `${path.join(path.dirname(env.LOOP_STORE_DIR), "bin")}:${process.env.PATH}`, ...env } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -776,4 +778,67 @@ test("fitRows: headings never count as hidden phases; a fully hidden milestone d
     g("M2", { heading: true, milestone: 2 }), g("r3", { selected: true, milestone: 2 }), g("r4", { milestone: 2 }),
   ];
   assert.deepEqual(fitRows(groups, 4, (_s, x) => x), ["  ✓ 2 earlier done phase(s) hidden", "M2", "r3", "r4"]);
+});
+
+
+test("loop-top --once: shows quota windows from ws with source and age", async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const windows = [
+    { runner: "codex", account_id: "account-a", bucket: "premium", window: "five_hour", remaining_ratio: 0.75, source: "reported", age_secs: 42, status: "available" },
+    { runner: "claude", account_id: "account-b", bucket: null, window: "weekly", remaining_ratio: null, source: "estimated", age_secs: 120, status: "unknown" },
+    { runner: "grok", account_id: null, bucket: null, window: "unknown", remaining_ratio: null, source: null, age_secs: null, status: "unavailable" },
+    { runner: "codex", account_id: "account-a", window: "expired", remaining_ratio: 1, source: "reported", age_secs: 60, status: "unavailable" },
+  ];
+  fs.writeFileSync(path.join(fx.root, "quota.json"), JSON.stringify({ windows }));
+  fs.writeFileSync(path.join(fx.root, "bin", "ws"), `#!/bin/sh
+[ "$1" = usage ] && [ "$2" = --json ] || exit 2
+[ "$WS_SOCK" = "$HOME/store/wsd.sock" ] || exit 3
+/bin/cat "$HOME/quota.json"
+`, { mode: 0o755 });
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /Quota/);
+  assert.match(out.stdout, /codex.*account-a.*premium.*five_hour.*75\.0%.*reported.*42s ago/);
+  assert.match(out.stdout, /claude.*weekly.*unknown.*estimated.*2m ago/);
+  assert.match(out.stdout, /grok.*unavailable/);
+  assert.match(out.stdout, /expired.*unavailable/);
+  assert.doesNotMatch(out.stdout, /100\.0%/);
+});
+
+for (const [name, script] of [
+  ["missing executable", null],
+  ["command failure", "#!/bin/sh\nexit 1\n"],
+  ["unknown subcommand", "#!/bin/sh\necho 'unknown subcommand: usage' >&2\nexit 2\n"],
+  ["invalid JSON", "#!/bin/sh\necho unavailable\n"],
+  ["invalid response", "#!/bin/sh\necho '{}'\n"],
+  ["invalid window", '#!/bin/sh\necho \'{"windows":[null]}\'\n'],
+]) {
+  test(`loop-top --once: omits quota after ${name}`, async (t) => {
+    const fx = fixture();
+    t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+    if (script) fs.writeFileSync(path.join(fx.root, "bin", "ws"), script, { mode: 0o755 });
+    else fs.rmSync(path.join(fx.root, "bin", "ws"));
+    const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: {
+      LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store,
+      ...(script ? {} : { PATH: path.join(fx.root, "bin") }),
+    } });
+    assert.equal(out.code, 0, out.stderr);
+    assert.match(out.stdout, /Stored title/);
+    assert.doesNotMatch(out.stdout, /Quota/);
+  });
+}
+
+test("loop-top --once: terminates an unresponsive quota command", { timeout: 30_000 }, async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(fx.root, "bin", "ws"), `#!${process.execPath}
+require("node:fs").writeFileSync(process.env.HOME + "/quota-started", String(process.pid));
+setInterval(() => {}, 60_000);
+`, { mode: 0o755 });
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.equal(out.code, 0, out.stderr);
+  assert.doesNotMatch(out.stdout, /Quota/);
+  const pid = Number(fs.readFileSync(path.join(fx.root, "quota-started"), "utf8"));
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
 });

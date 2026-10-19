@@ -178,7 +178,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 {
                     return Err("Use --headless to set process options.".into());
                 }
-                let value = crate::mcp::Control::from_env(socket)?
+                let value = crate::mcp::Control::for_caller(socket, super::caller(socket).await?)
                     .call(
                         "session_create",
                         serde_json::json!({"name":name, "workspace_id":workspace_id}),
@@ -246,10 +246,7 @@ async fn create(
     let absolute = |path: PathBuf| directory.join(path);
     let parent_session_id = match arguments.parent {
         Some(parent) => Some(client::session(socket, &parent).await?.id),
-        None => std::env::var("WS_SESSION_ID")
-            .ok()
-            .map(|id| id.parse())
-            .transpose()?,
+        None => super::caller(socket).await?,
     };
     let mut env = BTreeMap::new();
     for assignment in arguments.environment {

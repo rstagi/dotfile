@@ -73,11 +73,18 @@ path_without_command() {
   print -r -- "${(j.:.)kept}"
 }
 
+# Require the debug binary for each Rust suite.
+require_ws_test_binary() {
+  [[ -x "$ROOT/wsd/target/debug/ws" ]] && return 0
+  print -u2 -- "Missing Rust binary: $ROOT/wsd/target/debug/ws. Run cargo build in wsd."
+  return 1
+}
+
 # Start a private Rust daemon on $WS_SOCK. The caller must stop WS_TEST_DAEMON_PID on exit.
 # The probe pings only after the socket exists: `ws ping` autostarts a daemon when the socket is missing.
 start_ws_test_daemon() {
+  require_ws_test_binary || return 1
   WS_RUST_BIN="$ROOT/wsd/target/debug/ws"
-  [[ -x "$WS_RUST_BIN" ]] || { print -u2 -- "Missing Rust binary: $WS_RUST_BIN. Run cargo build in wsd."; return 1; }
   [[ -n "${WS_SOCK:-}" ]] || { print -u2 -- "Set WS_SOCK to a private socket before the test daemon starts."; return 1; }
   "$WS_RUST_BIN" daemon > "$TMP/ws-daemon.log" 2>&1 &
   WS_TEST_DAEMON_PID=$!

@@ -382,7 +382,7 @@ impl Server {
         use tokio::io::AsyncWriteExt;
         let mut command = tokio::process::Command::from(crate::tmux::client());
         if let Some(socket) = &self.socket {
-            command.args(["-L", socket]);
+            command.args([crate::tmux::socket_flag(socket), socket]);
         } else if let Some(path) = &self.path {
             command.args(["-S", path]);
         } else {
@@ -759,7 +759,7 @@ mod tests {
     };
 
     struct Sandbox {
-        home: tempfile::TempDir,
+        home: crate::test_sandbox::SandboxRoot,
         store: Store,
         sender: SessionId,
         recipient: SessionId,
@@ -767,7 +767,7 @@ mod tests {
 
     impl Sandbox {
         fn new() -> Self {
-            let home = tempfile::tempdir().unwrap();
+            let home = crate::test_sandbox::SandboxRoot::new();
             let mut sessions = Sessions::open(home.path(), 1).unwrap();
             let sender = sessions.create(CreateSession::default()).unwrap().id;
             let recipient = sessions.create(CreateSession::default()).unwrap().id;
@@ -844,7 +844,7 @@ mod tests {
     impl PasteSandbox {
         async fn new() -> Self {
             let sandbox = Sandbox::new();
-            let server = format!("ws-paste-{}-{}", std::process::id(), Ulid::new());
+            let server = sandbox.home.tmux_socket();
             let tmux = crate::tmux::Tmux::named(&server);
             let mut result = Self {
                 sandbox,
@@ -855,7 +855,7 @@ mod tests {
             };
             let output = std::process::Command::new("tmux")
                 .args([
-                    "-L",
+                    "-S",
                     &result.server,
                     "-f",
                     "/dev/null",
@@ -1008,14 +1008,6 @@ mod tests {
             callback.tmux_socket = Some(self.server.clone());
             callback.payload = json!({"hook_event_name":event, "turn_id":"paste-turn"});
             callback
-        }
-    }
-
-    impl Drop for PasteSandbox {
-        fn drop(&mut self) {
-            let _ = std::process::Command::new("tmux")
-                .args(["-L", &self.server, "kill-server"])
-                .output();
         }
     }
 
@@ -1510,13 +1502,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zsh_selection_suppresses_idle_paste_and_retains_its_messages() {
+    async fn retired_zsh_selector_does_not_suppress_idle_paste() {
         use std::time::Duration;
         let sandbox = PasteSandbox::new().await;
         sandbox.sandbox.store.lock().unwrap().legacy_home =
             Some(sandbox.sandbox.home.path().into());
         std::fs::write(sandbox.sandbox.home.path().join("backend"), "zsh\n").unwrap();
-        sandbox.sandbox.send("wait for Rust");
+        sandbox.sandbox.send("deliver with a retired selector");
         let server = super::Server {
             socket: Some(sandbox.server.clone()),
             path: None,
@@ -1530,43 +1522,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(sandbox.sandbox.events("paste.started").is_empty());
-        std::fs::write(sandbox.sandbox.home.path().join("backend"), "rust\n").unwrap();
-        super::retry(
-            sandbox.sandbox.store.clone(),
-            &server,
-            Duration::from_secs(30),
-            &clock,
-        )
-        .await
-        .unwrap();
         assert_eq!(sandbox.sandbox.events("paste.submitted").len(), 1);
-    }
-
-    #[tokio::test]
-    async fn zsh_selection_suppresses_stop_delivery_and_cached_replies() {
-        let sandbox = Sandbox::new();
-        sandbox.store.lock().unwrap().legacy_home = Some(sandbox.home.path().into());
-        std::fs::write(sandbox.home.path().join("backend"), "rust\n").unwrap();
-        sandbox.send("retained while zsh owns delivery");
-        let callback = sandbox.callback(100);
-        let first = ingest(
-            sandbox.store.clone(),
-            callback.clone(),
-            StopDecision::Accept,
-        )
-        .await
-        .unwrap();
-        assert_eq!(first["decision"], "block");
-        std::fs::write(sandbox.home.path().join("backend"), "zsh\n").unwrap();
-        let cached = ingest(sandbox.store.clone(), callback, StopDecision::Accept)
-            .await
-            .unwrap();
-        assert_eq!(cached, json!({}));
-        assert_eq!(sandbox.stop(101).await, json!({}));
-        assert!(sandbox.events("message.delivered").is_empty());
-        std::fs::write(sandbox.home.path().join("backend"), "rust\n").unwrap();
-        assert_eq!(sandbox.stop(102).await["decision"], "block");
     }
 
     #[tokio::test]

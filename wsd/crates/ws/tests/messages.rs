@@ -468,6 +468,81 @@ fn hook_stdout_commits_delivery_and_the_next_stop_reads_the_batch() {
 }
 
 #[test]
+fn a_stop_hook_that_times_out_after_the_block_leaves_the_batch_for_the_next_stop() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let sandbox = Sandbox::new();
+    let recipient = sandbox.create("recipient");
+    let id = recipient["id"].as_str().unwrap();
+    let output = sandbox
+        .ws()
+        .args(["send", id, "deliver after a timeout"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(75), "{output:?}");
+    // Simulate a hook that times out: post the stop, never read the reply, close the connection.
+    let callback = json!({
+        "callback_id": Ulid::new(), "session_id": id, "observed_at_us": 1, "state": "stop",
+        "pane": null, "tmux_socket": null, "tmux_path": null,
+        "payload": {"hook_event_name":"Stop", "stop_hook_active":true},
+    })
+    .to_string();
+    let mut stream = UnixStream::connect(&sandbox.socket).unwrap();
+    write!(
+        stream,
+        "POST /v1/hooks/ingest HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{callback}",
+        callback.len()
+    )
+    .unwrap();
+    // Keep the connection open until the daemon records the block, so it cannot cancel the ingest.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while sandbox
+        .log(id)
+        .iter()
+        .all(|entry| entry.event_type != "hook.delivery")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "The daemon did not record the block."
+        );
+        std::thread::yield_now();
+    }
+    drop(stream);
+    let delivered = |sandbox: &Sandbox| {
+        sandbox
+            .log(id)
+            .iter()
+            .filter(|entry| entry.event_type == "message.delivered")
+            .count()
+    };
+    assert_eq!(delivered(&sandbox), 0);
+    let mut child = sandbox
+        .ws()
+        .env("WS_SESSION_ID", id)
+        .args(["hook", "stop"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"{\"hook_event_name\":\"Stop\",\"stop_hook_active\":true}")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_ok(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!({"decision":"block", "reason":"[ws #2]\ndeliver after a timeout"})
+    );
+    assert_eq!(delivered(&sandbox), 1);
+}
+
+#[test]
 fn a_hook_with_closed_stdout_retains_the_batch_for_the_next_hook() {
     use std::{
         os::{fd::OwnedFd, unix::net::UnixStream},
