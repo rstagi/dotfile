@@ -20,10 +20,9 @@ use ws_core::{
     log::SessionLog,
 };
 
-/// Total transport budget for Stop and exit. Generated hooks add a 10 s parent margin.
-pub const STOP_CLI_BUDGET: Duration = Duration::from_secs(20);
-
-// Bound each tmux call independently of the hook client.
+/// Guards the daemon against a hung tmux server. The hook client has its own transport
+/// deadline, so this bound never delays the agent. It must stay above the tmux latency
+/// that ordinary scheduling load causes, because a timeout drops the window update.
 const TMUX_DEADLINE: Duration = Duration::from_secs(2);
 pub(crate) static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -329,73 +328,11 @@ async fn record(
     Json(callback): Json<Callback>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     // The hook client has a short deadline. Its disconnect must not cancel ingest.
-    let reply = tokio::spawn(async move {
-        let reply = ingest(store.clone(), callback.clone(), StopDecision::Accept).await?;
-        if reply["decision"] == "block" {
-            // Recovery must survive cancellation of the HTTP handler as well as ingest.
-            tokio::spawn(async move {
-                tokio::time::sleep(STOP_CLI_BUDGET).await;
-                if let Err(error) = recover_unconfirmed(store, callback).await {
-                    eprintln!("Cannot recover the unconfirmed hook: {error}");
-                }
-            });
-        }
-        Ok::<_, Error>(reply)
-    })
-    .await
-    .map_err(|error| ApiError(io::Error::other(error).into()))?
-    .map_err(ApiError)?;
-    Ok((StatusCode::CREATED, Json(reply)))
-}
-
-async fn recover_unconfirmed(store: Store, callback: Callback) -> crate::sessions::Result<()> {
-    let _guard = INGEST_LOCK.lock().await;
-    let raw = callback.clone();
-    let pending = api::call(store.clone(), move |sessions| {
-        sessions.unconfirmed_delivery(&raw)
-    })
-    .await
-    .map_err(|error| error.0)?;
-    if !pending {
-        return Ok(());
-    }
-    let Some(window) = window(&callback).await? else {
-        return Ok(());
-    };
-    if !owns_window(&callback, &window) || window.seq != callback.observed_at_us {
-        return Ok(());
-    }
-    let Some(pane) = callback.pane.as_deref() else {
-        return Ok(());
-    };
-    // Match submit's ownership guard and preserve any newer turn, including external tmux changes.
-    let ownership = crate::bus::delivery::ownership_guard(callback.session_id, &window.id, pane);
-    let guard = format!(
-        "#{{&&:{ownership},#{{&&:#{{==:#{{@ws_seq}},{}}},#{{&&:#{{==:#{{@ws_state}},working}},#{{==:#{{@ws_main}},working}}}}}}}}",
-        callback.observed_at_us
-    );
-    let state = if window.subagents.is_empty() {
-        "idle"
-    } else {
-        "working"
-    };
-    let release = format!(
-        "set-option -w -t {} @ws_main idle; set-option -w -t {} @ws_state {state}; set-option -wu -t {} @ws_turn; display-message -p released",
-        window.id, window.id, window.id
-    );
-    if tmux(&callback, &["if-shell", "-F", "-t", pane, &guard, &release]).await? == "released" {
-        api::call(store, move |sessions| {
-            sessions.append(
-                callback.session_id,
-                "hook.abandoned",
-                json!({"callback_id":callback.callback_id}),
-            )?;
-            Ok(())
-        })
+    let reply = tokio::spawn(ingest(store, callback, StopDecision::Accept))
         .await
-        .map_err(|error| error.0)?;
-    }
-    Ok(())
+        .map_err(|error| ApiError(io::Error::other(error).into()))?
+        .map_err(ApiError)?;
+    Ok((StatusCode::CREATED, Json(reply)))
 }
 
 fn stop_reply(decision: &StopDecision) -> Value {

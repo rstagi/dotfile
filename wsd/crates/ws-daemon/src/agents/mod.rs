@@ -275,7 +275,7 @@ impl Prepared {
 }
 
 fn hooks(agent: &str, command: &str) -> Value {
-    let run = |state: &str| json!([{ "hooks": [{"type": "command", "command": format!("{command} {state}"), "timeout": if matches!(state, "stop" | "exit") { crate::hooks::STOP_CLI_BUDGET.as_secs() + 10 } else { 5 }}] }]);
+    let run = |state: &str| json!([{ "hooks": [{"type": "command", "command": format!("{command} {state}"), "timeout": 5}] }]);
     let mut settings = json!({"hooks": {
         "UserPromptSubmit": run("working"), "PreToolUse": run("working"), "PostToolUse": run("working"),
         "Stop": run("stop"), "PermissionRequest": run("waiting")
