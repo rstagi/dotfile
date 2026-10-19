@@ -87,6 +87,9 @@ pub struct HeadlessArgs {
     parent: Option<String>,
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Read the CLI environment. Explicit --env values take priority.
+    #[arg(long)]
+    inherit_env: bool,
     #[arg(long = "env", value_name = "K=V")]
     environment: Vec<String>,
     #[arg(long)]
@@ -171,6 +174,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 if !arguments.command.is_empty()
                     || arguments.parent.is_some()
                     || arguments.cwd.is_some()
+                    || arguments.inherit_env
                     || !arguments.environment.is_empty()
                     || arguments.stdin.is_some()
                     || arguments.stdout.is_some()
@@ -249,6 +253,17 @@ async fn create(
         None => super::caller(socket).await?,
     };
     let mut env = BTreeMap::new();
+    if arguments.inherit_env {
+        for (key, value) in std::env::vars_os() {
+            let key = key
+                .into_string()
+                .map_err(|_| "An environment key is not valid UTF-8.")?;
+            let value = value
+                .into_string()
+                .map_err(|_| "An environment value is not valid UTF-8.")?;
+            env.insert(key, value);
+        }
+    }
     for assignment in arguments.environment {
         let (key, value) = assignment
             .split_once('=')

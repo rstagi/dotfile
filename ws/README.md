@@ -214,10 +214,14 @@ Dependency edges use `POST /v1/sessions/{id}/depends_on` or `/block_on` with `{"
 `GET /v1/edges` returns the projected graph. A cycle returns HTTP 409 and the cycle's session IDs.
 The source log records `session.depends_on` or `session.block_on`. The registry rebuild restores these edges.
 
-`ws session create --headless [--parent <id>] [--cwd <dir>] [--env K=V]... [--stdin <file>] [--stdout <file>] [--stderr <file>] -- <cmd>`
+`ws session create --headless [--parent <id>] [--cwd <dir>] [--inherit-env] [--env K=V]... [--stdin <file>] [--stdout <file>] [--stderr <file>] -- <cmd>`
 starts a process under the daemon and prints its session ULID. The process leads its own process group.
 The working directory defaults to the CLI's current directory. Relative I/O paths use that same CLI directory, independent of `--cwd`.
 Environment overrides extend the daemon environment. Repeated keys use the last value.
+`--inherit-env` reads the CLI process environment and sends it over the Unix socket.
+Explicit `--env K=V` assignments override inherited values, regardless of flag order.
+The daemon does not persist these environment values in its registry, events, spans or diagnostic logs.
+A command can still write its own environment values to its output files.
 The process receives its session ULID in `WS_SESSION_ID` only.
 Claude, Codex and Grok use the shared agent preparation contract in headless mode.
 Stdin defaults to EOF. Stdout and stderr default to `$WS_STATE/sessions/<id>/stdout.log` and `stderr.log`.
@@ -234,6 +238,9 @@ For an interactive agent, `ws session stop <id>` closes its owned tmux window an
 The daemon records an `exit` event and marks the session `finished`.
 `ws session run [--headless] …` accepts the same command and I/O options as `session create --headless`.
 It waits in the foreground and returns the child exit code. Output stays in the session log files.
+Use `ws session run --inherit-env -- <cmd>` to keep inherited environment values out of process arguments.
+The Loop runner and orchestrator use this flag when the installed CLI lists it in `session run --help`.
+They retain `--env K=V` forwarding for older binaries. Install milestone 4 to remove that argument exposure.
 SIGTERM, SIGINT and SIGHUP stop the session group. The client waits for the recorded exit before it exits.
 The daemon persists the process id, process group and process start identity in `session.running`.
 After a restart, it adopts each matching live headless process and polls its liveness.
