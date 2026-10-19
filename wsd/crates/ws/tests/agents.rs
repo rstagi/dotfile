@@ -22,6 +22,218 @@ struct Sandbox {
 }
 
 #[test]
+fn start_api_rejects_invalid_places_and_names_before_creating_resources() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path();
+    let file = directory.join("document");
+    fs::write(&file, "text").unwrap();
+    for body in [
+        json!({"agent":"claude"}),
+        json!({"cwd":directory, "scratch":true, "agent":"claude"}),
+        json!({"scratch":false, "agent":"claude"}),
+        json!({"scratch":true, "agent":"unknown"}),
+        json!({"cwd":file, "agent":"claude"}),
+        json!({"cwd":directory.join("missing"), "agent":"claude"}),
+        json!({"scratch":true, "agent":"claude", "name":"../escape"}),
+        json!({"scratch":true, "agent":"claude", "name":"me"}),
+        json!({"scratch":true, "agent":"claude", "name":""}),
+    ] {
+        let response = common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/sessions/start",
+            &body.to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 400"), "{body}: {response}");
+    }
+    assert!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!directory.join(".ws/scratch").exists());
+    assert_eq!(
+        sandbox.tmux(&["list-sessions", "-F", "#{session_name}"]),
+        "keepalive"
+    );
+}
+
+#[test]
+fn directory_agents_share_a_tmux_session_and_restart_in_the_same_place() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("plain-dir");
+    fs::create_dir(&directory).unwrap();
+    let directory = directory.canonicalize().unwrap();
+    let alias = sandbox.home.path().join("directory-alias");
+    std::os::unix::fs::symlink(&directory, &alias).unwrap();
+    let mut agents = Vec::new();
+    let mut tmux_session = String::new();
+    for cwd in [&directory, &alias] {
+        let response = common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/sessions/start",
+            &json!({"cwd":cwd, "agent":"grok", "prompt":"First turn only."}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        let (agent, stream) = sandbox.capture();
+        let id = agent["id"].as_str().unwrap();
+        let window = sandbox.window(id);
+        let grouped = sandbox.tmux(&["display-message", "-p", "-t", &window, "#{session_name}"]);
+        if tmux_session.is_empty() {
+            tmux_session = grouped.clone();
+        }
+        assert_eq!(grouped, tmux_session);
+        agents.push((agent, stream));
+    }
+    let identity = agents[0].0["id"].as_str().unwrap().to_owned();
+    let id = identity.as_str();
+    let old_window = sandbox.window(id);
+    // Completion preserves the window. A later clean process exit requires a new launch.
+    let done = sandbox
+        .command()
+        .env("WS_SESSION_ID", id)
+        .arg("done")
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "{done:?}");
+    assert_eq!(sandbox.window(id), old_window);
+    agents[0].1.write_all(b"0").unwrap();
+    sandbox.wait_for(|| !sandbox.events(id, "exit").is_empty());
+    let sent = sandbox.output(&["send", id, "Resume this directory."]);
+    assert_eq!(sent.status.code(), Some(75), "{sent:?}");
+    let (restarted, _running) = sandbox.capture();
+    assert_eq!(restarted["id"], id);
+    assert_eq!(restarted["cwd"], directory.to_str().unwrap());
+    assert!(
+        !restarted["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("First turn only."))
+    );
+    let window = sandbox.window(id);
+    assert_ne!(window, old_window);
+    assert_eq!(
+        sandbox.tmux(&["display-message", "-p", "-t", &window, "#{session_name}"]),
+        tmux_session
+    );
+    assert!(sandbox.json(&["show", id, "--json"])["workspace_id"].is_null());
+    assert!(
+        sandbox
+            .json(&["list", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn start_api_creates_named_and_unnamed_scratch_directories() {
+    let sandbox = Sandbox::new();
+    for name in [Some("draft"), None] {
+        let response = common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/sessions/start",
+            &json!({"scratch":true, "agent":"claude", "name":name}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        let started: Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let id = started["session_id"].as_str().unwrap();
+        let suffix = &id[id.len() - 8..];
+        let leaf = name.map_or_else(|| suffix.to_owned(), |name| format!("{name}-{suffix}"));
+        let expected = sandbox
+            .home
+            .path()
+            .join(".ws/scratch")
+            .join(leaf)
+            .canonicalize()
+            .unwrap();
+        let (agent, _running) = sandbox.capture();
+        assert_eq!(agent["cwd"], expected.to_str().unwrap());
+        let session = sandbox.json(&["show", id, "--json"]);
+        assert_eq!(session["cwd"], expected.to_str().unwrap());
+        assert!(session["workspace_id"].is_null());
+        assert!(
+            sandbox
+                .json(&["list", "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn start_api_runs_an_agent_in_a_directory_without_registering_a_workspace() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("notes and plans");
+    fs::create_dir(&directory).unwrap();
+    let directory = directory.canonicalize().unwrap();
+    let before = sandbox.json(&["list", "--json"]);
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/sessions/start",
+        &json!({"cwd":directory, "agent":"codex", "name":"notes", "prompt":"Read these notes."})
+            .to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    let started: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let id = started["session_id"].as_str().unwrap();
+    let (agent, _running) = sandbox.capture();
+    assert_eq!(agent["id"], id);
+    assert_eq!(agent["agent"], "codex");
+    assert_eq!(agent["cwd"], directory.to_str().unwrap());
+    assert!(
+        agent["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Read these notes."))
+    );
+    let session = sandbox.json(&["show", id, "--json"]);
+    assert_eq!(session["name"], "notes");
+    assert_eq!(session["cwd"], directory.to_str().unwrap());
+    assert!(session["workspace_id"].is_null());
+    assert_eq!(sandbox.json(&["list", "--json"]), before);
+    let window = sandbox.window(id);
+    assert_eq!(started["window_id"], window);
+    assert_eq!(
+        sandbox.tmux(&["show-option", "-wqv", "-t", &window, "@ws_path"]),
+        directory.to_str().unwrap()
+    );
+    let tmux_session = sandbox.tmux(&["display-message", "-p", "-t", &window, "#{session_name}"]);
+    assert!(
+        tmux_session.starts_with("notes and plans-"),
+        "{tmux_session}"
+    );
+    assert_eq!(tmux_session.len(), "notes and plans-".len() + 6);
+    assert_eq!(
+        sandbox.tmux(&["show-option", "-qv", "-t", &tmux_session, "@ws_path"]),
+        directory.to_str().unwrap()
+    );
+    let done = sandbox
+        .command()
+        .env("WS_SESSION_ID", id)
+        .arg("done")
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "{done:?}");
+    assert_eq!(sandbox.window(id), window);
+    assert_eq!(
+        sandbox.events(id, "session.created")[0].body["spawned"].as_bool(),
+        None
+    );
+    let sent = sandbox.output(&["send", id, "Continue these notes."]);
+    assert_eq!(sent.status.code(), Some(75), "{sent:?}");
+    assert_eq!(sandbox.json(&["show", id, "--json"])["state"], "running");
+    assert_eq!(sandbox.window(id), window);
+}
+
+#[test]
 fn a_session_window_prepares_an_agent_without_a_workspace() {
     let (sandbox, id, window, pane) = session_window_sandbox();
     let response = common::request(

@@ -419,6 +419,7 @@ impl Sessions {
                 crate::workspaces::LaunchContext {
                     resume: None,
                     run: None,
+                    start: None,
                     spawn: Some(crate::workspaces::SpawnOrigin {
                         id: child,
                         trigger_id: trigger.id,
