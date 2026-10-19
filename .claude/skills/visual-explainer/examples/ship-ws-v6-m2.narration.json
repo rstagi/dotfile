@@ -1,44 +1,69 @@
 {
+  "version": 2,
   "mode": "ship",
-  "sections": [
+  "stops": [
     {
-      "id": "intro",
-      "text": "This video explains milestone two of W S version six, at its merge gate. In this milestone, a Rust daemon called W S D replaces the Z shell version of W S on one machine. Thirty-five of thirty-six Done when checks are met. The final review is a comment, with seven findings still open."
+      "focus": ["all"],
+      "title": "Milestone two at a glance",
+      "text": "This video explains milestone two of W S version six, at its merge gate. In this milestone, a Rust daemon called W S D replaces the Z shell version of W S on one machine. The graph shows the outcome in the middle, and around it the changes, the delivered phases, the deviations, the setbacks, the review, the hand test and the rollback."
     },
     {
-      "id": "summary",
-      "text": "Here is the outcome. The W S command now runs on one Rust daemon instead of shell scripts and lock files. The daemon owns sessions, logs, messages, dependency edges, triggers and a local MCP server. It also runs Loop runners as W S sessions. The command names, the flags, the output and the exit codes stay the same. To go back, one command switches to the Z shell backend. The work took thirty-five work phases and one review phase."
+      "focus": ["summary"],
+      "text": "Here is the outcome. The W S command now runs on one Rust daemon instead of shell scripts and lock files. The daemon owns sessions, logs, messages, dependency edges, triggers and a local MCP server. The command names, the flags, the output and the exit codes stay the same. To go back, one command switches to the Z shell backend."
     },
     {
-      "id": "changes",
-      "text": "The changes share one idea: one process owns all state. One binary holds the command line, the daemon and the MCP server. Each session has an append-only log with a hash chain. A SQLite registry is a projection that the daemon can rebuild from those logs. Sessions survive a closed terminal and a daemon restart. One prepare function builds every agent launch, so hooks and MCP come from one place. Messages are log events with confirmed delivery. The installer adds a launch agent that keeps the daemon running. The page lists all fourteen changes, with how and why."
+      "focus": ["group-changes"],
+      "title": "The changes",
+      "text": "The changes share one idea: one process owns all state. Each session has an append-only log with a hash chain. A SQLite registry is a projection that the daemon can rebuild from those logs. Sessions survive a closed terminal and a daemon restart. Messages are log events with confirmed delivery. Each change links to the phases that built it."
     },
     {
-      "id": "delivered",
-      "text": "Now the Done when checks. Thirty-five of thirty-six are met. Look first at the one that is partial. Phase thirty-eight asks for a non-blocking review verdict and a hand check before the merge. The review is a comment, which does not block. The hand check is still yours to do. It is the hand-test list in this video and on the page. The met rows cover the log, the registry, sessions, messages, triggers, the importer, MCP, Loop runners and the installer."
+      "focus": ["group-delivered"],
+      "title": "Done when checks",
+      "text": "Thirty-five of thirty-six Done when checks are met. The met rows cover the log, the registry, sessions, messages, triggers, the importer, MCP, Loop runners and the installer."
     },
     {
-      "id": "deviations",
-      "text": "Three things differ from the plan. First, the plan put the install before the dry run of the import. But the install starts the daemon, and the daemon imports at its first start. So the dry run must come first, and there is no separate import step. Second, the latency test of the hook ingest now runs only when you set a flag, because it failed at random under load. Third, a new phase, seventy-one, joins milestone three to fix finding F4."
+      "focus": ["phase-38"],
+      "title": "The partial check",
+      "text": "Look at the one that is partial. Phase thirty-eight asks for a non-blocking review verdict and a hand check before the merge. The review is a comment, which does not block. The hand check is still yours to do."
     },
     {
-      "id": "setbacks",
-      "text": "Now the setbacks: the costs on the way, also where the result matches the plan. The milestone took forty-four attempts for thirty-six phases, with nine retries, two model escalations, three questions and one human-in-the-loop pause, in about twenty hours. Look at phase twenty-one first. Its tests failed at random while other loops loaded the machine, so the orchestrator asked a human. The fix made the tests wait for an event instead of a clock, and then twenty full Verify runs passed. Phase thirteen needed a stronger model to fix a lock file race. A Codex usage limit cost two attempts in phase twenty-eight. The page lists all nine setbacks with their lessons."
+      "focus": ["group-deviations"],
+      "title": "Three deviations",
+      "text": "Three things differ from the plan. First, the plan put the install before the dry run of the import. But the install starts the daemon, and the daemon imports at its first start. So the dry run must come first. Second, the latency test of the hook ingest now runs only when you set a flag, because it failed at random under load. Third, a new phase, seventy-one, joins milestone three to fix finding F4."
     },
     {
-      "id": "reviews",
-      "text": "The review used the max tier of Adversarial Review, with two outer rounds. The final Opus review posted a comment, so nothing blocks the merge. One major finding is deferred. W S new with an agent can fail under load, because tmux cannot find the new window. Run the command again. Phase seventy-one fixes it in milestone three. Six minor findings stay open. They cover test cleanup, tmux sockets, the test runner output and the latency gates. The repository Verify passed, and so did all one thousand and thirteen W S shell tests."
+      "focus": ["phase-21", "setback-2", "setback-3", "setback-4"],
+      "title": "Phase twenty-one",
+      "text": "Now the setbacks, the costs on the way. Phase twenty-one cost the most. Its tests failed at random while other loops loaded the machine, so the orchestrator asked a human. The fix made the tests wait for an event instead of a clock, and then twenty full Verify runs passed."
     },
     {
-      "id": "handTest",
-      "text": "Before you merge, test it by hand. The order matters. First, check out the pull request head in your dotfile folder, because the installer builds from there. You can back up the Z shell state. Then build the release binary and run the import as a dry run. Do this before the install, because the install starts the daemon, and the daemon imports at once. Then install, and check that the daemon runs and that the import is complete. After that, send a message, drive W S from an agent through MCP, run a handoff with a trigger, and restart the daemon under a headless session. Last, merge the pull request, update your dotfile folder, and resume the Loop."
+      "focus": ["group-setbacks"],
+      "title": "The other setbacks",
+      "text": "The milestone took forty-four attempts for thirty-six phases, with nine retries, two model escalations, three questions and one human-in-the-loop pause, in about twenty hours. Phase thirteen needed a stronger model to fix a lock file race. A Codex usage limit cost two attempts in phase twenty-eight."
     },
     {
-      "id": "rollback",
-      "text": "If something goes wrong, roll back in three steps. First, switch W S back to the Z shell backend while the daemon still runs. Then stop the daemon with launchctl. It starts again at the next login. To return to Rust later, install again first, then select the Rust backend."
+      "focus": ["review-1", "finding-f4"],
+      "title": "The review",
+      "text": "The review used the max tier of Adversarial Review, with two outer rounds. The final Opus review posted a comment, so nothing blocks the merge. One major finding is deferred. W S new with an agent can fail under load, because tmux cannot find the new window. Run the command again. Phase seventy-one fixes it in milestone three. Six minor findings stay open."
     },
     {
-      "id": "outro",
+      "focus": ["step-3", "step-4", "phase-28"],
+      "title": "Dry run before the install",
+      "text": "Before you merge, test it by hand. The order matters. Build the release binary and run the import as a dry run first. Then install. The install starts the daemon, and the daemon imports at once, so a later dry run only shows the stored plan."
+    },
+    {
+      "focus": ["group-hand-test"],
+      "title": "The hand test",
+      "text": "After the install, check that the daemon runs and that the import is complete. Then send a message, drive W S from an agent through MCP, run a handoff with a trigger, and restart the daemon under a headless session. Last, merge the pull request, update your dotfile folder, and resume the Loop. Each step links to the phases that it checks."
+    },
+    {
+      "focus": ["group-rollback"],
+      "title": "Rollback",
+      "text": "If something goes wrong, roll back in three steps. First, switch W S back to the Z shell backend while the daemon still runs. Then stop the daemon with launchctl. To return to Rust later, install again first, then select the Rust backend."
+    },
+    {
+      "focus": ["all"],
+      "title": "Explore the milestone",
       "text": "That is milestone two of W S version six. The page has every Done when row, every finding and every hand-test command with its code reference. Open the page before you merge the pull request."
     }
   ]

@@ -45,9 +45,9 @@
       "title": "One explainer for plans, gates and reviews",
       "outcome": "All three callers use the shared renderer. No Remotion, MP4 or browser render step remains.",
       "phases": [
-        { "number": 1, "title": "Add the renderer, schemas and template test-first", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "estimate": "20-25 min", "doneWhen": "`node --test tests/visual-explainer.test.mjs` covers field-path errors, escaping, both modes and the hand-test reference rule." },
-        { "number": 2, "title": "Write the skill text and the example props", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [1], "estimate": "15-20 min", "doneWhen": "The STE linter reports no hard violations. The examples render." },
-        { "number": 3, "title": "Connect pr-review, multiphase-plan and loop-execute", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [2], "estimate": "20-25 min", "doneWhen": "Each caller runs the right mode. A failed explainer never blocks a park or a resume." },
+        { "number": 1, "title": "Add the renderer, schemas and template test-first", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "estimate": "20-25 min", "doneWhen": "`node --test tests/visual-explainer.test.mjs` covers field-path errors, escaping, both modes and the hand-test reference rule.", "components": ["render.mjs", "page.html", "Schemas"] },
+        { "number": 2, "title": "Write the skill text and the example props", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [1], "estimate": "15-20 min", "doneWhen": "The STE linter reports no hard violations. The examples render.", "components": ["SKILL.md", "Schemas"] },
+        { "number": 3, "title": "Connect pr-review, multiphase-plan and loop-execute", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [2], "estimate": "20-25 min", "doneWhen": "Each caller runs the right mode. A failed explainer never blocks a park or a resume.", "components": ["pr-review", "multiphase-plan", "loop-execute"] },
         { "number": 4, "title": "Review milestone 1", "kind": "pr-review", "dependsOn": [3] }
       ]
     }
@@ -56,6 +56,8 @@
     {
       "decision": "Animate with SVG and CSS inside the page.",
       "why": "The page opens anywhere, needs no render step, and respects reduced motion.",
+      "phases": [1],
+      "components": ["page.html"],
       "rejected": [
         { "option": "Remotion video", "reason": "Each run built a new project in `/tmp`. It was slow, each output looked different, and it broke easily." },
         { "option": "MP4 render", "reason": "It needs ffmpeg or a browser on the machine." }
@@ -64,6 +66,8 @@
     {
       "decision": "The agent writes only props JSON.",
       "why": "Fixed scenes give the same look every run. One escaping function protects every field.",
+      "phases": [1, 2],
+      "components": ["render.mjs", "Schemas"],
       "rejected": [
         { "option": "The agent writes HTML each run", "reason": "Each page differs, and props text could inject markup or script." }
       ]
@@ -71,14 +75,16 @@
     {
       "decision": "A `ship` hand-test step must carry a `path:line` reference.",
       "why": "The milestone 2 checklist had the install before the dry run. The reference forces a read of the code.",
+      "phases": [1, 2],
+      "components": ["Schemas", "SKILL.md"],
       "rejected": [
         { "option": "Free-text checklist", "reason": "Nothing forces the author to check the order against the code." }
       ]
     }
   ],
   "risks": [
-    { "risk": "A long plan makes a long page.", "impact": "low", "likelihood": "medium", "mitigation": "Sticky section navigation and a Play tour." },
-    { "risk": "An explainer failure blocks a milestone park or resume.", "impact": "high", "likelihood": "low", "mitigation": "The explainer runs best-effort. The notification states the failure." },
-    { "risk": "A wrong code reference looks like proof.", "impact": "medium", "likelihood": "medium", "mitigation": "The skill tells the author to open each referenced line before writing the command." }
+    { "risk": "A long plan makes a long page.", "impact": "low", "likelihood": "medium", "mitigation": "Sticky section navigation and a Play tour.", "mitigatedBy": [1], "components": ["page.html"] },
+    { "risk": "An explainer failure blocks a milestone park or resume.", "impact": "high", "likelihood": "low", "mitigation": "The explainer runs best-effort. The notification states the failure.", "mitigatedBy": [3], "components": ["loop-execute"] },
+    { "risk": "A wrong code reference looks like proof.", "impact": "medium", "likelihood": "medium", "mitigation": "The skill tells the author to open each referenced line before writing the command.", "mitigatedBy": [2], "components": ["SKILL.md"] }
   ]
 }

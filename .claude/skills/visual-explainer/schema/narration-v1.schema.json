@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "visual-explainer/narration-v1.schema.json",
+  "title": "visual-explainer narration, version 1 (legacy)",
+  "description": "The legacy narration: one entry for each section. Each section becomes one stop on its cluster of graph nodes. Write new narrations as version 2 (narration.schema.json). render-video.mjs also checks that each id belongs to the mode, appears once and has its props section, and that the text has at most 9000 characters in total.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode", "sections"],
+  "properties": {
+    "mode": { "enum": ["plan", "ship"] },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text"],
+        "properties": {
+          "id": {
+            "description": "plan: intro, goal, architecture, milestones, decisions, risks, outro. ship: intro, summary, changes, delivered, deviations, setbacks, reviews, handTest, rollback, outro.",
+            "enum": ["intro", "goal", "architecture", "milestones", "decisions", "risks", "summary", "changes", "delivered", "deviations", "setbacks", "reviews", "handTest", "rollback", "outro"]
+          },
+          "text": { "type": "string", "minLength": 1, "maxLength": 1500 }
+        }
+      }
+    }
+  }
+}

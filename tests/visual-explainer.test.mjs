@@ -7,6 +7,7 @@ import path from "node:path";
 
 const SKILL = path.join(import.meta.dirname, "..", ".claude", "skills", "visual-explainer");
 const CLI = path.join(SKILL, "scripts", "render.mjs");
+const { buildGraph } = await import(path.join(SKILL, "scripts", "graph.mjs"));
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "visual-explainer-"));
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
@@ -63,15 +64,31 @@ const planProps = (over = {}) => ({
   ...over,
 });
 
-function render(props, { args = [] } = {}) {
+function render(props, { args = [], narration } = {}) {
   const dir = fs.mkdtempSync(path.join(TMP, "case-"));
   const propsFile = path.join(dir, "props.json");
   fs.writeFileSync(propsFile, typeof props === "string" ? props : JSON.stringify(props));
+  if (narration !== undefined) fs.writeFileSync(path.join(dir, "narration.json"), typeof narration === "string" ? narration : JSON.stringify(narration));
   const out = path.join(dir, "out");
   const target = args.includes("--check") ? [] : ["--out", out];
-  const res = spawnSync(process.execPath, [CLI, "--props", propsFile, ...target, ...args], { encoding: "utf8" });
+  const res = spawnSync(process.execPath, [CLI, "--props", propsFile, ...target, ...args.map((a) => a.replace("<dir>", dir))], { encoding: "utf8" });
   const page = path.join(out, "index.html");
   return { ...res, dir, page, html: fs.existsSync(page) ? fs.readFileSync(page, "utf8") : null };
+}
+
+// The graph data of the page: the JSON in <script type="application/json" id="ve-data">.
+function pageData(html) {
+  const match = /<script type="application\/json" id="ve-data">([^<]*)<\/script>/.exec(html);
+  assert.ok(match, "the page has its graph data");
+  return JSON.parse(match[1]);
+}
+
+// The outline entry of one node: from its <li> to the next one.
+function outlineEntry(html, id) {
+  const start = html.indexOf(`<li class="o-node" id="o-${id}"`);
+  assert.ok(start > 0, `outline entry of ${id}`);
+  const end = html.indexOf("</li>\n", start);
+  return html.slice(start, end);
 }
 
 test("ship: valid props write one index.html and exit 0", () => {
@@ -115,7 +132,25 @@ test("validation: prints every error on its own line with its field path", () =>
   assert.match(r.stderr, /\$\.extra: unknown field/);
 });
 
-test("ship: renders every section in order with the props content", () => {
+// The page was a report with fixed sections. Now it is the concept graph: these tests replace the
+// section-order tests of the report.
+test("page: the page is the graph, not a report: graph data, one svg node per graph node, no report sections", () => {
+  const props = shipProps({ deviations: [{ planned: "Fix F4 in this milestone", actual: "F4 moved to Phase 71", reason: "The fix needs the tmux driver rework." }] });
+  const r = render(props);
+  assert.equal(r.status, 0, r.stderr);
+  const data = pageData(r.html);
+  const graph = buildGraph(props);
+  assert.deepEqual(data.nodes.map((n) => [n.id, n.kind, n.x, n.y, n.w, n.h]), graph.nodes.map((n) => [n.id, n.kind, n.x, n.y, n.w, n.h]), "the layout of graph.mjs");
+  assert.deepEqual(data.edges.map((e) => `${e.from}>${e.to}`), graph.edges.map((e) => `${e.from}>${e.to}`));
+  assert.deepEqual([data.width, data.height], [graph.width, graph.height]);
+  for (const node of graph.nodes) {
+    assert.match(r.html, new RegExp(`<g class="n k-${node.kind}[^"]*" data-id="${node.id}" transform="translate\\(${node.x} ${node.y}\\)"`), node.id);
+  }
+  assert.match(r.html, new RegExp(`<svg class="graph" id="graph" viewBox="0 0 ${graph.width} ${graph.height}"`));
+  assert.ok(!/class="scene"|<nav class="toc"|<h2>Outcome<\/h2>|<h2>Hand test<\/h2>/.test(r.html), "no report sections");
+});
+
+test("page: every fact of the props is in the outline, escaped, with inline code and links", () => {
   const props = shipProps({
     deviations: [{ planned: "Fix F4 in this milestone", actual: "F4 moved to Phase 71", reason: "The fix needs the tmux driver rework." }],
     handTest: [
@@ -137,21 +172,58 @@ test("ship: renders every section in order with the props content", () => {
   };
   const r = render(props);
   assert.equal(r.status, 0, r.stderr);
-  const order = ["Outcome", "Delivered", "Deviations", "Review", "Hand test", "Rollback"]
-    .map((title) => r.html.indexOf(`<h2>${title}</h2>`));
-  assert.ok(order.every((i) => i > 0), `all sections present: ${order}`);
-  assert.deepEqual([...order].sort((a, b) => a - b), order, "sections keep their order");
+  const outline = r.html.slice(r.html.indexOf('id="outline"'));
   for (const text of [
-    "GET /widgets returns 200", "F4 moved to Phase 71", "One major finding stays open.",
-    "Window lookup fails under load", "212 tests", "git revert -m1 &lt;merge-sha&gt;",
+    "GET /widgets returns 200", "F4 moved to Phase 71", "The fix needs the tmux driver rework.", "One major finding stays open.",
+    "Window lookup fails under load", "212 tests", "git revert -m1 &lt;merge-sha&gt;", "./wsd migrate --dry-run",
+    "wsd/src/import.rs:50", "install.sh:412", "The dry-run writes nothing.", "Phase 71",
+  ]) assert.ok(outline.includes(text), `the outline shows ${text}`);
+  assert.match(outline, /<code>GET \/widgets<\/code>/, "backticks become inline code");
+  assert.match(outline, /href="https:\/\/github\.com\/acme\/widgets\/pull\/7#pullrequestreview-1"/);
+  assert.ok(outline.indexOf('id="o-finding-f4"') < outline.indexOf('id="o-finding-f2"'), "the major finding comes before the minor one");
+  assert.ok(outline.indexOf('id="o-step-1"') < outline.indexOf('id="o-step-2"'), "hand-test steps keep their order");
+});
+
+test("page: deep links, and an outline of every node grouped by kind in legend order", () => {
+  const props = planProps();
+  const r = render(props);
+  assert.equal(r.status, 0, r.stderr);
+  const graph = buildGraph(props);
+  for (const node of graph.nodes) {
+    const entry = outlineEntry(r.html, node.id);
+    assert.ok(entry.includes(`href="#node=${node.id}"`), `${node.id} has a deep link`);
+  }
+  const kinds = [...r.html.matchAll(/<section class="o-kind" id="o-k-([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(kinds, ["goal", "milestone", "phase", "layer", "component", "decision", "risk"]);
+  assert.match(r.html, /<section class="outline" id="outline" aria-label="Outline">/);
+  const phase2 = outlineEntry(r.html, "phase-2");
+  assert.match(phase2, /<dt>Depends on<\/dt><dd><a class="near-link k-phase" href="#node=phase-1">/, "a connection is a link to its node");
+  assert.match(phase2, /<dt>Unblocks<\/dt><dd><a class="near-link k-phase" href="#node=phase-3">/);
+  assert.match(phase2, /<dt>Part of<\/dt><dd><a class="near-link k-milestone" href="#node=milestone-1">/);
+  assert.match(r.html, /addEventListener\("hashchange"/, "the script follows the URL hash");
+});
+
+test("page: the plan graph marks gates, statuses and risk impact on its nodes", () => {
+  const r = render(planProps());
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.html, /<g class="n k-phase t-warn" data-id="phase-3"[^>]*>[\s\S]*?P3 · review · merge gate/, "the gate phase");
+  assert.match(r.html, /<g class="n k-risk t-bad" data-id="risk-2"/, "a high-impact risk");
+  for (const text of ["Serve widgets over HTTP.", "Widget store", "reads widgets", "Read path", "Widgets are readable.", "Add the widget store",
+    "Store tests pass", "15-20 min", "acme/widgets", "Postgres", "Needs a server for a local tool.", "WAL mode.", "loop-widgets-2026-10-18-1200",
   ]) assert.ok(r.html.includes(text), `page shows ${text}`);
-  assert.match(r.html, /<code>GET \/widgets<\/code>/, "backticks become inline code");
-  assert.match(r.html, /href="https:\/\/github\.com\/acme\/widgets\/pull\/7#pullrequestreview-1"/);
-  const dry = r.html.indexOf("./wsd migrate --dry-run");
-  const install = r.html.indexOf("./install.sh ws");
-  assert.ok(dry > 0 && install > dry, "hand-test steps keep their order");
-  assert.ok(r.html.includes("wsd/src/import.rs:50") && r.html.includes("install.sh:412"), "each step shows its code reference");
-  assert.ok(r.html.indexOf(">F4<") < r.html.indexOf(">F2<"), "the major finding comes before the minor one");
+  const risks = [...r.html.matchAll(/<li class="o-node" id="o-(risk-\d)"/g)].map((m) => m[1]);
+  assert.deepEqual(risks, ["risk-2", "risk-1"], "high-impact risks come first");
+});
+
+test("page: without a narration, the tour visits the root and each group between two overviews", () => {
+  const r = render(planProps());
+  assert.equal(r.status, 0, r.stderr);
+  const { stops } = pageData(r.html);
+  assert.deepEqual(stops.map((s) => s.overview), [true, false, false, false, false, false, true]);
+  assert.deepEqual(stops[1].nodes, ["goal"]);
+  assert.deepEqual(stops.slice(2, 6).map((s) => s.title), ["Timeline", "Architecture", "Decisions", "Risks"]);
+  assert.ok(stops.every((s) => s.text.length > 0), "every stop has a caption");
+  assert.match(r.html, /<button type="button" class="btn" data-tour>Play tour<\/button>/);
 });
 
 const processProps = {
@@ -168,39 +240,30 @@ const setbackProps = [
   { kind: "replan", title: "Plan edit", what: "Phase 71 was added.", resolution: "The plan moved F4 to milestone 3." },
 ];
 
-test("ship: the setbacks scene sits between deviations and review, with the process numbers and one card per setback", () => {
+test("ship: the process numbers and each setback are nodes with all their facts", () => {
   const r = render(shipProps({ process: processProps, setbacks: setbackProps }));
   assert.equal(r.status, 0, r.stderr);
-  const order = ["Deviations", "Setbacks and hiccups", "Review"].map((title) => r.html.indexOf(`<h2>${title}</h2>`));
-  assert.ok(order.every((i) => i > 0), `all sections present: ${order}`);
-  assert.deepEqual([...order].sort((a, b) => a - b), order, "setbacks come after deviations and before review");
-  assert.match(r.html, /<a href="#s-setbacks">Setbacks and hiccups<\/a>/, "the nav links the scene");
-  const scene = r.html.slice(order[1], order[2]);
-  for (const [value, label] of [["36", "phases"], ["44", "attempts"], ["9", "retries"], ["2", "escalations"], ["3", "questions"],
-    ["1", "HIL"], ["0", "merge conflicts"], ["2", "review rounds"], ["1", "fix rounds"], ["20h 21m", "wall time"]]) {
-    assert.match(scene, new RegExp(`<b>${value}</b><span>${label}</span>`), `stat ${label}`);
+  const process = outlineEntry(r.html, "process");
+  for (const stat of ["36 phases", "44 attempts", "9 retries", "2 escalations", "3 questions", "1 HIL", "0 merge conflicts", "2 review rounds", "1 fix rounds", "20h 21m wall time"]) {
+    assert.ok(process.includes(stat), `stat ${stat}`);
   }
-  for (const text of [
-    "Verify flaked under load", "P21", "6 attempts, 134 min", "The notifications tests failed in about half of the full Verify runs.",
-    "The human chose deterministic tests.", "Gate wall-clock tests on events, not on sleeps.", "Phase 71 was added.",
-  ]) assert.ok(scene.includes(text), `scene shows ${text}`);
-  assert.match(scene, /<span class="kind kind-hil">hil<\/span>/, "a kind chip");
-  assert.match(scene, /<span class="kind kind-replan">replan<\/span>/);
-  assert.equal((scene.match(/<article class="card setback/g) ?? []).length, 2, "one card per setback");
+  const first = outlineEntry(r.html, "setback-1");
+  for (const text of ["Verify flaked under load", "P21", "6 attempts, 134 min", "The notifications tests failed in about half of the full Verify runs.",
+    "The human chose deterministic tests.", "Gate wall-clock tests on events, not on sleeps."]) assert.ok(first.includes(text), `setback shows ${text}`);
+  assert.ok(outlineEntry(r.html, "setback-2").includes("Phase 71 was added."));
+  assert.match(r.html, /<g class="n k-setback t-info" data-id="setback-1"/, "a HIL setback");
+  assert.ok(pageData(r.html).groups.some((g) => g.id === "group-setbacks"));
 });
 
-test("ship: the setbacks scene shows only what it has, and is omitted without process and setbacks", () => {
-  const none = render(shipProps());
-  assert.equal(none.status, 0, none.stderr);
-  assert.ok(!none.html.includes("<h2>Setbacks and hiccups</h2>") && !none.html.includes('href="#s-setbacks"'), "no scene and no nav link");
+test("ship: without process and setbacks there is no setbacks group", () => {
+  const r = render(shipProps());
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!pageData(r.html).groups.some((g) => g.id === "group-setbacks"));
+  assert.ok(!r.html.includes('id="o-k-setback"') && !r.html.includes('id="o-process"') && !r.html.includes('data-id="process"'));
   const numbersOnly = render(shipProps({ process: { attempts: 3 } }));
   assert.equal(numbersOnly.status, 0, numbersOnly.stderr);
-  assert.match(numbersOnly.html, /<b>3<\/b><span>attempts<\/span>/);
-  assert.ok(!numbersOnly.html.includes("<span>phases</span>"), "an absent number is not shown");
-  assert.match(numbersOnly.html, /No setbacks\./);
-  const cardsOnly = render(shipProps({ setbacks: [setbackProps[1]] }));
-  assert.equal(cardsOnly.status, 0, cardsOnly.stderr);
-  assert.ok(cardsOnly.html.includes("<h2>Setbacks and hiccups</h2>") && !cardsOnly.html.includes('class="stats'), "cards without a stat strip");
+  assert.ok(outlineEntry(numbersOnly.html, "process").includes("3 attempts"));
+  assert.ok(!outlineEntry(numbersOnly.html, "process").includes("phases"), "an absent number is not shown");
 });
 
 test("ship: setbacks and process are checked against the schema", () => {
@@ -224,13 +287,13 @@ test("escaping: props text cannot inject HTML, script or template slots", () => 
     deviations: [{ planned: evil, actual: "x' onmouseover='alert(4)", reason: "{{HERO}}" }],
     process: { wallTime: evil },
     setbacks: [{ kind: "other", title: evil, what: evil, cost: evil, resolution: evil, lesson: evil }],
-    handTest: [{ command: `echo "${evil}"`, ref: "src/a.js:1", why: evil, expect: evil }],
+    handTest: [{ title: evil, command: `echo "${evil}"`, ref: "src/a.js:1", why: evil, expect: evil }],
   });
   props.reviews[0].findings = [{ id: "F1", severity: "major", title: evil, location: evil, detail: evil, fix: evil, status: "open" }];
   props.reviews[0].validation = [{ command: evil, result: "fail", note: evil }];
-  const r = render(props);
+  const r = render(props, { narration: { version: 2, mode: "ship", stops: [{ focus: ["all"], title: evil, text: evil }] } });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal((r.html.match(/<script/g) ?? []).length, 2, "only the two template scripts exist");
+  assert.equal((r.html.match(/<script/g) ?? []).length, 3, "only the template scripts and the data block exist");
   assert.ok(!/<img/i.test(r.html), "no injected element");
   assert.ok(!/<b>ship<\/b>/.test(r.html), "markup in a title stays text");
   assert.ok(!r.html.includes("' onmouseover='"), "quotes cannot break out of an attribute or text");
@@ -238,6 +301,8 @@ test("escaping: props text cannot inject HTML, script or template slots", () => 
   assert.ok(r.html.includes("&lt;/code&gt;&lt;script&gt;alert(3)&lt;/script&gt;"), "inline code content is escaped");
   assert.ok(r.html.includes("$&amp; $&#39; {{SCENES}}"), "replacement patterns and slot names stay literal");
   assert.ok(r.html.includes("{{HERO}}"), "a slot name inside props is never expanded");
+  const data = pageData(r.html);
+  assert.equal(data.stops[0].title, evil, "the data block keeps the text, with no markup in the page source");
 });
 
 test("escaping: link URLs must be http or https", () => {
@@ -245,25 +310,6 @@ test("escaping: link URLs must be http or https", () => {
   const r = render(props);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /\$\.meta\.links\[0\]\.url: must match .*http or https URL/);
-});
-
-test("plan: renders goal, architecture, timeline, decisions and risks in order", () => {
-  const r = render(planProps());
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.html, /<title>Widget effort plan<\/title>/);
-  assert.match(r.html, /<body class="mode-plan">/);
-  const order = ["Goal", "Architecture", "Timeline", "Decisions", "Risks"].map((t) => r.html.indexOf(`<h2>${t}</h2>`));
-  assert.ok(order.every((i) => i > 0), `all sections present: ${order}`);
-  assert.deepEqual([...order].sort((a, b) => a - b), order, "sections keep their order");
-  for (const text of [
-    "Serve widgets over HTTP.", "Widget store", "reads widgets", "Read path", "Widgets are readable.",
-    "Add the widget store", "Store tests pass", "15-20 min", "acme/widgets", "Postgres",
-    "Needs a server for a local tool.", "WAL mode.", "loop-widgets-2026-10-18-1200",
-  ]) assert.ok(r.html.includes(text), `page shows ${text}`);
-  const phases = ["Add the widget store", "Serve GET /widgets", "Review milestone 1", "Accept POST /widgets"].map((t) => r.html.indexOf(t));
-  assert.deepEqual([...phases].sort((a, b) => a - b), phases, "phases keep plan order");
-  assert.match(r.html, /merge gate/i, "the gate phase is marked");
-  assert.ok(r.html.indexOf("Lock contention") < r.html.indexOf("Schema drift"), "high-impact risks come first");
 });
 
 test("plan: a decision without a rejected option is invalid", () => {
@@ -287,8 +333,9 @@ for (const [mode, props] of [["plan", planProps()], ["ship", shipProps()]]) {
     assert.match(r.html, /\nbody \{[^}]*background: var\(--bg\);/, "explicit body background");
     assert.match(r.html, /\.wrap \{[^}]*padding: 0 16px;/, "16px side gutter");
     assert.match(r.html, /@media \(prefers-reduced-motion: no-preference\)/, "motion only when allowed");
+    assert.match(r.html, /@media \(max-width: 640px\)/, "a phone layout");
     assert.ok(!/<script[^>]+src=|<link\b|@import|url\(\s*["']?https?:/i.test(r.html), "no external scripts, styles or assets");
-    assert.ok(!/\{\{[A-Z]+\}\}/.test(r.html), "every template slot is filled");
+    assert.ok(!/\{\{[A-Z_]+\}\}/.test(r.html), "every template slot is filled");
   });
 }
 
@@ -304,7 +351,7 @@ test("--check validates without writing a page", () => {
 test("usage errors exit 2", () => {
   const res = spawnSync(process.execPath, [CLI], { encoding: "utf8" });
   assert.equal(res.status, 2);
-  assert.match(res.stderr, /usage: render\.mjs --props <file> \(--out <dir> \| --check\)/);
+  assert.match(res.stderr, /usage: render\.mjs --props <file> \(--out <dir> \| --check \| --ids\)/);
 });
 
 test("the committed example props stay valid and render, one per mode at least", () => {

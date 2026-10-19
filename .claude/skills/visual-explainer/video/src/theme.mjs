@@ -20,12 +20,3 @@ export const FONTS = {
   sans: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
   mono: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
 };
-
-// Sizes in px at 1920x1080. The smallest text stays above 16 px on a 6-inch phone in landscape.
-export const TYPE = {
-  hero: 112,
-  title: 76,
-  lead: 54,
-  body: 40,
-  small: 34,
-};

@@ -1,33 +1,54 @@
 {
+  "version": 2,
   "mode": "plan",
-  "sections": [
+  "stops": [
     {
-      "id": "intro",
-      "text": "This video explains the plan for a shared visual explainer. The plan has one milestone with four phases in one lane. It replaces the Remotion video that each run built on its own. Instead, one shared skill renders a fixed web page from a file of facts."
+      "focus": ["all"],
+      "title": "The plan at a glance",
+      "text": "This video explains the plan for a shared visual explainer. The graph shows the whole plan. In the middle is the goal. Around it are the timeline, the architecture, the decisions and the risks. The plan has one milestone with four phases in one lane. It replaces the Remotion video that each run built on its own."
     },
     {
-      "id": "goal",
+      "focus": ["goal"],
       "text": "The goal is simple. Every plan, every milestone gate and every pull request review gets the same animated explainer page. The agent writes only one file of facts, the props file. A script with no dependencies checks that file and renders one self-contained page. So every page has the same look."
     },
     {
-      "id": "architecture",
-      "text": "Look at the three layers from top to bottom. At the top are the three callers: multiphase plan, loop execute and pr review. Each one changes, so that it calls the explainer. In the middle is the visual explainer skill, with its instructions and two schemas. A hand-test step must point at a line of code. At the bottom is the renderer. The render script checks the props and fills a fixed template. Two flows connect the parts. Loop execute gets the props from a detached runner. The render script puts escaped scene markup into fixed slots."
+      "focus": ["group-architecture"],
+      "title": "Three layers",
+      "text": "Look at the three layers from top to bottom. At the top are the three callers: multiphase plan, loop execute and pr review. Each one changes, so that it calls the explainer. In the middle is the visual explainer skill, with its instructions and two schemas. At the bottom is the renderer: the render script and the page template."
     },
     {
-      "id": "milestones",
-      "text": "The plan has one milestone: one explainer for plans, gates and reviews. It has four phases in lane A. Phase one adds the renderer, the schemas and the template, test first. Phase two writes the skill text and the example props. Phase three connects the three callers. Each work phase takes fifteen to twenty-five minutes. Phase four reviews the milestone. At the end, all three callers use the shared renderer, and no Remotion step remains."
+      "focus": ["component-loop-execute", "component-render-mjs", "component-page-html"],
+      "title": "From the runner to the page",
+      "text": "Two flows connect the parts. Loop execute gets the props from a detached runner and gives them to the render script. The render script checks the props, escapes every text, and puts the scene markup into fixed slots of the template."
     },
     {
-      "id": "decisions",
-      "text": "Three decisions shape the plan. First, the page animates with SVG and CSS. It opens anywhere and needs no render step. The plan rejects a Remotion video, because each run built a new project, and that was slow and fragile. It also rejects an MP4 render, because that needs extra tools on the machine. Second, the agent writes only props. Fixed scenes give the same look every run, and one escape function protects every field. Third, each hand-test step carries a code reference. That rule makes the author read the code, so the steps come in the right order."
+      "focus": ["group-timeline"],
+      "title": "The timeline",
+      "text": "The plan has one milestone: one explainer for plans, gates and reviews. Its four phases follow one another in lane A. Each work phase takes fifteen to twenty-five minutes. Phase four reviews the milestone. At the end, all three callers use the shared renderer, and no Remotion step remains."
     },
     {
-      "id": "risks",
-      "text": "Now the risks, highest impact first. The biggest risk is that a failed explainer blocks a milestone park or a resume. The mitigation: the explainer is best effort, and the notification states the failure. A medium risk is a wrong code reference that looks like proof. The skill tells the author to open each referenced line first. The last risk is a long page for a long plan. Sticky navigation and a Play tour help the reader."
+      "focus": ["phase-1"],
+      "text": "Phase one does the most work. It adds the renderer, the schemas and the template, test first. Follow its edges: it touches the render script, the page template and the schemas. The tests cover field path errors, escaping, both modes and the code reference rule."
     },
     {
-      "id": "outro",
-      "text": "That is the plan for the shared visual explainer. The page has every phase, every decision and every risk, with the full text. Open the page to read the details and to follow its links."
+      "focus": ["group-decisions"],
+      "title": "Three decisions",
+      "text": "Three decisions shape the plan. First, the page animates with SVG and CSS, so it opens anywhere and needs no render step. The plan rejects a Remotion video, because each run built a new project, and that was slow and fragile. Second, the agent writes only props, so one escape function protects every field. Third, each hand-test step carries a code reference, so the author reads the code and the steps come in the right order."
+    },
+    {
+      "focus": ["risk-2", "phase-3", "component-loop-execute"],
+      "title": "The biggest risk",
+      "text": "The biggest risk is that a failed explainer blocks a milestone park or a resume. Phase three mitigates it in loop execute: the explainer runs best effort, and the notification states the failure."
+    },
+    {
+      "focus": ["risk-3", "risk-1"],
+      "title": "Two smaller risks",
+      "text": "A medium risk is a wrong code reference that looks like proof. The skill text tells the author to open each referenced line first. The last risk is a long page for a long plan. Navigation and a tour help the reader."
+    },
+    {
+      "focus": ["all"],
+      "title": "Explore the plan",
+      "text": "That is the plan for the shared visual explainer. The page has every phase, every decision and every risk, with the full text and all the connections. Open any node on the page to read its facts."
     }
   ]
 }
