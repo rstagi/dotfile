@@ -64,12 +64,12 @@ Process:
 - Triage deferred issues one time each week, not in the PR.
 - Do not raise the severity of an item to put it in the blocking list. When you are not sure, the item is deferred.
 
-## Checks that are not automated yet
+## Deterministic checks
 
-This repository has no CI workflow. These checks are planned, each in its own small PR:
+A new repository sets up these checks in CI from the start:
 
 - Architecture tests: slice boundaries, dependency direction and import cycles.
 - The flag off/on test matrix.
 - The delete test.
 
-Until a check exists, a reviewer can report a probable failure as a deferred issue. It blocks only when a check fails.
+This repository does not add them. It has no feature slices and no CI workflow, and `ws` moves to its own repository later. Here, a reviewer reports a probable failure of these rules as a deferred issue. A check blocks only when it exists and fails.
