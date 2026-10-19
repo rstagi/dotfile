@@ -1,0 +1,17 @@
+{
+  "id": "1",
+  "sources": [
+    "1"
+  ],
+  "event": "exit",
+  "action": "send",
+  "target": "2",
+  "template": "exited {id}",
+  "sender": "",
+  "path": "",
+  "agent": "claude",
+  "status": "pending",
+  "event_offsets": {
+    "1": 1
+  }
+}

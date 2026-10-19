@@ -1,3 +1,6 @@
+#[path = "../../ws-daemon/src/import/fixtures/mod.rs"]
+mod fixtures;
+
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 use serde_json::json;
@@ -11,16 +14,7 @@ fn resumes_a_partial_import_from_its_saved_snapshot_without_duplicate_messages()
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    let capture = Command::new("zsh")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ws-daemon/src/import/fixtures/capture.zsh"
-        ))
-        .arg(&source)
-        .env("HOME", root.path())
-        .output()
-        .unwrap();
-    assert!(capture.status.success(), "{capture:?}");
+    fixtures::copy("messages", &source);
     let output = migrate(root.path(), &source, &state);
     assert!(output.status.success(), "{output:?}");
     let mut plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -144,16 +138,7 @@ fn imports_all_artifacts_and_requeues_interrupted_stop_and_unconfirmed_paste() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");
     let state = root.path().join("state");
-    let capture = Command::new("zsh")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ws-daemon/src/import/fixtures/capture.zsh"
-        ))
-        .arg(&source)
-        .env("HOME", root.path())
-        .output()
-        .unwrap();
-    assert!(capture.status.success(), "{capture:?}");
+    fixtures::copy("messages", &source);
     let before = tree(&source);
     let output = migrate(root.path(), &source, &state);
     assert!(output.status.success(), "{output:?}");

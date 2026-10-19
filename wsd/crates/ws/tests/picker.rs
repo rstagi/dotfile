@@ -1,3 +1,6 @@
+#[path = "../../ws-daemon/src/import/fixtures/mod.rs"]
+mod fixtures;
+
 #[allow(dead_code)]
 mod common;
 
@@ -342,8 +345,8 @@ fn zsh_picker_checks_run_against_rust_data_commands() {
 #[test]
 fn empty_picker_matches_zsh() {
     let sandbox = Sandbox::new();
-    sandbox.parity(&["_rows"]);
-    sandbox.parity(&["_summary"]);
+    sandbox.parity("empty/rows", &["_rows"]);
+    sandbox.parity("empty/summary", &["_summary"]);
 }
 
 #[test]
@@ -353,8 +356,8 @@ fn stopped_workspaces_match_zsh_and_pins_sort_first() {
         ("api/beta", false),
         ("api/alpha", false),
     ]);
-    sandbox.parity(&["_rows"]);
-    sandbox.parity(&["_summary"]);
+    sandbox.parity("stopped/rows", &["_rows"]);
+    sandbox.parity("stopped/summary", &["_summary"]);
     let output = sandbox.command().arg("_rows").output().unwrap();
     let rows = String::from_utf8(output.stdout).unwrap();
     assert!(rows.lines().next().unwrap().contains("📌"));
@@ -378,8 +381,8 @@ fn live_picker_matches_zsh_states_unread_and_active_targets() {
         ("web/zeta", false),
         ("api/orphan", true),
     ]);
-    sandbox.parity(&["_rows"]);
-    sandbox.parity(&["_summary"]);
+    sandbox.parity("live/initial-rows", &["_rows"]);
+    sandbox.parity("live/initial-summary", &["_summary"]);
     let windows = sandbox.server.tmux(
         sandbox.home.path(),
         &["list-windows", "-a", "-F", "#{window_id}"],
@@ -391,14 +394,14 @@ fn live_picker_matches_zsh_states_unread_and_active_targets() {
             &["set", "-wu", "-t", window, "@ws_unread"],
         );
     }
-    sandbox.parity(&["_rows"]);
+    sandbox.parity("live/read-rows", &["_rows"]);
     let output = sandbox.command().arg("_rows").output().unwrap();
     let rows = String::from_utf8(output.stdout).unwrap();
     assert!(rows.lines().nth(1).unwrap().ends_with(windows[1]));
     sandbox
         .server
         .tmux(sandbox.home.path(), &["select-window", "-t", windows[0]]);
-    sandbox.parity(&["_rows"]);
+    sandbox.parity("live/focused-rows", &["_rows"]);
     let output = sandbox.command().arg("_rows").output().unwrap();
     assert!(
         String::from_utf8(output.stdout)
@@ -414,7 +417,7 @@ fn live_picker_matches_zsh_states_unread_and_active_targets() {
             &["set", "-w", "-t", window, "@ws_unread", "1"],
         );
     }
-    sandbox.parity(&["_rows"]);
+    sandbox.parity("live/unread-rows", &["_rows"]);
     let output = sandbox.command().arg("_rows").output().unwrap();
     assert!(
         String::from_utf8(output.stdout)
@@ -483,7 +486,7 @@ fn session_toggle_matches_zsh_expansion_and_collapse() {
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty());
     assert!(sandbox.home.path().join(".ws/show-sessions").exists());
-    sandbox.parity(&["_rows"]);
+    sandbox.parity("sessions/expanded", &["_rows"]);
     let expanded = sandbox.command().arg("_rows").output().unwrap().stdout;
     assert!(String::from_utf8(expanded).unwrap().contains("grok#3"));
     let output = sandbox.command().arg("_toggle_sessions").output().unwrap();
@@ -493,8 +496,8 @@ fn session_toggle_matches_zsh_expansion_and_collapse() {
         sandbox.command().arg("_rows").output().unwrap().stdout,
         collapsed
     );
-    assert!(sandbox.zsh(&["_toggle_sessions"]).is_empty());
-    sandbox.parity(&["_rows"]);
+    assert!(sandbox.run(&["_toggle_sessions"]).is_empty());
+    sandbox.parity("sessions/reexpanded", &["_rows"]);
 }
 
 #[test]
@@ -517,12 +520,12 @@ fn unread_toggle_matches_zsh_and_updates_picker_targets() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty());
-    sandbox.parity(&["_rows"]);
-    sandbox.parity(&["_summary"]);
+    sandbox.parity("unread/marked-rows", &["_rows"]);
+    sandbox.parity("unread/marked-summary", &["_summary"]);
     let rows = String::from_utf8(sandbox.command().arg("_rows").output().unwrap().stdout).unwrap();
     assert!(rows.lines().next().unwrap().ends_with(&window));
-    assert!(sandbox.zsh(&["_unread", &window]).is_empty());
-    sandbox.parity(&["_rows"]);
+    assert!(sandbox.run(&["_unread", &window]).is_empty());
+    sandbox.parity("unread/cleared-rows", &["_rows"]);
     let output = sandbox
         .command()
         .args(["_unread", &window])
@@ -535,9 +538,9 @@ fn unread_toggle_matches_zsh_and_updates_picker_targets() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    sandbox.parity(&["_rows"]);
-    sandbox.parity(&["_unread"]);
-    sandbox.parity(&["_unread", ""]);
+    sandbox.parity("unread/repeated-rows", &["_rows"]);
+    sandbox.parity("unread/no-target", &["_unread"]);
+    sandbox.parity("unread/empty-target", &["_unread", ""]);
 }
 
 #[test]
@@ -568,7 +571,10 @@ fn previews_match_zsh_pane_bytes_and_stopped_git_output() {
         assert!(output.status.success(), "{output:?}");
     }
     std::fs::write(stopped.join("untracked"), "preview fixture").unwrap();
-    sandbox.parity(&["_preview", stopped.to_str().unwrap(), ""]);
+    sandbox.parity(
+        "preview/stopped",
+        &["_preview", stopped.to_str().unwrap(), ""],
+    );
     let window = sandbox
         .server
         .tmux(
@@ -595,19 +601,22 @@ fn previews_match_zsh_pane_bytes_and_stopped_git_output() {
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    sandbox.parity(&[
-        "_preview",
-        sandbox
-            .home
-            .path()
-            .join("worktrees/api/alpha")
-            .to_str()
-            .unwrap(),
-        &window,
-    ]);
-    sandbox.parity(&["_preview", "", &window]);
-    sandbox.parity(&["_preview"]);
-    sandbox.parity(&["_preview", "/missing"]);
+    sandbox.parity(
+        "preview/workspace-pane",
+        &[
+            "_preview",
+            sandbox
+                .home
+                .path()
+                .join("worktrees/api/alpha")
+                .to_str()
+                .unwrap(),
+            &window,
+        ],
+    );
+    sandbox.parity("preview/pane", &["_preview", "", &window]);
+    sandbox.parity("preview/no-target", &["_preview"]);
+    sandbox.parity("preview/missing", &["_preview", "/missing"]);
 }
 
 #[test]
@@ -619,7 +628,7 @@ fn picker_preserves_unicode_and_long_names() {
             true,
         ),
     ]);
-    sandbox.parity(&["_rows"]);
+    sandbox.parity("unicode/rows", &["_rows"]);
 }
 
 #[test]
@@ -667,16 +676,7 @@ fn repository_discovery_matches_zsh_and_preserves_read_only_mapping() {
     )
     .unwrap();
     std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}",
-        home.join("fake-agents").display(),
-        std::env::var("PATH").unwrap()
-    );
-    let zsh = Command::new("zsh").args(["-fc", "source \"$1/ws/lib/workspace.sh\"; source \"$1/ws/lib/picker.sh\"; REGISTRY=\"$HOME/.loop/repos.json\"; WS_REPO_ROOTS=\"\"; pick_repo", "picker"])
-        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.."))
-        .env("HOME", home).env("PATH", &path).current_dir(home).output().unwrap();
-    assert!(zsh.status.success(), "{zsh:?}");
-    let expected = std::fs::read(home.join("repo-candidates")).unwrap();
+    let expected = format!("{}\n", repo.display()).into_bytes();
     let output = sandbox
         .command()
         .args(["new", "--branch", "registry-test", "--detach"])
@@ -767,6 +767,7 @@ impl Sandbox {
 
     fn fixture(workspaces: &[(&str, bool)], live: bool) -> Self {
         let home = common::SandboxRoot::new();
+        fixtures::copy("picker", &home.path().join("picker-fixtures"));
         let socket = home.path().join("ws.sock");
         let server = Server(home.tmux_socket());
         let state = home.path().join("state");
@@ -891,32 +892,34 @@ impl Sandbox {
         command
     }
 
-    fn zsh(&self, args: &[&str]) -> Vec<u8> {
-        let selector = self.home.path().join(".ws/backend");
-        std::fs::write(&selector, "zsh\n").unwrap();
-        let output = Command::new("zsh")
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ws/ws.sh"))
-            .args(args)
-            .env("HOME", self.home.path())
-            .env("WS_HOME", self.home.path().join(".ws"))
-            .env("WS_ROOT", self.home.path().join("worktrees"))
-            .env("WS_TMUX_SOCKET", &self.server.0)
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .output()
-            .unwrap();
-        std::fs::write(&selector, "rust\n").unwrap();
-        assert!(output.status.success(), "zsh {args:?}: {output:?}");
+    fn run(&self, args: &[&str]) -> Vec<u8> {
+        let output = self.command().args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
         output.stdout
     }
 
-    fn parity(&self, args: &[&str]) {
-        let expected = self.zsh(args);
-        let actual = self.command().args(args).output().unwrap();
-        assert!(actual.status.success(), "Rust {args:?}: {actual:?}");
+    fn parity(&self, fixture: &str, args: &[&str]) {
+        let path = self.home.path().join("picker-fixtures").join(fixture);
+        let mut expected = std::fs::read_to_string(path)
+            .unwrap()
+            .replace("@HOME@", self.home.path().to_str().unwrap());
+        if expected.contains("@COMMIT@") {
+            let commit = Command::new("git")
+                .arg("-C")
+                .arg(args[1])
+                .args(["rev-parse", "--short", "HEAD"])
+                .env("HOME", self.home.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(commit.status.success(), "{commit:?}");
+            expected =
+                expected.replace("@COMMIT@", String::from_utf8(commit.stdout).unwrap().trim());
+        }
         assert_eq!(
-            String::from_utf8(actual.stdout).unwrap(),
-            String::from_utf8(expected).unwrap(),
+            String::from_utf8(self.run(args)).unwrap(),
+            expected,
             "{args:?}"
         );
     }
