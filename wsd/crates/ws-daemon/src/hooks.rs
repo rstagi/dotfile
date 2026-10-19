@@ -8,7 +8,7 @@ use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fs,
     io::{self, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
@@ -27,6 +27,7 @@ pub const STOP_CLI_BUDGET: Duration = Duration::from_secs(20);
 const TMUX_DEADLINE: Duration = Duration::from_secs(2);
 // Recovery of an unconfirmed block retries this many times when a tmux call times out.
 const RECOVERY_ATTEMPTS: u32 = 3;
+const SPOOL_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -79,6 +80,42 @@ pub async fn ingest(
     decision: StopDecision,
 ) -> crate::sessions::Result<Value> {
     ingest_callback(store, callback, decision, true).await
+}
+
+/// Drains callbacks concurrently with the socket server until daemon shutdown.
+pub(crate) async fn drain(store: Store, state: &Path) -> io::Result<()> {
+    let mut pending = VecDeque::new();
+    let mut seen = BTreeSet::new();
+    let mut scan_at = tokio::time::Instant::now();
+    loop {
+        if pending.is_empty() {
+            tokio::time::sleep_until(scan_at).await;
+            // Retry failed files once the current queue completes.
+            seen.clear();
+        }
+        if tokio::time::Instant::now() >= scan_at {
+            scan_at = tokio::time::Instant::now() + SPOOL_INTERVAL;
+            if let Err(error) = api::call(store.clone(), crate::bus::delivery::replay).await {
+                eprintln!("Cannot drain the delivery spool: {}", error.0);
+            }
+            match spool_paths(state) {
+                Ok(paths) => {
+                    // Preserve each scan's order. New arrivals precede the existing backlog.
+                    let fresh: Vec<_> = paths
+                        .into_iter()
+                        .filter(|path| seen.insert(path.clone()))
+                        .collect();
+                    for path in fresh.into_iter().rev() {
+                        pending.push_front(path);
+                    }
+                }
+                Err(error) => eprintln!("Cannot scan the hook spool: {error}"),
+            }
+        }
+        if let Some(path) = pending.pop_front() {
+            replay_file(store.clone(), &path).await;
+        }
+    }
 }
 
 async fn ingest_callback(
@@ -292,12 +329,19 @@ pub fn spool(state: &Path, callback: &Callback) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+#[cfg(test)]
 pub(crate) async fn replay(store: Store, state: &Path) -> io::Result<()> {
     api::call(store.clone(), crate::bus::delivery::replay)
         .await
         .map_err(|error| io::Error::other(error.0))?;
-    let directory = state.join("spool");
-    let mut paths = match fs::read_dir(&directory) {
+    for path in spool_paths(state)? {
+        replay_file(store.clone(), &path).await;
+    }
+    Ok(())
+}
+
+fn spool_paths(state: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut paths = match fs::read_dir(state.join("spool")) {
         Ok(entries) => entries
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| {
@@ -305,25 +349,26 @@ pub(crate) async fn replay(store: Store, state: &Path) -> io::Result<()> {
                     .is_some_and(|extension| extension == "json")
             })
             .collect::<Vec<_>>(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
     paths.sort();
-    for path in paths {
-        // Preserve a malformed or failed record. It must not prevent other sessions from replaying.
-        let result = async {
-            let callback = serde_json::from_slice(&fs::read(&path)?)?;
-            ingest_callback(store.clone(), callback, StopDecision::Accept, false)
-                .await
-                .map_err(io::Error::other)?;
-            fs::remove_file(&path)
-        }
-        .await;
-        if let Err(error) = result {
-            eprintln!("Cannot replay hook {}: {error}", path.display());
-        }
+    Ok(paths)
+}
+
+async fn replay_file(store: Store, path: &Path) {
+    // Preserve malformed or failed records without blocking another session.
+    let result = async {
+        let callback = serde_json::from_slice(&fs::read(path)?)?;
+        ingest_callback(store, callback, StopDecision::Accept, false)
+            .await
+            .map_err(io::Error::other)?;
+        fs::remove_file(path)
     }
-    Ok(())
+    .await;
+    if let Err(error) = result {
+        eprintln!("Cannot replay hook {}: {error}", path.display());
+    }
 }
 
 async fn record(

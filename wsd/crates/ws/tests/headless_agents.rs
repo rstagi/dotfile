@@ -335,6 +335,7 @@ fn headless_sequence_and_turn_guards_survive_restart_and_spool_replay_per_sessio
     let replay = callback(&first, "working", "PreToolUse", "first-turn", 400);
     hooks::spool(&home.path().join("state"), &replay).unwrap();
     let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    common::wait_for_empty_spool(&home.path().join("state"));
     post(&callback(&first, "stop", "Stop", "first-turn", 350));
     post(&callback(&first, "cancel", "Interrupt", "wrong-turn", 500));
     post(&callback(

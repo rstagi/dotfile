@@ -22,6 +22,19 @@ pub fn latency_assertions_enabled() -> bool {
     std::env::var("WS_ASSERT_LATENCY").as_deref() == Ok("1")
 }
 
+#[allow(dead_code)]
+pub fn wait_for_empty_spool(state: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while std::fs::read_dir(state.join("spool"))
+        .unwrap()
+        .next()
+        .is_some()
+    {
+        assert!(Instant::now() < deadline, "The spool did not drain.");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 impl Daemon {
     pub fn start(command: Command, socket: &Path) -> Self {
         let mut daemon = Self::spawn(command);
