@@ -13,6 +13,9 @@ use ws_daemon::{
 };
 
 const DEFAULT_TRANSPORT_DEADLINE: Duration = Duration::from_millis(250);
+/// The daemon ingests a stop or exit under its ingest lock with two tmux calls of up to 2 s each.
+/// This deadline covers a lock wait behind one paste plus those two calls.
+const LOCKED_INGEST_DEADLINE: Duration = Duration::from_secs(5);
 /// Test seam: sandboxes under load set a long hang guard instead of the production deadline.
 const TRANSPORT_DEADLINE_ENV: &str = "WS_HOOK_TRANSPORT_DEADLINE_MS";
 
@@ -35,7 +38,7 @@ pub async fn run(socket: &Path, state: &str) {
         ("idle", "StopCancelled" | "stop_cancelled" | "Interrupt") => "cancel",
         _ => state,
     };
-    let deadline = transport_deadline(env::var(TRANSPORT_DEADLINE_ENV).ok().as_deref());
+    let deadline = transport_deadline(state, env::var(TRANSPORT_DEADLINE_ENV).ok().as_deref());
     let (mut reply, mut receipt) = deliver(socket, state, payload, observed_at_us, deadline)
         .await
         .unwrap_or_else(|_| (json!({}), None));
@@ -133,13 +136,17 @@ async fn deliver(
 
 /// Legacy zsh agents export a numeric `WS_SESSION`. Only the daemon maps it to
 /// the imported ULID, so an unreachable daemon drops that callback.
-/// The production deadline keeps a hook from stalling the agent. A sandbox may raise it.
-fn transport_deadline(value: Option<&str>) -> Duration {
+/// The production deadline keeps a hook from stalling the agent. A stop or exit hook waits
+/// longer for the locked daemon ingest. A sandbox may set its own deadline.
+fn transport_deadline(state: &str, value: Option<&str>) -> Duration {
     value
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_TRANSPORT_DEADLINE)
+        .unwrap_or(match state {
+            "stop" | "exit" => LOCKED_INGEST_DEADLINE,
+            _ => DEFAULT_TRANSPORT_DEADLINE,
+        })
 }
 
 async fn resolve(socket: &Path, identity: &str, deadline: Duration) -> Option<Ulid> {
@@ -188,10 +195,48 @@ mod tests {
 
     #[test]
     fn the_transport_deadline_defaults_to_250ms_and_accepts_a_sandbox_override() {
-        assert_eq!(transport_deadline(None), Duration::from_millis(250));
-        assert_eq!(transport_deadline(Some("")), Duration::from_millis(250));
-        assert_eq!(transport_deadline(Some("abc")), Duration::from_millis(250));
-        assert_eq!(transport_deadline(Some("0")), Duration::from_millis(250));
-        assert_eq!(transport_deadline(Some(" 30000 ")), Duration::from_secs(30));
+        for state in [
+            "working",
+            "idle",
+            "cancel",
+            "waiting",
+            "quota",
+            "subagent-stop",
+        ] {
+            assert_eq!(transport_deadline(state, None), Duration::from_millis(250));
+            assert_eq!(
+                transport_deadline(state, Some("")),
+                Duration::from_millis(250)
+            );
+            assert_eq!(
+                transport_deadline(state, Some("abc")),
+                Duration::from_millis(250)
+            );
+            assert_eq!(
+                transport_deadline(state, Some("0")),
+                Duration::from_millis(250)
+            );
+            assert_eq!(
+                transport_deadline(state, Some(" 30000 ")),
+                Duration::from_secs(30)
+            );
+        }
+    }
+
+    #[test]
+    fn stop_and_exit_hooks_wait_5s_for_the_locked_ingest_and_accept_a_sandbox_override() {
+        for state in ["stop", "exit"] {
+            assert_eq!(transport_deadline(state, None), Duration::from_secs(5));
+            assert_eq!(transport_deadline(state, Some("")), Duration::from_secs(5));
+            assert_eq!(transport_deadline(state, Some("0")), Duration::from_secs(5));
+            assert_eq!(
+                transport_deadline(state, Some(" 30000 ")),
+                Duration::from_secs(30)
+            );
+            assert_eq!(
+                transport_deadline(state, Some("100")),
+                Duration::from_millis(100)
+            );
+        }
     }
 }

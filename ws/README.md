@@ -125,7 +125,9 @@ A Rust CLI request starts a background daemon when its socket is missing and lau
 Concurrent starts share a startup lock. A failed start reports the log path beside the socket.
 The daemon exits when its socket file disappears or a different file replaces it.
 Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
-A hook waits 250 ms for the daemon reply, then spools the callback and prints `{}`. Test sandboxes raise this bound with `WS_HOOK_TRANSPORT_DEADLINE_MS`.
+A stop or exit hook waits 5 s for the daemon reply. Other hooks wait 250 ms.
+When the time expires, the hook spools the callback and prints `{}`. Test sandboxes set this bound with `WS_HOOK_TRANSPORT_DEADLINE_MS`.
+The daemon can record a block before a stop hook times out. The batch then arrives at the next stop hook. Until then, the session shows `working`.
 
 The launcher always uses Rust. `WS_RUST_BIN` overrides the binary path for tests.
 `ws backend rust` remains available to import remaining legacy sessions, messages and triggers.
