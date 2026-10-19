@@ -1,11 +1,12 @@
 ---
 name: pr-review-fix-all
 description: >-
-  Verify one Loop AR round's converged review and optional disputed items against code,
-  plan every disposition, delegate accepted findings to Opus fixers, then integrate,
-  verify, commit, and fast-forward push. Use only for Loop's `fix<r>` remediation runs
-  with one report, any current disputed sidecar, tier standard|max, RUN_DIR, integration
-  worktree, and verification command supplied.
+  Verify the converged review and the optional disputed items of one Loop AR round against
+  the code. Plan a disposition for each finding. Send accepted blocking findings to Opus
+  fixers. List deferred findings as follow-ups and do not fix them. Then integrate, verify,
+  commit and fast-forward push. Use only for Loop `fix<r>` remediation runs that supply one
+  report, any current disputed sidecar, tier standard|max, RUN_DIR, the integration worktree
+  and a verification command.
 argument-hint: "report:<path> [disputed:<path>] tier:<standard|max> run-dir:<path> worktree:<path> branch:<name> remote:<name> verify:<command>"
 allowed-tools:
   - Agent
@@ -25,6 +26,9 @@ Opus fixers, and leave the integration branch verified and pushed. The caller su
 `report:` (the round's last R `report.md`), optional `disputed:` (the current round's
 `.disputed.md`), tier, absolute `RUN_DIR`, integration worktree, integration branch, remote,
 and repository verification command. Stay in that worktree.
+
+Fix only `blocking` items. Never widen the scope of the PR to fix a `deferred` item. List
+each `deferred` item as a follow-up.
 
 ## 1. Validate inputs and state
 
@@ -54,17 +58,38 @@ duplicates by evidence while retaining every source ID and its disposition. Do n
 critic concern merely because R rejected or omitted it, or accept R's finding merely because
 C agreed. Resolve conflicts from evidence in the current tree.
 
+Give each finding a class. The class is `blocking` with one category (`security`,
+`unprotected-breakage` or `failing-check`), or `deferred`. Keep the class from the report.
+When a finding has no class, choose the class with these rules:
+
+- `security`: a leaked secret, an auth or permission bypass, data exposure or unsafe
+  handling of user data. Also a change that can cause real harm in production.
+- `unprotected-breakage`: a change to current behavior that no feature flag or equivalent
+  off switch protects, or existing tests that fail with the flag off.
+- `failing-check`: a deterministic check that fails, for example the build, the tests, the
+  architecture tests, the flag off/on matrix or the delete test.
+- `deferred`: all other findings.
+
+When the code confirms a `blocking` finding but the problem is in none of the 3 categories,
+change its class to `deferred`. Never change a `deferred` finding to `blocking`. When you
+are not sure, the class is `deferred`.
+
 Write `RUN_DIR/remediation-plan.md` before editing code. Include every finding with:
 
-- source and stable finding ID (identify reviewer versus disputed/critic-only origin);
-- severity and exact claim;
-- disposition: accepted, rejected, or duplicate;
-- reproduction/evidence and duplicate target where relevant;
-- fix group, files, dependencies, and overlap risks;
-- test-first step and verification command.
+- source and stable finding ID (identify reviewer versus disputed/critic-only origin)
+- class, category, severity and exact claim
+- disposition: `deferred` for a `deferred` finding. Otherwise accepted, rejected, or duplicate
+- reproduction/evidence and duplicate target where relevant
+- fix group, files, dependencies, and overlap risks
+- test-first step and verification command
 
 Accepted and rejected findings, including disputed items, require concrete code/test evidence. Every accepted finding must belong to exactly one
-fix group; none may be silently skipped.
+fix group. Do not skip an accepted finding. Accept only `blocking` findings. A `deferred`
+finding belongs to no fix group.
+
+Add a `## Follow-ups` section to the plan. List each `deferred` finding there with its
+source ID, its file:line and one sentence. A follow-up needs no reproduction. Do not fix
+these findings in this PR.
 
 ## 3. Build safe work units
 
@@ -74,7 +99,8 @@ mutating shared generated state. Schedule groups with overlapping files or depen
 
 If there are no accepted findings after verifying both inputs, run the repository verification
 command, confirm remote HEAD still equals local HEAD, and record the no-op in the plan. Do not
-create an empty commit or push; finish with `done` and `result:NOOP`.
+create an empty commit and do not push. Finish with `done` and `result:NOOP`. This rule
+also applies when all findings are `deferred`.
 
 ## 4. Implement fixes
 
@@ -100,9 +126,9 @@ silently implement delegated groups in the coordinator or substitute another mod
 ## 5. Integrate and verify
 
 After each batch, inspect all changes before continuing. Reject scope creep and reconcile any
-unexpected collision. Reproduce the accepted finding against the changed code and run each
-group's focused tests. A failed or incomplete group may be resumed once with precise feedback;
-otherwise stop with `blocked`.
+unexpected collision. Reject each change that fixes a `deferred` finding. Reproduce the
+accepted finding against the changed code and run each group's focused tests. A failed or
+incomplete group may be resumed once with precise feedback; otherwise stop with `blocked`.
 
 After all groups return:
 
@@ -134,6 +160,8 @@ action. Successful remediation must provide the evidence consumed by `loop-revie
   "worktree": "absolute integration worktree"
 }
 ```
+
+When the plan lists follow-ups, give their count in `summary`.
 
 Use literal `PUSHED` only for changed HEAD with a verified fast-forward push; use `NOOP` only
 for unchanged HEAD. Both require `git ls-remote` confirmation of the supplied remote branch
