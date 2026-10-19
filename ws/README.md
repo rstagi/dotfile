@@ -275,6 +275,9 @@ The batch follows `pair_seq` order for each sender. Its headers use sender metad
 
 After the hook writes and flushes its reply, it confirms delivery through `POST /v1/hooks/delivered`.
 The daemon writes `message.delivered` in the recipient log. Failed confirmations remain in `$WS_STATE/delivery-spool/` for replay at startup or before the next hook.
+A hook batch stays provisional until the next Stop. If that Stop reports `stop_hook_active: false`, the daemon returns the batch again.
+If the client does not confirm a block and no receipt exists in the spool, recovery returns the same window to `idle` after the CLI budget.
+The idle paste worker then submits the pending inbox. Recovery checks ownership and the sequence before it changes the window, so it preserves newer turns.
 
 For an idle agent window, the daemon pastes a durable batch into the recorded agent pane with bracketed paste and a separate Enter.
 A newer `UserPromptSubmit` confirms the batch and writes `message.delivered`. Tool hooks and older prompts do not confirm it.
@@ -292,6 +295,7 @@ The Rust backend accepts `--force` before the target or after the message. The f
 If the agent cannot resume, the message stays queued. Sessions on other devices do not launch locally.
 
 The next accepted Stop or matching cancellation writes `message.read` with `implicit: true` for delivered messages that lack an explicit acknowledgement.
+A Stop with `stop_hook_active: false` retains provisional hook deliveries instead. Older hook payloads that omit this field keep the implicit-read behavior.
 Hook spool replay does not inject a new batch. Only the session's local device can inject messages.
 
 Run `cd wsd && cargo test -p ws --test messages` to check persistence, ordering, acknowledgements and stdin.
@@ -534,7 +538,9 @@ It retains prompt, turn and tool identifiers. Receipt times remain separate from
 The daemon records callbacks before it reduces the window state. Repeated `working` callbacks stay separate log events.
 The window options retain the zsh sequence, turn and background subagent rules. A blocked Stop keeps its turn active.
 A failed transport writes the callback to `$WS_STATE/spool/`. The daemon replays pending callbacks at startup.
-Every hook exits 0. Stop returns its decision as JSON. Each tmux command that the daemon runs for a hook has a 2 s deadline.
+Every hook exits 0. Stop returns its decision as JSON. Stop and exit share one 20 s CLI budget across resolve, ingest and confirmation.
+Generated Claude Stop and SessionEnd hooks and Grok Stop hooks have a 30 s parent timeout.
+Each tmux command that the daemon runs for a hook has a 2 s deadline.
 The Rust daemon sends the same desktop notification events through terminal-notifier, osascript, boringnotch, or a custom adapter.
 Hooks retain their notification settings, including `WS_NOTIFY=0`, when the daemon replays their spool records.
 Built-in banners and sounds require an unfocused tab in `idle` or `waiting`. Custom adapters and boringnotch receive every state transition.
