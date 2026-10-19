@@ -780,7 +780,6 @@ impl Sessions {
         ];
         for (key, value) in [
             ("WS_WORKSPACE", name.to_owned()),
-            ("WS_SESSION", id.to_string()),
             ("WS_SESSION_ID", id.to_string()),
         ] {
             args.extend(["-e".into(), format!("{key}={value}")]);

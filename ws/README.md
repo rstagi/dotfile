@@ -1,7 +1,7 @@
 # ws — terminal workspaces
 
 Install with `./install.sh ws`, then run `ws` for the picker.
-The dispatcher selects the Rust CLI and local daemon by default.
+The launcher runs the Rust CLI and local daemon.
 The [Rust command reference](#rust-commands) describes state, migration and automation.
 
 - A workspace combines a git worktree and a tmux session. Each interactive agent uses a window in that session.
@@ -13,7 +13,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws claude|codex|grok [args]` starts a tracked agent in the current workspace window.
 - `ws sessions [<id>|<name>] [--json]`, `ws whoami [--json]`, `ws name <label>` and `ws show <target> [--json]` manage session identity.
 - Session IDs are ULIDs. Targets accept names, unique ULID prefixes and quoted aliases such as `'#123'`.
-- Agents receive the ULID in `WS_SESSION_ID` and the compatibility variable `WS_SESSION`. IDs survive resume.
+- New agents receive the ULID in `WS_SESSION_ID` only. IDs survive resume.
 - `ws send <target> <message|->` queues a durable message. Exit 75 means queued. Do not send the message again.
 - A message to a finished session reopens it. `--force` remains accepted for compatibility.
 - `ws inbox [--json]` lists unread messages. `ws ack [<event_id>...]` acknowledges selected messages, or all visible unread messages.
@@ -22,7 +22,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws on <ids> done|exit --send-to <target> <text>` registers a continuation. `--spawn <prompt> [--agent <agent>]` starts a child instead.
 - `ws triggers [--json]` lists pending actions. `ws on --rm <trigger-ULID>` removes one action.
 - `ws mcp` serves local stdio MCP tools. Agent launches configure this server without changing Claude or Codex configuration files.
-- `ws backend zsh` restores the legacy implementation. `ws backend rust` returns to Rust and imports new legacy records.
+- `ws backend rust` imports any remaining legacy records. Rust is the only backend.
 
 The picker uses fzf. Enter opens a workspace. Ctrl-N creates a Claude workspace, Ctrl-O uses Codex, and Ctrl-R uses Grok.
 Ctrl-A adds Claude, Ctrl-T adds Codex, and Ctrl-V adds Grok. Ctrl-S shows sessions, Ctrl-P changes pins, and Ctrl-X removes workspaces.
@@ -93,15 +93,19 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 
 ## Layout
 
-`ws/ws.sh` reads `$WS_HOME/backend` and executes `$WS_HOME/bin/ws-rs` for Rust commands.
-The Cargo workspace in `wsd/` contains `ws-core` for durable data, `ws-daemon` for the runtime, and `ws` for the CLI.
-Rust owns sessions, messages, logs, dependency edges and the local MCP server.
-`wsd/crates/ws/src/cmd/picker.zsh` supplies the embedded fzf UI. The other shell modules support the explicit zsh backend.
+`ws/ws.sh` executes `${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}`. It ignores old backend selectors.
+The Cargo workspace in `wsd/` contains three crates:
 
-`ws/tests/` retains the zsh suite. Its four groups use private homes, isolated tmux servers and fake agents.
-Run `zsh ws/tests/run.sh`, or select `core`, `send`, `triggers` or `misc`.
-`zsh ws/tests/run.sh rust` checks the Rust dispatcher in a sandbox.
-`cd wsd && cargo test -p ws --test backend` tests startup import, Rust commands, MCP and backend changes through the dispatcher.
+- `ws-core` stores durable data.
+- `ws-daemon` provides the runtime.
+- `ws` provides the CLI and embeds `wsd/crates/ws/src/cmd/picker.zsh` for the fzf UI.
+
+Rust owns sessions, messages, logs, dependency edges and the local MCP server.
+Run `cd wsd && cargo test` to test the CLI and daemon.
+Run `zsh ws/tests/run.sh` to test the picker shell glue with a private tmux server.
+`tests/run.sh` also runs this smoke test.
+`ws/tests/picker-rust.test.sh` supplies the shell checks for the Rust picker integration test.
+Run `cd wsd && cargo test -p ws --test backend` to test the launcher, startup import, messages, waits and MCP.
 
 ## Rust commands
 
@@ -123,27 +127,22 @@ The daemon exits when its socket file disappears or a different file replaces it
 Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
 A hook waits 250 ms for the daemon reply, then spools the callback and prints `{}`. Test sandboxes raise this bound with `WS_HOOK_TRANSPORT_DEADLINE_MS`.
 
-`ws backend rust` selects Rust through `$WS_HOME/backend`. The dispatcher uses `$WS_HOME/bin/ws-rs`.
-`WS_RUST_BIN` overrides the binary path for tests. An absent selector selects Rust when `WS_RUST_BIN` is set or `$WS_HOME/bin/ws-rs` is executable.
-An absent selector without the Rust binary selects zsh. In this state `ws backend zsh` writes the selector, and `ws backend rust` fails until `./install.sh ws` installs the binary.
-`ws backend zsh` restores zsh and reports how many Rust-only sessions it cannot reach.
-Both commands hold a switch lock. Rust suppresses message injection and automatic trigger actions while zsh is selected.
-Returning to Rust imports new zsh sessions, pending messages and triggers without changing existing Rust session IDs.
-Both backends reserve aliases through `sessions/counter` under the zsh-compatible `counter.lock`.
-The zsh suite writes its selector inside its sandbox. `zsh ws/tests/run.sh rust` runs the Rust dispatcher smoke test.
+The launcher always uses Rust. `WS_RUST_BIN` overrides the binary path for tests.
+`ws backend rust` remains available to import remaining legacy sessions, messages and triggers.
+It retains existing Rust session IDs. It does not enable another backend.
+Alias allocation retains `sessions/counter` and the compatible `counter.lock`.
 
 The Rust `ws pick` command and bare `ws` use the fzf UI in `wsd/crates/ws/src/cmd/picker.zsh`.
 Rows, summaries, previews, pins, session expansion and unread changes use Rust commands.
 The binary embeds the shell UI. It does not need the source checkout at runtime.
 The tmux keys keep the picker, new workspace, agent tab and merge actions.
 Bindings retain the configured state paths and tmux socket. They preserve user hooks at index 0.
-The zsh backend keeps its data functions in `ws/lib/picker-legacy.sh` until its removal.
 
 On its first start with empty Rust state and an existing `$WS_HOME/sessions`, the daemon imports legacy state before serving requests.
 It imports sessions, pending messages, pending triggers, listed branch workspaces and pins.
 The import journal makes startup import resumable. A completed startup import does not read the source again.
 Existing Rust logs prevent an automatic import when no journal exists.
-The source files remain available for `ws backend zsh`. Rust-only sessions remain inaccessible to zsh.
+The source files remain available as legacy import inputs. Rust is the only backend.
 Rust state lives in `$WS_STATE` (default `~/.ws/state`). The socket uses `$WS_SOCK` (default `~/.ws/wsd.sock`).
 
 `ws migrate --from-zsh [--dry-run]` manually imports `$WS_HOME/sessions` into `$WS_STATE` (default `~/.ws/state`).
@@ -158,7 +157,8 @@ An interrupted import resumes from that snapshot. A completed import makes subse
 The Rust CLI in `wsd/` supports `whoami`, `name <label>`, `sessions [id|name]` and `show <id|name>`.
 Each command accepts `--json`. Human output uses `#N` aliases. Targets accept aliases, names, ULIDs and unique ULID prefixes.
 The `me` target selects the current session.
-`WS_SESSION_ID` contains the session ULID. `WS_SESSION` carries the same value for compatibility.
+New launches set `WS_SESSION_ID` to the session ULID. They remove inherited `WS_SESSION` values.
+The CLI still reads `WS_SESSION` for agents that started before the Rust cutover.
 `whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window option `@ws_session`.
 Legacy windows and `WS_SESSION` can contain a bare numeric alias.
 Session lists, picker rows and child creation resolve that alias.
@@ -213,7 +213,7 @@ The source log records `session.depends_on` or `session.block_on`. The registry 
 starts a process under the daemon and prints its session ULID. The process leads its own process group.
 The working directory defaults to the CLI's current directory. Relative I/O paths use that same CLI directory, independent of `--cwd`.
 Environment overrides extend the daemon environment. Repeated keys use the last value.
-The process receives its session ULID in `WS_SESSION_ID` and `WS_SESSION`.
+The process receives its session ULID in `WS_SESSION_ID` only.
 Claude, Codex and Grok use the shared agent preparation contract in headless mode.
 Stdin defaults to EOF. Stdout and stderr default to `$WS_STATE/sessions/<id>/stdout.log` and `stderr.log`.
 
@@ -294,7 +294,6 @@ Hook spool replay does not inject a new batch. Only the session's local device c
 
 Run `cd wsd && cargo test -p ws --test messages` to check persistence, ordering, acknowledgements and stdin.
 Run `cd wsd && cargo test -p ws-daemon bus::delivery::tests` to check Stop replies, paste, timeout recovery and restart.
-Run `zsh wsd/crates/ws/tests/golden/message-capture.zsh` to regenerate the zsh error fixtures.
 
 `ws mcp` serves a local stdio MCP connection through `rmcp`. It calls the daemon at `$WS_SOCK`.
 Standard output contains MCP messages. Diagnostics use standard error.
@@ -524,7 +523,7 @@ When the target is absent, it uses the current directory or tmux workspace.
 Workspace tabs start the selected agent through one preparation contract in `ws-daemon`.
 `ws claude`, `ws codex` and `ws grok` run tracked agents in the current workspace tab and forward their arguments.
 Agent launches use `WS_AGENT_SHELL` (default `zsh -ic`) to load shell configuration.
-Each agent receives the same ULID in `WS_SESSION` and `WS_SESSION_ID`.
+Each new agent receives its ULID in `WS_SESSION_ID` only. Preparation removes inherited `WS_SESSION` values.
 Claude receives a private settings file for each launch. Codex receives per-launch `-c hooks.*` flags and `--dangerously-bypass-hook-trust`.
 Grok receives `${GROK_HOME:-$HOME/.grok}/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.
 Slots remain in `<git-dir>/ws-sessions`. A clean exit removes the slot. Other exits retain it for `ws open` and resume.
@@ -540,7 +539,6 @@ Built-in banners and sounds require an unfocused tab in `idle` or `waiting`. Cus
 `ws _dismiss <window|pane>` emits `closed` once for an open notification. It keeps the tab state.
 `ws _build-notifier` creates the branded `$WS_HOME/ws.app` from `WS_NOTIFIER_SOURCE`.
 Run `cd wsd && cargo test -p ws --test notifications` to check adapters with fake commands in a private HOME.
-Run `zsh wsd/crates/ws/tests/golden/notify-capture.zsh` to regenerate the zsh notification fixture.
 Run `cd wsd && cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to check hooks and measure latency.
 This run prints the p95 values of the full ingest path and the daemon-down spool path. It does not assert them.
 Run `cd wsd && WS_ASSERT_LATENCY=1 cargo test -p ws --test hook_ingest --test tmux -- --nocapture` to assert both p95 values below 50 ms.
@@ -548,22 +546,22 @@ Run `cd wsd && WS_ASSERT_LATENCY=1 cargo test -p ws --test hook_ingest --test tm
 Only the exact value `1` enables latency assertions. An unset variable or any other value disables them.
 The slow lookup test always checks the callback and the spool count.
 Enable latency assertions only on an idle machine. Parallel loads increase scheduler latency above the limit.
-Run `zsh wsd/crates/ws/tests/golden/hook-capture.zsh` to regenerate the zsh hook state fixture.
 Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.
-The tests use fake agents and private tmux servers. Preparation tests also compare captured output from the zsh builders.
+The tests use fake agents and private tmux servers. Preparation tests also compare frozen output from the retired zsh builders.
 
-Run `zsh wsd/crates/ws/tests/golden/workspace-capture.zsh` to regenerate the zsh workspace fixtures.
 Run `cd wsd && cargo test -p ws --test workspaces` to check the Rust workspace commands.
 
 Rust import and parity tests copy frozen zsh files from `wsd/crates/ws-daemon/src/import/fixtures/` into their sandboxes.
 These tests do not run the legacy backend. Fixture markers substitute sandbox paths and the preview commit hash.
 
-Run `zsh wsd/crates/ws/tests/golden/capture.zsh` from the repository root to regenerate the zsh fixtures.
-The capture uses `ws/tests/helpers.sh` with a private HOME and tmux server.
-Only ids and sandbox output paths are normalized. Run `cd wsd && cargo test -p ws --test session_commands` to compare the Rust output.
+The golden fixtures are frozen. Their capture scripts used the retired zsh backend.
+Only IDs and sandbox output paths are normalized.
+Run `cd wsd && cargo test -p ws --test session_commands` to compare the Rust output.
 
-## Upgrading from the root-level `ws.sh`
+## Upgrading from zsh
 
-ws moved from `~/dotfile/ws.sh` to `~/dotfile/ws/ws.sh`. After pulling, run `./install.sh ws` (re-links `~/.local/bin/ws`, re-points the alias source and runs `ws _migrate-hooks`, which rewrites `~/.grok/hooks/ws.json`, `$WS_HOME/claude-settings.json`, the `$WS_HOME/bin/ws` link and the tmux key bindings to the new path). Starting `ws` (bare, `new`, `add`, `open`, `pick`) migrates too, but only what is broken: a file whose embedded ws path is missing or not executable (and a dangling `$WS_HOME/bin/ws`), so a second ws checkout never steals hooks that still point at a working install. `ws _migrate-hooks` forces the re-point at the ws you run it from. Missing files are not created.
-
-Agent tabs that were already running keep the old path baked into their hooks (Claude passes its settings at launch, Codex per-launch `-c hooks.*`) and into their launch wrapper. Once the old `ws.sh` is gone, those tabs stop updating status, and when their agent exits the wrapper's `_dismiss`/`_end` fail: the slot is not freed, the notification stays open and `ws on ... exit` triggers never fire (detached delivery retries from the old `_agent` fail too). Close and `ws open` such tabs before relying on any of that (resume keeps the conversation). New and resumed tabs pick up the new path automatically.
+Run `./install.sh ws` to install the Rust binary and update the launcher links.
+New and resumed agents receive launch settings from Rust.
+The installer does not rewrite old global hook files.
+Resume existing tabs with `ws open` to receive the current launch settings.
+The daemon retains the one-time legacy import described above.

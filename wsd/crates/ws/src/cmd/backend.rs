@@ -6,8 +6,8 @@ use std::{
 };
 
 pub async fn run(socket: &Path, backend: &str) -> Result<()> {
-    if !matches!(backend, "rust" | "zsh") {
-        return Err("Select the rust or zsh backend.".into());
+    if backend != "rust" {
+        return Err("Only the rust backend is available.".into());
     }
     let home = ws_daemon::import::backend::home()?;
     fs::create_dir_all(&home)?;
@@ -20,25 +20,18 @@ pub async fn run(socket: &Path, backend: &str) -> Result<()> {
         });
     let lock = ws_core::lockfile::open_lock_file(&home.join("backend.lock"))?;
     lock.lock()?;
-    let body = client::request(
+    client::request(
         socket,
         Method::POST,
         "/v1/backend",
         serde_json::to_vec(&serde_json::json!({"backend":backend, "home":home, "root":root}))?,
     )
     .await?;
-    let response: serde_json::Value = serde_json::from_slice(&body)?;
     let temporary = home.join(format!(".backend-{}", ws_core::ids::Ulid::new()));
     fs::write(&temporary, format!("{backend}\n"))?;
     fs::File::open(&temporary)?.sync_all()?;
     fs::rename(&temporary, home.join("backend"))?;
     fs::File::open(&home)?.sync_all()?;
     println!("ws backend: {backend}");
-    if backend == "zsh" {
-        println!(
-            "{} Rust-only sessions are unreachable from zsh.",
-            response["rust_only"]
-        );
-    }
     Ok(())
 }

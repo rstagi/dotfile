@@ -27,7 +27,8 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
     for agent in ["claude", "codex", "grok"] {
         let prepared = prepare(agent, Mode::Interactive, &context, Some("resume-123")).unwrap();
         assert_eq!(prepared.program, agent);
-        assert_eq!(prepared.env["WS_SESSION"], context.id);
+        assert!(!prepared.env.contains_key("WS_SESSION"));
+        assert!(prepared.unset_env.iter().any(|key| key == "WS_SESSION"));
         assert_eq!(prepared.env["WS_SESSION_ID"], context.id);
         let mut expected =
             shell_words::split(&legacy_fixture(&format!("{agent}.command"), &context)).unwrap();
@@ -96,10 +97,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
         assert_eq!(actual, expected, "{agent}");
         assert_eq!(
             prepared.env,
-            BTreeMap::from([
-                ("WS_SESSION".into(), context.id.clone()),
-                ("WS_SESSION_ID".into(), context.id.clone()),
-            ])
+            BTreeMap::from([("WS_SESSION_ID".into(), context.id.clone()),])
         );
         assert!(!context.home.join(".grok/hooks/ws.json").exists());
     }

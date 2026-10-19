@@ -33,26 +33,25 @@ done
 zsh "$TMP/repo/tests/run.sh" > "$TMP/result" 2>&1
 assert_exit "$?" 1 "a missing Rust binary fails the runner"
 assert_eq "$(tail -n 1 "$TMP/result")" \
-  'SHELL TESTS FAILED: runner-ws-cancel.test.sh, runner-ws.test.sh, ws Rust smoke' \
-  "the last line names all three missing-binary failures"
+  'SHELL TESTS FAILED: runner-ws-cancel.test.sh, runner-ws.test.sh' \
+  "the last line names both missing-binary failures"
 assert_eq "$(rg -c 'Missing Rust binary: .* Run cargo build in wsd\.' "$TMP/result")" \
-  3 "every Rust suite reports the same build instruction"
+  2 "every Rust suite reports the same build instruction"
 
 rm "$TMP/repo/tests/runner-ws.test.sh" "$TMP/repo/tests/runner-ws-cancel.test.sh"
 mkdir -p "$TMP/repo/wsd/target/debug"
 print -r -- '#!/bin/sh\nexit 0' > "$TMP/repo/wsd/target/debug/ws"
 chmod +x "$TMP/repo/wsd/target/debug/ws"
 cat > "$TMP/repo/ws/tests/run.sh" <<'EOF'
-[[ "${1:-}" == rust ]] && exit "${SUITE_RUST_RESULT:-0}"
 exit "${SUITE_WS_RESULT:-0}"
 EOF
 zsh "$TMP/repo/tests/run.sh" > "$TMP/result" 2>&1
 assert_exit "$?" 0 "the runner passes when all suites pass"
 assert_eq "$(tail -n 1 "$TMP/result")" 'ALL SHELL TESTS PASSED' \
   "the success summary stays unchanged"
-SUITE_RUST_RESULT=1 SUITE_WS_RESULT=1 zsh "$TMP/repo/tests/run.sh" > "$TMP/result" 2>&1
-assert_exit "$?" 1 "the runner fails when both ws suites fail"
+SUITE_WS_RESULT=1 zsh "$TMP/repo/tests/run.sh" > "$TMP/result" 2>&1
+assert_exit "$?" 1 "the runner fails when the picker smoke fails"
 assert_eq "$(tail -n 1 "$TMP/result")" \
-  'SHELL TESTS FAILED: ws/tests/run.sh, ws Rust smoke' \
-  "the last line names the background suite and the Rust smoke"
+  'SHELL TESTS FAILED: ws/tests/run.sh' \
+  "the last line names the picker smoke"
 test_summary

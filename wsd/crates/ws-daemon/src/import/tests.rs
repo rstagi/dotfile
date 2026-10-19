@@ -16,22 +16,6 @@ use super::from_zsh_with_root;
 use crate::{api, sessions::Sessions};
 
 #[test]
-fn delivery_defaults_to_rust_without_a_selector() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
-    assert!(
-        super::backend::delivery_guard(home.path())
-            .unwrap()
-            .is_some()
-    );
-    fs::write(home.path().join("backend"), "zsh\n").unwrap();
-    assert!(
-        super::backend::delivery_guard(home.path())
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
 fn incremental_resume_imports_changes_after_the_interrupted_snapshot() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let source = root.path().join("legacy");

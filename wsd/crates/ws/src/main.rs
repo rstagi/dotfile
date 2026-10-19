@@ -31,7 +31,7 @@ enum Command {
         #[arg(long, requires = "preflight")]
         milestone: Option<u64>,
     },
-    /// Select the active local backend.
+    /// Import remaining legacy state with the Rust backend.
     Backend { backend: String },
     /// Select a workspace or tab with fzf.
     Pick,

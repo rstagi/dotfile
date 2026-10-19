@@ -34,7 +34,8 @@ fn prepare_prints_the_shared_contract_and_materializes_private_files_without_a_d
             let prepared: Prepared = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(prepared.program, agent);
             assert_eq!(prepared.env["WS_SESSION_ID"], id);
-            assert_eq!(prepared.env["WS_SESSION"], id);
+            assert!(!prepared.env.contains_key("WS_SESSION"));
+            assert!(prepared.unset_env.iter().any(|key| key == "WS_SESSION"));
             for file in &prepared.files {
                 assert!(file.path.starts_with(home.path()));
                 assert_eq!(fs::read(&file.path).unwrap(), file.contents);
@@ -135,13 +136,14 @@ fn shell_output_preserves_quoting_and_the_claude_print_prompt_order() {
     for shell in ["/bin/sh", "zsh"] {
         let captured = Command::new(shell).args(["-c", script, "probe"])
             .arg(std::str::from_utf8(&output.stdout).unwrap())
+            .env("WS_SESSION", "legacy-before-prepare")
             .env("PROMPT", "Return 'READY'\nThen stop. $(false)")
-            .env("PROBE", "import json,os,sys; print(json.dumps(dict(argv=sys.argv[1:], id=os.environ['WS_SESSION_ID'], legacy=os.environ['WS_SESSION'])))")
+            .env("PROBE", "import json,os,sys; print(json.dumps(dict(argv=sys.argv[1:], id=os.environ['WS_SESSION_ID'], legacy=os.environ.get('WS_SESSION'))))")
             .output().unwrap();
         assert!(captured.status.success(), "{captured:?}");
         let captured: Value = serde_json::from_slice(&captured.stdout).unwrap();
         assert_eq!(captured["id"], "01K7Q0K5M00000000000000001");
-        assert_eq!(captured["id"], captured["legacy"]);
+        assert_eq!(captured["legacy"], Value::Null);
         let args = captured["argv"].as_array().unwrap();
         assert_eq!(args[0], "claude");
         let files = shell_words::split(args[1].as_str().unwrap()).unwrap();
