@@ -166,7 +166,10 @@ Legacy windows and `WS_SESSION` can contain a bare numeric alias.
 Session lists, picker rows and child creation resolve that alias.
 `WS_TMUX_SOCKET` selects the tmux server by name or socket path.
 
-JSON returns the registry session fields, including the ULID `id`, numeric `alias` and lifecycle `state`.
+JSON returns the registry session fields, including the ULID `id`, numeric `alias`, lifecycle `state`, `cwd` and `repos`.
+`cwd` is null when the session has no recorded directory. Legacy imports use their recorded `path` as `cwd`.
+`repos` contains entries with `path` and optional `remote`, `branch` and `base` fields.
+The registry merges repo entries by path. A `phase.worktree` event records its checkout path and uses its `reference` as `base`.
 `sessions --json` returns an array. The other commands return one session object. `show --json` adds the `output` path.
 Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
 The TSV state column reports the live tmux state or `stopped` when no tagged window exists.

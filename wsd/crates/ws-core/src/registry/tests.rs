@@ -6,6 +6,287 @@ use proptest::prelude::*;
 use serde_json::json;
 
 #[test]
+fn invalid_repo_attachments_leave_the_session_and_projection_cursor_unchanged() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    registry
+        .apply(
+            &log.append(0, "session.created", json!({"alias": 1}))
+                .unwrap(),
+        )
+        .unwrap();
+    let valid = log
+        .append(0, "session.repo_attached", json!({"path": "/sandbox/app"}))
+        .unwrap();
+    let sessions = registry.sessions().unwrap();
+    for body in [
+        json!({}),
+        json!({"path": ""}),
+        json!({"path": 1}),
+        json!({"path": "/sandbox/app", "remote": []}),
+        json!({"path": "/sandbox/app", "branch": false}),
+        json!({"path": "/sandbox/app", "base": ""}),
+    ] {
+        let mut invalid = valid.clone();
+        invalid.body = body;
+        assert!(matches!(
+            registry.apply(&invalid),
+            Err(Error::InvalidEvent(_))
+        ));
+        assert_eq!(registry.sessions().unwrap(), sessions);
+        assert!(
+            registry
+                .events_of_type("session.repo_attached")
+                .unwrap()
+                .is_empty()
+        );
+    }
+    registry.apply(&valid).unwrap();
+    assert_eq!(registry.sessions().unwrap()[0].repos.len(), 1);
+}
+
+#[test]
+fn schema_upgrade_failure_preserves_the_old_tables_and_version() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let db = sandbox.path().join("registry.sqlite");
+    let legacy = Connection::open(&db).unwrap();
+    legacy
+        .execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY);
+        INSERT INTO sessions VALUES ('old-row'); PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    log.append(0, "session.created", json!({"alias": 0}))
+        .unwrap();
+    assert!(matches!(
+        Registry::open(&db, 1),
+        Err(Error::InvalidEvent(_))
+    ));
+    assert_eq!(
+        legacy
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        legacy
+            .query_row("SELECT id FROM sessions", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "old-row"
+    );
+    legacy.pragma_update(None, "user_version", 3).unwrap();
+    assert!(matches!(
+        Registry::open(&db, 1),
+        Err(Error::InvalidEvent(_))
+    ));
+    assert_eq!(
+        legacy
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        legacy
+            .query_row("SELECT id FROM sessions", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "old-row"
+    );
+}
+
+#[test]
+fn old_registry_schemas_rebuild_session_places_and_repos_from_logs() {
+    for version in [0, 1] {
+        let sandbox = tempfile::tempdir().unwrap();
+        let db = sandbox.path().join("registry.sqlite");
+        let id = Ulid::new();
+        let log = SessionLog::new(sandbox.path(), id, Ulid::new());
+        log.append(
+            0,
+            "session.created",
+            json!({"alias": 7, "cwd": "/sandbox/notes"}),
+        )
+        .unwrap();
+        log.append(
+            0,
+            "session.repo_attached",
+            json!({"path": "/sandbox/app", "branch": "feature"}),
+        )
+        .unwrap();
+        log.append(
+            0,
+            "phase.worktree",
+            json!({"repo": "/sandbox/lib", "path": "/sandbox/checkout", "reference": "main"}),
+        )
+        .unwrap();
+        let legacy = Connection::open(&db).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, state TEXT NOT NULL,
+             workspace_id TEXT, device_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL, body TEXT NOT NULL);
+             INSERT INTO sessions VALUES ('stale', NULL, 'created', NULL, 'stale', 0, 0, '{}');",
+            )
+            .unwrap();
+        legacy.pragma_update(None, "user_version", version).unwrap();
+        drop(legacy);
+        let mut registry = Registry::open(&db, 1).unwrap();
+        let sessions = registry.sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, id);
+        assert_eq!(sessions[0].alias, 7);
+        assert_eq!(sessions[0].cwd.as_deref(), Some("/sandbox/notes"));
+        assert_eq!(
+            serde_json::to_value(&sessions[0]).unwrap()["repos"],
+            json!([
+                {"path": "/sandbox/app", "branch": "feature"},
+                {"path": "/sandbox/checkout", "base": "main"},
+            ])
+        );
+        assert_eq!(registry.next_alias().unwrap(), 8);
+        registry.rebuild(sandbox.path()).unwrap();
+        assert_eq!(registry.sessions().unwrap(), sessions);
+        drop(registry);
+        assert_eq!(
+            Registry::open(&db, 1).unwrap().sessions().unwrap(),
+            sessions
+        );
+    }
+}
+
+#[test]
+fn imported_session_paths_supply_cwd_and_explicit_cwd_takes_precedence() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    for (alias, body, expected) in [
+        (
+            1,
+            json!({"path": "/sandbox/legacy", "zsh_meta": {"path": "/sandbox/legacy"}}),
+            Some("/sandbox/legacy"),
+        ),
+        (
+            2,
+            json!({"path": "/sandbox/legacy", "cwd": "/sandbox/current"}),
+            Some("/sandbox/current"),
+        ),
+        (3, json!({"path": "", "zsh_meta": {"path": ""}}), None),
+        (4, json!({}), None),
+    ] {
+        let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        let mut body = body;
+        body["alias"] = json!(alias);
+        registry
+            .apply(&log.append(0, "session.created", body).unwrap())
+            .unwrap();
+        assert_eq!(
+            registry.sessions().unwrap().last().unwrap().cwd.as_deref(),
+            expected
+        );
+    }
+    let sessions = registry.sessions().unwrap();
+    registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(registry.sessions().unwrap(), sessions);
+}
+
+#[test]
+fn phase_worktrees_project_checkout_paths_and_base_references_without_duplicates() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    for (event_type, body) in [
+        ("session.created", json!({"alias": 1})),
+        (
+            "phase.worktree",
+            json!({"repo": "/sandbox/app", "path": "/sandbox/phases/checkout", "reference": "abc123"}),
+        ),
+        (
+            "session.repo_attached",
+            json!({"path": "/sandbox/phases/checkout", "remote": "git@example.com:app.git"}),
+        ),
+        (
+            "phase.worktree",
+            json!({"repo": "/sandbox/app", "path": "/sandbox/phases/checkout", "reference": "def456"}),
+        ),
+    ] {
+        let entry = log.append(0, event_type, body).unwrap();
+        registry.apply(&entry).unwrap();
+    }
+    let sessions = registry.sessions().unwrap();
+    assert_eq!(
+        serde_json::to_value(&sessions[0]).unwrap()["repos"],
+        json!([
+            {"path": "/sandbox/phases/checkout", "remote": "git@example.com:app.git", "base": "def456"}
+        ])
+    );
+    assert_eq!(sessions[0].cwd, None);
+    registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(registry.sessions().unwrap(), sessions);
+}
+
+#[test]
+fn attached_repos_merge_by_path_and_survive_reopening_and_rebuild() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let db = sandbox.path().join("registry.sqlite");
+    let mut registry = Registry::open(&db, 1).unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    for (event_type, body) in [
+        (
+            "session.created",
+            json!({"alias": 1, "cwd": "/sandbox/notes"}),
+        ),
+        (
+            "session.repo_attached",
+            json!({"path": "/sandbox/app", "remote": "git@example.com:app.git", "branch": "feature", "base": "main"}),
+        ),
+        ("session.repo_attached", json!({"path": "/sandbox/lib"})),
+        (
+            "session.repo_attached",
+            json!({"path": "/sandbox/app", "branch": "next"}),
+        ),
+        ("session.repo_attached", json!({"path": "/sandbox/app"})),
+    ] {
+        let entry = log.append(0, event_type, body).unwrap();
+        registry.apply(&entry).unwrap();
+        registry.apply(&entry).unwrap();
+    }
+    let expected = json!([
+        {"path": "/sandbox/app", "remote": "git@example.com:app.git", "branch": "next", "base": "main"},
+        {"path": "/sandbox/lib"},
+    ]);
+    let sessions = registry.sessions().unwrap();
+    assert_eq!(
+        serde_json::to_value(&sessions[0]).unwrap()["repos"],
+        expected
+    );
+    assert_eq!(sessions[0].cwd.as_deref(), Some("/sandbox/notes"));
+    drop(registry);
+    let mut registry = Registry::open(&db, 1).unwrap();
+    assert_eq!(registry.sessions().unwrap(), sessions);
+    registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(registry.sessions().unwrap(), sessions);
+}
+
+#[test]
+fn projects_a_session_cwd_without_a_workspace() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    let created = log
+        .append(
+            0,
+            "session.created",
+            json!({"alias": 1, "cwd": "/sandbox/notes"}),
+        )
+        .unwrap();
+    registry.apply(&created).unwrap();
+    let session = serde_json::to_value(&registry.sessions().unwrap()[0]).unwrap();
+    assert_eq!(session["cwd"], "/sandbox/notes");
+    assert_eq!(session["workspace_id"], Value::Null);
+    assert_eq!(session["repos"], json!([]));
+}
+
+#[test]
 fn sessions_survive_reopening_and_aliases_start_at_the_configured_floor() {
     let sandbox = tempfile::tempdir().unwrap();
     let db = sandbox.path().join("registry.sqlite");
@@ -430,7 +711,7 @@ proptest! {
     #[test]
     fn incremental_apply_and_rebuild_have_identical_views(
         floor in 1_i64..100_000,
-        actions in prop::collection::vec((0_usize..3, 0_u8..6, 0_usize..3), 0..40),
+        actions in prop::collection::vec((0_usize..3, 0_u8..8, 0_usize..3), 0..40),
         schedule in prop::collection::vec(0_usize..3, 1..30),
     ) {
         let sandbox = tempfile::tempdir().unwrap();
@@ -438,7 +719,7 @@ proptest! {
         let ids = [Ulid::from(3_u128), Ulid::from(1_u128), Ulid::from(2_u128)];
         let logs: Vec<_> = ids.iter().map(|id| SessionLog::new(sandbox.path(), *id, Ulid::new())).collect();
         for (actor, log) in logs.iter().enumerate() {
-            log.append(0, "session.created", json!({"alias": floor + actor as i64, "name": format!("session-{actor}")})).unwrap();
+            log.append(0, "session.created", json!({"alias": floor + actor as i64, "name": format!("session-{actor}"), "cwd": format!("/sandbox/{actor}")})).unwrap();
             log.append(0, "workspace.created", json!({"workspace_id": format!("workspace-{actor}"), "path": format!("/sandbox/{actor}")})).unwrap();
         }
         for (index, (actor, action, target)) in actions.iter().enumerate() {
@@ -459,6 +740,8 @@ proptest! {
                     logs[recipient].append(0, "message.delivered", json!({"message_id": sent.event_id})).unwrap();
                     logs[recipient].append(0, "message.read", json!({"message_id": sent.event_id})).unwrap();
                 }
+                5 => { log.append(0, "session.repo_attached", json!({"path": format!("/sandbox/repo-{target}"), "branch": format!("feature-{index}")})).unwrap(); }
+                6 => { log.append(0, "phase.worktree", json!({"repo": "/sandbox/app", "path": format!("/sandbox/repo-{target}"), "reference": format!("base-{index}")})).unwrap(); }
                 _ => { log.append(0, "future.event", json!({"ignored": true})).unwrap(); }
             }
         }
@@ -743,6 +1026,6 @@ fn event_queries_survive_upgrade_reopen_and_rebuild() {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        1
+        2
     );
 }

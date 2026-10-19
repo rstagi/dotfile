@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     name TEXT,
     state TEXT NOT NULL,
     workspace_id TEXT,
+    cwd TEXT,
+    repos TEXT NOT NULL DEFAULT '[]',
     device_id TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
