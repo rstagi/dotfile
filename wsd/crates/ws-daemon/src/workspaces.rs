@@ -775,8 +775,13 @@ impl Sessions {
                 .as_ref()
                 .is_some_and(|path| Path::new(path).canonicalize().ok() != wt.canonicalize().ok())
         {
+            let kind = if name.is_some() {
+                "workspace"
+            } else {
+                "directory"
+            };
             return Err(failure(format!(
-                "The tmux session {session_name} uses another directory."
+                "The tmux session {session_name} belongs to another {kind}."
             )));
         }
         let pending = crate::agents::launch::PendingLaunch::new(id)?;
