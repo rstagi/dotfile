@@ -2,7 +2,7 @@ use std::process::{Command, ExitCode};
 
 use crate::Result;
 
-const SCRIPT: &str = include_str!("../../../../../ws/lib/picker.sh");
+const SCRIPT: &str = include_str!("picker.zsh");
 
 pub fn run() -> Result<ExitCode> {
     configure_bindings()?;

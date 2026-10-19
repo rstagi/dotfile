@@ -1,5 +1,8 @@
+#[path = "../src/import/fixtures/mod.rs"]
+mod fixtures;
+
 use serde_json::Value;
-use std::{collections::BTreeMap, path::PathBuf, process::Command};
+use std::{collections::BTreeMap, path::PathBuf};
 use ws_daemon::agents::{AgentSession, Mode, prepare};
 
 #[test]
@@ -26,30 +29,8 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
         assert_eq!(prepared.program, agent);
         assert_eq!(prepared.env["WS_SESSION"], context.id);
         assert_eq!(prepared.env["WS_SESSION_ID"], context.id);
-        let script = r#"
-            source "$REPO/ws/lib/tabs.sh"
-            source "$REPO/ws/lib/hooks.sh"
-            hooks_migrate() { :; }
-            WS_SESSIONS="$HOME/sessions"
-            agent_command "$AGENT" resume-123 "" "$SID"
-        "#;
-        let output = Command::new("zsh")
-            .args(["-f", "-c", script])
-            .env(
-                "REPO",
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."),
-            )
-            .env("HOME", home.path())
-            .env("WS_HOME", &context.ws_home)
-            .env("GROK_HOOKS", context.home.join(".grok/hooks/ws.json"))
-            .env("WS_BIN", &context.ws_bin)
-            .env("AGENT", agent)
-            .env("SID", &context.id)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
         let mut expected =
-            shell_words::split(std::str::from_utf8(&output.stdout).unwrap().trim()).unwrap();
+            shell_words::split(&legacy_fixture(&format!("{agent}.command"), &context)).unwrap();
         assert_eq!(expected.remove(0), agent);
         let mut actual = prepared.argv.clone();
         if agent == "claude" {
@@ -70,7 +51,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
             let expected_i = expected.iter().position(|v| v == "--settings").unwrap() + 1;
             actual[i] = expected[expected_i].clone();
             let legacy: Value = serde_json::from_slice(
-                &std::fs::read(context.ws_home.join("claude-settings.json")).unwrap(),
+                legacy_fixture(".ws/claude-settings.json", &context).as_bytes(),
             )
             .unwrap();
             let mut generated: Value = serde_json::from_slice(&prepared.files[0].contents).unwrap();
@@ -106,13 +87,11 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
             assert_eq!(generated, legacy);
         }
         if agent == "grok" {
-            let legacy: Value = serde_json::from_slice(
-                &std::fs::read(context.home.join(".grok/hooks/ws.json")).unwrap(),
-            )
-            .unwrap();
+            let legacy: Value =
+                serde_json::from_slice(legacy_fixture(".grok/hooks/ws.json", &context).as_bytes())
+                    .unwrap();
             let generated: Value = serde_json::from_slice(&prepared.files[0].contents).unwrap();
             assert_eq!(generated, legacy);
-            std::fs::remove_file(context.home.join(".grok/hooks/ws.json")).unwrap();
         }
         assert_eq!(actual, expected, "{agent}");
         assert_eq!(
@@ -577,4 +556,14 @@ fn setting_names_and_versions_match_the_captured_s2_contracts() {
             }
         }
     }
+}
+
+fn legacy_fixture(name: &str, context: &AgentSession) -> String {
+    let directory = context.home.join("legacy-agent-preparation");
+    fixtures::copy("agent-preparation", &directory);
+    let path = directory.join(name);
+    std::fs::read_to_string(path)
+        .unwrap()
+        .replace("@HOME@", context.home.to_str().unwrap())
+        .replace("@WS_BIN@", context.ws_bin.to_str().unwrap())
 }

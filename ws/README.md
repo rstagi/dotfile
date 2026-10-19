@@ -96,7 +96,7 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 `ws/ws.sh` reads `$WS_HOME/backend` and executes `$WS_HOME/bin/ws-rs` for Rust commands.
 The Cargo workspace in `wsd/` contains `ws-core` for durable data, `ws-daemon` for the runtime, and `ws` for the CLI.
 Rust owns sessions, messages, logs, dependency edges and the local MCP server.
-`ws/lib/picker.sh` supplies the embedded fzf UI. The other shell modules support the explicit zsh backend.
+`wsd/crates/ws/src/cmd/picker.zsh` supplies the embedded fzf UI. The other shell modules support the explicit zsh backend.
 
 `ws/tests/` retains the zsh suite. Its four groups use private homes, isolated tmux servers and fake agents.
 Run `zsh ws/tests/run.sh`, or select `core`, `send`, `triggers` or `misc`.
@@ -132,7 +132,7 @@ Returning to Rust imports new zsh sessions, pending messages and triggers withou
 Both backends reserve aliases through `sessions/counter` under the zsh-compatible `counter.lock`.
 The zsh suite writes its selector inside its sandbox. `zsh ws/tests/run.sh rust` runs the Rust dispatcher smoke test.
 
-The Rust `ws pick` command and bare `ws` use the fzf UI in `ws/lib/picker.sh`.
+The Rust `ws pick` command and bare `ws` use the fzf UI in `wsd/crates/ws/src/cmd/picker.zsh`.
 Rows, summaries, previews, pins, session expansion and unread changes use Rust commands.
 The binary embeds the shell UI. It does not need the source checkout at runtime.
 The tmux keys keep the picker, new workspace, agent tab and merge actions.
@@ -550,10 +550,13 @@ The slow lookup test always checks the callback and the spool count.
 Enable latency assertions only on an idle machine. Parallel loads increase scheduler latency above the limit.
 Run `zsh wsd/crates/ws/tests/golden/hook-capture.zsh` to regenerate the zsh hook state fixture.
 Run `cd wsd && cargo test -p ws --test agents && cargo test -p ws-daemon --test agent_preparation` to check launches.
-The tests use fake agents and private tmux servers. Preparation tests also compare the existing zsh builders.
+The tests use fake agents and private tmux servers. Preparation tests also compare captured output from the zsh builders.
 
 Run `zsh wsd/crates/ws/tests/golden/workspace-capture.zsh` to regenerate the zsh workspace fixtures.
 Run `cd wsd && cargo test -p ws --test workspaces` to check the Rust workspace commands.
+
+Rust import and parity tests copy frozen zsh files from `wsd/crates/ws-daemon/src/import/fixtures/` into their sandboxes.
+These tests do not run the legacy backend. Fixture markers substitute sandbox paths and the preview commit hash.
 
 Run `zsh wsd/crates/ws/tests/golden/capture.zsh` from the repository root to regenerate the zsh fixtures.
 The capture uses `ws/tests/helpers.sh` with a private HOME and tmux server.

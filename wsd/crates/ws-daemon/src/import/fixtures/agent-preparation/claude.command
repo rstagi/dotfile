@@ -1,0 +1,1 @@
+claude --dangerously-skip-permissions --settings @HOME@/.ws/claude-settings.json --append-system-prompt You\ are\ ws\ session\ \#01K7Q0K5M00000000000000001.\ Use\ the\ ws-sessions\ skill\ to\ coordinate\ sessions. --resume resume-123

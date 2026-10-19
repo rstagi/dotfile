@@ -88,7 +88,8 @@ loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop infer
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
 ws/ws.sh                Terminal workspace dispatcher: Rust by default, explicit zsh fallback (see ws/README.md)
-ws/lib/                 Embedded fzf picker UI and legacy zsh backend modules
+ws/lib/                 Legacy zsh backend modules and picker wrapper
+wsd/crates/ws/src/cmd/picker.zsh  Embedded fzf picker UI
 ws/tests/               ws suite: helpers.sh (sandbox) + area *.test.sh, sourced in order per parallel group by run.sh
 wsd/                    Default ws implementation: ws-core durable data, ws-daemon runtime, ws CLI + MCP
 docs/ws-v6/             WS v6 architecture, semantic conventions and spike reports (S1 scripts stay)
