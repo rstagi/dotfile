@@ -112,14 +112,11 @@ async fn deliver(
         payload,
         notify: Some(ws_daemon::notify::Config::from_env()),
     };
-    if let Ok(Ok(reply)) = tokio::time::timeout(
+    if let Ok(reply) = client::hook_request(
+        socket,
+        "/v1/hooks/ingest",
+        serde_json::to_vec(&callback)?,
         deadline,
-        client::request(
-            socket,
-            hyper::Method::POST,
-            "/v1/hooks/ingest",
-            serde_json::to_vec(&callback)?,
-        ),
     )
     .await
     {
@@ -164,19 +161,15 @@ async fn resolve(socket: &Path, identity: &str, deadline: Duration) -> Option<Ul
 async fn confirm(socket: &Path, receipt: &Receipt, deadline: Duration) -> Result<()> {
     // Write the receipt before transport so a daemon restart can restore delivery.
     let pending = delivery::spool(&state_path()?, receipt)?;
-    if matches!(
-        tokio::time::timeout(
-            deadline,
-            client::request(
-                socket,
-                hyper::Method::POST,
-                "/v1/hooks/delivered",
-                serde_json::to_vec(receipt)?,
-            )
-        )
-        .await,
-        Ok(Ok(_))
-    ) {
+    if client::hook_request(
+        socket,
+        "/v1/hooks/delivered",
+        serde_json::to_vec(receipt)?,
+        deadline,
+    )
+    .await
+    .is_ok()
+    {
         std::fs::remove_file(pending)?;
     }
     Ok(())

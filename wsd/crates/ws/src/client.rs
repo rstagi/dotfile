@@ -124,6 +124,28 @@ pub(crate) async fn request(
     })?
 }
 
+/// Sends one hook callback under the caller's deadline only.
+/// The deadline covers the connection and the reply. Hooks never start the daemon.
+pub(crate) async fn hook_request(
+    socket: &Path,
+    path: &str,
+    body: Vec<u8>,
+    deadline: Duration,
+) -> Result<Bytes> {
+    timeout(deadline, async {
+        let stream = connect(socket, false).await?;
+        send_request(stream, Method::POST, path, body).await
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "The daemon at {} did not answer within {} ms.",
+            socket.display(),
+            deadline.as_millis()
+        )
+    })?
+}
+
 async fn connect(socket: &Path, autostart: bool) -> Result<UnixStream> {
     match UnixStream::connect(socket).await {
         Ok(stream) => Ok(stream),
@@ -317,6 +339,58 @@ mod tests {
         net::UnixListener,
         sync::oneshot,
     };
+
+    #[tokio::test]
+    async fn hook_requests_use_only_the_caller_deadline() {
+        for (deadline, answers) in [
+            (Duration::from_secs(30), true),
+            (Duration::from_secs(1), false),
+        ] {
+            let home = tempfile::tempdir_in("/tmp").unwrap();
+            let socket = home.path().join("daemon.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (observed, received) = oneshot::channel();
+            let (release, released) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut bytes = [0; 1024];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let n = stream.read(&mut bytes).await.unwrap();
+                    assert_ne!(n, 0);
+                    request.extend_from_slice(&bytes[..n]);
+                }
+                observed.send(()).unwrap();
+                released.await.unwrap();
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await;
+            });
+            let client = tokio::spawn(async move {
+                hook_request(&socket, "/v1/hooks/ingest", Vec::new(), deadline).await
+            });
+            received.await.unwrap();
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(3)).await;
+            tokio::task::yield_now().await;
+            tokio::time::resume();
+            release.send(()).unwrap();
+            let result = client.await.unwrap();
+            server.await.unwrap();
+            match result {
+                Ok(body) => {
+                    assert!(answers, "{deadline:?} did not enforce its deadline.");
+                    assert_eq!(body.as_ref(), b"{}");
+                }
+                Err(error) => {
+                    assert!(!answers, "{deadline:?}: {error}");
+                    assert!(error.to_string().contains("within 1000 ms"));
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn store_requests_wait_for_completion_while_fast_requests_keep_their_deadline() {
