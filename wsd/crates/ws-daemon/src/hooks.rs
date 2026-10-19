@@ -20,9 +20,10 @@ use ws_core::{
     log::SessionLog,
 };
 
-/// Guards the daemon against a hung tmux server. The hook client has its own transport
-/// deadline, so this bound never delays the agent. It must stay above the tmux latency
-/// that ordinary scheduling load causes, because a timeout drops the window update.
+/// Total transport budget for Stop and exit. Generated hooks add a 10 s parent margin.
+pub const STOP_CLI_BUDGET: Duration = Duration::from_secs(20);
+
+// Bound each tmux call independently of the hook client.
 const TMUX_DEADLINE: Duration = Duration::from_secs(2);
 pub(crate) static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

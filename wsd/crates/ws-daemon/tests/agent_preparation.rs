@@ -51,7 +51,7 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
             let i = actual.iter().position(|v| v == "--settings").unwrap() + 1;
             let expected_i = expected.iter().position(|v| v == "--settings").unwrap() + 1;
             actual[i] = expected[expected_i].clone();
-            let legacy: Value = serde_json::from_slice(
+            let mut legacy: Value = serde_json::from_slice(
                 legacy_fixture(".ws/claude-settings.json", &context).as_bytes(),
             )
             .unwrap();
@@ -85,13 +85,17 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
                 .unwrap();
             assert_eq!(status["type"], "command");
             assert!(status["command"].as_str().unwrap().ends_with(" hook quota"));
+            assert_eq!(generated["hooks"]["Stop"][0]["hooks"][0]["timeout"], 30);
+            legacy["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 30.into();
             assert_eq!(generated, legacy);
         }
         if agent == "grok" {
-            let legacy: Value =
+            let mut legacy: Value =
                 serde_json::from_slice(legacy_fixture(".grok/hooks/ws.json", &context).as_bytes())
                     .unwrap();
             let generated: Value = serde_json::from_slice(&prepared.files[0].contents).unwrap();
+            assert_eq!(generated["hooks"]["Stop"][0]["hooks"][0]["timeout"], 30);
+            legacy["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 30.into();
             assert_eq!(generated, legacy);
         }
         assert_eq!(actual, expected, "{agent}");
