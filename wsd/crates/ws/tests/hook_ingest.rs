@@ -57,6 +57,7 @@ fn cli_spools_every_callback_and_daemon_replays_logical_boundaries() {
     let spool = home.path().join("state/spool");
     assert_eq!(fs::read_dir(&spool).unwrap().count(), 4);
     let daemon = Daemon::start(ws(home.path(), &socket), &socket);
+    common::wait_for_empty_spool(&home.path().join("state"));
     let log_path = home
         .path()
         .join("state/sessions")
@@ -238,6 +239,7 @@ fn missing_pane_exit_hooks_record_exit_fire_triggers_and_replay_once() {
                 ws(sandbox.home.path(), &sandbox.socket),
                 &sandbox.socket,
             ));
+            common::wait_for_empty_spool(&sandbox.home.path().join("state"));
             assert_eq!(
                 fs::read_dir(sandbox.home.path().join("state/spool"))
                     .unwrap()
@@ -451,6 +453,65 @@ fn stale_hooks_preserve_callbacks_without_replacing_a_newer_turn() {
 }
 
 #[test]
+fn replayed_working_callback_preserves_newer_idle_state_and_records_its_event() {
+    for headless in [false, true] {
+        for restart in [false, true] {
+            let mut sandbox = HookSandbox::new();
+            let mut working = sandbox.callback(
+                "working",
+                json!({"hook_event_name":"UserPromptSubmit", "turn_id":"old"}),
+                100,
+            );
+            if headless {
+                working.pane = None;
+                working.tmux_socket = None;
+            }
+            let mut idle = working.clone();
+            idle.callback_id = ws_core::ids::Ulid::new();
+            idle.observed_at_us = 300;
+            idle.state = "stop".into();
+            idle.payload = json!({"hook_event_name":"Stop"});
+            for callback in [&working, &idle] {
+                let response = request(
+                    &sandbox.socket,
+                    "POST",
+                    "/v1/hooks/ingest",
+                    &serde_json::to_string(callback).unwrap(),
+                );
+                assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+            }
+            working.callback_id = ws_core::ids::Ulid::new();
+            working.observed_at_us = 200;
+            if restart {
+                sandbox.daemon.take();
+            }
+            let state = sandbox.home.path().join("state");
+            ws_daemon::hooks::spool(&state, &working).unwrap();
+            if restart {
+                sandbox.daemon = Some(Daemon::start(
+                    ws(sandbox.home.path(), &sandbox.socket),
+                    &sandbox.socket,
+                ));
+            }
+            common::wait_for_empty_spool(&state);
+            if !headless {
+                assert!(sandbox.options().starts_with("idle|idle||"));
+            }
+            let log = sandbox.log();
+            let events: Vec<_> = log
+                .iter()
+                .filter(|event| event["body"]["callback_id"] == working.callback_id.to_string())
+                .collect();
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0]["type"], "hook.received");
+            assert_eq!(events[1]["type"], "turn.started");
+            assert_eq!(events[1]["body"]["state_accepted"], false);
+            assert_eq!(events[1]["body"]["window_state"], "idle");
+        }
+    }
+}
+
+#[test]
 fn stale_subagent_callbacks_keep_bookkeeping_and_reused_panes_keep_their_owner() {
     let sandbox = HookSandbox::new();
     sandbox.post(
@@ -521,6 +582,7 @@ async fn blocked_stop_preserves_the_turn_and_its_decision_across_replay() {
     drop(store);
     let daemon = Daemon::start(ws(sandbox.home.path(), &sandbox.socket), &sandbox.socket);
     sandbox.daemon = Some(daemon);
+    common::wait_for_empty_spool(&state);
     assert!(sandbox.options().starts_with("working|working|same-turn|"));
     let log = sandbox.log();
     assert_eq!(
@@ -573,6 +635,7 @@ fn daemon_down_hooks_spool_without_tmux_and_replay_every_callback() {
         ws(sandbox.home.path(), &sandbox.socket),
         &sandbox.socket,
     ));
+    common::wait_for_empty_spool(&sandbox.home.path().join("state"));
     let log = sandbox.log();
     assert_eq!(
         log.iter()
@@ -1004,11 +1067,19 @@ fn parent_deadline_after_stdout(spooled: bool) {
     );
     proxy.join().unwrap();
     assert!(sandbox.options().starts_with("working|working|"));
-    let receipts = sandbox.home.path().join("state/delivery-spool");
-    assert_eq!(
-        fs::read_dir(receipts).unwrap().count(),
-        usize::from(spooled)
-    );
+    // The live drain can confirm a spooled receipt before the parent deadline.
+    let confirmed = ws(sandbox.home.path(), &sandbox.socket)
+        .args([
+            "wait",
+            &sandbox.id,
+            "--for",
+            "event=hook.confirmed",
+            "--timeout",
+            "30",
+        ])
+        .output()
+        .unwrap();
+    assert!(confirmed.status.success(), "{confirmed:?}");
     let recovered = sandbox.cli_stop(false);
     assert_eq!(recovered, discarded);
     assert_eq!(sandbox.cli_stop(true), json!({}));
