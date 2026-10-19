@@ -703,3 +703,18 @@ describe("parsePlan — archived milestone stubs", () => {
       .toMatch(/Milestone 1.*gate Phase 8.*not.*listed/i);
   });
 });
+
+describe("parsePlan — plan-format.md document template", () => {
+  const doc = readFileSync(new URL("../../../.claude/skills/multiphase-plan/references/plan-format.md", import.meta.url), "utf8");
+  const template = doc.split("## Document template")[1].match(/```markdown\n([\s\S]*?)\n```/)![1];
+
+  it("parses the footprint Touches and the Deferred section without warnings", () => {
+    const plan = parsePlan(template);
+    expect(plan.warnings).toEqual([]);
+    expect(plan.phases.map((phase) => phase.phase)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(plan.phases[0].touches).toBe("folder `src/feature/token-refresh/` · wiring `src/routes.ts` · flag `TOKEN_REFRESH`");
+    expect(plan.phases[1].touches).toBe("folder none (refactor) · wiring none (refactor) · flag none (no behavior change)");
+    expect(plan.phases[0].doneWhen).toBe("<acceptance criteria, testable>");
+    expect(plan.prose.parallelGuide).not.toContain("Deferred");
+  });
+});

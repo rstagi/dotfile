@@ -43,11 +43,38 @@ between repositories.
   confidence, and basis; the parser ignores it. Its upper bound should normally be at most
   25 minutes to leave room before the runner's 30-minute checkpoint. State exceptions
   openly rather than claiming a bound the evidence cannot support.
+- Every work phase of a new plan has a `Touches:` bullet. It states the footprint of the
+  phase (see **Footprint** below). Parsers read only its first line. A free-text `Touches:`
+  line in an old plan stays valid.
 - Legacy plans without `## Repositories` normalize to one synthetic `primary` repository;
   their scalar Loop config `Verify` / `PR` fields remain executable.
 - Legacy plans may still carry `kestral*` header keys, `**Kestral project:**` /
   `**Plan doc:**` / `**Effort task:**` header lines, or `**Task:**` phase lines — readers
   ignore them.
+
+## Footprint
+
+A plan passes on two tests. It does not break existing behavior. It is easy to remove. The
+`Touches:` bullet of each work phase gives the evidence for both. The footprint is per work
+phase, not per feature. The work phase is the unit that a runner gets and that `loop-pickup`
+claims, and it belongs to one repository. A feature with 2 or more phases repeats its first
+line in each phase.
+
+- **First line.** Write 3 parts with ` · ` between them:
+  - `` folder `<path>` ``: the feature folder. The new files of the phase go in it.
+  - `` wiring `<file>` ``: the single wiring point of the feature, for example a route
+    registration, a command dispatch or a plugin list. The flag check is at this point only.
+  - `` flag `<NAME>` ``: the flag, off by default. For an equivalent off switch, write
+    `off switch <what>`, for example a config toggle or a new command that no caller uses yet.
+  - When a part does not apply, write `none (<reason>)` after its word. A refactor phase
+    writes `flag none (no behavior change)`.
+- **Sub-bullets.** Write one indented sub-bullet for each existing file that the phase edits
+  outside its feature folder: `` `<path>` — <one-line reason> ``. When the phase edits the
+  wiring file, the wiring file is in this list.
+- **More than 3 files.** When the list has more than 3 files, add one sub-bullet
+  `why more than 3: <reason>`. This is a point for discussion. It never blocks the plan.
+- **Parser safety.** Do not start a sub-bullet with a bold `**Label:**`. Parsers read such a
+  line as a phase field.
 
 ## Milestones (optional)
 
@@ -193,7 +220,8 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 - **Depends on:** none
 - **Parallelizable with:** Phase 2 (independent)
 - **Suggested branch:** `feat/oauth-token-refresh`
-- **Touches:** <files / modules / areas — for conflict awareness>
+- **Touches:** folder `src/feature/token-refresh/` · wiring `src/routes.ts` · flag `TOKEN_REFRESH`
+  - `src/routes.ts` — register the refresh route behind the flag
 - **Done when:** <acceptance criteria, testable>
 - **Estimate:** <min–max min · high|medium|low confidence · basis>
 - **Verify:** <optional — runnable acceptance check, exit 0 = pass>
@@ -204,7 +232,8 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 - **Depends on:** none
 - **Parallelizable with:** Phase 1 (independent)
 - **Suggested branch:** `refactor/invoice-retry-state`
-- **Touches:** <...>
+- **Touches:** folder none (refactor) · wiring none (refactor) · flag none (no behavior change)
+  - `src/billing/retry.ts` — move the retry steps into a state machine
 - **Done when:** <...>
 - **Estimate:** <min–max min · confidence · basis>
 - **Verify:** <optional — runnable acceptance check, exit 0 = pass>
@@ -214,7 +243,7 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 - **Depends on:** Phase 1
 - **Parallelizable with:** Phase 2 (independent)
 - **Suggested branch:** `feat/api-client-token-refresh`
-- **Touches:** <...>
+- **Touches:** <folder · wiring · flag, then one sub-bullet for each existing file>
 - **Done when:** <...>
 - **Estimate:** <min–max min · confidence · basis>
 
@@ -231,6 +260,9 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 - **Depends on:** Phase 4
 - **Parallelizable with:** none — review barrier
 - **Done when:** every repository PR has a non-blocking review verdict
+
+## Deferred / Not now
+- <item> — <source: review finding ID | planner> — <why it can wait>
 
 ## Parallel execution guide
 - **Lane A** (worktree 1): Phase 1 → Phase 3. Start immediately.
@@ -312,7 +344,7 @@ fetching.
   naturally has first; only then look for independence. Split phases into separate lanes
   only when they pass all three independence checks (no dependency, low file contention, no
   coordination tax — see `multiphase-plan` step 2 → Independence test). Never reshape,
-  split, or reorder phases, and never add stubs/mocks/frozen interfaces/flags, just to
+  split, or reorder phases, and never add stubs/mocks/frozen interfaces/extra flags, just to
   enable parallel work. A fully sequential, single-lane plan is the expected outcome for
   most efforts; more lanes is not better. When in doubt, keep it sequential.
 - **Vertical slices, not layers.** For full-stack work a phase delivers the backend *and*
@@ -324,6 +356,15 @@ fetching.
 - **Every phase has a testable *Done when*.** A phase without acceptance criteria can't be
   claimed or handed off cleanly. A runnable **Verify:** line (a command, exit 0 = pass) is
   what lets `loop-execute` enforce the *Done when* mechanically.
+- **A seam is its own phase.** When a feature needs a new seam in existing code, plan a small
+  refactor phase with no behavior change before the feature phase. Its `Touches:` writes
+  `flag none (no behavior change)`. The feature phase depends on it and only adds code.
+- **Every plan has a `## Deferred / Not now` section.** Write one line for each item that the
+  plan does not need to pass the 3 blocking rules. These rules are security or safety,
+  unprotected breakage and a failing check. Give the item, its source (a review finding ID or
+  `planner`) and the reason that it can wait. Write `- none` when there is no item. Put the
+  section after the last `## Phases` or `## Milestone N` section. Parsers ignore it. Do not write `### Phase` headings in it. A runner
+  does not do its items, and no phase depends on them.
 - **Bound Loop work phases conservatively.** Use an evidence-based `Estimate:` on each work phase.
   Split phases whose likely upper bound exceeds 25 minutes without making artificial
   parallel lanes. The runner's 30-minute cutoff is a checkpoint, not proof that a phase
