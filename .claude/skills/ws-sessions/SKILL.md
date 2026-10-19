@@ -18,7 +18,9 @@ The shell launcher always runs Rust. It ignores old backend selector files.
 Rust stores its logs and registry in `$WS_STATE`, which defaults to `~/.ws/state`.
 The daemon socket uses `$WS_SOCK`, which defaults to `~/.ws/wsd.sock`.
 
-Tracked agents receive their session ULID in `WS_SESSION_ID` and the compatibility variable `WS_SESSION`.
+New tracked agents receive their session ULID in `WS_SESSION_ID` only.
+Launch preparation removes inherited `WS_SESSION` values.
+The CLI still reads `WS_SESSION` for agents that started before the cutover.
 `ws whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window identity.
 Do not invent an ID or set these variables to another session.
 If `ws whoami` fails, use `ws sessions` to discover sessions from the terminal.

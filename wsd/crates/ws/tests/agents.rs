@@ -629,7 +629,7 @@ fn workspace_agents_receive_hooks_identity_slots_and_resume_ids() {
         let (capture, _running) = sandbox.capture();
         assert_eq!(capture["agent"], agent);
         assert_eq!(capture["shell"], "ready");
-        assert_eq!(capture["id"], capture["legacy_id"]);
+        assert_eq!(capture["legacy_id"], Value::Null);
         assert_eq!(
             capture["cwd"],
             sandbox.worktree().canonicalize().unwrap().to_str().unwrap()

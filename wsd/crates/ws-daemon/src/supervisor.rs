@@ -569,7 +569,7 @@ impl Sessions {
         command
             .current_dir(cwd)
             .env("WS_SESSION_ID", id.to_string())
-            .env("WS_SESSION", id.to_string())
+            .env_remove("WS_SESSION")
             .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
             .stdout(output)
             .stderr(errors)

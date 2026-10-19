@@ -73,11 +73,8 @@ pub fn prepare(
     let mut prepared = Prepared {
         program: agent.into(),
         argv: vec![],
-        env: BTreeMap::from([
-            ("WS_SESSION".into(), session.id.clone()),
-            ("WS_SESSION_ID".into(), session.id.clone()),
-        ]),
-        unset_env: vec![],
+        env: BTreeMap::from([("WS_SESSION_ID".into(), session.id.clone())]),
+        unset_env: vec!["WS_SESSION".into()],
         files: vec![],
         telemetry: None,
     };

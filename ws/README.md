@@ -13,7 +13,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws claude|codex|grok [args]` starts a tracked agent in the current workspace window.
 - `ws sessions [<id>|<name>] [--json]`, `ws whoami [--json]`, `ws name <label>` and `ws show <target> [--json]` manage session identity.
 - Session IDs are ULIDs. Targets accept names, unique ULID prefixes and quoted aliases such as `'#123'`.
-- Agents receive the ULID in `WS_SESSION_ID` and the compatibility variable `WS_SESSION`. IDs survive resume.
+- New agents receive the ULID in `WS_SESSION_ID` only. IDs survive resume.
 - `ws send <target> <message|->` queues a durable message. Exit 75 means queued. Do not send the message again.
 - A message to a finished session reopens it. `--force` remains accepted for compatibility.
 - `ws inbox [--json]` lists unread messages. `ws ack [<event_id>...]` acknowledges selected messages, or all visible unread messages.
@@ -157,7 +157,8 @@ An interrupted import resumes from that snapshot. A completed import makes subse
 The Rust CLI in `wsd/` supports `whoami`, `name <label>`, `sessions [id|name]` and `show <id|name>`.
 Each command accepts `--json`. Human output uses `#N` aliases. Targets accept aliases, names, ULIDs and unique ULID prefixes.
 The `me` target selects the current session.
-`WS_SESSION_ID` contains the session ULID. `WS_SESSION` carries the same value for compatibility.
+New launches set `WS_SESSION_ID` to the session ULID. They remove inherited `WS_SESSION` values.
+The CLI still reads `WS_SESSION` for agents that started before the Rust cutover.
 `whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window option `@ws_session`.
 Legacy windows and `WS_SESSION` can contain a bare numeric alias.
 Session lists, picker rows and child creation resolve that alias.
@@ -212,7 +213,7 @@ The source log records `session.depends_on` or `session.block_on`. The registry 
 starts a process under the daemon and prints its session ULID. The process leads its own process group.
 The working directory defaults to the CLI's current directory. Relative I/O paths use that same CLI directory, independent of `--cwd`.
 Environment overrides extend the daemon environment. Repeated keys use the last value.
-The process receives its session ULID in `WS_SESSION_ID` and `WS_SESSION`.
+The process receives its session ULID in `WS_SESSION_ID` only.
 Claude, Codex and Grok use the shared agent preparation contract in headless mode.
 Stdin defaults to EOF. Stdout and stderr default to `$WS_STATE/sessions/<id>/stdout.log` and `stderr.log`.
 
@@ -522,7 +523,7 @@ When the target is absent, it uses the current directory or tmux workspace.
 Workspace tabs start the selected agent through one preparation contract in `ws-daemon`.
 `ws claude`, `ws codex` and `ws grok` run tracked agents in the current workspace tab and forward their arguments.
 Agent launches use `WS_AGENT_SHELL` (default `zsh -ic`) to load shell configuration.
-Each agent receives the same ULID in `WS_SESSION` and `WS_SESSION_ID`.
+Each new agent receives its ULID in `WS_SESSION_ID` only. Preparation removes inherited `WS_SESSION` values.
 Claude receives a private settings file for each launch. Codex receives per-launch `-c hooks.*` flags and `--dangerously-bypass-hook-trust`.
 Grok receives `${GROK_HOME:-$HOME/.grok}/hooks/ws.json`. All generated hook commands call the Rust binary's `ws hook` command.
 Slots remain in `<git-dir>/ws-sessions`. A clean exit removes the slot. Other exits retain it for `ws open` and resume.

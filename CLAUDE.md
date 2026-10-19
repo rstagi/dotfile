@@ -108,7 +108,8 @@ The journal resumes interrupted imports. A completed startup import does not rep
 The import includes pending messages, pending triggers, listed branch workspaces and pins.
 
 Sessions use ULIDs and local `#N` aliases. Quote aliases in shell commands, for example `ws show '#123'`.
-Agents receive the same ULID in `WS_SESSION_ID` and the compatibility variable `WS_SESSION`.
+New agents receive their ULID in `WS_SESSION_ID` only. Launch preparation removes inherited `WS_SESSION` values.
+The CLI still reads `WS_SESSION` for agents that started before the cutover.
 `ws whoami` checks these variables in that order, then the tmux window identity.
 `ws sessions`, `ws show` and `ws list` support `--json`.
 `ws send` queues durable messages and returns 75. A message to a finished session reopens it.
