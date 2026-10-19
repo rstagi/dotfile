@@ -8,7 +8,7 @@ import path from "node:path";
 const SKILL = path.join(import.meta.dirname, "..", ".claude", "skills", "visual-explainer");
 const RENDER = path.join(SKILL, "scripts", "render.mjs");
 const RENDER_VIDEO = path.join(SKILL, "scripts", "render-video.mjs");
-const { clip, paginate, storyboard } = await import(path.join(SKILL, "video", "src", "storyboard.mjs"));
+const { clip, storyboard } = await import(path.join(SKILL, "video", "src", "storyboard.mjs"));
 const { cacheDir, cacheKey, parseArgs, pruneCaches, renderAttempts, videoSettings } = await import(RENDER_VIDEO);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "visual-explainer-video-"));
 // Not a root after() hook: with --test-name-pattern, node runs it before a long filtered test ends.
@@ -61,8 +61,6 @@ const shipProps = (over = {}) => ({
 const EXAMPLE_NARRATION = Object.fromEntries(Object.keys(EXAMPLES).map((mode) => [mode, JSON.parse(fs.readFileSync(path.join(SKILL, "examples",
   fs.readdirSync(path.join(SKILL, "examples")).find((f) => f.startsWith(mode) && f.endsWith(".narration.json"))), "utf8"))]));
 const introOnly = (mode) => ({ mode, sections: [{ id: "intro", text: "Hello." }] });
-
-const kinds = (board) => board.scenes.map((s) => s.kind);
 
 function run(script, args, { props, narration, env = {}, timeout } = {}) {
   const dir = fs.mkdtempSync(path.join(TMP, "case-"));
@@ -560,24 +558,24 @@ test("encoder: render-video rejects a bad VE_VIDEO_* value with exit 2 before an
 });
 
 test("encoder: x264 attempts lower the quality, then the size", () => {
-  const attempts = renderAttempts({ fps: 24, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" }, 300, 14);
+  const attempts = renderAttempts({ fps: 24, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" }, 120, 14);
   assert.deepEqual(attempts.map((a) => [a.scale, a.crf, a.x264Preset, a.videoBitrate]), [[1, 23, "veryfast", undefined], [1, 30, "veryfast", undefined], [2 / 3, 30, "veryfast", undefined]]);
   assert.ok(attempts.every((a) => a.fps === 24 && a.concurrency === 8 && a.hardwareAcceleration === "disable" && a.gl === "angle"));
 });
 
-// Measured on the ship example, x264 veryfast, 24 fps, 1920x1080, on an Apple M4:
-// 278.6 s -> 10.64 MB at CRF 23 · 547.5 s -> 15.54 MB at CRF 23, 12.11 MB at CRF 27, 10.35 MB at CRF 30 ·
-// 599.4 s -> 12.39 MB at CRF 28.
-test("encoder: the first x264 quality comes from the video length, so a 10 minute video fits 14 MB on the first render", () => {
+// The graph video moves a camera, so it needs more bytes per second than the slide video did.
+// Measured on the graph video of the examples, x264 veryfast, 24 fps, 1920x1080, on an Apple M4:
+// plan 165.75 s -> 7.90 MB at CRF 23 · ship 231.5 s -> 14.40 MB at CRF 23, 8.10 MB at CRF 30.
+test("encoder: the first x264 quality comes from the video length, so a 4 minute graph video fits 14 MB on the first render", () => {
   const x264 = { fps: 24, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" };
   const crfs = (seconds, maxMb = 14) => renderAttempts(x264, seconds, maxMb).map((a) => [a.label, a.scale, a.crf]);
   const backup = [["1920x1080 at a lower quality", 1, 30], ["1280x720", 2 / 3, 30]];
   assert.deepEqual(crfs(60), [["1920x1080", 1, 23], ...backup], "a short video keeps CRF 23");
-  assert.deepEqual(crfs(278.6), [["1920x1080", 1, 23], ...backup], "10.6 MB at CRF 23 fits");
-  assert.deepEqual(crfs(547.5), [["1920x1080", 1, 27], ...backup], "15.5 MB at CRF 23 is above the limit, 12.1 MB at CRF 27 fits");
-  assert.deepEqual(crfs(600), [["1920x1080", 1, 28], ...backup], "10 minutes: 12.4 MB at CRF 28 fits");
-  assert.deepEqual(crfs(600, 30), [["1920x1080", 1, 23], ...backup], "a larger limit keeps CRF 23");
-  assert.deepEqual(crfs(1500), [["1920x1080", 1, 30], ["1280x720", 2 / 3, 30]], "CRF 30 is the lowest first quality, then only 1280x720 is left");
+  assert.deepEqual(crfs(165.75), [["1920x1080", 1, 23], ...backup], "plan example: 7.9 MB at CRF 23 fits");
+  assert.deepEqual(crfs(231.5), [["1920x1080", 1, 26], ...backup], "ship example: 14.4 MB at CRF 23 is above the limit, 8.1 MB at CRF 30");
+  assert.deepEqual(crfs(300), [["1920x1080", 1, 29], ...backup], "5 minutes");
+  assert.deepEqual(crfs(300, 30), [["1920x1080", 1, 23], ...backup], "a larger limit keeps CRF 23");
+  assert.deepEqual(crfs(600), [["1920x1080", 1, 30], ["1280x720", 2 / 3, 30]], "CRF 30 is the lowest first quality, then only 1280x720 is left");
   let last = 0;
   for (let seconds = 30; seconds <= 1500; seconds += 30) {
     const crf = renderAttempts(x264, seconds, 14)[0].crf;
@@ -716,7 +714,10 @@ function treeContains(dir, needle) {
   });
 }
 
-const PLAN_SECTIONS = EXAMPLE_NARRATION.plan.sections.length;
+// The narrated stops of the plan example: one clip each. The narration was a list of sections; it
+// is now a list of stops, so the clip ids are the stop ids.
+const PLAN_EXAMPLE_FILE = path.join(SKILL, "examples", "plan-visual-explainer.narration.json");
+const PLAN_STOPS = checkNarration(PLAN_EXAMPLE_FILE, EXAMPLES.plan).stops.filter((s) => s.text);
 
 test("render-video: when ElevenLabs fails in auto mode, the video uses say, one stderr line says so, and the result names the engine", () => {
   const world = fakeWorld();
@@ -725,18 +726,31 @@ test("render-video: when ElevenLabs fails in auto mode, the video uses say, one 
   assert.deepEqual(r.stdout.trim().split("\n"), [path.join(world.out, "video.mp4"), "tts: say (fallback: HTTP 401 quota_exceeded)"]);
   assert.deepEqual(r.stderr.split("\n").filter((l) => l.includes("ElevenLabs failed")),
     ["render-video: ElevenLabs failed (HTTP 401 quota_exceeded): the video uses the macOS voice"]);
-  assert.match(r.stderr, new RegExp(`render-video: tts: say voice Samantha model say: ${PLAN_SECTIONS} clips, 0 cached`));
-  assert.equal(world.sayCalls().length, PLAN_SECTIONS, "say speaks every section");
-  assert.deepEqual(Object.keys(world.engineInput().voiceover).sort(), EXAMPLE_NARRATION.plan.sections.map((s) => s.id).sort());
+  assert.match(r.stderr, new RegExp(`render-video: tts: say voice Samantha model say: ${PLAN_STOPS.length} clips, 0 cached`));
+  assert.equal(world.sayCalls().length, PLAN_STOPS.length, "say speaks every stop");
+  assert.deepEqual(Object.keys(world.engineInput().voiceover).sort(), PLAN_STOPS.map((s) => s.id).sort());
   assert.ok(![r.stdout, r.stderr].some((text) => text.includes(KEY)), "no key in stdout or stderr");
   assert.ok(!treeContains(world.root, KEY), "no key in a file name or a file");
+});
+
+test("render-video: the composition gets the graph of the page and the resolved stops", () => {
+  const world = fakeWorld();
+  const r = world.render(["--tts", "say"], {});
+  assert.equal(r.status, 0, r.stderr);
+  const { props } = world.engineInput();
+  const graph = buildGraph(EXAMPLES.plan);
+  assert.deepEqual(Object.keys(props).sort(), ["graph", "kinds", "meta", "mode", "stops"]);
+  assert.deepEqual(props.kinds.phase, { label: "Phases", color: "accent" }, "the kind labels and colors of graph.mjs");
+  assert.deepEqual(props.graph.nodes.map((n) => [n.id, n.x, n.y]), graph.nodes.map((n) => [n.id, n.x, n.y]), "the positions of the page");
+  assert.deepEqual(props.stops.map((s) => s.id), checkNarration(PLAN_EXAMPLE_FILE, EXAMPLES.plan).stops.map((s) => s.id));
+  assert.ok(props.stops.every((s) => Array.isArray(s.nodes) && typeof s.overview === "boolean"));
 });
 
 test("render-video: an explicit --tts elevenlabs still fails with exit 3 and writes no video", () => {
   const world = fakeWorld();
   const r = world.render(["--tts", "elevenlabs"], { ELEVENLABS_API_KEY: KEY, FAKE_FETCH: "401" });
   assert.equal(r.status, 3, r.stderr);
-  assert.match(r.stderr, /render-video\.mjs: text to speech failed for section intro: ElevenLabs returned HTTP 401/);
+  assert.match(r.stderr, new RegExp(`render-video\\.mjs: text to speech failed for section ${PLAN_STOPS[0].id}: ElevenLabs returned HTTP 401`));
   assert.ok(!r.stderr.includes("macOS voice"));
   assert.equal(r.stdout, "");
   assert.deepEqual(fs.readdirSync(world.out), [], "no video");
@@ -821,80 +835,107 @@ test("clip: a cut inside inline code closes the code span", () => {
   assert.equal(clip("Run `ws migrate --from-zsh --dry-run` first", 24), "Run `ws migrate…`");
 });
 
-// ---- list split rule ----
+// ---- storyboard: the camera moves over the graph from stop to stop ----
+// The video had one scene per report section, with lists split across scenes. Now it draws the
+// graph of the page and moves a camera between the stops of the narration: these tests replace the
+// scene and list-split tests.
 
-test("paginate: a list that fits one scene stays in one scene", () => {
-  assert.deepEqual(paginate(["a", "b", "c"], 5, 2), { pages: [["a", "b", "c"]], more: 0 });
-  assert.deepEqual(paginate([], 5, 2), { pages: [], more: 0 });
-});
+const { buildGraph } = await import(path.join(SKILL, "scripts", "graph.mjs"));
+const { tourStops } = await import(NARRATION);
+const { cameraAt, CARD, GRAPH_AREA, MAX_SCALE } = await import(path.join(SKILL, "video", "src", "storyboard.mjs"));
 
-test("paginate: a longer list splits into balanced scenes in list order", () => {
-  assert.deepEqual(paginate([1, 2, 3, 4, 5, 6], 5, 2).pages, [[1, 2, 3], [4, 5, 6]]);
-  assert.deepEqual(paginate([1, 2, 3, 4, 5, 6, 7], 5, 3).pages, [[1, 2, 3, 4], [5, 6, 7]]);
-});
+// The input props of a composition: what render-video.mjs passes.
+function videoInput(props, narration = null) {
+  const graph = buildGraph(props);
+  return { mode: props.mode, meta: props.meta, graph, stops: tourStops(graph, narration, props) };
+}
+const planStops = (stops) => videoInput(planProps(), { version: 2, mode: "plan", stops });
+const ids = (board) => board.stops.map((s) => s.id);
+const stopOf = (board, id) => board.stops.find((s) => s.id === id);
 
-test("paginate: items past the scene cap are cut and counted", () => {
-  const list = Array.from({ length: 14 }, (_, i) => i + 1);
-  assert.deepEqual(paginate(list, 5, 2), { pages: [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], more: 4 });
-});
+// The screen box of a world box under a camera: the camera point sits at the frame center.
+function onScreen(camera, box) {
+  return { x: (box.x - camera.x) * camera.scale + 960, y: (box.y - camera.y) * camera.scale + 540, w: box.w * camera.scale, h: box.h * camera.scale };
+}
+function inside(inner, outer, slack = 1) {
+  return inner.x >= outer.x - slack && inner.y >= outer.y - slack && inner.x + inner.w <= outer.x + outer.w + slack && inner.y + inner.h <= outer.y + outer.h + slack;
+}
 
-// ---- storyboard: scenes ----
-
-test("storyboard: 1920x1080 at 30 fps", () => {
-  const board = storyboard(planProps());
+test("storyboard: 1920x1080 at 30 fps by default", () => {
+  const board = storyboard(videoInput(planProps()));
   assert.deepEqual([board.width, board.height, board.fps], [1920, 1080, 30]);
 });
 
-test("storyboard (plan): the scenes mirror the page order, one timeline scene per milestone", () => {
-  assert.deepEqual(kinds(storyboard(planProps())),
-    ["title", "goal", "architecture", "flows", "timeline", "timeline", "decisions", "risks", "end"]);
-  const noFlows = planProps();
-  delete noFlows.architecture.flows;
-  assert.ok(!kinds(storyboard(noFlows)).includes("flows"), "no flows scene without flows");
+test("storyboard: one stop for each narration stop, with a title stop and an end stop when the narration does not start and end on the overview", () => {
+  const board = storyboard(planStops([stop(["goal"]), stop(["phase-2"])]));
+  assert.deepEqual(ids(board), ["title", "stop-1", "stop-2", "end"]);
+  assert.deepEqual(board.stops.map((s) => [s.card.type, s.overview]), [["title", true], ["node", false], ["node", false], ["end", true]]);
+  const framed = storyboard(planStops([stop(["all"]), stop(["phase-2"]), stop(["all"])]));
+  assert.deepEqual(ids(framed), ["stop-1", "stop-2", "stop-3"], "an overview at the start and at the end carries the title and the end card");
+  assert.deepEqual(framed.stops.map((s) => s.card.type), ["title", "node", "end"]);
 });
 
-test("storyboard (ship): the scenes mirror the page order, and an empty deviation list still gets its scene", () => {
-  assert.deepEqual(kinds(storyboard(shipProps())),
-    ["title", "summary", "delivered", "deviations", "review", "hand-test", "rollback", "end"]);
-  const withChanges = shipProps({ changes: [{ area: "Storage", how: "SQLite", why: "One file" }] });
-  assert.deepEqual(kinds(storyboard(withChanges)).slice(0, 3), ["title", "summary", "changes"]);
+test("storyboard: a version 1 narration and the default tour visit every cluster", () => {
+  const v1 = storyboard(videoInput(planProps(), { mode: "plan", sections: [{ id: "intro", text: "Hi." }] }));
+  assert.deepEqual(ids(v1), ["intro", "goal", "architecture", "milestones", "decisions", "risks", "outro"]);
+  assert.deepEqual(stopOf(v1, "milestones").nodes, ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
+  const ship = storyboard(videoInput(shipProps()));
+  assert.ok(ids(ship).includes("group-hand-test") && ids(ship).includes("group-review"));
 });
 
-test("storyboard: a long list splits across scenes, and the last scene counts the items that only the page shows", () => {
-  const delivered = many(14, (i) => ({ criterion: `Criterion ${i}`, result: "Done", status: i === 12 ? "missed" : "met" }));
-  const scenes = storyboard(shipProps({ delivered })).scenes.filter((s) => s.kind === "delivered");
-  assert.deepEqual(scenes.map((s) => [s.delivered.length, s.more, s.part.index, s.part.count]), [[4, 0, 1, 2], [4, 6, 2, 2]]);
-  assert.equal(scenes[0].delivered[0].criterion, "Criterion 12", "a missed row comes first, so a cut drops met rows");
+test("storyboard: the camera frames the focus nodes in the graph area, left of the card, up to the zoom limit", () => {
+  const board = storyboard(planStops([stop(["all"]), stop(["phase-2"]), stop(["risk-1", "component-widget-store", "milestone-2"]), stop(["group-timeline"])]));
+  const graph = buildGraph(planProps());
+  const box = (idsOf) => {
+    const nodes = graph.nodes.filter((n) => idsOf.includes(n.id));
+    const x = Math.min(...nodes.map((n) => n.x));
+    const y = Math.min(...nodes.map((n) => n.y));
+    return { x, y, w: Math.max(...nodes.map((n) => n.x + n.w)) - x, h: Math.max(...nodes.map((n) => n.y + n.h)) - y };
+  };
+  assert.ok(GRAPH_AREA.x + GRAPH_AREA.w <= CARD.x, "the card is right of the graph area");
+  for (const s of board.stops) {
+    const target = s.overview ? { x: 0, y: 0, w: graph.width, h: graph.height } : box(s.nodes);
+    const shown = onScreen(s.camera, target);
+    assert.ok(inside(shown, GRAPH_AREA), `${s.id}: ${JSON.stringify(shown)} inside the graph area`);
+    assert.ok(s.camera.scale <= MAX_SCALE, `${s.id}: zoom ${s.camera.scale}`);
+    const fills = Math.max(shown.w / GRAPH_AREA.w, shown.h / GRAPH_AREA.h);
+    assert.ok(s.camera.scale === MAX_SCALE || fills > 0.97, `${s.id}: the focus fills the area (${fills.toFixed(2)})`);
+  }
+  assert.equal(stopOf(board, "stop-2").camera.scale, MAX_SCALE, "one node zooms to the limit");
 });
 
-test("storyboard: the timeline never mixes milestones and counts the phases past its cap", () => {
-  const milestones = many(3, (m) => ({ number: m, title: `M${m}`, phases: many(7, (i) => ({ number: m * 10 + i, title: `Phase ${i}`, kind: "work" })) }));
-  const scenes = storyboard(planProps({ milestones })).scenes.filter((s) => s.kind === "timeline");
-  assert.deepEqual(scenes.map((s) => [s.milestone.number, s.phases.length]), [[1, 4], [1, 3], [2, 4], [2, 3]]);
-  assert.deepEqual(scenes.map((s) => s.more), [0, 0, 0, 7], "milestone 3 is only on the page");
+test("storyboard: the camera reaches each stop after its transition and holds it to the end of the stop", () => {
+  const board = storyboard(planStops([stop(["all"]), stop(["phase-2"]), stop(["risk-1"]), stop(["group-architecture"]), stop(["all"])]));
+  const same = (a, b) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6 && Math.abs(a.scale - b.scale) < 1e-9;
+  board.stops.forEach((s, i) => {
+    assert.ok(s.transitionInFrames < s.durationInFrames, `${s.id}: the move ends inside the stop`);
+    assert.ok(same(cameraAt(board, s.from + s.transitionInFrames), s.camera), `${s.id}: the camera arrives`);
+    assert.ok(same(cameraAt(board, s.from + s.durationInFrames - 1), s.camera), `${s.id}: the camera holds`);
+    if (i) assert.ok(same(cameraAt(board, s.from), board.stops[i - 1].camera), `${s.id}: the move starts at the previous stop`);
+  });
+  const s = board.stops[1];
+  const midway = cameraAt(board, s.from + Math.floor(s.transitionInFrames / 2));
+  assert.ok(midway.scale > board.stops[0].camera.scale && midway.scale < s.camera.scale, "the zoom moves between the two stops");
+  assert.equal(board.stops[0].transitionInFrames, 0, "the first stop starts in place");
 });
 
-test("storyboard: sub-lists keep their first items and count the rest", () => {
-  const plan = planProps();
-  plan.architecture.layers[0].components = many(6, (i) => ({ name: `C${i}`, role: "r" }));
-  plan.decisions[0].rejected.push({ option: "MySQL", reason: "Needs a server." });
-  const board = storyboard(plan);
-  const arch = board.scenes.find((s) => s.kind === "architecture");
-  assert.deepEqual([arch.layers[0].components.length, arch.layers[0].more], [4, 2]);
-  assert.equal(board.scenes.find((s) => s.kind === "decisions").decisions[0].moreRejected, 1);
-
-  const ship = shipProps({ handTest: [{ command: "a\nb\n\nc\nd", ref: "src/a.js:1", why: "w" }] });
-  ship.reviews[0].findings = [
-    { id: "F1", severity: "nit", title: "n", status: "open" },
-    { id: "F2", severity: "major", title: "m", status: "fixed" },
-    { id: "F3", severity: "major", title: "m", status: "open" },
-    { id: "F4", severity: "blocker", title: "b", status: "deferred" },
-  ];
-  const shipBoard = storyboard(ship);
-  const reviewScene = shipBoard.scenes.find((s) => s.kind === "review");
-  assert.deepEqual(reviewScene.findings.map((f) => f.id), ["F4", "F3", "F2"], "severity first, then open before fixed");
-  assert.equal(reviewScene.moreFindings, 1);
-  assert.deepEqual(shipBoard.scenes.find((s) => s.kind === "hand-test").steps[0].command, { lines: ["a", "b"], more: 2 });
+test("storyboard: the card shows the key facts of one node, or a list of the focus nodes", () => {
+  const props = planProps();
+  props.risks[0].mitigation = "WAL mode. ".repeat(40);
+  const board = storyboard(videoInput(props, { version: 2, mode: "plan", stops: [stop(["risk-1"]), stop(["group-timeline"], "All phases.", { title: "The timeline" })] }));
+  const one = stopOf(board, "stop-1").card;
+  assert.equal(one.type, "node");
+  assert.deepEqual([one.kind, one.title], ["risk", "Lock contention"]);
+  assert.deepEqual(one.facts.map((f) => f.label), ["Impact", "Mitigation"]);
+  assert.ok(one.facts[1].text.length <= 160 && one.facts[1].text.endsWith("…"), "a long fact is cut");
+  const list = stopOf(board, "stop-2").card;
+  assert.equal(list.type, "list");
+  assert.equal(list.title, "The timeline");
+  assert.deepEqual(list.items.map((i) => i.id), ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
+  assert.equal(list.more, 0);
+  const big = storyboard(videoInput(planProps(), { version: 2, mode: "plan", stops: [stop(["all"]), stop(["goal", "milestone-1", "milestone-2", "phase-1", "phase-2", "phase-3", "risk-1", "decision-1"])] }));
+  assert.deepEqual([stopOf(big, "stop-2").card.items.length, stopOf(big, "stop-2").card.more], [6, 2]);
+  assert.equal(stopOf(big, "stop-1").card.type, "title");
 });
 
 test("theme: the video colors are the dark color tokens of the page", async () => {
@@ -908,111 +949,51 @@ test("theme: the video colors are the dark color tokens of the page", async () =
 
 // ---- storyboard: duration ----
 
-const many = (n, make) => Array.from({ length: n }, (_, i) => make(i + 1));
-const longText = (n) => many(n, (i) => `word${i}`).join(" ");
-
-function longShip() {
-  return shipProps({
-    summary: longText(400),
-    changes: many(30, (i) => ({ area: `Area ${i}`, how: longText(80), why: longText(60) })),
-    delivered: many(80, (i) => ({ phase: i, criterion: longText(60), result: longText(60), status: i % 7 ? "met" : "partial" })),
-    deviations: many(40, () => ({ planned: longText(60), actual: longText(60), reason: longText(60) })),
-    process: { phases: 80, attempts: 120, retries: 30, escalations: 4, questions: 3, hil: 2, mergeConflicts: 1, reviewRounds: 4, fixRounds: 3, wallTime: "2 days" },
-    setbacks: many(20, (i) => ({ phase: i, kind: "retry", title: longText(20), what: longText(60), cost: "1 attempt", resolution: longText(60), lesson: longText(40) })),
-    reviews: many(10, () => ({ verdict: "COMMENT", summary: longText(80), validation: [{ command: "npm test", result: "pass" }],
-      findings: many(60, (i) => ({ id: `F${i}`, severity: "minor", title: longText(30), status: "open" })) })),
-    handTest: many(40, (i) => ({ title: `Step ${i}`, command: "a\nb\nc\nd", ref: "src/a.js:1", why: longText(60), expect: longText(30) })),
-    rollback: many(20, () => ({ step: longText(60), command: "git revert -m1 <sha>" })),
-  });
-}
-
 function assertContiguous(board) {
   let at = 0;
-  for (const scene of board.scenes) {
-    assert.equal(scene.from, at, `${scene.kind} starts where the previous scene ends`);
-    assert.ok(Number.isInteger(scene.durationInFrames) && scene.durationInFrames > 0);
-    at += scene.durationInFrames;
+  for (const s of board.stops) {
+    assert.equal(s.from, at, `${s.id} starts where the previous stop ends`);
+    assert.ok(Number.isInteger(s.durationInFrames) && s.durationInFrames > 0);
+    at += s.durationInFrames;
   }
-  assert.equal(at, board.durationInFrames, "the scenes fill the whole video");
+  assert.equal(at, board.durationInFrames, "the stops fill the whole video");
 }
 
-const sceneOf = (board, kind) => board.scenes.find((s) => s.kind === kind);
-const sectionOf = (board, id) => board.sections.find((s) => s.id === id);
-
-test("duration: without narration each scene plays its minimum visual time, 5 to 10 s, the title 5 s and the end 4 s", () => {
-  for (const props of [planProps(), shipProps(), longShip(), ...Object.values(EXAMPLES)]) {
-    const board = storyboard(props);
+test("duration: without audio each stop plays its minimum visual time, 5 to 9 s; the added title stop 5 s and end stop 4 s", () => {
+  for (const input of [videoInput(planProps()), videoInput(shipProps()), ...Object.values(EXAMPLES).map((p) => videoInput(p))]) {
+    const board = storyboard(input);
     assertContiguous(board);
-    assert.equal(sceneOf(board, "title").durationInFrames, 5 * 30);
-    assert.equal(sceneOf(board, "end").durationInFrames, 4 * 30);
-    const content = board.scenes.filter((s) => s.kind !== "title" && s.kind !== "end");
-    assert.ok(content.every((s) => s.durationInFrames >= 5 * 30 && s.durationInFrames <= 10 * 30), props.mode);
-    assert.ok(board.sections.every((s) => s.audio === null), "no audio");
+    assert.ok(board.stops.every((s) => s.durationInFrames >= 5 * 30 && s.durationInFrames <= 9 * 30 && s.audio === null), input.mode);
   }
-  const short = sceneOf(storyboard(planProps({ goal: "Serve widgets." })), "goal");
-  const long = sceneOf(storyboard(planProps({ goal: longText(40) })), "goal");
-  assert.ok(long.durationInFrames > short.durationInFrames, "a longer goal stays on screen longer");
+  const added = storyboard(planStops([stop(["goal"])]));
+  assert.deepEqual(added.stops.map((s) => s.durationInFrames / 30), [5, stopOf(added, "stop-1").durationInFrames / 30, 4]);
 });
 
-test("duration: a narrated section lasts its audio plus 0.6 s, and the audio starts 0.3 s into the section", () => {
-  const board = storyboard(planProps(), { goal: { src: "tts/goal.wav", seconds: 20 } });
-  const goal = sceneOf(board, "goal");
-  assert.equal(goal.durationInFrames, 618, "20.6 s at 30 fps");
-  assert.deepEqual(sectionOf(board, "goal").audio, { src: "tts/goal.wav", from: goal.from + 9, durationInFrames: 600 });
+test("duration: a narrated stop lasts its audio plus 0.6 s, and the audio starts 0.3 s into the stop", () => {
+  const board = storyboard(planStops([stop(["all"]), stop(["goal"])]), { "stop-2": { src: "tts/b.wav", seconds: 20 } });
+  const s = stopOf(board, "stop-2");
+  assert.equal(s.durationInFrames, 618, "20.6 s at 30 fps");
+  assert.deepEqual(s.audio, { src: "tts/b.wav", from: s.from + 9, durationInFrames: 600 });
   assertContiguous(board);
 });
 
-test("duration: a short narration keeps the minimum visual time of its section", () => {
-  const silent = sceneOf(storyboard(planProps()), "goal").durationInFrames;
-  const board = storyboard(planProps(), { goal: { src: "tts/goal.wav", seconds: 1 } });
-  assert.equal(sceneOf(board, "goal").durationInFrames, silent);
-});
-
-test("duration: a section with several scenes splits its time between them by their minimum visual time", () => {
-  const silent = storyboard(planProps());
-  const board = storyboard(planProps(), { architecture: { src: "tts/a.wav", seconds: 40 } });
-  const [arch, flows] = ["architecture", "flows"].map((kind) => sceneOf(board, kind));
-  assert.equal(arch.durationInFrames + flows.durationInFrames, 1218, "40.6 s at 30 fps");
-  const ratio = sceneOf(silent, "architecture").durationInFrames / sceneOf(silent, "flows").durationInFrames;
-  assert.ok(Math.abs(arch.durationInFrames / flows.durationInFrames - ratio) < 0.02, "the split keeps the ratio of the minimum times");
-  assert.deepEqual(sectionOf(board, "architecture"), {
-    id: "architecture", from: arch.from, durationInFrames: 1218, audio: { src: "tts/a.wav", from: arch.from + 9, durationInFrames: 1200 },
-  });
-  assertContiguous(board);
-});
-
-test("duration: another frame rate keeps the same times in seconds", () => {
-  const board = storyboard(planProps(), { goal: { src: "tts/goal.wav", seconds: 20 } }, { fps: 24 });
-  assert.equal(board.fps, 24);
-  assert.equal(sceneOf(board, "goal").durationInFrames, 480 + 14, "20 s of audio plus 0.6 s at 24 fps");
-  assert.equal(sectionOf(board, "goal").audio.from, sceneOf(board, "goal").from + 7, "0.3 s lead");
-  assert.equal(sceneOf(board, "title").durationInFrames, 5 * 24);
-  assertContiguous(board);
+test("duration: a short audio keeps the minimum visual time, and another frame rate keeps the times in seconds", () => {
+  const silent = stopOf(storyboard(planStops([stop(["all"]), stop(["goal"])])), "stop-2").durationInFrames;
+  const short = storyboard(planStops([stop(["all"]), stop(["goal"])]), { "stop-2": { src: "tts/b.wav", seconds: 1 } });
+  assert.equal(stopOf(short, "stop-2").durationInFrames, silent);
+  const at24 = storyboard(planStops([stop(["all"]), stop(["goal"])]), { "stop-2": { src: "tts/b.wav", seconds: 20 } }, { fps: 24 });
+  assert.equal(at24.fps, 24);
+  assert.equal(stopOf(at24, "stop-2").durationInFrames, 480 + 14, "20 s of audio plus 0.6 s at 24 fps");
+  assert.equal(stopOf(at24, "stop-2").audio.from, stopOf(at24, "stop-2").from + 7, "0.3 s lead");
+  assertContiguous(at24);
 });
 
 test("duration: the narration sets the length, with no upper limit", () => {
-  const voiceover = Object.fromEntries(["intro", "goal", "architecture", "milestones", "decisions", "risks", "outro"].map((id) => [id, { src: `tts/${id}.wav`, seconds: 60 }]));
-  const board = storyboard(planProps(), voiceover);
-  assert.equal(board.durationInFrames, 7 * 1818, "7 sections of 60.6 s");
+  const stops = Array.from({ length: 7 }, (_, i) => stop([i % 2 ? "goal" : "all"]));
+  const voiceover = Object.fromEntries(stops.map((_, i) => [`stop-${i + 1}`, { src: `tts/${i}.wav`, seconds: 60 }]));
+  const board = storyboard(planStops(stops), voiceover);
+  assert.equal(board.durationInFrames, 7 * 1818, "7 stops of 60.6 s");
   assertContiguous(board);
-});
-
-test("storyboard (ship): process counts and setbacks make one 'Setbacks and hiccups' scene after the deviations", () => {
-  const props = shipProps({
-    process: { phases: 6, attempts: 9, retries: 2, hil: 1, wallTime: "3 h 10 min" },
-    setbacks: [{ phase: 4, kind: "verify-fail", title: "Flaky socket test", what: "Verify failed twice.", cost: "2 attempts", resolution: "A shared fixture.", lesson: "Sandbox sockets." }],
-  });
-  const board = storyboard(props);
-  assert.deepEqual(kinds(board), ["title", "summary", "delivered", "deviations", "setbacks", "review", "hand-test", "rollback", "end"]);
-  const scene = board.scenes[4];
-  assert.equal(scene.section.title, "Setbacks and hiccups");
-  assert.deepEqual(scene.process, [["phases", "6"], ["attempts", "9"], ["retries", "2"], ["HIL", "1"], ["wall time", "3 h 10 min"]], "the labels of the page");
-  assert.deepEqual(scene.setbacks.map((s) => [s.phase, s.kind, s.title, s.resolution]), [[4, "verify-fail", "Flaky socket test", "A shared fixture."]]);
-  assert.deepEqual(kinds(storyboard(shipProps({ process: { retries: 0 } }))).slice(3, 5), ["deviations", "setbacks"], "process alone");
-  const empty = storyboard(shipProps({ setbacks: [] }));
-  assert.deepEqual(kinds(empty).slice(3, 5), ["deviations", "setbacks"], "like the page: an empty list still shows the scene");
-  assert.deepEqual([empty.scenes[4].process, empty.scenes[4].setbacks], [[], []]);
-  assert.deepEqual(kinds(storyboard(shipProps())).slice(3, 5), ["deviations", "review"], "no field, no scene");
 });
 
 // ---- real render (VE_VIDEO_E2E=1) ----

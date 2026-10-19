@@ -362,6 +362,7 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
   }
   function fitAll(animate) { moveTo(fitBox({ x: 0, y: 0, w: data.width, h: data.height }, 1.2), animate); }
   function zoomAt(sx, sy, factor) {
+    cancelAnimationFrame(frame);
     var r = svg.getBoundingClientRect();
     var k = clampK(cam.k * factor);
     var wx = cam.x + (sx - r.left - r.width / 2) / cam.k;
@@ -369,7 +370,7 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
     cam = { k: k, x: wx - (sx - r.left - r.width / 2) / k, y: wy - (sy - r.top - r.height / 2) / k };
     apply();
   }
-  function pan(dx, dy) { cam = { x: cam.x - dx / cam.k, y: cam.y - dy / cam.k, k: cam.k }; apply(); }
+  function pan(dx, dy) { cancelAnimationFrame(frame); cam = { x: cam.x - dx / cam.k, y: cam.y - dy / cam.k, k: cam.k }; apply(); }
 
   // ---- pointer: drag pans, two fingers pinch, a tap opens a node ----
   var points = new Map();

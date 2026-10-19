@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // visual-explainer video: props JSON + narration JSON -> <out>/video.mp4, a narrated video that
-// Remotion renders from the video/ project.
+// Remotion renders from the video/ project. The video draws the concept graph of the page
+// (graph.mjs) with the same positions, and a camera moves from stop to stop of the narration.
 //
 //   node render-video.mjs --props <file> --narration <file> --out <dir> [--timeout-min <n>] [--max-mb <n>] [--tts <engine>]
 //   node render-video.mjs --props <file> --narration <file> --check     validate only
@@ -26,6 +27,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { storyboard } from "../video/src/storyboard.mjs";
+import { buildGraph, KINDS } from "./graph.mjs";
 import { checkNarration } from "./narration.mjs";
 import { checkProps } from "./props.mjs";
 import { speak } from "./tts.mjs";
@@ -56,11 +58,12 @@ const GL = ["default", "angle", "egl", "swiftshader", "swangle", "vulkan", "angl
 const X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
 const AUDIO_KBPS = 64;
 const SIZE_MARGIN = 0.9; // a hardware encoder can overshoot its target bitrate, and the x264 model is an estimate
-// x264 size model, measured on the ship example (17 scenes, 1920x1080, veryfast, 24 fps) at 279 s
-// and 548 s: at CRF 23, the video stream has about 5.6 MB plus 10.2 KB for each second. Each 8 CRF
-// steps halve it (7.6 to 8.1 measured). A long video is mostly still frames, so its bitrate is lower.
-// The plan example is smaller, so the model is conservative for it.
-const X264 = { bestCrf: 23, lowCrf: 30, halvingCrf: 8, fixedBytes: 5_600_000, bytesPerSecond: 10_200 };
+// x264 size model of the graph video, measured on the ship example (13 stops, 1920x1080, veryfast,
+// 24 fps) at 231.5 s: at CRF 23, the video stream has about 0.5 MB plus 54 KB for each second. The
+// camera moves cost most of the bytes: each move changes the whole frame. 7 CRF steps halved it in
+// the measurement; the model uses 8, so it predicts a larger file. The plan example (166 s, 7.9 MB
+// at CRF 23) has a smaller graph, so the model is conservative for it.
+const X264 = { bestCrf: 23, lowCrf: 30, halvingCrf: 8, fixedBytes: 500_000, bytesPerSecond: 54_000 };
 const MIN_VIDEO_KBPS = 150;
 const MAX_VIDEO_KBPS = 2500;
 
@@ -75,7 +78,7 @@ if (isMain()) await main(process.argv.slice(2));
 async function main(argv) {
   const args = parseArgs(argv);
   if (!args) fail(2, USAGE);
-  const { props, narration } = checkInputs(args);
+  const { props, graph, stops } = checkInputs(args);
   let settings;
   try {
     settings = videoSettings(process.env);
@@ -91,10 +94,11 @@ async function main(argv) {
     const dir = cacheDir(process.env, cacheKey(VIDEO_DIR));
     await prepareCache(dir, deadline);
     markUsed(dir);
-    const { voiceover, engine } = await narrate(dir, narration, args.tts, deadline);
-    const seconds = storyboard(props, voiceover, { fps: settings.fps }).durationInFrames / settings.fps;
+    const { voiceover, engine } = await narrate(dir, stops, args.tts, deadline);
+    const input = compositionProps(props, graph, stops);
+    const seconds = storyboard(input, voiceover, { fps: settings.fps }).durationInFrames / settings.fps;
     const attempts = renderAttempts(settings, seconds, args.maxMb);
-    const video = await renderVideo(dir, { props, voiceover }, attempts, out, args.maxMb, deadline);
+    const video = await renderVideo(dir, { props: input, voiceover }, attempts, out, args.maxMb, deadline);
     process.stdout.write(`${video}\ntts: ${engine}\n`);
   } catch (err) {
     stop(err instanceof IoError ? 2 : 3, `render-video.mjs: ${err.message}`);
@@ -137,17 +141,31 @@ function cacheRoot(env) {
   return path.join(path.resolve(base), "visual-explainer");
 }
 
-// Check the props, then the narration against them. Exit 1 or 2 on a failure.
+// Check the props, then the narration against them and their graph. Exit 1 or 2 on a failure.
 function checkInputs(args) {
   try {
     const { props, errors } = checkProps(args.props);
     if (errors.length) fail(1, formatErrors(errors));
-    const checked = checkNarration(args.narration, props);
+    const graph = buildGraph(props);
+    const checked = checkNarration(args.narration, props, graph);
     if (checked.errors.length) fail(1, formatErrors(checked.errors));
-    return { props, narration: checked.narration };
+    return { props, graph, stops: checked.stops };
   } catch (err) {
     fail(2, `render-video.mjs: ${err.message}`);
   }
+}
+
+// The input props of the composition: the graph of the page, the resolved stops, and the label and
+// color token of each kind. Only the key facts of each node go on a video card, so the other facts
+// stay out of the render input.
+function compositionProps(props, graph, stops) {
+  return {
+    mode: props.mode,
+    meta: props.meta,
+    kinds: KINDS,
+    graph: { ...graph, nodes: graph.nodes.map((n) => ({ ...n, facts: n.facts.filter((f) => f.key) })) },
+    stops: stops.map(({ id, title, text, nodes, overview }) => ({ id, title, text, nodes, overview })),
+  };
 }
 
 // pruneCaches(current, now) removes the sibling caches of `current` with no use for 7 days, and
@@ -264,15 +282,15 @@ function markUsed(dir) {
   }
 }
 
-// Speak each narration section, then put the clips where the bundle serves them (staticFile).
-// Returns { voiceover: { <section id>: { src, seconds } }, engine }. `engine` is the engine line
+// Speak the text of each narrated stop, then put the clips where the bundle serves them (staticFile).
+// Returns { voiceover: { <stop id>: { src, seconds } }, engine }. `engine` is the engine line
 // of the result: "elevenlabs", "say" or "say (fallback: <reason>)". A failure is a StepError (exit 3).
-async function narrate(dir, narration, option, deadline) {
+async function narrate(dir, stops, option, deadline) {
   const left = deadline.at - Date.now();
   if (left <= 0) throw new StepError(`timed out after ${deadline.label} before the text to speech`);
   let result;
   try {
-    result = await speak(narration.sections, option, {
+    result = await speak(stops.filter((s) => s.text).map(({ id, text }) => ({ id, text })), option, {
       dir: path.join(cacheRoot(process.env), "tts"), env: process.env, signal: AbortSignal.timeout(left),
       onFallback: (reason) => log(`ElevenLabs failed (${reason}): the video uses the macOS voice`),
     });

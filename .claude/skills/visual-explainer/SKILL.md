@@ -1,27 +1,27 @@
 ---
 name: visual-explainer
 description: >-
-  Render one animated, self-contained HTML explainer page from a props JSON file.
-  Mode `plan` shows the goal, the architecture, the milestone and phase timeline,
-  the decisions with their rejected options, and the risks. Mode `ship` shows what
-  each Done when delivered and the deviations from the plan. It also shows the review
-  verdict and findings, a hand-test checklist with code references, and the rollback
-  steps. Then it renders the same props as an MP4 video with Remotion. A narration JSON
-  file gives the video its voiceover. The page shows the video at the top. The page is
-  the primary output. A failed video never blocks the page. Use it after multiphase-plan
-  registers a plan, at a Loop milestone merge gate, at a Loop milestone resume, and in
-  pr-review Step 4. You write only the props JSON and the narration JSON. The skill owns
-  the HTML, the CSS, the JS and the video.
+  Render one self-contained HTML page from a props JSON file. The page is a concept graph that a
+  person can explore. The reader pans, zooms, searches, filters, opens a node for all of its facts
+  and follows the links between the nodes. Mode `plan` shows the goal, the milestones and phases,
+  the architecture, the decisions and the risks. Mode `ship` shows the outcome, the changes, each
+  Done when result, the deviations and the setbacks. It also shows the review and its findings, the
+  hand-test steps with code references, and the rollback steps. A narration JSON file gives a
+  tour of the graph. The page plays the tour as captions, and a Remotion video moves a camera
+  over the same graph with a voiceover. The page is the primary output. A failed video never
+  blocks the page. Use it after multiphase-plan registers a plan, at a Loop milestone merge
+  gate, at a Loop milestone resume, and in pr-review Step 4. You write only the props JSON and
+  the narration JSON. The skill owns the HTML, the CSS, the JS, the layout and the video.
 argument-hint: "plan|ship <output-dir>"
 ---
 
 # Visual Explainer
 
-This skill turns facts into one fixed, animated HTML page and a narrated MP4 video. You
-write the facts as a props JSON file and the spoken text as a narration JSON file. A
-zero-dependency Node script checks the props against a schema. Then it escapes all text,
-puts it into fixed scene components, and writes one `index.html`. A second script speaks
-the narration and renders the same props as `video.mp4` with Remotion.
+This skill turns facts into a concept graph. You write the facts as a props JSON file and the tour
+as a narration JSON file. A zero-dependency Node script checks the props against a schema. Then it
+builds the graph: one node for each item, the edges between the items, and one fixed layout. It
+writes one `index.html` with the graph. A second script speaks the narration and renders the same
+graph as `video.mp4` with Remotion. The video uses the positions of the page.
 
 `<skill>` below is the directory of this file. In a self-hosted Loop run, use
 `$RUNTIME_ROOT/.claude/skills/visual-explainer`.
@@ -30,30 +30,32 @@ the narration and renders the same props as `video.mp4` with Remotion.
 
 | File | Purpose |
 |------|---------|
-| `template/page.html` | The page: color tokens, dark mode, motion rules, scene styles, a small script |
+| `template/page.html` | The page: color tokens, dark mode, motion rules, styles, the page script |
 | `scripts/render.mjs` | Checks the props, then writes `index.html` (Node 20.11 or later) |
 | `scripts/render-video.mjs` | Checks the props and the narration, then renders `video.mp4` in a cache directory |
+| `scripts/graph.mjs` | Props to nodes, edges, groups and the fixed layout. It also checks the relation ids |
+| `scripts/page.mjs` | The graph SVG, the outline and the page data |
 | `scripts/props.mjs` | The props check that both scripts use |
-| `scripts/narration.mjs` | The narration check |
+| `scripts/narration.mjs` | The narration check and the tour stops |
 | `scripts/tts.mjs` | Text to speech with ElevenLabs or the macOS `say` command, with a clip cache |
-| `scripts/scenes.mjs` | The fixed scene components of the page |
 | `scripts/validate.mjs` | The schema checker |
 | `schema/plan.schema.json` | The props of `plan` mode |
 | `schema/ship.schema.json` | The props of `ship` mode |
-| `schema/narration.schema.json` | The narration of both modes |
-| `examples/*.props.json` | One valid example for each mode |
-| `examples/*.narration.json` | The narration of each example |
+| `schema/narration.schema.json` | The narration, version 2: the stops of the tour |
+| `schema/narration-v1.schema.json` | The legacy narration, version 1: one text for each section |
+| `examples/*.props.json` | One valid example for each mode, with relation fields |
+| `examples/*.narration.json` | The version 2 narration of each example |
 | `video/package.json`, `video/package-lock.json` | The Remotion project and its pinned versions |
 | `video/engine.mjs` | The Remotion bundle and render steps. It runs only in the cache directory |
-| `video/src/storyboard.mjs` | The video scenes: item limits, text cuts, sections and timing |
-| `video/src/*.jsx` | The Remotion compositions `plan` and `ship` and their scenes |
+| `video/src/storyboard.mjs` | The video stops: camera, card, timing |
+| `video/src/*.jsx` | The Remotion compositions `plan` and `ship`: the graph, the card, the header |
 
 ## Rules
 
 1. Write only the props JSON file and the narration JSON file. Do not write HTML, CSS or JS.
 2. Do not edit the template, the scripts or the schemas during a run.
 3. Write facts only. Take each fact from the plan, the ledger, a review report, the PR or
-   the code. Do not invent a count, a result or a finding.
+   the code. Do not invent a count, a result, a finding or a relation.
 4. Omit an optional field when you do not know its value.
 5. Write plain text. A pair of backticks marks inline code. A newline is a line break.
 6. Do not put secrets, tokens or credentials in the props or in the narration.
@@ -91,7 +93,8 @@ Read `schema/<mode>.schema.json` and the example of that mode. Then collect thes
 **`ship` mode:**
 
 - `delivered`: one row for each Done when in scope. Set `status` to `met`, `partial` or
-  `missed`. Take the evidence from the progress log, the ledger and the review.
+  `missed`. Take the evidence from the progress log, the ledger and the review. Give each row
+  its `phase` number. The relation fields find a phase through this number.
 - `deviations`: each difference between the plan and the result. Use an empty array when
   there is no difference.
 - `process`: the process numbers. This field is optional. In a Loop run, the caller gives
@@ -110,12 +113,39 @@ Read `schema/<mode>.schema.json` and the example of that mode. Then collect thes
     the cause, write `Cause: unknown`.
   - Write `cost` from the candidate facts: attempts, minutes, rounds. Do not invent a count.
   - Write `lesson` only when the evidence supports a rule that an agent can apply.
-  - The page shows the `process` numbers and the `setbacks` in one scene after the
-    deviations. The page omits that scene when both fields are absent.
 - `reviews`: one entry for each repository or PR. `verdict` is the posted GitHub event.
   Copy the findings of the final review. Set each finding to `open`, `fixed` or `deferred`.
 - `handTest`: the ordered steps for a human. Each step has `command`, `ref` and `why`.
 - `rollback`: the ordered steps that undo the change.
+
+**Relation fields (optional, both modes):** a relation field adds an edge to the graph. Add a
+relation only when a source states it. These edges need no field:
+
+- the goal to each milestone, and a milestone to each phase
+- the `dependsOn` order of the phases
+- a layer to each component, and each component flow
+- a review to each finding, and a hand-test step or a rollback step to the next step
+
+The relation fields add these edges:
+
+| Field | Values | Edge |
+|-------|--------|------|
+| `milestones[].phases[].components` | component names | the phase touches the component |
+| `decisions[].phases`, `decisions[].components` | phase numbers, component names | the decision affects the item |
+| `risks[].mitigatedBy` | phase numbers | the phase mitigates the risk |
+| `risks[].components` | component names | the risk affects the component |
+| `changes[].phases` | phase numbers | the phase delivers the change |
+| `deviations[].phases` | phase numbers | the deviation concerns the phase |
+| `reviews[].findings[].phases`, `reviews[].findings[].changes` | phase numbers, change areas | the finding is about the item |
+| `handTest[].phases` | phase numbers | the step checks the phase |
+
+- A phase number in `plan` mode must be the number of a phase in `milestones`.
+- A phase number in `ship` mode must be the `phase` of a `delivered` row.
+- A component name must be the exact name of one component. A change area must be the exact
+  `area` of one change.
+- The check rejects an unknown id with its field path, for example
+  `$.risks[0].mitigatedBy[1]: no phase 42 in the milestones`.
+- The check also rejects a phase number or a milestone number that appears more than once.
 
 ### 3. Check every hand-test command against the code
 
@@ -139,29 +169,53 @@ Then add a `deviations` entry for the difference. The schema rejects a step with
 
 ### 4. Write the narration
 
-The narration is the voiceover of the video. It helps a person follow the explanation.
-Read `schema/narration.schema.json` and the example narration of the mode. The file has
-this shape:
+The narration is the tour of the graph. The video moves its camera to each stop and speaks the
+text. The page tour shows the same text as a caption. Read `schema/narration.schema.json` and the
+example narration of the mode. The file has this shape:
 
 ```json
-{ "mode": "<mode>", "sections": [{ "id": "<section id>", "text": "<spoken text>" }] }
+{ "version": 2, "mode": "<mode>", "stops": [{ "focus": ["<id>"], "title": "<optional title>", "text": "<spoken text>" }] }
 ```
 
-The section ids, in video order:
+Each stop has these fields:
 
-- `plan`: `intro`, `goal`, `architecture`, `milestones`, `decisions`, `risks`, `outro`.
-- `ship`: `intro`, `summary`, `changes`, `delivered`, `deviations`, `setbacks`,
-  `reviews`, `handTest`, `rollback`, `outro`.
+- `focus`: 1 to 12 ids. An id is a node id, a group id or `all`. `all` shows the whole graph.
+- `title`: optional, at most 80 characters. Without it, the stop takes the title of its focus.
+- `text`: the spoken text of the stop, at most 1500 characters.
 
-Write one entry for each section that the props show. `changes` needs `changes` items.
-`setbacks` needs `setbacks` items or `process` counts. The check rejects an unknown id, a
-repeated id, and an id whose props section is absent. A section without narration plays
-for its minimum visual time, with no voice.
+Get the ids from the props:
+
+```bash
+node <skill>/scripts/render.mjs --props <output-dir>/props.json --ids
+```
+
+Each output line is `<id>`, a tab, the kind, a tab and the title. The node ids follow these rules:
+
+- `plan`: `goal`, `milestone-<n>`, `phase-<n>`, `layer-<i>`, `component-<slug>`, `decision-<i>`,
+  `risk-<i>`.
+- `ship`: `summary`, `process`, `change-<i>`, `phase-<n>`, `delivered-<i>`, `deviation-<i>`,
+  `setback-<i>`, `review-<i>`, `finding-<slug>`, `step-<i>`, `rollback-<i>`.
+- `<n>` is the number in the props. `<i>` is the position in its list, from 1. `<slug>` is the
+  name in lowercase, with `-` for each run of other characters. In `ship` mode, `phase-<n>` is
+  the node of the `delivered` rows of phase n.
+- The group ids are `group-<name>`, for example `group-timeline`, `group-architecture`,
+  `group-delivered` and `group-hand-test`.
+
+Plan the tour by these rules:
+
+1. Start with `all`. End with `all`. The first stop shows the title card. The last stop shows
+   the end card.
+2. Give each important item its own stop. Examples: the goal, a large phase, the biggest risk
+   and the phase that mitigates it, a partial Done when, a major finding.
+3. Use a group id for a stop about a whole cluster.
+4. Keep the stops in an order that tells the story: the goal, the work, the decisions, the
+   risks. In `ship` mode: the outcome, the delivered work, the deviations, the setbacks, the
+   review, the hand test, the rollback.
 
 Write the text by these rules:
 
-1. Explain. Do not read the slides aloud.
-2. For each section, say what it shows, why it matters and what to look at.
+1. Explain. Do not read the node cards aloud.
+2. For each stop, say what it shows, why it matters and what to look at.
 3. Take facts only from the sources of the props. Do not add a fact that the props do
    not support.
 4. Write spoken English: short sentences, active voice and simple tenses.
@@ -169,8 +223,11 @@ Write the text by these rules:
    `wsd` and "Z shell" for `zsh`. Do not spell out paths, hashes or long commands. Name
    them in words.
 6. Do not use backticks, markup or lists in the text.
-7. Use 30 to 180 words for each section and 300 to 900 words in total. The check rejects
-   a section above 1500 characters and a narration above 9000 characters in total.
+7. Use 20 to 120 words for each stop and 300 to 900 words in total. The check rejects a
+   narration above 9000 characters in total.
+
+A version 1 narration (`{ "mode", "sections": [{ "id", "text" }] }`) is still valid. Each
+section becomes one stop on its cluster of nodes. Write new narrations as version 2.
 
 ### 5. Check the props and the narration
 
@@ -195,6 +252,11 @@ node <skill>/scripts/render.mjs --props <output-dir>/props.json --out <output-di
 The script prints the absolute path of `<output-dir>/index.html`. It writes nothing for
 invalid props.
 
+The page tour uses `narration.json` in the directory of the props file. `--narration <file>`
+names a different file. When `narration.json` beside the props is not valid, the script writes
+one warning line to stderr and the page gets the default tour. When the `--narration` file is
+not valid, the script exits 1.
+
 ### 7. Video
 
 The video is an addition to the page. Do these steps in this order:
@@ -208,7 +270,7 @@ The video is an addition to the page. Do these steps in this order:
 
    The defaults are `--timeout-min 15`, `--max-mb 14` (1 MB is 1,000,000 bytes) and
    `--tts auto`.
-3. When the command exits 0, render the page again with the video block:
+3. When the command exits 0, render the page again with the video drawer:
 
    ```bash
    node <skill>/scripts/render.mjs --props <output-dir>/props.json --out <output-dir> --video video.mp4
@@ -249,13 +311,13 @@ Text to speech:
 - `VE_TTS_VOICE` sets the voice. `VE_TTS_MODEL` sets the ElevenLabs model. In `auto` mode
   with the key, `VE_TTS_VOICE` is the ElevenLabs voice, so the `say` fallback uses the best
   installed English voice.
-- The script caches each clip by the engine, the voice, the model and the text. A
-  re-render of the same narration sends no text again. The log line `tts:` gives the
-  number of characters sent.
+- The script makes one clip for each stop that has text. It caches each clip by the engine,
+  the voice, the model and the text. A re-render of the same narration sends no text again.
+  The log line `tts:` gives the number of characters sent.
 
 The first run for each version of `video/` runs `npm ci` and downloads a headless browser.
 It needs network access and takes up to about one minute more. On an Apple M4 laptop, a
-later render takes about one third of the video length, plus the text to speech for new
+later render takes about one half of the video length, plus the text to speech for new
 text.
 
 ### 8. Publish
@@ -280,7 +342,43 @@ the `render-video.mjs` stdout starts with `tts: say`, write `video: embedded (ma
 fails, report the failure and the last stderr lines. A failed explainer never blocks the
 work of the caller. A failed video never blocks the page.
 
+## The graph
+
+`scripts/graph.mjs` builds the graph from the props. The same props always give the same node
+ids, the same edges and the same positions.
+
+- Each node has an id, a kind, a title, a short summary and all the facts of its item.
+- The root node (`goal` or `summary`) sits in the middle. Each group of nodes is a framed block
+  around it: for example the timeline, the architecture, the decisions and the risks.
+- Inside a block, the nodes are in a grid in reading order. In the timeline, each milestone
+  heads a block of its phases in plan order. In the architecture, each layer heads a row of
+  its components. The grid keeps a plan with 40 or more phases readable.
+- The script places the blocks one by one, the largest first. Each block takes the free
+  position that keeps the whole drawing small in a 16:9 frame. The position is also near the
+  root and near the blocks that share edges with it. No two node boxes overlap.
+- A legacy reference to an item that is not in the props, for example a `dependsOn` phase of
+  an earlier milestone, makes no edge. The fact stays on the node.
+
 ## The page
+
+The page shows the graph in the full window.
+
+- Drag to pan. Use the wheel or two fingers to zoom.
+- On the keyboard, Tab moves between the nodes and Enter opens a node. The arrow keys pan, `+`
+  and `-` zoom, and `0` shows the whole graph.
+- A click or Enter on a node opens the detail panel. The panel shows all the facts of the node
+  and its connections as links.
+- The URL hash `#node=<id>` opens a node. The browser back and forward buttons move between the
+  opened nodes. A link with a hash opens that node.
+- The search field finds nodes by their title, their summary or their id.
+- The kind chips at the top are the legend. A chip shows or hides its kind.
+- The Outline view lists every node, grouped by kind, with all its facts. It is the default view
+  on a phone. Without the script, the page shows the static graph and the outline.
+- Play tour steps through the stops of the narration at the pace of the reader, with the
+  narration text as captions.
+- With `--video <path>`, the bar has a Video button that opens a drawer with
+  `<video controls preload="metadata" playsinline>`. The path must be relative, end in `.mp4` and
+  have no `..` segment. Without `--video`, the page has no video.
 
 The template meets the Claude artifact page contract:
 
@@ -288,34 +386,29 @@ The template meets the Claude artifact page contract:
 - Color tokens are on `:root`. Dark tokens are under `prefers-color-scheme: dark` and
   `:root[data-theme="dark"]`. `body` has an explicit background.
 - There are no external scripts, styles or assets.
-- The layout fits a phone with a 16px side gutter and no horizontal page scroll.
-- Motion runs only under `prefers-reduced-motion: no-preference`.
+- The layout fits a phone of 360 px width with no horizontal page scroll.
+- Motion runs only under `prefers-reduced-motion: no-preference`. With reduced motion, the
+  camera jumps.
 - The renderer escapes all props text. A link URL must start with `http://` or `https://`.
-
-The page animates with SVG and CSS. A small script reveals each scene on scroll, copies
-commands, and runs the Play tour. Without the script, the page shows every scene.
-
-With `--video <path>`, the page shows a `<video controls preload="metadata" playsinline>`
-block between the title and the section navigation. The path must be relative, end in
-`.mp4` and have no `..` segment. Without `--video`, the page has no video block.
 
 ## The video
 
-`video/` is a Remotion project with two compositions, `plan` and `ship`. Each composition
-takes the props JSON and the voiceover clips as its input props. The video is 1920x1080
-at 24 fps, with the voiceover as its audio. It has no captions.
+`video/` is a Remotion project with two compositions, `plan` and `ship`. Each composition takes
+the graph, the tour stops and the voiceover clips as its input props. The video is 1920x1080 at
+24 fps, with the voiceover as its audio. It has no captions.
 
-- The scenes follow the page. `plan`: title, goal, architecture, timeline, decisions,
-  risks. `ship`: title, summary, changes, delivered, deviations, setbacks and hiccups,
-  review, hand test, rollback.
+- The video draws the graph of the page with the same positions.
+- A camera moves from stop to stop. During the first 0.9 s of a stop, the camera eases from the
+  previous stop. The focus nodes and their edges stay bright, their neighbours dim a little, and
+  the other nodes dim.
+- A card on the right shows the key facts of one focus node, or a list of the focus nodes. The
+  first stop shows the title card and the last stop shows the end card.
+- When the narration does not start with `all`, the video adds a title stop of 5 s. When it does
+  not end with `all`, the video adds an end stop of 4 s.
 - The colors are the dark color tokens of `template/page.html`. A test compares them.
-- Each scene shows few items, with large text for a phone screen. A long list continues in
-  the next scene, up to a limit. After the limit, the scene shows `+N more on the page`.
-  Long text ends in an ellipsis.
-- The narration sets the length. Each scene has a minimum visual time: reading time for
-  its words, from 5 to 10 s. A section lasts the longer of the minimum visual time of its
-  scenes and its audio time plus 0.6 s. A section with several scenes shares its time
-  between them.
+- The narration sets the length. Each stop has a minimum visual time: reading time for its
+  card, from 5 to 9 s. A stop lasts the longer of its minimum visual time and its audio time
+  plus 0.6 s. The audio starts 0.3 s into the stop.
 
 `render-video.mjs` never writes into the skill directory. The skill directory can be a
 symlinked git checkout or a Loop integration worktree. The script copies `video/` to
@@ -327,13 +420,13 @@ MP4 to a temporary file in the output directory, then renames it to `video.mp4`.
 removes the caches of other keys that no run used for 7 days.
 
 The first render uses an x264 quality (CRF) that the script chooses from the video length
-and `--max-mb`. A size model from measurements of the ship example predicts the file size.
+and `--max-mb`. A size model from measurements of the graph video predicts the file size.
 The script uses the best CRF from 23 to 30 whose predicted file fits 90% of `--max-mb`. With
-`--max-mb 14`, a video of up to about 6 minutes gets CRF 23. A video of about 10 minutes
-gets CRF 28. Measurements: a 548 s ship video had 15.5 MB at CRF 23 and 12.1 MB at CRF 27.
-A 599 s ship video had 12.4 MB at CRF 28. The plan example has fewer scenes and smaller
-files, so its first CRF can be higher than necessary. When the file is larger than
-`--max-mb`, the script renders again at CRF 30, then at 1280x720.
+`--max-mb 14`, a video of up to about 3 minutes gets CRF 23. A video of 5 minutes gets CRF 29.
+Measurements: the 166 s plan example had 7.9 MB at CRF 23. The 232 s ship example had 14.4 MB
+at CRF 23 and 8.1 MB at CRF 30. The camera moves take most of the bytes, because each move
+changes the whole frame. When the file is larger than `--max-mb`, the script renders again at
+CRF 30, then at 1280x720.
 
 Encoder settings: the defaults are the fastest combination of a measurement on an Apple M4
 with 10 cores. The text stays sharp. The browser frame capture takes most of the time, so
@@ -361,7 +454,7 @@ repository is a personal project, so the free license applies. A company with mo
 needs a Remotion company license. The renderer passes no `licenseKey`, so Remotion sends no
 usage data.
 
-To change the template, the scenes, the video or a schema, edit the skill files. Then run
+To change the template, the graph, the video or a schema, edit the skill files. Then run
 `zsh tests/visual-explainer.test.sh` from the repository root. Set `VE_VIDEO_E2E=1` to
 also render the two examples as real narrated videos. That run uses the real text to
 speech engine.

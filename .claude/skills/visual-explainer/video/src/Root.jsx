@@ -1,6 +1,6 @@
-// Two compositions, one per mode. The input props are the validated props JSON of the page, plus
-// `voiceover` ({ <section id>: { src, seconds } }) and `fps` from render-video.mjs.
-// The narration sets the length.
+// Two compositions, one per mode. The input props come from render-video.mjs: { mode, meta, kinds,
+// graph, stops } (the graph of the page and the resolved tour stops), plus `voiceover`
+// ({ <stop id>: { src, seconds } }) and `fps`. The narration sets the length.
 import { Composition } from "remotion";
 import { Explainer } from "./Explainer.jsx";
 import { SAMPLE_PLAN, SAMPLE_SHIP } from "./samples.mjs";

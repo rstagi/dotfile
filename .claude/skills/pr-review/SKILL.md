@@ -160,7 +160,7 @@ Make a visual report after the written report. Do this also when you post nothin
 pr-review-output/<repo>-<pr>/
   props.json     # the ship props that you write
   narration.json # the voiceover text that you write
-  index.html     # the page that visual-explainer renders, with the video at the top
+  index.html     # the page that visual-explainer renders, with the video in a drawer
   video.mp4      # the narrated explainer video that render-video.mjs renders
   link.txt       # the artifact URL or the absolute path of index.html
 ```
@@ -183,7 +183,7 @@ Run the `visual-explainer` skill in `ship` mode with this output directory. Writ
 
 Use the writing rules of the report: be concise, and use no em-dashes or en-dashes.
 
-**Video.** Write `narration.json` as the skill tells you (its step 4). The narration explains what the PR does, how it does it, the findings and the hand test. It does not read the slides aloud. The skill renders the narrated explainer video from the same props (its step 7). `render-video.mjs` renders `video.mp4` with Remotion, in its cache directory and never in the PR checkout. Then the skill renders the page again with the video at the top, and publishes both. Do not build a Remotion project by hand. When `ffprobe` is available, check that the video has an audio stream. When the video fails, keep the page without the video.
+**Video.** Write `narration.json` as the skill tells you (its step 4). The narration explains what the PR does, how it does it, the findings and the hand test. It does not read the slides aloud. The skill renders the narrated explainer video from the same props (its step 7). `render-video.mjs` renders `video.mp4` with Remotion, in its cache directory and never in the PR checkout. Then the skill renders the page again with the video, and publishes both. Do not build a Remotion project by hand. When `ffprobe` is available, check that the video has an audio stream. When the video fails, keep the page without the video.
 
 When the render fails, keep the written report and any posted review. State the failure in the final message. A failed video never blocks the page.
 

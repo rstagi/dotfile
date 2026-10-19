@@ -31,12 +31,22 @@ assert_contains "$(cat "$EXPLAINER")" 'A failed video never blocks the page.' "v
 assert_contains "$(cat "$EXPLAINER")" 'caller renders the page and the video' "a headless runner writes props only"
 assert_contains "$(cat "$EXPLAINER")" 'Remotion is free for an individual and for a company of up to 3 people.' "license note"
 
+# The narration is now a tour of graph stops (version 2): the video shows node cards, not slides,
+# and a stop is shorter than a section was.
 echo "visual explainer: the narration explains, and the check binds it to the props"
 assert_contains "$(cat "$EXPLAINER")" '### 4. Write the narration' "narration step before the check"
-assert_contains "$(cat "$EXPLAINER")" '1. Explain. Do not read the slides aloud.' "narration explains"
+assert_contains "$(cat "$EXPLAINER")" '1. Explain. Do not read the node cards aloud.' "narration explains"
 assert_contains "$(cat "$EXPLAINER")" 'say what it shows, why it matters and what to look at' "narration structure"
-assert_contains "$(cat "$EXPLAINER")" 'Use 30 to 180 words for each section and 300 to 900 words in total.' "narration length"
+assert_contains "$(cat "$EXPLAINER")" 'Use 20 to 120 words for each stop and 300 to 900 words in total.' "narration length"
+assert_contains "$(cat "$EXPLAINER")" 'node <skill>/scripts/render.mjs --props <output-dir>/props.json --ids' "the ids of the focus come from the props"
+assert_contains "$(cat "$EXPLAINER")" 'A version 1 narration (`{ "mode", "sections": [{ "id", "text" }] }`) is still valid.' "version 1 narrations still work"
 assert_contains "$(cat "$EXPLAINER")" 'It has no captions.' "no captions"
+
+echo "visual explainer: the page is a graph, and the props can state relations"
+assert_contains "$(cat "$EXPLAINER")" '**Relation fields (optional, both modes):**' "relation fields are documented"
+assert_contains "$(cat "$EXPLAINER")" 'The URL hash `#node=<id>` opens a node.' "deep links"
+assert_contains "$(cat "$EXPLAINER")" 'It is the default view
+  on a phone.' "the outline is the phone view"
 
 echo "visual explainer: multiphase-plan explains every plan except light ones"
 assert_contains "$PLAN_SKILL" '### 5. Explain the plan (skipped in `light` mode)' "plan explainer step after registration"

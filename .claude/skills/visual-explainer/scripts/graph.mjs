@@ -615,8 +615,9 @@ function layout(graph, blocks) {
   for (const edge of graph.edges) edge.d = edgePath(byId.get(edge.from), byId.get(edge.to));
 }
 
+// A group of one kind shows its count. A mixed group (a timeline, an architecture) does not.
 function groupLabel(label, count, kinds) {
-  return kinds.length === 1 && !["process"].includes(kinds[0]) ? `${label} · ${count}` : label;
+  return kinds.length === 1 ? `${label} · ${count}` : label;
 }
 
 // Edge counts between groups, by pair key "a|b" with a < b.
