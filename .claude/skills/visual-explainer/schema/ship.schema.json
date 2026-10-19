@@ -21,7 +21,8 @@
         "properties": {
           "area": { "$ref": "#/$defs/label" },
           "how": { "$ref": "#/$defs/text" },
-          "why": { "$ref": "#/$defs/text" }
+          "why": { "$ref": "#/$defs/text" },
+          "phases": { "$ref": "#/$defs/phaseRefs", "description": "Relation: the phases that built the change." }
         }
       }
     },
@@ -53,7 +54,8 @@
         "properties": {
           "planned": { "$ref": "#/$defs/text" },
           "actual": { "$ref": "#/$defs/text" },
-          "reason": { "$ref": "#/$defs/text" }
+          "reason": { "$ref": "#/$defs/text" },
+          "phases": { "$ref": "#/$defs/phaseRefs", "description": "Relation: the phases that the deviation concerns." }
         }
       }
     },
@@ -114,7 +116,8 @@
           "command": { "$ref": "#/$defs/command" },
           "ref": { "$ref": "#/$defs/codeRef" },
           "why": { "$ref": "#/$defs/text" },
-          "expect": { "$ref": "#/$defs/text" }
+          "expect": { "$ref": "#/$defs/text" },
+          "phases": { "$ref": "#/$defs/phaseRefs", "description": "Relation: the phases that the step checks." }
         }
       }
     },
@@ -139,6 +142,18 @@
     "label": { "type": "string", "minLength": 1, "maxLength": 120 },
     "text": { "type": "string", "minLength": 1, "maxLength": 4000 },
     "command": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "phaseRefs": {
+      "description": "Relation: phase numbers. Each number must be the phase of a delivered row.",
+      "type": "array",
+      "maxItems": 40,
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "changeRefs": {
+      "description": "Relation: change areas. Each area must be the exact area of one changes item.",
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/label" }
+    },
     "url": {
       "type": "string",
       "pattern": "^https?://[^\\s\"'<>]+$",
@@ -216,7 +231,9 @@
               "location": { "$ref": "#/$defs/label" },
               "detail": { "$ref": "#/$defs/text" },
               "fix": { "$ref": "#/$defs/text" },
-              "status": { "enum": ["open", "fixed", "deferred"] }
+              "status": { "enum": ["open", "fixed", "deferred"] },
+              "phases": { "$ref": "#/$defs/phaseRefs", "description": "Relation: the phases that the finding is about." },
+              "changes": { "$ref": "#/$defs/changeRefs", "description": "Relation: the changes that the finding is about." }
             }
           }
         },

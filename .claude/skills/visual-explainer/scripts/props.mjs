@@ -1,7 +1,8 @@
 // Shared props check of render.mjs and render-video.mjs: read the JSON, check the mode, then the
-// schema of that mode.
+// schema of that mode, then the ids in the relation fields (graph.mjs relationErrors).
 import fs from "node:fs";
 import path from "node:path";
+import { relationErrors } from "./graph.mjs";
 import { validate } from "./validate.mjs";
 
 const SCHEMA_DIR = path.join(import.meta.dirname, "..", "schema");
@@ -24,7 +25,8 @@ export function checkProps(file) {
   }
   // The mode selects the schema, so check it first: one clear error beats a cascade.
   if (!MODES.includes(props?.mode)) return { props, errors: [{ path: "$.mode", message: `must be one of ${MODES.join(", ")}` }] };
-  return { props, errors: validate(loadSchema(props.mode), props) };
+  const errors = validate(loadSchema(props.mode), props);
+  return { props, errors: errors.length ? errors : relationErrors(props) };
 }
 
 function loadSchema(mode) {

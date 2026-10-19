@@ -91,7 +91,8 @@
                 "repository": { "$ref": "#/$defs/label" },
                 "dependsOn": { "type": "array", "maxItems": 20, "items": { "type": "integer", "minimum": 0 } },
                 "estimate": { "$ref": "#/$defs/label" },
-                "doneWhen": { "$ref": "#/$defs/text" }
+                "doneWhen": { "$ref": "#/$defs/text" },
+                "components": { "$ref": "#/$defs/componentRefs", "description": "Relation: the components that the phase touches." }
               }
             }
           }
@@ -122,7 +123,9 @@
                 "reason": { "$ref": "#/$defs/text" }
               }
             }
-          }
+          },
+          "phases": { "$ref": "#/$defs/phaseRefs", "description": "Relation: the phases that the decision affects." },
+          "components": { "$ref": "#/$defs/componentRefs", "description": "Relation: the components that the decision affects." }
         }
       }
     },
@@ -138,7 +141,9 @@
           "risk": { "$ref": "#/$defs/text" },
           "impact": { "enum": ["high", "medium", "low"] },
           "likelihood": { "enum": ["high", "medium", "low"] },
-          "mitigation": { "$ref": "#/$defs/text" }
+          "mitigation": { "$ref": "#/$defs/text" },
+          "mitigatedBy": { "$ref": "#/$defs/phaseRefs", "description": "Relation: the phases that mitigate the risk." },
+          "components": { "$ref": "#/$defs/componentRefs", "description": "Relation: the components that the risk affects." }
         }
       }
     }
@@ -146,6 +151,18 @@
   "$defs": {
     "label": { "type": "string", "minLength": 1, "maxLength": 120 },
     "text": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "phaseRefs": {
+      "description": "Relation: phase numbers. Each number must be the number of a phase in the milestones.",
+      "type": "array",
+      "maxItems": 40,
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "componentRefs": {
+      "description": "Relation: component names. Each name must be the exact name of one component in architecture.layers.",
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/label" }
+    },
     "url": {
       "type": "string",
       "pattern": "^https?://[^\\s\"'<>]+$",

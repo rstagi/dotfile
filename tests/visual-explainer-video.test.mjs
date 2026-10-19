@@ -133,6 +133,110 @@ test("narration: invalid JSON is one error, an unreadable file throws", () => {
   assert.throws(() => checkNarration(path.join(TMP, "missing.json"), planProps()), /cannot read/);
 });
 
+// ---- narration v2: stops on the graph ----
+
+const stop = (focus, text = `About ${focus.join(" and ")}.`, extra = {}) => ({ focus, text, ...extra });
+const v2 = (mode, stops) => ({ version: 2, mode, stops });
+
+test("narration v2: each stop resolves to its nodes; all is the overview and a group id names its nodes", () => {
+  const props = planProps();
+  const { errors, stops } = checkNarration(narrationFile(v2("plan", [
+    stop(["all"], "The whole plan."),
+    stop(["risk-1", "phase-2"], "A risky phase.", { title: "Risky phase" }),
+    stop(["group-timeline"]),
+    stop(["component-http-api"]),
+  ])), props);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(stops.map((s) => s.id), ["stop-1", "stop-2", "stop-3", "stop-4"]);
+  assert.equal(stops[0].overview, true);
+  assert.equal(stops[0].nodes.length, 12, "the overview lights every node");
+  assert.deepEqual(stops[1].nodes, ["phase-2", "risk-1"], "in graph order");
+  assert.equal(stops[1].title, "Risky phase");
+  assert.deepEqual(stops[2].nodes, ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
+  assert.equal(stops[2].title, "Timeline", "a group stop is titled by its group");
+  assert.equal(stops[3].title, "HTTP API", "a one-node stop is titled by its node");
+  assert.deepEqual(stops.map((s) => s.text), ["The whole plan.", "A risky phase.", "About group-timeline.", "About component-http-api."]);
+});
+
+test("narration v2: an unknown or repeated focus id, a wrong mode and the length limit fail with field paths", () => {
+  const { errors } = checkNarration(narrationFile(v2("plan", [
+    stop(["goal", "phase-9"]), stop(["risk-1", "risk-1"]), stop(["group-nope"]),
+  ])), planProps());
+  assert.deepEqual(errors.map((e) => `${e.path}: ${e.message}`), [
+    'narration.stops[0].focus[1]: "phase-9" is not a node id or a group id (render.mjs --ids lists them)',
+    'narration.stops[1].focus[1]: "risk-1" appears more than once in this stop',
+    'narration.stops[2].focus[0]: "group-nope" is not a node id or a group id (render.mjs --ids lists them)',
+  ]);
+  const wrongMode = checkNarration(narrationFile(v2("ship", [stop(["summary"])])), planProps());
+  assert.deepEqual(wrongMode.errors.map((e) => `${e.path}: ${e.message}`), ["narration.mode: must be plan, the mode of the props"]);
+  const long = checkNarration(narrationFile(v2("plan", Array.from({ length: 7 }, () => stop(["goal"], "x".repeat(1300))))), planProps());
+  assert.deepEqual(long.errors.map((e) => `${e.path}: ${e.message}`), ["narration.stops: has 9100 characters in total, the limit is 9000"]);
+});
+
+test("narration v2: the schema needs version 2 and stops with a focus list and a text", () => {
+  const { errors } = checkNarration(narrationFile({ version: 3, mode: "plan", stops: [{ focus: [], text: "" }, { text: "t", extra: 1 }] }), planProps());
+  assert.deepEqual(errors.map((e) => e.path), [
+    "narration.version", "narration.stops[0].focus", "narration.stops[0].text", "narration.stops[1].focus", "narration.stops[1].extra",
+  ]);
+  const missing = checkNarration(narrationFile({ mode: "plan" }), planProps());
+  assert.deepEqual(missing.errors.map((e) => `${e.path}: ${e.message}`), ["narration.version: required", "narration.stops: required"]);
+});
+
+// ---- narration v1: each section maps to its cluster of nodes ----
+
+test("narration v1 (plan): each section becomes one stop on its cluster, in video order, with or without text", () => {
+  const { errors, stops } = checkNarration(narrationFile({ mode: "plan", sections: [say("risks"), say("intro"), say("milestones")] }), planProps());
+  assert.deepEqual(errors, []);
+  assert.deepEqual(stops.map((s) => s.id), ["intro", "goal", "architecture", "milestones", "decisions", "risks", "outro"]);
+  const byId = Object.fromEntries(stops.map((s) => [s.id, s]));
+  assert.deepEqual([byId.intro.overview, byId.outro.overview], [true, true]);
+  assert.deepEqual(byId.goal.nodes, ["goal"]);
+  assert.deepEqual(byId.architecture.nodes, ["layer-1", "component-http-api", "layer-2", "component-widget-store"]);
+  assert.deepEqual(byId.milestones.nodes, ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
+  assert.deepEqual(byId.risks.nodes, ["risk-1"]);
+  assert.deepEqual([byId.risks.text, byId.intro.text], ["The risks section.", "The intro section."]);
+  assert.equal(byId.goal.text, "", "a section without narration has no voice");
+  assert.ok(byId.goal.caption.length > 0, "but the page tour still has a caption");
+});
+
+test("narration v1 (ship): an empty cluster maps to the outcome node, and optional clusters follow the props", () => {
+  const props = shipProps({ changes: [{ area: "Read API", how: "h", why: "w" }], process: { attempts: 2 } });
+  const { errors, stops } = checkNarration(narrationFile({ mode: "ship", sections: [say("deviations"), say("setbacks"), say("changes")] }), props);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(stops.map((s) => s.id), ["intro", "summary", "changes", "delivered", "deviations", "setbacks", "reviews", "handTest", "rollback", "outro"]);
+  const byId = Object.fromEntries(stops.map((s) => [s.id, s]));
+  assert.deepEqual(byId.deviations.nodes, ["summary"], "no deviations: the outcome node");
+  assert.deepEqual(byId.setbacks.nodes, ["process"]);
+  assert.deepEqual(byId.changes.nodes, ["change-1"]);
+  assert.deepEqual(byId.reviews.nodes, ["review-1"]);
+});
+
+// ---- the page tour comes from the narration ----
+
+test("page tour: render.mjs takes narration.json beside the props, or --narration, as the tour captions", () => {
+  const narration = v2("plan", [stop(["all"], "Welcome."), stop(["phase-2"], "The read phase.")]);
+  const beside = run(RENDER, ["--props", "<props>", "--out", "<out>"], { props: planProps(), narration });
+  assert.equal(beside.status, 0, beside.stderr);
+  assert.equal(beside.stderr, "");
+  const data = (html) => JSON.parse(/<script type="application\/json" id="ve-data">([^<]*)<\/script>/.exec(html)[1]);
+  assert.deepEqual(data(beside.html).stops.map((s) => [s.text, s.nodes.length, s.overview]), [["Welcome.", 12, true], ["The read phase.", 1, false]]);
+  const explicit = run(RENDER, ["--props", "<props>", "--out", "<out>", "--narration", "<narration>"], { props: planProps(), narration });
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.equal(data(explicit.html).stops[1].text, "The read phase.");
+});
+
+test("page tour: a bad narration.json beside the props gives one warning and the default tour; a bad --narration exits 1", () => {
+  const narration = v2("plan", [stop(["phase-99"], "Gone.")]);
+  const beside = run(RENDER, ["--props", "<props>", "--out", "<out>"], { props: planProps(), narration });
+  assert.equal(beside.status, 0, beside.stderr);
+  assert.deepEqual(beside.stderr.trim().split("\n"), ['render.mjs: the tour ignores narration.json: narration.stops[0].focus[0]: "phase-99" is not a node id or a group id (render.mjs --ids lists them)']);
+  assert.ok(beside.html, "the page is written");
+  const explicit = run(RENDER, ["--props", "<props>", "--out", "<out>", "--narration", "<narration>"], { props: planProps(), narration });
+  assert.equal(explicit.status, 1);
+  assert.match(explicit.stderr, /^narration\.stops\[0\]\.focus\[0\]: "phase-99" is not a node id/);
+  assert.equal(explicit.html, null);
+});
+
 // ---- text to speech ----
 
 const { chooseEngine, clipKey, pickSayVoice, speak, synthesize, ttsSettings, wavSeconds } = await import(path.join(SKILL, "scripts", "tts.mjs"));
@@ -652,7 +756,8 @@ test("render-video: the result names the engine when no fallback happens", () =>
 
 // ---- page embed: render.mjs --video ----
 
-test("page: --video adds one video block between the hero and the section nav", () => {
+// The video was a block at the top of the report. The graph page keeps it in a drawer that the bar opens.
+test("page: --video adds one video in a closed drawer, opened from the bar, after the graph and the outline", () => {
   const r = run(RENDER, ["--props", "<props>", "--out", "<out>", "--video", "video.mp4"], { props: EXAMPLES.ship });
   assert.equal(r.status, 0, r.stderr);
   const videos = r.html.match(/<video\b[^>]*>/g) ?? [];
@@ -661,18 +766,19 @@ test("page: --video adds one video block between the hero and the section nav", 
   assert.match(videos[0], /\bpreload="metadata"/);
   assert.match(videos[0], /\bplaysinline\b/);
   assert.match(videos[0], /\bsrc="video\.mp4"/);
-  const hero = r.html.indexOf("</header>");
+  assert.match(r.html, /<div class="drawer" id="video-panel" role="dialog" aria-label="Video" hidden>/, "a closed drawer");
+  assert.match(r.html, /<button type="button" class="btn" data-video aria-controls="video-panel" aria-expanded="false">Video<\/button>/, "a bar button opens it");
+  const graph = r.html.indexOf('<svg class="graph"');
+  const outline = r.html.indexOf('id="outline"');
   const video = r.html.indexOf("<video");
-  const nav = r.html.indexOf('<nav class="toc"');
-  assert.ok(hero > 0 && hero < video && video < nav, "the video sits after the hero and before the scenes");
+  assert.ok(graph > 0 && graph < outline && outline < video, "the video is not at the top");
 });
 
-test("page: without --video the page has no video block, and the hero and the nav stay adjacent", () => {
+test("page: without --video the page has no video markup", () => {
   for (const props of Object.values(EXAMPLES)) {
     const r = run(RENDER, ["--props", "<props>", "--out", "<out>"], { props });
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(!/<video|video-block/.test(r.html), "no video markup");
-    assert.ok(r.html.includes('</div></header>\n<nav class="toc"'), "the empty slot adds no byte");
+    assert.ok(!/<video|id="video-panel"|data-video aria-controls/.test(r.html), "no video markup");
   }
 });
 
