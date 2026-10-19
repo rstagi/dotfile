@@ -45,7 +45,7 @@ main() {
       inner="$(jq -er '.inner' <<< "$config")" || return 1
     else
       tier="${LOOP_REVIEW_TIER_DEFAULT:-standard}"
-      rounds="${LOOP_REVIEW_ROUNDS_DEFAULT:-1}"
+      rounds="${LOOP_REVIEW_ROUNDS_DEFAULT:-2}"
       inner="${LOOP_REVIEW_INNER_DEFAULT:-2}"
     fi
     tier="${opt[tier]:-$tier}"
@@ -195,6 +195,7 @@ report or invoke its posting workflow. Each run is fresh; never resume a provide
 Read only the current exchange inlined below; do not read unrelated runs or existing GitHub
 reviews/comments. A critic/confirm audits the last reviewer against this same full PR context.
 LOCAL
+        review_fix_scope "$ledger" >> "$framing" || return 1
         ar_prompt --role "$role" --framing "$framing" --ledger "$ledger" --run-dir "$run_dir" ;;
       fix|final)
         cat -- "$framing" || return 1
@@ -249,6 +250,41 @@ review_evidence() {
     cat -- "${ledger%.tsv}.disputed.md" || return 1
   fi
   printf '\n'
+}
+
+# A round after a fix checks only the fix diff and the blocking items of the round before it.
+review_fix_scope() {
+  local ledger="$1" line report="" disputed=0 fix_dir="" prior="" prior_disputed=0 range meta
+  local loop_dir="${1:a:h:h}"
+  local -a columns
+  [[ -f "$ledger" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    columns=(${(ps:\t:)line})
+    case "$columns[3]" in
+      review) report="$columns[6]"; disputed=0 ;;
+      respond) report="$columns[6]" ;;
+      disputed) disputed=1 ;;
+      fix) fix_dir="$columns[6]"; prior="$report"; prior_disputed="$disputed" ;;
+    esac
+  done < "$ledger"
+  [[ -n "$fix_dir" ]] || return 0
+  meta="$loop_dir/$fix_dir/meta.json"
+  range="$(jq -ers '(.[1] // {}) as $m | .[0] as $s |
+    "\($m.headBefore // $s.headBefore)..\($m.headAfter // $s.headAfter)"' \
+    "$loop_dir/$fix_dir/status.json" <([[ -f "$meta" ]] && cat -- "$meta" || print '{}'))" || return 1
+  printf '\n## Scope after a fix\n'
+  cat <<SCOPE
+A fix ran after the previous round. This round checks only the fix diff and the blocking
+findings of the previous round. Fix diff: git diff $range. Report a previous blocking finding
+again only when it stays open. Add no new deferred finding. Add a new blocking finding only
+when the fix diff caused it.
+SCOPE
+  printf '\n### Previous converged review (%s)\n\n' "$loop_dir/$prior"
+  cat -- "$loop_dir/$prior/report.md" || return 1
+  if (( prior_disputed )) && [[ -f "${ledger%.tsv}.disputed.md" ]]; then
+    printf '\n### Previous disputed items (%s)\n\n' "${ledger%.tsv}.disputed.md"
+    cat -- "${ledger%.tsv}.disputed.md" || return 1
+  fi
 }
 
 review_final_instructions() {

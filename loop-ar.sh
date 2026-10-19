@@ -7,7 +7,7 @@
 # run_dir is relative to the loop directory; a<k> is the idempotency key.
 # Roles / token-only verdicts:
 #   review|respond: APPROVE|NEEDS_CHANGES
-#   critic|confirm: AGREE|DISAGREE_EVIDENCE|DISAGREE_CONCERN
+#   critic|confirm: AGREE|DISAGREE_EVIDENCE|DISAGREE_CONCERN (confirm: legacy ledgers only)
 #   disputed: DISPUTED; fix: PUSHED|NOOP
 #   final: REQUEST_CHANGES|COMMENT|APPROVE
 # Stages: round<r> for review/critic/respond/confirm; disputed for the dispute
@@ -24,7 +24,7 @@ typeset -g _LOOP_AR_ROOT="${${(%):-%x}:A:h}"
 # ar_next --rounds N --inner M --ledger F [--start-round r] [--single-round].
 ar_next() {
   emulate -L zsh
-  local rounds="" inner="" ledger="" start=1 single=0 round reviewer critic third decision
+  local rounds="" inner="" ledger="" start=1 single=0 started=0 round reviewer critic third decision
   local -a providers
   local -A ar_state
   while (( $# )); do
@@ -42,6 +42,10 @@ ar_next() {
   done
   _ar_count "$rounds" && _ar_count "$inner" && _ar_count "$start" \
     && [[ -n "$ledger" ]] && (( start <= rounds )) || return 1
+  # Legacy ledgers can start a round after a clean round without a fix. Rows of a later round
+  # mark every earlier round as complete.
+  [[ -f "$ledger" ]] && started="$(awk -F '\t' '$2 ~ /^round[1-5]$/ {
+    n = substr($2, 6) + 0; if (n > m) m = n } END { print m + 0 }' "$ledger")"
   for (( round = start; round <= rounds; round++ )); do
     _ar_load_round "$ledger" "$round" || return 1
     [[ "${ar_state[final]}" == 1 ]] && { print -r -- done; return 0; }
@@ -49,19 +53,15 @@ ar_next() {
       (( single )) && { print -r -- done; return 0; }
       continue
     fi
+    (( round < started )) && continue
     providers=(${(ps:\t:)"$(ar_rotation "$round")"})
     reviewer="$providers[1]"; critic="$providers[2]"; third="$providers[3]"
-    # A veto keeps T in the critic slot for every remaining inner exchange.
+    # Legacy ledgers only (new rounds never run T): a veto keeps T in the critic slot.
     if [[ "${ar_state[confirm]}" != - && "${ar_state[confirm]}" != AGREE ]]; then critic="$third"; fi
     case "${ar_state[role]}" in
       -) printf 'round%d\treview\t%s\n' "$round" "$reviewer"; return 0 ;;
       review|respond) printf 'round%d\tcritic\t%s\n' "$round" "$critic"; return 0 ;;
-      critic)
-        if [[ "${ar_state[first]}" == APPROVE && "${ar_state[critic]}" == AGREE \
-          && "${ar_state[count]}" == 1 && "${ar_state[confirm]}" == - ]]; then
-          printf 'round%d\tconfirm\t%s\n' "$round" "$third"; return 0
-        fi
-        decision="${ar_state[critic]}" ;;
+      critic) decision="${ar_state[critic]}" ;;
       confirm)
         if [[ "${ar_state[confirm]}" == AGREE ]]; then
           (( single )) && print -r -- done || printf 'final\tfinal\tclaude\n'
@@ -78,9 +78,11 @@ ar_next() {
       return 0
     fi
     (( single )) && { print -r -- done; return 0; }
-    if (( round < rounds )) && [[ "${ar_state[last]}" == NEEDS_CHANGES || "${ar_state[disputed]}" == 1 ]]; then
-      printf 'fix%d\tfix\tclaude\n' "$round"; return 0
+    # R and C agree that no blocking finding is open: the review ends.
+    if [[ "${ar_state[last]}" == APPROVE && "${ar_state[disputed]}" != 1 ]]; then
+      printf 'final\tfinal\tclaude\n'; return 0
     fi
+    if (( round < rounds )); then printf 'fix%d\tfix\tclaude\n' "$round"; return 0; fi
   done
   (( single )) && print -r -- done || printf 'final\tfinal\tclaude\n'
 }

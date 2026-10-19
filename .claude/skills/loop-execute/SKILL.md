@@ -390,7 +390,7 @@ configuration, and prompt references. A pipeline failure follows HIL; do not sil
 to the old workflow.
 
 Read the review phase's tags: `[review: standard|max]` (default `LOOP_REVIEW_TIER_DEFAULT`,
-standard), `[rounds: N]` (default `LOOP_REVIEW_ROUNDS_DEFAULT` (1)), and `[inner: N]` (default
+standard), `[rounds: N]` (a maximum, default `LOOP_REVIEW_ROUNDS_DEFAULT` (2)), and `[inner: N]` (default
 `LOOP_REVIEW_INNER_DEFAULT` (2)). Both limits are 1..5, with rounds capped by
 `LOOP_REVIEW_ROUNDS_CAP`. Legacy tiers shallow and medium are rejected, never translated.
 For a new phase persist each `repositories[slug].reviewPipeline` using
@@ -439,21 +439,22 @@ answer; continue the same logical step/head without advancing the ledger. R/C/T 
 call with prior exchange and answer inlined, never `--resume`; retain the original artifacts.
 
 The CLI owns rotation (round 1 gpt→claude, round 2 claude→grok, round 3 grok→gpt), inner caps,
-and the fix rule. R reviews/responds, C audits against code, and T confirms a candidate clean
-opening pair (the first R review is `APPROVE` and C answers `AGREE`). R/C/T
-**never post or mutate GitHub** or edit the artifact. T `AGREE` skips remaining outer rounds
-and jumps to `final`; no skipped ledger rows are written. A T veto makes T the active critic
-for the remaining inner loop. At the inner cap the disputed sidecar preserves both positions,
+and the fix rule. R reviews/responds, and C audits against code. R/C
+**never post or mutate GitHub** or edit the artifact. A round in which R and C agree that no blocking finding is open goes straight to `final`, in every round.
+No skipped ledger rows are written. New pipelines never run a third provider T (`confirm`).
+Legacy ledgers with `confirm` rows still replay. At the inner cap the disputed sidecar preserves both positions,
 including critic-added issues; disputed > findings > clean. Only the fixer edits code between
-outer rounds. For r < N, run `fix<r>` iff the last R verdict is `NEEDS_CHANGES` or the round is disputed;
-otherwise proceed without a fix. The last round always goes to final, not another fix.
+outer rounds. For r < N, run `fix<r>` iff the last R verdict is `NEEDS_CHANGES` or the round is disputed.
+The last round always goes to final, not another fix.
 
 R gives each finding one class: blocking, with the category `security`, `unprotected-breakage`
 or `failing-check` and evidence, or deferred. When R is not sure, the finding is deferred.
 R ends with `NEEDS_CHANGES` only when at least one blocking finding stays.
 C also checks the classes. A deferred finding is never a disagreement.
 Deferred findings never cause a fix, a dispute or `REQUEST_CHANGES`.
-With the default of one round, round 1 goes to `final`, and no fix runs.
+A round after a fix checks only the fix diff and the blocking findings of the round before it.
+It adds no new deferred finding, and a new blocking finding only when the fix caused it.
+`loop-review.sh prompt` adds this scope to the R/C prompts of that round.
 
 - `fix<r>` (`review-fix`): its prompt invokes `/pr-review-fix-all` with exactly one converged
   review, the current disputed sidecar only when that round has a dispute row, and these inputs:

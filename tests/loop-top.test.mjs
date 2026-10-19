@@ -327,7 +327,7 @@ test("phaseRows + --once: review phases carry their tier; the model column shows
   t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
   const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
   assert.match(out.stdout, /2 +Deep review +review +max review ×2 /);
-  assert.match(out.stdout, /3 +Default review +review +standard review ×1 /);
+  assert.match(out.stdout, /3 +Default review +review +standard review ×2 /);
 });
 
 test("--once: shared rounds apply to every tier; explicit historical rounds stay visible", async (t) => {

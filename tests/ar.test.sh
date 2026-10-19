@@ -39,7 +39,7 @@ assert_eq "$(ar_rotation 3)" "grok${T}gpt${T}claude" "round 3 R/C/T"
 assert_eq "$(ar_rotation 4)" "gpt${T}claude${T}grok" "rotation wraps"
 ar_rotation 0 > /dev/null 2>&1; assert_exit "$?" 1 "round zero rejected"
 
-echo "ar: clean opening review requires third-provider confirmation"
+echo "ar: a clean round ends the review without a third provider"
 record() {
   local count=0
   [[ -f "$LEDGER" ]] && count=$(wc -l < "$LEDGER")
@@ -50,10 +50,8 @@ assert_eq "$(next)" "round1${T}review${T}gpt" "missing ledger starts review"
 record round1 review gpt APPROVE
 assert_eq "$(next)" "round1${T}critic${T}claude" "opening review goes to critic"
 record round1 critic claude AGREE
-assert_eq "$(next)" "round1${T}confirm${T}grok" "clean pair requires T"
-record round1 confirm grok AGREE
-assert_eq "$(next)" "final${T}final${T}claude" "three clean runs skip later rounds"
-assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" clean "confirmed opening is clean"
+assert_eq "$(next)" "final${T}final${T}claude" "clean pair skips later rounds without T"
+assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" clean "clean pair is clean"
 record final final claude APPROVE
 assert_eq "$(next)" done "posted final ends pipeline"
 
@@ -94,7 +92,7 @@ record round1 critic claude AGREE
 assert_eq "$(next)" "fix1${T}fix${T}claude" "agreement after response converges"
 assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" findings "remaining flags need fixes"
 
-echo "ar: third-provider veto takes over the critic slot"
+echo "ar: legacy T veto rows still replay"
 rm -f "$LEDGER"
 record round1 review gpt APPROVE
 record round1 critic claude AGREE
@@ -104,7 +102,7 @@ assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" findings "vetoed rou
 record round1 respond gpt APPROVE
 assert_eq "$(next)" "round1${T}critic${T}grok" "T becomes critic after veto"
 record round1 critic grok AGREE
-assert_eq "$(next)" "round2${T}review${T}claude" "veto prevents early stop even after convergence"
+assert_eq "$(next)" "final${T}final${T}claude" "resolved legacy veto is a clean round"
 assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" clean "resolved veto leaves no blocking finding"
 rm -f "$LEDGER"
 record round1 review gpt APPROVE
@@ -134,9 +132,8 @@ for reviewer_verdict in NEEDS_CHANGES APPROVE; do
   assert_eq "$(next)" "round2${T}review${T}claude" "disputed marker is complete after fix"
   record round2 review claude APPROVE
   record round2 critic grok AGREE
-  record round2 confirm gpt AGREE
   assert_eq "$(ar_round_status --ledger "$LEDGER" --round 2)" clean "earlier dispute does not taint next round"
-  assert_eq "$(next)" "final${T}final${T}claude" "later clean confirmation still stops early"
+  assert_eq "$(next)" "final${T}final${T}claude" "later clean round ends the review"
 done
 rm -f "$LEDGER" "${LEDGER%.tsv}.disputed.md"
 record round1 review gpt APPROVE
@@ -150,26 +147,33 @@ assert_eq "$(next --start-round 2 --single-round)" "round2${T}review${T}claude" 
 record round2 review claude APPROVE
 assert_eq "$(next --start-round 2 --single-round)" "round2${T}critic${T}grok" "round 2 uses Grok critic"
 record round2 critic grok AGREE
-assert_eq "$(next --start-round 2 --single-round)" "round2${T}confirm${T}gpt" "round 2 uses GPT confirmation"
-record round2 confirm gpt AGREE
-assert_eq "$(next --start-round 2 --single-round)" done "single-round clean has no final"
+assert_eq "$(next --start-round 2 --single-round)" done "single-round clean has no T and no final"
 rm -f "$LEDGER"
 record round2 review claude NEEDS_CHANGES
 record round2 critic grok AGREE
 assert_eq "$(next --start-round 2 --single-round)" done "single-round findings have no fix or final"
 assert_eq "$(ar_round_status --ledger "$LEDGER" --round 2)" findings "planner receives findings status"
 
-echo "ar: revised approval skips fixes but cannot trigger opening early stop"
+echo "ar: a revised approval is a clean round: final, no fix"
 rm -f "$LEDGER"
 record round1 review gpt NEEDS_CHANGES
 record round1 critic claude DISAGREE_EVIDENCE
 record round1 respond gpt APPROVE
 record round1 critic claude AGREE
-assert_eq "$(next)" "round2${T}review${T}claude" "last R approval omits fix, without third confirmation"
+assert_eq "$(next)" "final${T}final${T}claude" "revised approval ends the review without a fix"
 assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" clean "withdrawn findings no longer count"
 assert_eq "$(next --rounds 1)" "final${T}final${T}claude" "revised approval in last round goes to final"
 record fix1 fix claude NOOP
 assert_eq "$(next --single-round)" done "single-round cannot advance after a completed fix"
+
+echo "ar: a legacy ledger that moved past a clean round without a fix still replays"
+rm -f "$LEDGER"
+record round1 review gpt NEEDS_CHANGES
+record round1 critic claude DISAGREE_EVIDENCE
+record round1 respond gpt APPROVE
+record round1 critic claude AGREE
+record round2 review claude APPROVE
+assert_eq "$(next)" "round2${T}critic${T}grok" "started later round continues"
 
 echo "ar: configuration and ledger validation"
 for args in '--rounds 0' '--rounds 6' '--inner 0' '--inner 6' '--inner nope' '--start-round 4' '--unknown'; do

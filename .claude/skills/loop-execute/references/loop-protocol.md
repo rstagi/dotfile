@@ -56,8 +56,8 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   a frozen artifact. R also handles `respond`, with the prior exchange inlined in its prompt.
 - **Critic C** — a fresh read-only runner from a different provider auditing R's review
   against the artifact and codebase. C references finding IDs and grounds disagreement in code.
-- **Third provider T** — the provider outside R/C for this outer round. Its `confirm` run
-  uses the critic prompt to audit an initially clean review; a veto makes T the active critic
+- **Third provider T** — legacy ledgers only. New pipelines never run T. An old `confirm` row
+  is T's audit of an initially clean review. On replay, a T veto makes T the active critic
   for the rest of that round's inner loop. R/C/T rotate (§ PR review phase pipeline).
 - **Remediation coordinator** — Opus through Claude Code, only between outer rounds and
   only when the fix rule requires it. Through `/pr-review-fix-all` it verifies the converged
@@ -772,10 +772,10 @@ CHAIN_REVIEW_MAX_GROK=("grok:default");      EFFORT_REVIEW_MAX_GROK=max
 CHAIN_REVIEW_MAX_FIX=("claude:opus");        EFFORT_REVIEW_MAX_FIX=medium
 CHAIN_REVIEW_MAX_FINAL=("claude:opus");      EFFORT_REVIEW_MAX_FINAL=max
 LOOP_REVIEW_TIER_DEFAULT=standard
-LOOP_REVIEW_ROUNDS_DEFAULT=1
+LOOP_REVIEW_ROUNDS_DEFAULT=2
 LOOP_REVIEW_INNER_DEFAULT=2
 LOOP_REVIEW_ROUNDS_CAP=5
-LOOP_PLAN_REVIEW_ROUNDS=1
+LOOP_PLAN_REVIEW_ROUNDS=2
 CHAIN_PLAN_REVIEW_GPT=("codex:@sol");    EFFORT_PLAN_REVIEW_GPT=high
 CHAIN_PLAN_REVIEW_CLAUDE=("claude:opus"); EFFORT_PLAN_REVIEW_CLAUDE=high
 CHAIN_PLAN_REVIEW_GROK=("grok:default");  EFFORT_PLAN_REVIEW_GROK=high
@@ -1007,7 +1007,7 @@ you must stop early, skip the handoff and write status.json with outcome questio
 
 Every explicit `[kind: pr-review]` phase runs one Adversarial Review (AR) pipeline per
 repository. The heading accepts `[review: standard|max]` (default
-`LOOP_REVIEW_TIER_DEFAULT=standard`), `[rounds: N]` (default `LOOP_REVIEW_ROUNDS_DEFAULT=1`),
+`LOOP_REVIEW_TIER_DEFAULT=standard`), `[rounds: N]` (a maximum, default `LOOP_REVIEW_ROUNDS_DEFAULT=2`),
 and `[inner: M]` (default `LOOP_REVIEW_INNER_DEFAULT=2`). Both counts are integers 1..5;
 `LOOP_REVIEW_ROUNDS_CAP=5`. Legacy tiers shallow and medium are rejected by execution paths;
 historical Observatory/loop-top displays may still render them with a warning.
@@ -1083,11 +1083,14 @@ same head, using a fresh R/C/T call with the exchange inlined. Do not advance be
 
 ### Early stop, cap, and fix rule
 
-If R's first review is `APPROVE` and C answers `AGREE`, run T as `confirm` with the same
-critic prompt and full context. T `AGREE` skips every remaining outer round and goes straight
-to `final` (plan review: done). No `skipped` ledger rows are written; consumers infer skips
-from the clean `confirm`. If T disagrees, T becomes the critic for the rest of that inner loop;
-the cap still applies and the round no longer skips later outer rounds, even if R later approves.
+`[rounds: N]` is a maximum. When R and C agree that no blocking finding is open, the review
+skips every remaining outer round and goes straight to `final` (plan review: done). They agree
+when the last R verdict is `APPROVE`, C answers `AGREE`, and the round has no dispute.
+This holds for every round. No `skipped` ledger rows are written. Consumers infer skips from
+the clean round.
+New pipelines never run a third provider T. Replay treats a round as complete when a later
+round has rows, because old engines started a round after a clean round. A legacy ledger can contain `confirm` rows. On
+replay, T `AGREE` is a clean end. After a T veto, T becomes the critic for the rest of that inner loop.
 The `confirm` does not consume another inner round; a veto at inner cap 1 goes directly to disputed.
 
 At the inner cap without agreement, `ar_write_disputed` writes
@@ -1096,17 +1099,21 @@ last R report and last critic report verbatim and unresolved finding IDs, includ
 The sidecar uses the ledger filename without `.tsv` as its stem. A disputed round is never
 clean. The fixer/final reviewer/planner must verify disputed items against code; reaching the
 cap alone does not pause for HIL. Round status precedence is `disputed` > `findings` > `clean`.
-`findings` means that a blocking finding stays: the last R verdict is `NEEDS_CHANGES`, or a T
-veto has no answer yet.
+`findings` means that a blocking finding stays: the last R verdict is `NEEDS_CHANGES`, or a
+legacy T veto has no answer yet.
 The ledger's dispute row associates the sidecar with its round; an older sidecar must not make
 a later round disputed.
 
 After round r < N, run `fix<r>` iff the last R verdict is `NEEDS_CHANGES` or the round's
-`.disputed.md` exists (as identified by that round's dispute row). Otherwise advance without
-a fix. A clean confirmed early stop bypasses fixes and later rounds. Round N always proceeds
+`.disputed.md` exists (as identified by that round's dispute row). The fix covers only blocking
+findings. A clean round bypasses fixes and later rounds. Round N always proceeds
 to `final`, with its converged review and any current disputed items, rather than fixing again.
-Deferred findings never cause a fix, a dispute or `REQUEST_CHANGES`. With the default of one
-round, round 1 goes to `final`, and no fix runs.
+A blocking finding that stays open after round N makes the final request changes.
+Deferred findings never cause a fix, a dispute or `REQUEST_CHANGES`.
+A round after a fix checks only the fix diff and the blocking findings of the round before it.
+It adds no new deferred finding, and a new blocking finding only when the fix caused it.
+`loop-review.sh prompt` adds this scope (the fix diff range and the previous converged review)
+to every R/C prompt of that round.
 
 ### Ledger and CLI
 
@@ -1177,8 +1184,9 @@ reset the allowance. A second invalid verdict blocks that repository pipeline an
 the normal HIL path. This rule also applies when `recover` encounters an invalid verdict;
 never treat malformed output as agreement or advance the ledger past it.
 
-Example: standard, `[rounds: 2]`, inner cap 2. R revises once in round 1, fixes are pushed,
-and round 2 is confirmed clean (a first-round clean confirmation would instead jump to final):
+Example: standard, at most two rounds, inner cap 2. R revises once in round 1 and keeps a
+blocking finding. The fix is pushed, and round 2 is clean. A clean round 1 would instead go
+straight to final:
 
 | Run | Stage | Role | Provider | Chain | Verdict |
 |-----|-------|------|----------|-------|---------|
@@ -1189,8 +1197,7 @@ and round 2 is confirmed clean (a first-round clean confirmation would instead j
 | `a5` | `fix1` | `fix` | claude | `review-fix` | `PUSHED` |
 | `a6` | `round2` | `review` | claude | `review-claude` | `APPROVE` |
 | `a7` | `round2` | `critic` | grok | `review-grok` | `AGREE` |
-| `a8` | `round2` | `confirm` | gpt | `review-gpt` | `AGREE` |
-| `a9` | `final` | `final` | claude | `review-final` | `APPROVE` |
+| `a8` | `final` | `final` | claude | `review-final` | `APPROVE` |
 
 ### Remediation (`fix<r>`)
 
@@ -1223,7 +1230,7 @@ the next round. Unresolved accepted findings or failed verification block that r
 
 ### Final review (`final`)
 
-Run `review-final` after the last outer round or a confirmed clean early stop, at the same
+Run `review-final` after the last outer round or a clean early stop, at the same
 current head reviewed by that round. It reads one converged review (last R report), the current
 `.disputed.md` when the round is disputed, and current code. It independently verifies and
 deduplicates findings, including critic-added disputed items, saving the reconciled review in
@@ -1272,12 +1279,14 @@ outer-round boundary after any verified fix. Replay, rather than a cached stage,
 
 ### Plan review uses the same AR core
 
-`loop-plan-review.sh run --round r [--inner M]` drives one independent outer round synchronously
+`loop-plan-review.sh run --round r [--inner M] [--prior F]` drives one independent outer round synchronously
 with its own ledger and `ar_next --start-round r --single-round`. It prints TSV
 `status <converged review path> <ledger>`, status precedence `disputed` > `findings` > `clean`;
 exit 2 means no usable review. Plan review uses standard provider slots at effort `high`.
 The planner verifies the converged review and disputed items against code, edits the plan
-between outer rounds, and runs up to `LOOP_PLAN_REVIEW_ROUNDS=1`, stopping early on `clean`.
+between outer rounds, and runs at most `LOOP_PLAN_REVIEW_ROUNDS=2` rounds, stopping early on `clean`.
+A later round runs only when a blocking finding changed the plan. It gets
+`--prior <converged review of round 1>` and checks only those plan edits and blocking findings.
 For a plan, a finding is blocking only in these cases:
 - The plan ships a security problem.
 - The plan ships a breaking change with no flag or off switch, or with no wiring point.

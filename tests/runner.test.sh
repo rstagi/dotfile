@@ -363,7 +363,7 @@ review_defaults="$(
   source "$ROOT/loop-models.conf"
   print -r -- "$LOOP_REVIEW_TIER_DEFAULT:$LOOP_REVIEW_ROUNDS_DEFAULT:$LOOP_REVIEW_INNER_DEFAULT:$LOOP_REVIEW_ROUNDS_CAP:${LOOP_PLAN_REVIEW_ROUNDS:-unset}"
 )"
-assert_eq "$review_defaults" "standard:1:2:5:1" "shared review defaults apply to both tiers and plan review"
+assert_eq "$review_defaults" "standard:2:2:5:2" "shared review defaults: at most 2 rounds for PR and plan review"
 legacy_rounds="$(
   unset LOOP_REVIEW_ROUNDS_SHALLOW LOOP_REVIEW_ROUNDS_MEDIUM LOOP_REVIEW_ROUNDS_MAX
   source "$ROOT/loop-models.conf"

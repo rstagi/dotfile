@@ -3,7 +3,8 @@ set -u -o pipefail
 
 # One independent AR plan-review round. Only the planner edits the plan, between rounds.
 # Usage: loop-plan-review.sh run --round r [--inner M] [--dir .loop]
-#   [--plan-file <dir>/plan.md] [--worktree .] [--models-conf F]
+#   [--plan-file <dir>/plan.md] [--worktree .] [--models-conf F] [--prior <review>]
+# --prior: the converged review of the previous round. The round then checks only its blocking fixes.
 # Output: clean|findings|disputed<TAB>last reviewer report<TAB>ledger
 # Exit: 0 usable round; 2 provider failure / unusable verdict; 1 usage or local error.
 # Env: LOOP_PLAN_REVIEW_RUNNER overrides the runner (tests).
@@ -12,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="${LOOP_PLAN_REVIEW_RUNNER:-$SCRIPT_DIR/loop-runner.sh}"
 PLAN_FORMAT="$SCRIPT_DIR/.claude/skills/multiphase-plan/references/plan-format.md"
 DIR=".loop" PLAN_FILE="" WT="$PWD" MODELS_CONF="$SCRIPT_DIR/loop-models.conf"
-ROUND="" INNER=""
+ROUND="" INNER="" PRIOR=""
 source "$SCRIPT_DIR/loop-ar.sh"
 
 main() {
@@ -24,8 +25,10 @@ main() {
   PLAN_FILE="${PLAN_FILE:-$DIR/plan.md}"
   [[ -s "$PLAN_FILE" ]] || die "plan file '$PLAN_FILE' missing or empty"
   [[ -d "$WT" ]] || die "worktree '$WT' missing"
+  [[ -z "$PRIOR" || ( -f "$PRIOR" && -r "$PRIOR" ) ]] || die "prior review '$PRIOR' missing"
   mkdir -p "$DIR/runs" || die "cannot create '$DIR/runs'"
   DIR="${DIR:A}" PLAN_FILE="${PLAN_FILE:A}" WT="${WT:A}" MODELS_CONF="${MODELS_CONF:A}"
+  [[ -n "$PRIOR" ]] && PRIOR="${PRIOR:A}"
 
   local stamp ledger framing next stage role provider run_dir verdict kind rc report="" k=0 retry
   local -a step
@@ -81,7 +84,7 @@ main() {
 }
 
 parse_args() {
-  [[ "${1:-}" == run ]] || die "usage: loop-plan-review.sh run --round r [--inner M] [--dir D] [--plan-file F] [--worktree W] [--models-conf F]"
+  [[ "${1:-}" == run ]] || die "usage: loop-plan-review.sh run --round r [--inner M] [--dir D] [--plan-file F] [--worktree W] [--models-conf F] [--prior F]"
   shift
   while (( $# )); do
     (( $# >= 2 )) || die "missing value for $1"
@@ -90,6 +93,7 @@ parse_args() {
       --round) ROUND="$2" ;; --inner) INNER="$2" ;;
       --dir) DIR="$2" ;; --plan-file) PLAN_FILE="$2" ;;
       --worktree) WT="$2" ;; --models-conf) MODELS_CONF="$2" ;;
+      --prior) PRIOR="$2" ;;
       *) die "unknown arg $1" ;;
     esac
     shift 2
@@ -142,6 +146,19 @@ All other findings are deferred. They never block the plan. The planner puts the
 the "Deferred / Not now" section of the plan. Skip style nits.
 If the plan is sound, say so — do not invent findings.
 EOF
+  [[ -n "$PRIOR" ]] || return 0
+  cat <<EOF
+
+## Scope after blocking fixes
+The planner edited the plan for the blocking findings of the previous round. This round checks
+only those edits and those blocking findings. Report a previous blocking finding again only
+when it stays open. Add no new deferred finding. Add a new blocking finding only when a plan
+edit caused it.
+
+### Previous converged review ($PRIOR)
+
+EOF
+  cat -- "$PRIOR"
 }
 
 # Atomic six-column ledger append. Each invocation owns an independent ledger.
