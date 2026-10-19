@@ -1,0 +1,12 @@
+{
+  "id": "3",
+  "name": "",
+  "workspace": "repo/main",
+  "path": "/sandbox",
+  "slot": "1",
+  "agent": "codex",
+  "resume_id": "",
+  "window": "",
+  "status": "active",
+  "spawned": false
+}

@@ -1,3 +1,6 @@
+#[path = "../../ws-daemon/src/import/fixtures/mod.rs"]
+mod fixtures;
+
 #[allow(dead_code)]
 mod common;
 
@@ -217,16 +220,7 @@ fn first_start_imports_legacy_state_once_before_serving_commands() {
     let mut command = common::ws(home.path(), &socket);
     command.env("WS_TMUX_SOCKET", home.path().join("tmux.sock"));
     fs::remove_file(legacy.join("backend")).unwrap();
-    let output = Command::new("zsh")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ws-daemon/src/import/fixtures/triggers.zsh"
-        ))
-        .arg(&legacy)
-        .env("HOME", home.path())
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
+    fixtures::copy("exit", &legacy);
     fs::write(
         legacy.join("sessions/2/inbox"),
         "{\"message\":\"legacy message\"}\n",
@@ -414,25 +408,13 @@ fn switches_backends_and_imports_new_zsh_sessions_without_losing_rust_messages()
         String::from_utf8_lossy(&output.stdout).contains("2 Rust-only sessions"),
         "{output:?}"
     );
-    let legacy = Command::new("zsh")
-        .args([
-            "-fc",
-            r#"
-        source "$1/ws/ws.sh"
-        workspace_name() { print -r -- repo/main; }
-        id=$(ws_bus_allocate /sandbox 1 codex '') || exit
-        with_lock "$WS_SESSIONS/$id/inbox" ws_bus_enqueue "$id" 'created under zsh'
-        print -r -- "$id"
-    "#,
-            "legacy",
-        ])
-        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.."))
-        .env("HOME", home.path())
-        .env("WS_HOME", home.path().join(".ws"))
-        .output()
-        .unwrap();
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(String::from_utf8_lossy(&legacy.stdout).trim(), "3");
+    fixtures::copy("backend", &home.path().join(".ws"));
+    assert_eq!(
+        fs::read_to_string(home.path().join(".ws/sessions/counter"))
+            .unwrap()
+            .trim(),
+        "3"
+    );
     let output = dispatcher(home.path(), &socket)
         .args(["backend", "rust"])
         .output()
