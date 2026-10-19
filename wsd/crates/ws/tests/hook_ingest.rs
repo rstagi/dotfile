@@ -1056,12 +1056,13 @@ fn recovery_preserves_a_turn_that_starts_after_the_window_snapshot() {
     use std::{
         io::{BufRead, BufReader},
         os::unix::{fs::PermissionsExt, net::UnixListener},
-        time::{Duration, Instant},
+        time::Duration,
     };
     let gate_home = tempfile::tempdir_in("/tmp").unwrap();
     let gate_path = gate_home.path().join("gate.sock");
     let gate = UnixListener::bind(&gate_path).unwrap();
-    gate.set_nonblocking(true).unwrap();
+    // The wrapper makes the first window snapshot after this marker exceed the tmux deadline.
+    let slow_marker = gate_home.path().join("slow-snapshot");
     let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|path| path.join("tmux"))
         .find(|path| path.is_file())
@@ -1071,7 +1072,13 @@ fn recovery_preserves_a_turn_that_starts_after_the_window_snapshot() {
         &wrapper,
         format!(
             r#"#!/usr/bin/python3
-import os, socket, subprocess, sys
+import os, socket, subprocess, sys, time
+if 'show-options' in sys.argv[1:]:
+    try:
+        os.rename({slow:?}, {slow:?} + '.used')
+        time.sleep(5)
+    except FileNotFoundError:
+        pass
 if any('display-message -p released' in arg for arg in sys.argv[1:]):
     s = socket.socket(socket.AF_UNIX)
     s.connect({gate:?})
@@ -1085,6 +1092,7 @@ if any('display-message -p released' in arg for arg in sys.argv[1:]):
 os.execv({tmux:?}, [{tmux:?}] + sys.argv[1:])
 "#,
             gate = gate_path.to_str().unwrap(),
+            slow = slow_marker.to_str().unwrap(),
             tmux = real_tmux.to_str().unwrap()
         ),
     )
@@ -1103,21 +1111,17 @@ os.execv({tmux:?}, [{tmux:?}] + sys.argv[1:])
     });
     sandbox.queue("keep the newer turn");
     assert_eq!(sandbox.unconfirmed_stop()["decision"], "block");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let (mut control, _) = loop {
-        match gate.accept() {
-            Ok(connection) => break connection,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    Instant::now() < deadline,
-                    "Recovery did not reach its window guard."
-                );
-                std::thread::yield_now();
-            }
-            Err(error) => panic!("{error}"),
-        }
-    };
-    control.set_nonblocking(false).unwrap();
+    fs::write(&slow_marker, "").unwrap();
+    // Wait on the connection, not on a spin: the first recovery attempt times out and retries.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(gate.accept().map(|(stream, _)| stream));
+    });
+    let mut control = receiver
+        .recv_timeout(Duration::from_secs(90))
+        .expect("Recovery did not reach its window guard.")
+        .unwrap();
+    assert!(slow_marker.with_extension("used").exists());
     control
         .set_read_timeout(Some(Duration::from_secs(60)))
         .unwrap();

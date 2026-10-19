@@ -25,6 +25,8 @@ pub const STOP_CLI_BUDGET: Duration = Duration::from_secs(20);
 
 // Bound each tmux call independently of the hook client.
 const TMUX_DEADLINE: Duration = Duration::from_secs(2);
+// Recovery of an unconfirmed block retries this many times when a tmux call times out.
+const RECOVERY_ATTEMPTS: u32 = 3;
 pub(crate) static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -335,9 +337,7 @@ async fn record(
             // Recovery must survive cancellation of the HTTP handler as well as ingest.
             tokio::spawn(async move {
                 tokio::time::sleep(STOP_CLI_BUDGET).await;
-                if let Err(error) = recover_unconfirmed(store, callback).await {
-                    eprintln!("Cannot recover the unconfirmed hook: {error}");
-                }
+                recover_unconfirmed_with_retries(store, callback).await;
             });
         }
         Ok::<_, Error>(reply)
@@ -346,6 +346,27 @@ async fn record(
     .map_err(|error| ApiError(io::Error::other(error).into()))?
     .map_err(ApiError)?;
     Ok((StatusCode::CREATED, Json(reply)))
+}
+
+/// A slow tmux (a loaded machine) must not leave the window at `working` for good.
+async fn recover_unconfirmed_with_retries(store: Store, callback: Callback) {
+    for attempt in 1..=RECOVERY_ATTEMPTS {
+        match recover_unconfirmed(store.clone(), callback.clone()).await {
+            Ok(()) => return,
+            Err(error) if attempt < RECOVERY_ATTEMPTS && is_tmux_timeout(&error) => {
+                eprintln!("Recovery attempt {attempt} of the unconfirmed hook timed out: {error}");
+                tokio::time::sleep(TMUX_DEADLINE).await;
+            }
+            Err(error) => {
+                eprintln!("Cannot recover the unconfirmed hook: {error}");
+                return;
+            }
+        }
+    }
+}
+
+fn is_tmux_timeout(error: &crate::sessions::Error) -> bool {
+    matches!(error, crate::sessions::Error::Io(error) if error.kind() == io::ErrorKind::TimedOut)
 }
 
 async fn recover_unconfirmed(store: Store, callback: Callback) -> crate::sessions::Result<()> {
