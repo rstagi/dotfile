@@ -143,24 +143,7 @@ impl Sessions {
         caller: Option<SessionId>,
     ) -> Result<()> {
         let directory = self.agent_directory(session)?;
-        let workspace = session
-            .workspace_id
-            .as_deref()
-            .ok_or(Error::InvalidRequest("The agent session has no workspace."))?;
-        let old_windows: Vec<_> = self
-            .registry
-            .workspaces()?
-            .into_iter()
-            .filter(|record| record.id == workspace)
-            .flat_map(|record| {
-                record.body["windows"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .filter(|window| window["session_id"] == session.id.to_string())
-            .filter_map(|window| window["window_id"].as_str().map(str::to_owned))
-            .collect();
+        let old_windows = self.session_windows(session)?;
         let tmux = Tmux::from_env();
         if !self.process_exited(session.id)? {
             for window in &old_windows {
@@ -185,8 +168,10 @@ impl Sessions {
                 }
             }
         }
+        let id = session.id.to_string();
+        let tmux_session = session.workspace_id.as_deref().unwrap_or(&id);
         let launched = self.start_workspace_session(
-            workspace,
+            tmux_session,
             &directory,
             session.body["agent"].as_str().unwrap_or("claude"),
             caller,
@@ -365,8 +350,10 @@ impl Sessions {
         if resume.is_some() {
             return Ok(resume);
         }
-        Ok(slots::resume(directory, &session.id.to_string())?
-            .or_else(|| session.body["resume_id"].as_str().map(str::to_owned)))
+        Ok(
+            slots::resume(&self.state, directory, &session.id.to_string())?
+                .or_else(|| session.body["resume_id"].as_str().map(str::to_owned)),
+        )
     }
 
     fn agent_exited(&mut self, request: ExitRequest) -> Result<()> {
@@ -382,9 +369,9 @@ impl Sessions {
             )?;
         }
         if request.code == 0 {
-            slots::remove(&self.agent_directory(&session)?, &request.id)?;
+            slots::remove(&self.state, &self.agent_directory(&session)?, &request.id)?;
             if !["finished", "failed"].contains(&session.state.as_str()) {
-                self.stop(&request.id, None)?;
+                self.transition(&request.id, ws_core::state::SessionState::Finished, None)?;
             }
         }
         if request.user_tab || request.code == 0 {
@@ -404,13 +391,16 @@ impl Sessions {
         Ok(())
     }
 
-    fn agent_directory(&self, session: &Session) -> Result<PathBuf> {
+    pub(crate) fn agent_directory(&self, session: &Session) -> Result<PathBuf> {
+        if let Some(cwd) = &session.cwd {
+            return Ok(PathBuf::from(cwd));
+        }
         self.registry
             .workspaces()?
             .into_iter()
             .find(|w| Some(w.id.as_str()) == session.workspace_id.as_deref())
             .and_then(|w| w.body["path"].as_str().map(PathBuf::from))
-            .ok_or(Error::InvalidRequest("The agent session has no workspace."))
+            .ok_or(Error::InvalidRequest("The agent session has no directory."))
     }
 
     fn owns_agent_window(&self, session: &Session, pane: &str) -> Result<bool> {
@@ -433,17 +423,6 @@ impl Sessions {
         {
             return Ok(false);
         }
-        Ok(self
-            .registry
-            .workspaces()?
-            .into_iter()
-            .filter(|w| Some(w.id.as_str()) == session.workspace_id.as_deref())
-            .any(|w| {
-                w.body["windows"].as_array().is_some_and(|windows| {
-                    windows
-                        .iter()
-                        .any(|w| w["window_id"] == window && w["session_id"] == id)
-                })
-            }))
+        Ok(self.session_windows(session)?.contains(&window))
     }
 }

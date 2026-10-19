@@ -323,33 +323,20 @@ impl Sessions {
         &mut self,
         session: &ws_core::registry::Session,
     ) -> Result<()> {
-        let workspace = self
-            .registry
-            .workspaces()?
-            .into_iter()
-            .find(|record| Some(record.id.as_str()) == session.workspace_id.as_deref())
-            .ok_or(Error::InvalidRequest(
-                "The spawned session has no workspace.",
-            ))?;
-        if let Some(path) = workspace.body["path"].as_str() {
-            crate::agents::slots::remove(std::path::Path::new(path), &session.id.to_string())?;
+        match self.agent_directory(session) {
+            Ok(directory) => {
+                crate::agents::slots::remove(&self.state, &directory, &session.id.to_string())?
+            }
+            Err(Error::InvalidRequest(_)) => {}
+            Err(error) => return Err(error),
         }
         let tmux = crate::tmux::Tmux::from_env();
-        for window in workspace.body["windows"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|window| window["session_id"] == session.id.to_string())
-        {
-            if let Some(id) = window["window_id"].as_str()
-                && tmux
-                    .window_option(id, "@ws_session")
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    == Some(&session.id.to_string())
-            {
-                tmux.execute(&["kill-window", "-t", id])?;
+        let id = session.id.to_string();
+        let alias = session.alias.to_string();
+        for window in self.session_windows(session)? {
+            let owner = tmux.window_option(&window, "@ws_session").ok().flatten();
+            if owner.as_deref() == Some(&id) || owner.as_deref() == Some(&alias) {
+                tmux.execute(&["kill-window", "-t", &window])?;
             }
         }
         Ok(())

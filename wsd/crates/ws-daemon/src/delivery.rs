@@ -145,7 +145,7 @@ async fn retry(store: Store, server: &Server, timeout: Duration, clock: &Clock) 
             .into_iter()
             .filter(|s| s.device_id == sessions.device_id && pending.contains(&s.id))
             .collect();
-        let mut available = HashSet::new();
+        let mut available = Vec::new();
         for session in local {
             let id = session.id;
             if let Some(paste) = sessions.active_paste(id)? {
@@ -153,12 +153,12 @@ async fn retry(store: Store, server: &Server, timeout: Duration, clock: &Clock) 
                     sessions.requeue_paste(id, paste.batch_id)?;
                 }
             } else if !matches!(session.state.as_str(), "finished" | "failed") {
-                available.insert(id);
+                available.push(session);
             }
         }
         let mut targets = Vec::new();
-        for id in available {
-            let session = sessions.get_record(&id.to_string())?;
+        for session in available {
+            let id = session.id;
             for window in sessions.session_windows(&session)? {
                 if valid_target(&window, '@') {
                     targets.push((id, window));
