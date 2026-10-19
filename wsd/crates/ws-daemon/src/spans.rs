@@ -12,7 +12,7 @@ use ws_core::{
     ids::{DeviceId, EventId, SessionId},
     log::LogEntry,
     semconv,
-    telemetry_log::{Signal, TelemetryLog, TelemetryRecord},
+    telemetry_log::{Signal, TelemetryCursor, TelemetryLog, TelemetryRecord},
 };
 
 pub(crate) type SharedSpans = Arc<Mutex<Spans>>;
@@ -25,6 +25,29 @@ pub(crate) struct Spans {
     native_tracing: bool,
     written: HashSet<(String, String)>,
     sessions: HashMap<SessionId, SessionSpans>,
+    cursor: TelemetryCursor,
+    pending_models: Vec<PendingModel>,
+    native_streams: Vec<NativeStream>,
+    #[cfg(test)]
+    scanned: usize,
+}
+
+/// A model record whose turn or timing was not yet known when it was read.
+struct PendingModel {
+    event_id: EventId,
+    received_at_ms: u64,
+    ordinal: usize,
+    session: SessionId,
+    time: u64,
+    /// Claude records carry a measured duration. Codex records do not.
+    duration_ms: Option<u64>,
+    record: Value,
+}
+
+struct NativeStream {
+    session: SessionId,
+    start: u64,
+    end: u64,
 }
 
 #[derive(Clone, Default)]
@@ -75,6 +98,11 @@ impl Spans {
             emitter: crate::semconv_emit::Emitter::open(state, device)?,
             written,
             sessions: HashMap::new(),
+            cursor: TelemetryCursor::default(),
+            pending_models: Vec::new(),
+            native_streams: Vec::new(),
+            #[cfg(test)]
+            scanned: 0,
         })
     }
 
@@ -186,13 +214,13 @@ impl Spans {
         let mut finished = Vec::new();
         if event == "session.created" {
             state.resource = vec![attribute(semconv::SESSION_ID, entry.session_id.to_string())];
-            for (key, source) in [
-                (semconv::PARENT_SESSION_ID, "parent_session_id"),
-                (semconv::PROJECT, "project"),
-            ] {
-                if let Some(value) = entry.body[source].as_str() {
-                    state.resource.push(attribute(key, value));
-                }
+            if let Some(parent) = entry.body["parent_session_id"].as_str() {
+                state
+                    .resource
+                    .push(attribute(semconv::PARENT_SESSION_ID, parent));
+            }
+            if let Some(project) = crate::semconv_emit::session_project(&entry.body) {
+                state.resource.push(attribute(semconv::PROJECT, project));
             }
             if let Some(parent) = entry.body["parent_session_id"]
                 .as_str()
@@ -313,90 +341,102 @@ impl Spans {
         self.synthesize_models()
     }
 
-    /// Joins durable agent records to observed turn intervals. Replay retains each span identity.
+    /// Joins durable agent records to observed turn intervals. Reads only records after the cursor and retains unjoined models.
     pub(crate) fn synthesize_models(&mut self) -> io::Result<()> {
-        let records = self.log.read()?;
-        for source in records.iter().filter(|r| r.signal == Signal::Logs) {
-            for (ordinal, (resource, model)) in
-                signal_records(&source.payload, Signal::Logs).enumerate()
-            {
-                let name = string_attribute(model, semconv::EVENT_NAME);
-                let claude = model["body"]["stringValue"] == "claude_code.api_request"
-                    || name == Some("claude_code.api_request");
-                let codex = name == Some("codex.sse_event")
-                    && string_attribute(model, "event.kind") == Some("response.completed");
-                if !claude && !codex {
-                    continue;
-                }
-                if codex && numeric_attribute(model, "output_token_count").is_none_or(|n| n == 0) {
-                    continue;
-                }
-                let Some(session) = string_attribute(&resource["resource"], semconv::SESSION_ID)
-                    .or_else(|| string_attribute(model, semconv::SESSION_ID))
-                    .and_then(|s| s.parse::<SessionId>().ok())
-                else {
-                    continue;
-                };
-                let Some(state) = self.sessions.get(&session) else {
-                    continue;
-                };
-                let Some(time) = number(&model["timeUnixNano"])
-                    .filter(|t| *t > 0)
-                    .or_else(|| number(&model["observedTimeUnixNano"]))
-                else {
-                    continue;
-                };
-                let Some(turn) = state
-                    .closed_turns
-                    .iter()
-                    .chain(state.turn.iter())
-                    .find(|turn| {
-                        let start = number(&turn.span["startTimeUnixNano"]).unwrap();
-                        start <= time && time <= *turn.boundaries.last().unwrap()
-                    })
-                else {
-                    continue;
-                };
-                let (start, end, timing) = if claude {
-                    let Some(duration) = numeric_attribute(model, "duration_ms") else {
-                        continue;
-                    };
-                    (
-                        time.saturating_sub(duration.saturating_mul(1_000_000)),
-                        time,
-                        "measured",
-                    )
-                } else if let Some((start, end)) = native_interval(&records, session, time) {
-                    (start, end, "measured")
-                } else {
-                    // Native exporters flush independently. Retain pending records until timing or exit.
-                    if self.native_tracing && !state.exited {
-                        continue;
-                    }
-                    let Some(window) = turn
-                        .boundaries
-                        .windows(2)
-                        .find(|w| w[0] <= time && time <= w[1])
-                    else {
-                        continue;
-                    };
-                    (window[0], window[1], "estimated")
-                };
-                let attributes = model_attributes(model, claude, source.event_id, timing);
-                let span = json!({"traceId":turn.span["traceId"],
-                    "spanId":format!("{:016x}", (u128::from(source.event_id) as u64).wrapping_add(ordinal as u64 + 1).max(1)),
-                    "parentSpanId":turn.span["spanId"], "name":semconv::MODEL_CALL_SPAN,"kind":3,
-                    "startTimeUnixNano":start.to_string(),"endTimeUnixNano":end.to_string(),
-                    "attributes":attributes,"status":{"code":1}});
-                if !self.written.contains(&identity(&span)) {
-                    let payload = json!({"resourceSpans":[{"resource":{"attributes":state.resource},"scopeSpans":[{"scope":{"name":"ws.spans","version":semconv::VERSION},"spans":[span]}]}]});
-                    self.log
-                        .append(Signal::Traces, vec![payload], source.received_at_ms)?;
-                    self.written.insert(identity(&span));
+        let tail = self.log.read_after(self.cursor)?;
+        #[cfg(test)]
+        {
+            self.scanned += tail.records.len();
+        }
+        if tail.restarted {
+            self.pending_models.clear();
+            self.native_streams.clear();
+        }
+        self.cursor = tail.cursor;
+        for record in &tail.records {
+            match record.signal {
+                Signal::Logs => self.pending_models.extend(model_candidates(record)),
+                Signal::Traces => self.native_streams.extend(native_streams(record)),
+                Signal::Metrics => {}
+            }
+        }
+        let mut pending = std::mem::take(&mut self.pending_models).into_iter();
+        let mut retained = Vec::new();
+        while let Some(model) = pending.next() {
+            match self.join_model(&model) {
+                Ok(true) => {}
+                Ok(false) => retained.push(model),
+                Err(error) => {
+                    retained.push(model);
+                    retained.extend(pending);
+                    self.pending_models = retained;
+                    return Err(error);
                 }
             }
         }
+        self.pending_models = retained;
         Ok(())
+    }
+
+    /// Returns false while the model's turn or timing is not yet known. Replay retains each span identity.
+    fn join_model(&mut self, model: &PendingModel) -> io::Result<bool> {
+        let Some(state) = self.sessions.get(&model.session) else {
+            return Ok(false);
+        };
+        let time = model.time;
+        let Some(turn) = state
+            .closed_turns
+            .iter()
+            .chain(state.turn.iter())
+            .find(|turn| {
+                let start = number(&turn.span["startTimeUnixNano"]).unwrap();
+                start <= time && time <= *turn.boundaries.last().unwrap()
+            })
+        else {
+            return Ok(false);
+        };
+        let (start, end, timing) = if let Some(duration) = model.duration_ms {
+            (
+                time.saturating_sub(duration.saturating_mul(1_000_000)),
+                time,
+                "measured",
+            )
+        } else if let Some((start, end)) =
+            native_interval(&self.native_streams, model.session, time)
+        {
+            (start, end, "measured")
+        } else {
+            // Native exporters flush independently. Retain pending records until timing or exit.
+            if self.native_tracing && !state.exited {
+                return Ok(false);
+            }
+            let Some(window) = turn
+                .boundaries
+                .windows(2)
+                .find(|w| w[0] <= time && time <= w[1])
+            else {
+                return Ok(false);
+            };
+            (window[0], window[1], "estimated")
+        };
+        let attributes = model_attributes(
+            &model.record,
+            model.duration_ms.is_some(),
+            model.event_id,
+            timing,
+        );
+        let span = json!({"traceId":turn.span["traceId"],
+            "spanId":format!("{:016x}", (u128::from(model.event_id) as u64).wrapping_add(model.ordinal as u64 + 1).max(1)),
+            "parentSpanId":turn.span["spanId"], "name":semconv::MODEL_CALL_SPAN,"kind":3,
+            "startTimeUnixNano":start.to_string(),"endTimeUnixNano":end.to_string(),
+            "attributes":attributes,"status":{"code":1}});
+        if !self.written.contains(&identity(&span)) {
+            let payload = json!({"resourceSpans":[{"resource":{"attributes":state.resource},"scopeSpans":[{"scope":{"name":"ws.spans","version":semconv::VERSION},"spans":[span]}]}]});
+            self.log
+                .append(Signal::Traces, vec![payload], model.received_at_ms)?;
+            self.written.insert(identity(&span));
+        }
+        Ok(true)
     }
 
     fn segment_links(&self, state: &SessionSpans, current: &Value) -> io::Result<Vec<Value>> {
@@ -677,22 +717,87 @@ fn model_attributes(model: &Value, claude: bool, event_id: EventId, timing: &str
     attributes
 }
 
-fn native_interval(
-    records: &[TelemetryRecord],
-    session: SessionId,
-    time: u64,
-) -> Option<(u64, u64)> {
-    records
+fn native_interval(streams: &[NativeStream], session: SessionId, time: u64) -> Option<(u64, u64)> {
+    streams
         .iter()
-        .filter(|r| r.signal == Signal::Traces)
-        .flat_map(|r| r.payload["resourceSpans"].as_array().into_iter().flatten())
-        .filter(|r| {
-            string_attribute(&r["resource"], semconv::SESSION_ID)
-                == Some(session.to_string().as_str())
+        .filter(|stream| stream.session == session)
+        .map(|stream| (stream.start, stream.end))
+        // Completion export can follow closure within the producer timestamp's millisecond.
+        .filter(|(start, end)| {
+            *start <= time && *start < *end && time / 1_000_000 <= end / 1_000_000
         })
-        .flat_map(|r| r["scopeSpans"].as_array().into_iter().flatten())
-        .flat_map(|s| s["spans"].as_array().into_iter().flatten())
-        .filter(|s| {
+        .min_by_key(|(_, end)| end.abs_diff(time))
+}
+
+/// Agent model records that can become model spans once their turn is known.
+fn model_candidates(source: &TelemetryRecord) -> Vec<PendingModel> {
+    let mut candidates = Vec::new();
+    for (ordinal, (resource, model)) in signal_records(&source.payload, Signal::Logs).enumerate() {
+        let name = string_attribute(model, semconv::EVENT_NAME);
+        let claude = model["body"]["stringValue"] == "claude_code.api_request"
+            || name == Some("claude_code.api_request");
+        let codex = name == Some("codex.sse_event")
+            && string_attribute(model, "event.kind") == Some("response.completed");
+        if !claude && !codex {
+            continue;
+        }
+        if codex && numeric_attribute(model, "output_token_count").is_none_or(|n| n == 0) {
+            continue;
+        }
+        let Some(session) = string_attribute(&resource["resource"], semconv::SESSION_ID)
+            .or_else(|| string_attribute(model, semconv::SESSION_ID))
+            .and_then(|s| s.parse::<SessionId>().ok())
+        else {
+            continue;
+        };
+        let Some(time) = number(&model["timeUnixNano"])
+            .filter(|t| *t > 0)
+            .or_else(|| number(&model["observedTimeUnixNano"]))
+        else {
+            continue;
+        };
+        let duration_ms = if claude {
+            let Some(duration) = numeric_attribute(model, "duration_ms") else {
+                continue;
+            };
+            Some(duration)
+        } else {
+            None
+        };
+        candidates.push(PendingModel {
+            event_id: source.event_id,
+            received_at_ms: source.received_at_ms,
+            ordinal,
+            session,
+            time,
+            duration_ms,
+            record: model.clone(),
+        });
+    }
+    candidates
+}
+
+/// Measured native stream intervals that time Codex completions.
+fn native_streams(record: &TelemetryRecord) -> Vec<NativeStream> {
+    record.payload["resourceSpans"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let session = string_attribute(&r["resource"], semconv::SESSION_ID)?
+                .parse::<SessionId>()
+                .ok()?;
+            Some((session, r))
+        })
+        .flat_map(|(session, r)| {
+            r["scopeSpans"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|s| s["spans"].as_array().into_iter().flatten())
+                .map(move |s| (session, s))
+        })
+        .filter(|(_, s)| {
             matches!(
                 s["name"].as_str(),
                 Some(
@@ -702,17 +807,14 @@ fn native_interval(
                 )
             )
         })
-        .filter_map(|s| {
-            Some((
-                number(&s["startTimeUnixNano"])?,
-                number(&s["endTimeUnixNano"])?,
-            ))
+        .filter_map(|(session, s)| {
+            Some(NativeStream {
+                session,
+                start: number(&s["startTimeUnixNano"])?,
+                end: number(&s["endTimeUnixNano"])?,
+            })
         })
-        // Completion export can follow closure within the producer timestamp's millisecond.
-        .filter(|(start, end)| {
-            *start <= time && *start < *end && time / 1_000_000 <= end / 1_000_000
-        })
-        .min_by_key(|(_, end)| end.abs_diff(time))
+        .collect()
 }
 
 fn string_attribute<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -1012,6 +1114,40 @@ mod tests {
             assert_eq!(model["startTimeUnixNano"], turn["startTimeUnixNano"]);
             assert_eq!(model["endTimeUnixNano"], turn["endTimeUnixNano"]);
         }
+    }
+
+    #[test]
+    fn model_synthesis_scans_only_new_records_and_joins_early_models_later() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let session = sessions.create(CreateSession::default()).unwrap();
+        let log = TelemetryLog::new(sandbox.path(), session.device_id);
+        let ordinary =
+            json!({"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"1"}]}]}]});
+        log.append(Signal::Logs, vec![ordinary; 50], 0).unwrap();
+        log.append(
+            Signal::Logs,
+            vec![codex_completion(session.id, 5_000_000)],
+            0,
+        )
+        .unwrap();
+        sessions
+            .append(session.id, "turn.started", json!({"observed_at_us":1000}))
+            .unwrap();
+        let before = sessions.spans.lock().unwrap().scanned;
+        assert!(before >= 51);
+        sessions
+            .append(session.id, "turn.ended", json!({"observed_at_us":9000}))
+            .unwrap();
+        let scanned = sessions.spans.lock().unwrap().scanned - before;
+        assert!(scanned < 50, "rescanned {scanned} records");
+        let spans = stored_spans(&log);
+        let model = spans
+            .iter()
+            .find(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+            .unwrap();
+        assert_eq!(model["startTimeUnixNano"], "1000000");
+        assert_eq!(model["endTimeUnixNano"], "9000000");
     }
 
     fn codex_completion(session: Ulid, time: u64) -> Value {
@@ -1817,6 +1953,46 @@ mod tests {
             attribute(resource, semconv::DEVICE_ID),
             device.device_id.to_string()
         );
+    }
+
+    #[test]
+    fn the_project_resource_falls_back_to_the_workspace_id() {
+        use ws_core::{device::Device, log::SessionLog};
+        let sandbox = tempfile::tempdir().unwrap();
+        let device = Device::init(sandbox.path(), "test-device").unwrap();
+        let session = Ulid::new();
+        let source = SessionLog::new(sandbox.path(), session, device.device_id);
+        source
+            .append(
+                0,
+                "session.created",
+                json!({"alias":1,"workspace_id":"workspace"}),
+            )
+            .unwrap();
+        source
+            .append(
+                0,
+                "turn.started",
+                json!({"observed_at_us":100,"turn_id":"turn"}),
+            )
+            .unwrap();
+        source
+            .append(
+                0,
+                "turn.ended",
+                json!({"observed_at_us":200,"prompt_id":"turn"}),
+            )
+            .unwrap();
+        drop(Sessions::open(sandbox.path(), 0).unwrap());
+        let records = TelemetryLog::new(sandbox.path(), device.device_id)
+            .read()
+            .unwrap();
+        let resource = &records
+            .iter()
+            .find(|r| r.signal == Signal::Traces)
+            .unwrap()
+            .payload["resourceSpans"][0]["resource"];
+        assert_eq!(attribute(resource, semconv::PROJECT), "workspace");
     }
 
     async fn hook(

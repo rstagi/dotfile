@@ -63,13 +63,11 @@ impl Emitter {
     pub(crate) fn observe(&mut self, entry: &LogEntry) -> io::Result<Option<Value>> {
         if entry.event_type == "session.created" {
             let mut resource = vec![attribute(semconv::SESSION_ID, json!(entry.session_id))];
-            for (key, source) in [
-                (semconv::PARENT_SESSION_ID, "parent_session_id"),
-                (semconv::PROJECT, "project"),
-            ] {
-                if let Some(value) = entry.body[source].as_str() {
-                    resource.push(attribute(key, json!(value)));
-                }
+            if let Some(parent) = entry.body["parent_session_id"].as_str() {
+                resource.push(attribute(semconv::PARENT_SESSION_ID, json!(parent)));
+            }
+            if let Some(project) = session_project(&entry.body) {
+                resource.push(attribute(semconv::PROJECT, json!(project)));
             }
             self.resources.insert(entry.session_id, resource);
             if entry.body.get("phase").is_some() {
@@ -86,7 +84,7 @@ impl Emitter {
             return Ok(Some(event));
         }
         let mut body = entry.body.clone();
-        redact_body(&mut body, self.content);
+        redact_body(&mut body, None, self.content);
         let record = json!({"timeUnixNano": timestamp(entry).to_string(),
             "traceId": format!("{:032x}", u128::from(entry.session_id)),
             "eventName": name, "attributes": attributes,
@@ -315,6 +313,13 @@ pub(crate) fn event_attributes(entry: &LogEntry, name: &str, phase: Option<&Valu
     attributes
 }
 
+/// Returns the `ws.project` value of a `session.created` body: `project`, else `workspace_id`.
+pub(crate) fn session_project(body: &Value) -> Option<&str> {
+    body["project"]
+        .as_str()
+        .or_else(|| body["workspace_id"].as_str())
+}
+
 fn timestamp(entry: &LogEntry) -> u64 {
     if entry.event_type == "runner.usage.updated"
         && let Some(observed) = entry.body[semconv::RUNNER_USAGE_OBSERVED_AT].as_u64()
@@ -331,35 +336,40 @@ fn attribute(key: &str, value: Value) -> Value {
     json!({"key": key, "value": any_value(&value)})
 }
 
-fn redact_body(value: &mut Value, content: bool) {
+/// Removes personal data always, and content fields when content export is disabled.
+/// `parent` is the key of the enclosing object, for keys that are content only in context.
+fn redact_body(value: &mut Value, parent: Option<&str>, content: bool) {
     match value {
         Value::Object(fields) => {
-            fields.retain(|key, _| {
-                key != "user.email"
-                    && (content
-                        || !matches!(
-                            key.as_str(),
-                            "body"
-                                | "text"
-                                | "prompt"
-                                | "template"
-                                | "arguments"
-                                | "output"
-                                | "tool_input"
-                                | "tool_response"
-                        ))
-            });
-            for value in fields.values_mut() {
-                redact_body(value, content);
+            fields.retain(|key, _| key != "user.email" && (content || !is_content(key, parent)));
+            for (key, value) in fields.iter_mut() {
+                redact_body(value, Some(key), content);
             }
         }
         Value::Array(values) => {
             for value in values {
-                redact_body(value, content);
+                redact_body(value, parent, content);
             }
         }
         _ => {}
     }
+}
+
+fn is_content(key: &str, parent: Option<&str>) -> bool {
+    matches!(
+        key,
+        "body"
+            | "text"
+            | "prompt"
+            | "template"
+            | "arguments"
+            | "output"
+            | "tool_input"
+            | "tool_response"
+            | "command"
+            | "argv"
+            | "args"
+    ) || (parent == Some("stop_reply") && key == "reason")
 }
 
 fn any_value(value: &Value) -> Value {
@@ -612,6 +622,76 @@ mod tests {
             assert_eq!(encoded.contains("PRIVATE-OUTPUT"), content);
             assert!(encoded.contains("count"));
             assert!(encoded.contains("intValue"));
+        }
+    }
+
+    #[test]
+    fn stop_reply_reasons_and_commands_obey_the_export_policy() {
+        for content in [false, true] {
+            let sandbox = tempfile::tempdir().unwrap();
+            std::fs::write(
+                sandbox.path().join("config.toml"),
+                format!("[telemetry]\ncontent = {content}\n"),
+            )
+            .unwrap();
+            let device = ws_core::device::Device::init(sandbox.path(), "test-device").unwrap();
+            let session = ws_core::ids::Ulid::new();
+            let source = SessionLog::new(sandbox.path(), session, device.device_id);
+            source
+                .append(
+                    0,
+                    "session.created",
+                    json!({"alias":1,"kind":"headless",
+                    "command":["claude","-p","PRIVATE-PROMPT"],"cwd":"/tmp"}),
+                )
+                .unwrap();
+            source
+                .append(
+                    0,
+                    "turn.continued",
+                    json!({"stop_reply":
+                    {"decision":"block","reason":"PRIVATE-REASON"}}),
+                )
+                .unwrap();
+            drop(Sessions::open(sandbox.path(), 0).unwrap());
+            let records = TelemetryLog::new(sandbox.path(), device.device_id)
+                .read()
+                .unwrap();
+            assert_eq!(records.len(), 2);
+            let encoded =
+                serde_json::to_string(&records.iter().map(|r| &r.payload).collect::<Vec<_>>())
+                    .unwrap();
+            assert_eq!(encoded.contains("PRIVATE-PROMPT"), content);
+            assert_eq!(encoded.contains("PRIVATE-REASON"), content);
+            assert!(encoded.contains("block"));
+            assert!(encoded.contains("/tmp"));
+        }
+    }
+
+    #[test]
+    fn the_project_resource_falls_back_to_the_workspace_id() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let device = ws_core::device::Device::init(sandbox.path(), "test-device").unwrap();
+        let session = ws_core::ids::Ulid::new();
+        let source = SessionLog::new(sandbox.path(), session, device.device_id);
+        source
+            .append(
+                0,
+                "session.created",
+                json!({"alias":1,"workspace_id":"workspace"}),
+            )
+            .unwrap();
+        source.append(0, "session.running", json!({})).unwrap();
+        drop(Sessions::open(sandbox.path(), 0).unwrap());
+        let records = TelemetryLog::new(sandbox.path(), device.device_id)
+            .read()
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        for record in records {
+            assert_eq!(
+                attr(&record.payload["resourceLogs"][0]["resource"], "ws.project")["stringValue"],
+                "workspace"
+            );
         }
     }
 

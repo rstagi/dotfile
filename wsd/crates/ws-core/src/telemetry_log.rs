@@ -3,6 +3,7 @@
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -29,6 +30,21 @@ pub struct TelemetryRecord {
     pub signal: Signal,
     /// One OTLP export request with one log record, metric or span.
     pub payload: Value,
+}
+
+/// Position after the last complete record that a reader consumed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TelemetryCursor {
+    inode: Option<u64>,
+    offset: u64,
+}
+
+/// Records after a cursor. `restarted` is true when retention replaced the file and reading began again at its start.
+#[derive(Debug)]
+pub struct TelemetryTail {
+    pub records: Vec<TelemetryRecord>,
+    pub cursor: TelemetryCursor,
+    pub restarted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +100,36 @@ impl TelemetryLog {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(error) => Err(error),
         }
+    }
+
+    /// Returns complete records after the cursor in ingestion order. Ignores an incomplete crash tail.
+    pub fn read_after(&self, cursor: TelemetryCursor) -> io::Result<TelemetryTail> {
+        let _lock = self.lock()?;
+        let mut file = match File::open(self.directory.join("log.jsonl")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(TelemetryTail {
+                    records: Vec::new(),
+                    restarted: cursor != TelemetryCursor::default(),
+                    cursor: TelemetryCursor::default(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let metadata = file.metadata()?;
+        let same = cursor.inode.is_none_or(|inode| inode == metadata.ino())
+            && cursor.offset <= metadata.len();
+        let offset = if same { cursor.offset } else { 0 };
+        file.seek(SeekFrom::Start(offset))?;
+        let (records, valid_bytes) = read_file(&mut file)?;
+        Ok(TelemetryTail {
+            records,
+            cursor: TelemetryCursor {
+                inode: Some(metadata.ino()),
+                offset: offset + valid_bytes,
+            },
+            restarted: !same,
+        })
     }
 
     /// Removes expired records by atomic replacement under the same lock as append.
@@ -275,6 +321,25 @@ mod tests {
         assert_eq!(log.read().unwrap(), first);
         let second = log.append(Signal::Metrics, vec![payload], 2000).unwrap();
         assert_eq!(log.read().unwrap(), [first, second].concat());
+    }
+
+    #[test]
+    fn cursor_reads_return_only_new_records_and_restart_after_prune() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let log = TelemetryLog::new(sandbox.path(), Ulid::new());
+        let payload = json!({"resourceLogs": [{}]});
+        log.append(Signal::Logs, vec![payload.clone()], 1).unwrap();
+        let first = log.read_after(TelemetryCursor::default()).unwrap();
+        assert_eq!((first.records.len(), first.restarted), (1, false));
+        log.append(Signal::Logs, vec![payload.clone()], 2).unwrap();
+        let second = log.read_after(first.cursor).unwrap();
+        assert_eq!(second.records.len(), 1);
+        assert_eq!(second.records[0].received_at_ms, 2);
+        assert!(log.read_after(second.cursor).unwrap().records.is_empty());
+        log.prune_before(2).unwrap();
+        let third = log.read_after(second.cursor).unwrap();
+        assert!(third.restarted);
+        assert_eq!(third.records.len(), 1);
     }
 
     #[test]
