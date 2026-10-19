@@ -363,9 +363,12 @@ async fn submit(
 }
 
 fn ownership(paste: &Paste, id: SessionId) -> String {
+    ownership_guard(id, &paste.window, &paste.pane)
+}
+
+pub(crate) fn ownership_guard(id: SessionId, window: &str, pane: &str) -> String {
     format!(
-        "#{{&&:#{{==:#{{@ws_session}},{id}}},#{{&&:#{{==:#{{window_id}},{}}},#{{&&:#{{||:#{{==:#{{@ws_pane}},}},#{{==:#{{@ws_pane}},{}}}}},#{{==:#{{pane_dead}},0}}}}}}}}",
-        paste.window, paste.pane
+        "#{{&&:#{{==:#{{@ws_session}},{id}}},#{{&&:#{{==:#{{window_id}},{window}}},#{{&&:#{{||:#{{==:#{{@ws_pane}},}},#{{==:#{{@ws_pane}},{pane}}}}},#{{==:#{{pane_dead}},0}}}}}}}}"
     )
 }
 
@@ -416,6 +419,25 @@ impl Server {
 }
 
 impl Sessions {
+    pub(crate) fn unconfirmed_delivery(&self, callback: &Callback) -> Result<bool> {
+        if self
+            .state
+            .join("delivery-spool")
+            .join(format!("{}.json", callback.callback_id))
+            .exists()
+            || self.get_record(&callback.session_id.to_string())?.device_id != self.device_id
+        {
+            return Ok(false);
+        }
+        let Some(batch) = self.delivery_batch(callback.session_id, callback.callback_id)? else {
+            return Ok(false);
+        };
+        Ok(!self.registry.messages()?.iter().any(|message| {
+            batch.message_ids.contains(&message.id)
+                && (message.delivered_at_ms.is_some() || message.read_at_ms.is_some())
+        }))
+    }
+
     fn active_paste(&self, session: SessionId) -> Result<Option<Paste>> {
         let record = self.get_record(&session.to_string())?;
         let entries = SessionLog::new(&self.state, session, record.device_id)
