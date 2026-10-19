@@ -117,6 +117,7 @@ ar_rotation() {
 }
 
 # ar_round_status --ledger F --round r → clean|findings|disputed.
+# findings: a blocking finding stays (last R verdict NEEDS_CHANGES, or an unanswered T veto).
 ar_round_status() {
   emulate -L zsh
   local ledger="" round=""
@@ -133,7 +134,7 @@ ar_round_status() {
   if [[ "${ar_state[disputed]}" == 1 ]]; then
     print -r -- disputed
   elif [[ "${ar_state[last]}" == NEEDS_CHANGES \
-    || ( "${ar_state[confirm]}" != - && "${ar_state[confirm]}" != AGREE ) ]]; then
+    || ( "${ar_state[role]}" == confirm && "${ar_state[confirm]}" != AGREE ) ]]; then
     print -r -- findings
   else
     print -r -- clean

@@ -42,7 +42,7 @@ assert_eq "$(wc -l < "$LEDGER" | tr -d ' ')" 1 'invalid verdict writes no row'
 printf 'AGREE\n' > "$run_dir/report.md"
 cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage round1 --role critic --provider claude
 assert_exit "$?" 0 'valid critic completes opening exchange'
-assert_eq "$(next)" "a3${T}fix1${T}fix${T}review-fix" 'findings require remediation before second round'
+assert_eq "$(next --rounds 2)" "a3${T}fix1${T}fix${T}review-fix" 'findings require remediation before second round'
 
 echo 'review: fix evidence is checked against a real remote before advancing'
 REPO="$TMP/repo"
@@ -61,7 +61,7 @@ fix_status() {
 fix_status NOOP "$BEFORE" "$BEFORE"
 cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage fix1 --role fix --provider claude
 assert_exit "$?" 0 'verified NOOP recorded'
-assert_eq "$(next)" "a4${T}round2${T}review${T}review-claude" 'fix completion rotates reviewer'
+assert_eq "$(next --rounds 2)" "a4${T}round2${T}review${T}review-claude" 'fix completion rotates reviewer'
 record_report() {
   local k="$1" stage="$2" role="$3" provider="$4" report="$5"
   run_dir="${LEDGER%.ledger.tsv}-a$k"
@@ -70,15 +70,15 @@ record_report() {
   cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage "$stage" --role "$role" --provider "$provider"
 }
 record_report 4 round2 review claude 'NEEDS_CHANGES: F1 remains'
-assert_eq "$(next)" "a5${T}round2${T}critic${T}review-grok" 'round two critic is Grok'
+assert_eq "$(next --rounds 2)" "a5${T}round2${T}critic${T}review-grok" 'round two critic is Grok'
 record_report 5 round2 critic grok AGREE
-assert_eq "$(next)" "a6${T}final${T}final${T}review-final" 'last round omits remediation'
+assert_eq "$(next --rounds 2)" "a6${T}final${T}final${T}review-final" 'last round omits remediation'
 run_dir="$TMP/loop/runs/review-p7-acme--api-a6"
 mkdir -p "$run_dir"
 printf '{"outcome":"blocked","event":"REQUEST_CHANGES","commentUrl":"https://example.test/review/1"}\n' > "$run_dir/status.json"
 cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage final --role final --provider claude
 assert_exit "$?" 0 'posted request-changes is a completed final row'
-assert_eq "$(next)" done 'final event ends pipeline'
+assert_eq "$(next --rounds 2)" done 'final event ends pipeline'
 assert_eq "$(cut -f5 "$LEDGER" | tr '\n' '|')" 'NEEDS_CHANGES|AGREE|NOOP|NEEDS_CHANGES|AGREE|REQUEST_CHANGES|' 'standard findings pipeline end to end'
 
 echo 'review: pushed fix requires matching remote head'
@@ -118,6 +118,14 @@ for event in COMMENT APPROVE; do
   mv "$TMP/reset.tsv" "$LEDGER"
 done
 
+echo 'review: default is one outer round; a blocking finding goes straight to final'
+LEDGER="$TMP/loop/runs/review-p7-default.ledger.tsv"
+assert_eq "$(next)" "a1${T}round1${T}review${T}review-gpt" 'default pipeline opens round 1'
+assert_eq "$(jq -c . "${LEDGER%.tsv}.config.json")" '{"tier":"standard","rounds":1,"inner":2}' 'default pins one round and inner cap 2'
+record_report 1 round1 review gpt $'## Blocking\nF1 [blocking: security] token logged at src/auth.sh:4\n## Deferred\nF2 [deferred] rename helper\nNEEDS_CHANGES: F1 token logged'
+record_report 2 round1 critic claude AGREE
+assert_eq "$(next)" "a3${T}final${T}final${T}review-final" 'one round runs no fix; final decides'
+
 echo 'review: T veto takes over critic slot and prevents early stop'
 LEDGER="$TMP/loop/runs/review-p7-veto.ledger.tsv"
 record_report 1 round1 review gpt APPROVE
@@ -127,7 +135,7 @@ assert_eq "$(next)" "a4${T}round1${T}respond${T}review-gpt" 'veto goes back to r
 record_report 4 round1 respond gpt 'APPROVE'
 assert_eq "$(next)" "a5${T}round1${T}critic${T}review-grok" 'vetoing third provider stays critic'
 record_report 5 round1 critic grok AGREE
-assert_eq "$(next)" "a6${T}round2${T}review${T}review-claude" 'veto prevents skipping remaining rounds'
+assert_eq "$(next --rounds 2)" "a6${T}round2${T}review${T}review-claude" 'veto prevents skipping remaining rounds'
 
 echo 'review: exhausted inner cap writes dispute evidence and a synthetic row'
 LEDGER="$TMP/loop/runs/review-p7-dispute.ledger.tsv"
@@ -136,10 +144,10 @@ record_report 2 round1 critic claude $'F2 [major] src/replay.sh:10 also loses st
 assert_eq "$(next)" "a3${T}round1${T}respond${T}review-gpt" 'first disagreement permits one response'
 record_report 3 round1 respond gpt 'APPROVE'
 record_report 4 round1 critic claude $'F2 [major] src/replay.sh:10 still wrong\nDISAGREE_EVIDENCE: F2'
-assert_eq "$(next)" "a6${T}fix1${T}fix${T}review-fix" 'cap materializes synthetic a5 then requires fix'
+assert_eq "$(next --rounds 2)" "a6${T}fix1${T}fix${T}review-fix" 'cap materializes synthetic a5 then requires fix'
 assert_eq "$(tail -1 "$LEDGER" | cut -f1-5)" "a5${T}disputed${T}disputed${T}-${T}DISPUTED" 'disputed row uses frozen contract'
 assert_contains "$(cat "${LEDGER%.tsv}.disputed.md")" F2 'critic-only finding preserved in dispute sidecar'
-assert_eq "$(next)" "a6${T}fix1${T}fix${T}review-fix" 'next replay never duplicates disputed row'
+assert_eq "$(next --rounds 2)" "a6${T}fix1${T}fix${T}review-fix" 'next replay never duplicates disputed row'
 assert_eq "$(wc -l < "$LEDGER" | tr -d ' ')" 5 'exactly one dispute row'
 
 echo 'review: recover replays finished unrecorded runs only from this pipeline'
@@ -237,18 +245,30 @@ assert_contains "$rendered" 'current round only' 'final uses latest round review
 [[ "$rendered" != *'F1 [major] replay loses state'* ]]; assert_exit "$?" 0 'earlier reviewer report excluded'
 prompt nonsense >/dev/null; assert_exit "$?" 1 'unknown prompt role rejected'
 
-echo 'review: recover retains nondefault pipeline limits without extra flags'
-LEDGER="$TMP/loop/runs/review-p10-single.ledger.tsv"
-next --tier max --rounds 1 --inner 1 >/dev/null
-record_report 1 round1 review gpt 'NEEDS_CHANGES: F1'
+echo 'review: old two-round ledgers replay under the one-round default'
+# Written before the blocking/deferred rules: pinned 2 rounds, severity tags, legacy COMMENT final.
+LEDGER="$TMP/loop/runs/review-p10-legacy.ledger.tsv"
+printf '{"tier":"max","rounds":2,"inner":1}\n' > "${LEDGER%.tsv}.config.json"
+record_report 1 round1 review gpt $'F1 [major] legacy severity\nNEEDS_CHANGES: F1'
 record_report 2 round1 critic claude AGREE
-run_dir="${LEDGER%.ledger.tsv}-a3"
+printf 'a3\tfix1\tfix\tclaude\tNOOP\truns/review-p10-legacy-a3\n' >> "$LEDGER"
+run_dir="${LEDGER%.ledger.tsv}-a4"
 mkdir -p "$run_dir"
 printf '{"engineExit":0}\n' > "$run_dir/meta.json"
-printf '{"outcome":"done","event":"APPROVE","commentUrl":"https://example.test/review/4"}\n' > "$run_dir/status.json"
+printf '{"outcome":"done"}\n' > "$run_dir/status.json"
+print APPROVE > "$run_dir/report.md"
 cli recover --ledger "$LEDGER" --runs-dir "$TMP/loop/runs"
-assert_exit "$?" 0 'recover remembers one outer round'
-assert_eq "$(next --tier max --rounds 1 --inner 1)" done 'nondefault final recovered'
+assert_exit "$?" 0 'recover replays an old two-round ledger'
+assert_eq "$(tail -1 "$LEDGER" | cut -f1-5)" "a4${T}round2${T}review${T}claude${T}APPROVE" 'recover keeps the pinned two rounds'
+assert_eq "$(next --tier max --rounds 2 --inner 1)" "a5${T}round2${T}critic${T}review-grok" 'pinned limits continue round 2'
+record_report 5 round2 critic grok AGREE
+record_report 6 round2 confirm gpt AGREE
+run_dir="${LEDGER%.ledger.tsv}-a7"
+mkdir -p "$run_dir"
+printf '{"outcome":"question","event":"COMMENT","commentUrl":"https://example.test/review/4"}\n' > "$run_dir/status.json"
+cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage final --role final --provider claude
+assert_exit "$?" 0 'legacy COMMENT final still records'
+assert_eq "$(next --tier max --rounds 2 --inner 1)" done 'legacy final ends the old pipeline'
 
 echo 'review: wrapper HEAD evidence cannot be overridden by agent status'
 LEDGER="$TMP/loop/runs/review-p10-head-evidence.ledger.tsv"
@@ -268,4 +288,34 @@ jq 'del(.headBefore,.headAfter)' "$run_dir/status.json" > "$TMP/status.tmp"
 mv "$TMP/status.tmp" "$run_dir/status.json"
 cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage fix1 --role fix --provider claude
 assert_exit "$?" 0 'wrapper supplies hashes when status omits them'
+
+echo 'review: deferred-only findings skip fixes and end in the approve-equivalent final'
+LEDGER="$TMP/loop/runs/review-p11-deferred.ledger.tsv"
+record_report 1 round1 review gpt $'## Blocking\nNone.\n## Deferred\nF1 [deferred] rename helper at src/a.sh:3\nAPPROVE'
+record_report 2 round1 critic claude AGREE
+record_report 3 round1 confirm grok AGREE
+assert_eq "$(next --rounds 2)" "a4${T}final${T}final${T}review-final" 'deferred findings never cause a fix round'
+rendered="$(prompt final)"
+assert_contains "$rendered" '"## Blocking" and "## Deferred"' 'final report has exactly two finding sections'
+assert_contains "$rendered" '"## Footprint"' 'final report adds the footprint'
+assert_contains "$rendered" 'More than 3 files is a point for discussion' 'footprint over 3 files is a discussion flag'
+assert_contains "$rendered" 'REQUEST_CHANGES when at least one blocking finding stays open' 'only open blocking findings request changes'
+assert_contains "$rendered" 'Deferred findings never change the verdict.' 'deferred-only final approves'
+assert_contains "$rendered" 'post the event COMMENT' 'self-PR posts COMMENT with the verdict'
+run_dir="${LEDGER%.ledger.tsv}-a4"
+mkdir -p "$run_dir"
+printf '{"outcome":"done","event":"APPROVE","postedEvent":"COMMENT","commentUrl":"https://example.test/review/5"}\n' > "$run_dir/status.json"
+cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage final --role final --provider claude
+assert_exit "$?" 0 'self-PR final records'
+assert_eq "$(tail -1 "$LEDGER" | cut -f5)" APPROVE 'ledger keeps the verdict, not the posted COMMENT'
+assert_eq "$(next --rounds 2)" done 'approve-equivalent final ends the pipeline'
+
+echo 'review: one blocking finding gives a fix round for that finding only'
+LEDGER="$TMP/loop/runs/review-p11-blocking.ledger.tsv"
+record_report 1 round1 review gpt $'## Blocking\nF1 [blocking: unprotected-breakage] default flips at src/a.sh:9\n## Deferred\nF2 [deferred] rename helper\nNEEDS_CHANGES: F1 default flips'
+record_report 2 round1 critic claude AGREE
+assert_eq "$(next --rounds 2)" "a3${T}fix1${T}fix${T}review-fix" 'a blocking finding gives a fix round'
+rendered="$(prompt fix)"
+assert_contains "$rendered" 'Fix only blocking findings' 'fixer fixes only blocking findings'
+assert_contains "$rendered" 'Never accept a deferred finding' 'fixer leaves deferred findings'
 test_summary

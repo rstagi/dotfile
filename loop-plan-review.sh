@@ -132,8 +132,14 @@ Checklist:
 8. Review tier — the terminal review tier matches the effort's risk.
 9. Ambiguity — anything a headless agent would have to guess or ask about.
 
-Each numbered finding must identify the phase(s) affected, severity [blocker], [major], or
-[minor], the problem, code evidence, and a concrete plan edit. Skip style nits.
+Each numbered finding must identify the phase(s) affected, its class, the problem, code
+evidence, and a concrete plan edit. A plan finding is blocking only in these categories:
+- security: the plan ships a security or safety problem.
+- unprotected-breakage: the plan ships a breaking change to existing behavior with
+  no feature flag or off switch, or no wiring point for that flag.
+- failing-check: a phase cannot pass a deterministic check, for example its Verify command.
+All other findings are deferred. They never block the plan. The planner puts them in
+the "Deferred / Not now" section of the plan. Skip style nits.
 If the plan is sound, say so — do not invent findings.
 EOF
 }

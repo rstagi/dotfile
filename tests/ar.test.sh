@@ -105,7 +105,14 @@ record round1 respond gpt APPROVE
 assert_eq "$(next)" "round1${T}critic${T}grok" "T becomes critic after veto"
 record round1 critic grok AGREE
 assert_eq "$(next)" "round2${T}review${T}claude" "veto prevents early stop even after convergence"
-assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" findings "veto is retained in round status"
+assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" clean "resolved veto leaves no blocking finding"
+rm -f "$LEDGER"
+record round1 review gpt APPROVE
+record round1 critic claude AGREE
+record round1 confirm grok DISAGREE_EVIDENCE
+record round1 respond gpt NEEDS_CHANGES
+record round1 critic grok AGREE
+assert_eq "$(ar_round_status --ledger "$LEDGER" --round 1)" findings "veto that R accepts is a blocking finding"
 
 echo "ar: inner cap preserves disputes, including critic-only issues"
 for reviewer_verdict in NEEDS_CHANGES APPROVE; do
@@ -200,6 +207,11 @@ assert_exit "$?" 0 "all paper sentences and adaptation diff against vendored sou
 assert_contains "$(cat "$TMP/prompt.md")" "$(cat "$FRAMING")" "framing is opaque literal data"
 assert_contains "$(cat "$TMP/prompt.md")" "RUN_DIR=$LOOP/runs/new" "bind report and status output directory"
 assert_contains "$(cat "$TMP/prompt.md")" 'Role: review (A.2.3)' "review uses paper reviewer rules"
+for rule in '`[blocking: security]`' '`[blocking: unprotected-breakage]`' '`[blocking: failing-check]`' '`[deferred]`' \
+  'When you are not sure, the finding is deferred.' 'only when at least one blocking finding stays' \
+  'A blocking finding outside the three categories' 'A deferred finding is never a disagreement.'; do
+  assert_contains "$(cat "$TMP/prompt.md")" "$rule" "finding classes rule: $rule"
+done
 
 echo "ar: exchanges follow ledger order and report paths, not attempt names"
 mkdir -p "$LOOP/runs/z-review" "$LOOP/runs/a-critic" "$LOOP/runs/m-response"

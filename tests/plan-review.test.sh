@@ -56,6 +56,10 @@ assert_contains "$prompt" 'Independence' 'reviewer keeps plan checklist'
 assert_contains "$prompt" 'Role: review (A.2.3)' 'shared AR reviewer prompt'
 assert_contains "$prompt" 'An `[archived]` milestone stub lists shipped phases.' 'reviewer reads archived stubs'
 assert_contains "$prompt" "$LOOP/milestones/m<N>.md" 'reviewer knows where archived blocks live'
+assert_contains "$prompt" 'security: the plan ships a security or safety problem.' 'plan blocking: security'
+assert_contains "$prompt" 'no feature flag or off switch, or no wiring point' 'plan blocking: unprotected breaking change'
+assert_contains "$prompt" 'a phase cannot pass a deterministic check' 'plan blocking: failing check'
+assert_contains "$prompt" 'the "Deferred / Not now" section of the plan' 'deferred plan findings go to the plan section'
 critic_prompt="$(sed -n '2p' "$FAKE_LOG" | cut -f3)"
 assert_contains "$(cat "$critic_prompt" 2>/dev/null)" 'Scripted report 1' 'critic receives prior review'
 
@@ -86,6 +90,12 @@ assert_eq "$(cut -f1 <<< "$OUT")" findings 'third-provider veto prevents clean r
 assert_eq "$(cut -f1 "$FAKE_LOG" | tr '\n' ' ')" 'plan-review-gpt plan-review-claude plan-review-grok plan-review-gpt plan-review-grok ' 'third provider remains critic'
 ledger="$(cut -f3 <<< "$OUT")"
 assert_eq "$(cut -f3 "$ledger" | tr '\n' ' ')" 'review critic confirm respond critic ' 'sequential inner exchange'
+
+echo 'plan-review: a refuted veto leaves only deferred findings'
+printf '%s\n' APPROVE AGREE 'DISAGREE_CONCERN: F2 may be blocking' 'APPROVE' AGREE > "$FAKE_SCRIPT"
+review --round 1
+assert_exit "$RC" 0 'refuted veto round converges'
+assert_eq "$(cut -f1 <<< "$OUT")" clean 'no blocking finding stays, so the round is clean'
 
 echo 'plan-review: unresolved critic-only findings produce disputed evidence'
 printf '%s\n' APPROVE 'DISAGREE_CONCERN: F9 missing test at tests/run.sh:1' APPROVE 'DISAGREE_EVIDENCE: F9 remains at tests/run.sh:1' > "$FAKE_SCRIPT"
