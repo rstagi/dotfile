@@ -13,14 +13,12 @@ use ws_daemon::{
 };
 
 const DEFAULT_TRANSPORT_DEADLINE: Duration = Duration::from_millis(250);
-/// The daemon ingests a stop or exit under its ingest lock with two tmux calls of up to 2 s each.
-/// This deadline covers a lock wait behind one paste plus those two calls.
-const LOCKED_INGEST_DEADLINE: Duration = Duration::from_secs(5);
 /// Test seam: sandboxes under load set a long hang guard instead of the production deadline.
 const TRANSPORT_DEADLINE_ENV: &str = "WS_HOOK_TRANSPORT_DEADLINE_MS";
 
 /// Hooks always succeed. A failed transport leaves its callback in the spool.
 pub async fn run(socket: &Path, state: &str) {
+    let started = tokio::time::Instant::now();
     let observed_at_us = hooks::receipt_time_us().unwrap_or(0);
     let mut input = String::new();
     if !io::stdin().is_terminal() {
@@ -38,7 +36,8 @@ pub async fn run(socket: &Path, state: &str) {
         ("idle", "StopCancelled" | "stop_cancelled" | "Interrupt") => "cancel",
         _ => state,
     };
-    let deadline = transport_deadline(state, env::var(TRANSPORT_DEADLINE_ENV).ok().as_deref());
+    let deadline =
+        started + transport_deadline(state, env::var(TRANSPORT_DEADLINE_ENV).ok().as_deref());
     let (mut reply, mut receipt) = deliver(socket, state, payload, observed_at_us, deadline)
         .await
         .unwrap_or_else(|_| (json!({}), None));
@@ -69,7 +68,7 @@ async fn deliver(
     state: &str,
     payload: Value,
     observed_at_us: u64,
-    deadline: Duration,
+    deadline: tokio::time::Instant,
 ) -> Result<(Value, Option<Receipt>)> {
     let session = env::var("WS_SESSION_ID")
         .ok()
@@ -119,7 +118,7 @@ async fn deliver(
         socket,
         "/v1/hooks/ingest",
         serde_json::to_vec(&callback)?,
-        deadline,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
     )
     .await
     {
@@ -144,12 +143,12 @@ fn transport_deadline(state: &str, value: Option<&str>) -> Duration {
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or(match state {
-            "stop" | "exit" => LOCKED_INGEST_DEADLINE,
+            "stop" | "exit" => hooks::STOP_CLI_BUDGET,
             _ => DEFAULT_TRANSPORT_DEADLINE,
         })
 }
 
-async fn resolve(socket: &Path, identity: &str, deadline: Duration) -> Option<Ulid> {
+async fn resolve(socket: &Path, identity: &str, deadline: tokio::time::Instant) -> Option<Ulid> {
     if let Ok(id) = identity.parse() {
         return Some(id);
     }
@@ -158,21 +157,21 @@ async fn resolve(socket: &Path, identity: &str, deadline: Duration) -> Option<Ul
     } else {
         identity.to_owned()
     };
-    tokio::time::timeout(deadline, client::session(socket, &target))
+    tokio::time::timeout_at(deadline, client::session(socket, &target))
         .await
         .ok()?
         .ok()
         .map(|session| session.id)
 }
 
-async fn confirm(socket: &Path, receipt: &Receipt, deadline: Duration) -> Result<()> {
+async fn confirm(socket: &Path, receipt: &Receipt, deadline: tokio::time::Instant) -> Result<()> {
     // Write the receipt before transport so a daemon restart can restore delivery.
     let pending = delivery::spool(&state_path()?, receipt)?;
     if client::hook_request(
         socket,
         "/v1/hooks/delivered",
         serde_json::to_vec(receipt)?,
-        deadline,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
     )
     .await
     .is_ok()
@@ -224,11 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn stop_and_exit_hooks_wait_5s_for_the_locked_ingest_and_accept_a_sandbox_override() {
+    fn stop_and_exit_hooks_have_a_20s_total_budget_and_accept_a_sandbox_override() {
         for state in ["stop", "exit"] {
-            assert_eq!(transport_deadline(state, None), Duration::from_secs(5));
-            assert_eq!(transport_deadline(state, Some("")), Duration::from_secs(5));
-            assert_eq!(transport_deadline(state, Some("0")), Duration::from_secs(5));
+            assert_eq!(transport_deadline(state, None), Duration::from_secs(20));
+            assert_eq!(transport_deadline(state, Some("")), Duration::from_secs(20));
+            assert_eq!(
+                transport_deadline(state, Some("0")),
+                Duration::from_secs(20)
+            );
             assert_eq!(
                 transport_deadline(state, Some(" 30000 ")),
                 Duration::from_secs(30)
