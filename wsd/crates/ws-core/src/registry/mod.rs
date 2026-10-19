@@ -1,8 +1,12 @@
 //! Rebuildable SQLite projections of session logs.
 //!
 //! Event bodies use these fields:
-//! - `session.created`: positive integer `alias`, optional `name` and `workspace_id`.
+//! - `session.created`: positive integer `alias`, optional `name`, `workspace_id`, and `cwd`.
+//!   Legacy imports use `path` for `cwd`.
 //!   The caller obtains the alias from [`Registry::next_alias`] before the log append.
+//! - `session.repo_attached`: `path`, optional `remote`, `branch`, and `base`.
+//!   Repository paths identify entries. Later events update the metadata they contain.
+//! - `phase.worktree`: `path` and `reference`. The reference supplies the repo's `base`.
 //! - `session.renamed`: `name`. Lifecycle events use `session.<state>`.
 //!   The lifecycle service validates transitions. This module projects the recorded state.
 //! - `workspace.created|updated|removed`: `workspace_id`. Other fields form workspace data.
@@ -34,7 +38,7 @@ mod projection;
 use projection::apply_entry;
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub struct Registry {
     connection: Connection,
@@ -50,11 +54,26 @@ pub struct Session {
     #[serde(default)]
     pub exit_code: Option<i32>,
     pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub repos: Vec<SessionRepo>,
     pub device_id: DeviceId,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     /// The original `session.created` body. Current values appear in the fields above.
     pub body: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SessionRepo {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -104,6 +123,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Registry {
+    /// Opens the index. An older schema rebuilds from logs beside the database file.
     pub fn open(path: &Path, alias_floor: i64) -> Result<Self> {
         if alias_floor < 1 {
             return Err(Error::InvalidEvent(
@@ -113,17 +133,36 @@ impl Registry {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version > SCHEMA_VERSION {
             return Err(Error::InvalidEvent(
                 "The registry schema is newer than this binary supports.".into(),
             ));
         }
-        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if version < 1 {
-            tx.execute_batch("DROP INDEX IF EXISTS applied_callback;")?;
+        let mut entries = Vec::new();
+        if version < SCHEMA_VERSION {
+            let has_sessions: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions')",
+                [], |row| row.get(0),
+            )?;
+            if has_sessions {
+                let state = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                entries = read_logs(state)?.0;
+            }
+            tx.execute_batch(
+                "DROP TABLE IF EXISTS aliases; DROP TABLE IF EXISTS sessions;
+                DROP TABLE IF EXISTS workspaces; DROP TABLE IF EXISTS edges;
+                DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS applied_events;",
+            )?;
         }
         tx.execute_batch(SCHEMA)?;
+        for entry in &entries {
+            apply_entry(&tx, entry)?;
+        }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
         Ok(Self {
@@ -208,34 +247,7 @@ impl Registry {
     /// Replaces the index from verified logs in `state/sessions`. Leaves logs unchanged.
     /// A failed rebuild preserves the previous index. Reports incomplete final log lines.
     pub fn rebuild(&mut self, state: &Path) -> Result<RebuildReport> {
-        let mut logs = match fs::read_dir(state.join("sessions")) {
-            Ok(entries) => entries.collect::<std::result::Result<Vec<_>, _>>()?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        logs.sort_by_key(|directory| directory.file_name());
-        let mut entries = Vec::new();
-        let mut report = RebuildReport::default();
-        for directory in logs {
-            if !directory.file_type()?.is_dir() {
-                continue;
-            }
-            let name = directory.file_name();
-            let name = name.to_str().ok_or_else(|| {
-                Error::InvalidEvent("The session directory name is not UTF-8.".into())
-            })?;
-            let session = parse_id(name)?;
-            if session.to_string() != name {
-                return Err(Error::InvalidEvent(format!(
-                    "The session directory name is not canonical: {name}."
-                )));
-            }
-            let read = SessionLog::new(state, session, DeviceId::from(0_u128)).read()?;
-            if let Some(line) = read.truncated_line {
-                report.truncated_logs.push((session, line));
-            }
-            entries.extend(read.entries);
-        }
+        let (entries, mut report) = read_logs(state)?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -320,7 +332,7 @@ impl Registry {
         let mut statement = self.connection.prepare(
             "SELECT s.id, a.alias, s.name, s.state, s.workspace_id, s.device_id, s.created_at_ms, s.updated_at_ms, s.body,
              (SELECT json_extract(entry, '$.body.code') FROM applied_events
-              WHERE session_id = s.id AND json_extract(entry, '$.type') = 'exit' ORDER BY seq DESC LIMIT 1)
+              WHERE session_id = s.id AND json_extract(entry, '$.type') = 'exit' ORDER BY seq DESC LIMIT 1), s.cwd, s.repos
              FROM sessions s JOIN aliases a ON a.session_id = s.id ORDER BY a.alias")?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -334,6 +346,8 @@ impl Registry {
                 row.get(7)?,
                 row.get::<_, String>(8)?,
                 row.get::<_, Option<i32>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, String>(11)?,
             ))
         })?;
         rows.map(|row| {
@@ -348,6 +362,8 @@ impl Registry {
                 updated_at_ms,
                 body,
                 exit_code,
+                cwd,
+                repos,
             ) = row?;
             Ok(Session {
                 id: parse_id(&id)?,
@@ -356,6 +372,8 @@ impl Registry {
                 state,
                 exit_code,
                 workspace_id,
+                cwd,
+                repos: serde_json::from_str(&repos)?,
                 device_id: parse_id(&device_id)?,
                 created_at_ms,
                 updated_at_ms,
@@ -449,6 +467,38 @@ impl Registry {
             id,
         )
     }
+}
+
+fn read_logs(state: &Path) -> Result<(Vec<LogEntry>, RebuildReport)> {
+    let mut logs = match fs::read_dir(state.join("sessions")) {
+        Ok(entries) => entries.collect::<std::result::Result<Vec<_>, _>>()?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    logs.sort_by_key(|directory| directory.file_name());
+    let mut entries = Vec::new();
+    let mut report = RebuildReport::default();
+    for directory in logs {
+        if !directory.file_type()?.is_dir() {
+            continue;
+        }
+        let name = directory.file_name();
+        let name = name.to_str().ok_or_else(|| {
+            Error::InvalidEvent("The session directory name is not UTF-8.".into())
+        })?;
+        let session = parse_id(name)?;
+        if session.to_string() != name {
+            return Err(Error::InvalidEvent(format!(
+                "The session directory name is not canonical: {name}."
+            )));
+        }
+        let read = SessionLog::new(state, session, DeviceId::from(0_u128)).read()?;
+        if let Some(line) = read.truncated_line {
+            report.truncated_logs.push((session, line));
+        }
+        entries.extend(read.entries);
+    }
+    Ok((entries, report))
 }
 
 fn select_session(

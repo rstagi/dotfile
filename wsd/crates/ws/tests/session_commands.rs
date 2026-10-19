@@ -21,6 +21,54 @@ struct Sandbox {
 }
 
 #[test]
+fn session_json_shows_the_place_and_repos_without_a_workspace() {
+    let home = common::SandboxRoot::new();
+    let socket = home.path().join("wsd.sock");
+    let id = Ulid::new();
+    let log = SessionLog::new(&home.path().join("state"), id, Ulid::new());
+    log.append(
+        0,
+        "session.created",
+        json!({"alias": 1, "cwd": "/sandbox/notes"}),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        log.append(
+            0,
+            "session.repo_attached",
+            json!({
+                "path": "/sandbox/app", "remote": "git@example.com:app.git",
+                "branch": "feature", "base": "main"
+            }),
+        )
+        .unwrap();
+    }
+    let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    for args in [["sessions", "#1", "--json"], ["show", "#1", "--json"]] {
+        let output = common::ws(home.path(), &socket)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let session = if args[0] == "sessions" {
+            &value[0]
+        } else {
+            &value
+        };
+        assert_eq!(session["id"], id.to_string());
+        assert_eq!(session["cwd"], "/sandbox/notes");
+        assert_eq!(session["workspace_id"], Value::Null);
+        assert_eq!(
+            session["repos"],
+            json!([
+                {"path": "/sandbox/app", "remote": "git@example.com:app.git", "branch": "feature", "base": "main"}
+            ])
+        );
+    }
+}
+
+#[test]
 fn sessions_matches_the_zsh_golden_output_and_resolves_names() {
     let sandbox = Sandbox::new();
     sandbox.assert_golden(&["sessions"], include_str!("golden/sessions.txt"));

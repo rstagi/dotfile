@@ -3,7 +3,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-use super::{Error, Result, parse_id};
+use super::{Error, Result, SessionRepo, parse_id};
 use crate::{
     ids::{EventId, SessionId},
     log::LogEntry,
@@ -45,6 +45,7 @@ pub(super) fn apply_entry(connection: &Connection, entry: &LogEntry) -> Result<(
     }
     match entry.event_type.split_once('.') {
         Some(("session", _)) => project_session(connection, entry)?,
+        Some(("phase", "worktree")) => project_repo(connection, entry)?,
         Some(("workspace", _)) => project_workspace(connection, entry)?,
         Some(("edge", _)) => project_edge(connection, entry)?,
         Some(("message", _)) => project_message(connection, entry)?,
@@ -77,8 +78,8 @@ fn project_session(connection: &Connection, entry: &LogEntry) -> Result<()> {
                     )
                 })?;
             connection.execute(
-                "INSERT INTO sessions (id, name, state, workspace_id, device_id, created_at_ms, updated_at_ms, body)
-                 VALUES (?1, ?2, 'created', ?3, ?4, ?5, ?5, ?6)",
+                "INSERT INTO sessions (id, name, state, workspace_id, device_id, created_at_ms, updated_at_ms, body, cwd)
+                 VALUES (?1, ?2, 'created', ?3, ?4, ?5, ?5, ?6, ?7)",
                 params![
                     entry.session_id.to_string(),
                     optional_str(entry, "name")?,
@@ -86,6 +87,9 @@ fn project_session(connection: &Connection, entry: &LogEntry) -> Result<()> {
                     entry.device_id.to_string(),
                     sql_number(entry.ts_ms)?,
                     entry.body.to_string(),
+                    optional_str(entry, "cwd")?.or_else(|| {
+                        entry.body.get("path").and_then(Value::as_str).filter(|path| !path.is_empty())
+                    }),
                 ],
             )?;
             connection.execute(
@@ -93,6 +97,7 @@ fn project_session(connection: &Connection, entry: &LogEntry) -> Result<()> {
                 params![alias, entry.session_id.to_string()],
             )?;
         }
+        "session.repo_attached" => project_repo(connection, entry)?,
         "session.renamed" => {
             let name = required_str(entry, "name")?;
             let changed = connection.execute(
@@ -117,6 +122,52 @@ fn project_session(connection: &Connection, entry: &LogEntry) -> Result<()> {
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn project_repo(connection: &Connection, entry: &LogEntry) -> Result<()> {
+    let repo = SessionRepo {
+        path: required_str(entry, "path")?.into(),
+        remote: optional_str(entry, "remote")?.map(str::to_owned),
+        branch: optional_str(entry, "branch")?.map(str::to_owned),
+        base: if entry.event_type == "phase.worktree" {
+            Some(required_str(entry, "reference")?.into())
+        } else {
+            optional_str(entry, "base")?.map(str::to_owned)
+        },
+    };
+    let stored: Option<String> = connection
+        .query_row(
+            "SELECT repos FROM sessions WHERE id = ?1",
+            [entry.session_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(stored) = stored else {
+        return require_session(0, entry);
+    };
+    let mut repos: Vec<SessionRepo> = serde_json::from_str(&stored)?;
+    if let Some(existing) = repos.iter_mut().find(|existing| existing.path == repo.path) {
+        if repo.remote.is_some() {
+            existing.remote = repo.remote;
+        }
+        if repo.branch.is_some() {
+            existing.branch = repo.branch;
+        }
+        if repo.base.is_some() {
+            existing.base = repo.base;
+        }
+    } else {
+        repos.push(repo);
+    }
+    connection.execute(
+        "UPDATE sessions SET repos = ?1, updated_at_ms = ?2 WHERE id = ?3",
+        params![
+            serde_json::to_string(&repos)?,
+            sql_number(entry.ts_ms)?,
+            entry.session_id.to_string()
+        ],
+    )?;
     Ok(())
 }
 
