@@ -7,7 +7,7 @@ description: >-
   source of truth. Use when asked to "plan this out", "make a multi-phase plan", "break
   this into parallel phases", or before spinning up parallel worktrees for a larger effort.
   For Loop plans, estimate and size phases to fit one 30-minute execution attempt where the
-  work can be bounded. The draft is cross-checked by rotating reviewer/critic plan-review rounds (Codex, Claude, Grok) unless invoked as `light <goal>`.
+  work can be bounded. The draft gets one reviewer/critic plan-review round (Codex, Claude, Grok) unless invoked as `light <goal>`. Only security, unprotected breakage or a failing check blocks a plan. Other items go to its Deferred / Not now list.
 argument-hint: "[light] <goal> (optional)"
 ---
 
@@ -26,15 +26,27 @@ independent), never a *goal* you bend the plan toward. A fully sequential, singl
 is a normal, expected, good outcome — most plans are mostly sequential. More lanes is not
 better.
 
-**Modes.** By default the drafted plan goes through **rotating reviewer/critic plan-review
-rounds** (step 3) before it is registered: up to `LOOP_PLAN_REVIEW_ROUNDS` (default 2),
-stopping early on `clean`. If the argument starts with the word `light` (e.g.
-`/multiphase-plan light add a --json flag`), strip it from the goal and skip step 3 — use it
-for small or low-risk plans. A `light` plan also skips the visual explainer (step 5).
+**Fast and erasable.** A plan passes on two tests. It does not break existing behavior. It
+is easy to remove. Only these 3 things block a plan:
+
+1. Security or safety.
+2. Unprotected breakage: a change to existing behavior that no flag or off switch protects,
+   or existing tests that fail with the flag off.
+3. A failing deterministic check.
+
+Every other item is a deferred item. Write each deferred item as one line in the
+`## Deferred / Not now` section of the plan. Then continue. Write only what a runner needs to
+pass the 3 rules. A short plan is better.
+
+**Modes.** By default the drafted plan goes through **one reviewer/critic plan-review
+round** (step 3) before step 4 registers it. `LOOP_PLAN_REVIEW_ROUNDS` (default 1) can allow
+more rounds. If the argument starts with the word `light` (e.g.
+`/multiphase-plan light add a --json flag`), strip it from the goal and skip step 3. Use
+`light` for small or low-risk plans. A `light` plan also skips the visual explainer (step 5).
 
 **Front-load the interaction.** All questions go to the user in step 1, before drafting. From
-step 2 on, work autonomously through review and registration to the report; come back to the
-user only for a decision the review surfaced that genuinely needs them (step 3).
+step 2 on, work autonomously through review and registration to the report. Come back to the
+user only for a blocking review finding that needs their decision (step 3).
 
 ## Prerequisites
 
@@ -51,9 +63,9 @@ work well — **do not plan blind**:
 - Explore the codebase for the areas the work touches (dispatch an `Explore`/general
   agent or read the relevant files). Note the modules, seams, and shared files that
   phases will contend over — this drives the parallelization analysis.
-- **Question gate — ask everything now, once.** After exploring, list every unknown that
-  would change the plan and ask them all in **one batch** (`AskUserQuestion` in Claude Code;
-  a numbered list elsewhere), each with your recommended default. Cover whatever is not
+- **Question gate — ask the blocking unknowns now, once.** After exploring, list each unknown
+  that blocks the plan. Ask them all in **one batch** (`AskUserQuestion` in Claude Code,
+  a numbered list elsewhere). Give your recommended default for each. Cover whatever is not
   already settled by the request or the code:
   - scope & non-goals; definition of done
   - hard constraints and sequencing (deadlines, must-land-first, compatibility)
@@ -62,8 +74,9 @@ work well — **do not plan blind**:
   - milestones: one PR, or several (propose several only when the effort is too big for one PR)
   - review tier (`standard`/`max`, outer rounds, inner cap) — propose one from size and risk
 
-  Settle the "silly" things here — naming, which repo, which command runs the tests — so the
-  adversarial review spends its effort on the plan's real weaknesses. Ask a follow-up batch
+  Do not ask about a detail that does not block the plan, for example a name or a file
+  layout. Choose a default, state it in the plan and continue. When an open point can wait,
+  write it in `## Deferred / Not now`. Ask a follow-up batch
   only if an answer opens a new unknown. Don't ask what the code or the request already
   answers; if nothing is open, say so and move on. Offer `grilling` if the user wants the
   plan stress-tested first.
@@ -80,6 +93,18 @@ Author the plan in the **canonical plan format** (see
   `Depends on` edges. **Title each phase as an imperative outcome** ("Add OAuth token
   refresh endpoint"), never "Phase 1" or a vague label — the title usually seeds the PR
   title.
+- **Footprint** — write the footprint of each work phase in `Touches:` (grammar:
+  `references/plan-format.md` → Footprint). It names the feature folder, the single wiring
+  point and the flag or equivalent off switch. It lists each existing file that the phase
+  edits outside the feature folder, with a one-line reason. Keep the edits to existing files
+  few. The number of new files does not matter. A phase that edits more than 3 existing files
+  outside its feature folder gives the reason. This is a point for discussion, not a block.
+- **Seams first** — plan each new seam in existing code as a small refactor phase with no
+  behavior change. Put it before the feature phase that needs it. Then the feature phase only
+  adds code.
+- **Deferred / Not now** — every plan has this section. Write one line for each item that the
+  plan does not need to pass the 3 blocking rules. Do not add phases, fields or notes for
+  these items.
 - **Milestones** — default to none (one `## Phases` list, one PR per repository). Propose milestones only when the effort is too big for one PR and each milestone leaves main shippable on its own; confirm in the step-1 question gate. Each non-final milestone ends with a `[kind: pr-review]` `[gate: merge]` phase, and the next milestone's root phases list that gate in `Depends on`; milestones ≥2 must declare their own integration branch; milestone 1 may fall back to Loop config. Grammar and template: `references/plan-format.md` → Milestones.
   A plan keeps full phase blocks only for milestones that have not shipped. When the gate PRs of a milestone merge, `loop-execute` archives the milestone. Its phase blocks and its progress-log entries move to `.loop/milestones/m<N>.md`. `plan.md` keeps a short `[archived]` stub. When you edit an existing plan, do not copy archived blocks back into it. A phase that an `[archived]` stub lists is an existing phase with status `done`. Grammar: `references/plan-format.md` → Archived milestones.
   **Lessons.** Before you change the phases of a plan with archived milestones, read the `### Lessons` of the last 3 archive files. These are the `.loop/milestones/m<N>.md` files with the 3 highest N. An archive file without a `### Lessons` section gives no lessons. Apply each lesson that fits a phase that you add or change. For example, change its *Done when*, its `Verify:` command or its estimate. In the step 3 disposition table or the report, name each lesson that you applied and its archive file.
@@ -126,7 +151,8 @@ Author the plan in the **canonical plan format** (see
   frontend phases — but they stay in the **same lane**, share the **same `Suggested
   branch`**, and land in the **same PR**; mark each with "same PR as Phase N" in its
   Notes. A layer-only phase is legitimate only when the work itself is single-layer
-  (pure API change, pure UI polish) or a shared foundation several slices build on.
+  (pure API change, pure UI polish) or a shared foundation several slices build on, for
+  example a seam refactor (see **Seams first**).
 - **Lanes** — **default: one lane, fully sequential.** A lane is a chain of phases one
   worktree owns start-to-finish. Only after the phases exist, look for independence and
   split into separate lanes — and only when they pass the **Independence test** below.
@@ -158,7 +184,7 @@ them in the **same** lane:
    settled up front and listed in the conflict watch — not if they'd fight over the same
    core files.
 3. **No coordination tax** — parallelizing them does **not** require stubs, mocks, frozen
-   interfaces, feature flags, duplicated scaffolding, or any seam you wouldn't otherwise
+   interfaces, extra feature flags, duplicated scaffolding, or any seam you wouldn't otherwise
    write. If parallelism only works by adding artificial structure or making "something
    weird" happen, it isn't worth it — sequence them instead.
 
@@ -171,7 +197,7 @@ exists to prevent.
 ### 3. Adversarial plan review (skipped in `light` mode)
 
 Write the draft to `.loop/plan.md` (with the header from step 4). Read
-`LOOP_PLAN_REVIEW_ROUNDS` from `loop-models.conf` (default 2, range 1..5), then run round 1:
+`LOOP_PLAN_REVIEW_ROUNDS` from `loop-models.conf` (default 1, range 1..5), then run round 1:
 
     ~/dotfile/loop-plan-review.sh run --round 1
     # defaults: --dir .loop, --plan-file .loop/plan.md, --worktree .
@@ -200,17 +226,31 @@ usable review: report the provider failure and continue to step 4 explicitly unr
 do not substitute another provider or treat partial reports as convergence. Invalid verdict
 format gets one fresh-runner retry with a reminder; a second invalid verdict exits 2.
 
-**Reconcile here, in this chat, between rounds.** Read the converged review and any disputed
-sidecar (`<ledger without .tsv>.disputed.md`). Verify every finding and every disputed item
-against the code yourself, then accept (edit the plan) or reject (one-line evidence-backed
-reason). Do not edit the plan during an inner exchange. Show a compact disposition table
-(`round · finding · accept/reject · why`). Only findings that need a **user decision**
-(scope, product trade-off, a missing gate) go back to the user, batched into one question;
-settle everything else yourself.
+**Reconcile here, in this chat, after the round.** Read the converged review and any disputed
+sidecar (`<ledger without .tsv>.disputed.md`). Each finding has a class: `blocking` with a
+category (`security`, `unprotected-breakage` or `failing-check`), or `deferred`. When a
+finding has no class, give it one with the same rules. When you are not sure, the class is
+`deferred`. Do not raise a finding to `blocking` to force a plan edit.
 
-After reconciling and editing the plan, run the next independent round (`--round 2`, then
-higher as configured), up to `LOOP_PLAN_REVIEW_ROUNDS`. Stop early on `clean`; otherwise
-complete the configured rounds, reconcile the final findings/disputes, and continue to step 4.
+- **Blocking finding.** Check it against the code. When the finding is true, edit the plan to
+  fix it. When it is false, reject it with a one-line reason from the code.
+- **Deferred finding.** Do not edit the phases. Add one line to `## Deferred / Not now`. Drop
+  an item that does not deserve a follow-up.
+- **Disputed item.** Check it against the code. Then handle it as a blocking or a deferred
+  finding. A disputed item never counts as clean.
+
+Do not edit the plan during an inner exchange. Show a compact disposition table
+(`round · finding · class · fixed/deferred/rejected · why`). Only a blocking finding that
+needs a **user decision** (scope, product trade-off, a missing gate) goes back to the user.
+Put all such findings into one question. Settle everything else yourself.
+
+The default is one round. Run the next round (`--round 2`, then higher) only when both
+conditions are true:
+
+- `LOOP_PLAN_REVIEW_ROUNDS` allows it.
+- You edited the plan for a blocking finding in this round.
+
+Do not run a round only to find more small issues. After the last round, continue to step 4.
 
 ### 4. Register on the daemon
 
@@ -266,7 +306,7 @@ for a `light` plan.
 
 **Single-lane (sequential) plan — the common case:**
 
-> **Plan registered** · N phases, sequential · plan review: `<n accepted / n findings>` (or `light`).
+> **Plan registered** · N phases, sequential · plan review: `<n blocking fixed / n deferred / n rejected>` (or `light`).
 > State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
 >
 > This work is sequential — each phase builds on the last, so it runs in one worktree in
@@ -278,7 +318,7 @@ for a `light` plan.
 
 **Multi-lane plan — only when phases passed the Independence test:**
 
-> **Plan registered** · N phases in M lanes · plan review: `<n accepted / n findings>` (or `light`).
+> **Plan registered** · N phases in M lanes · plan review: `<n blocking fixed / n deferred / n rejected>` (or `light`).
 > State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
 >
 > **Parallel lanes:**
