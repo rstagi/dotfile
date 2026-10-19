@@ -15,10 +15,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use ws_core::{
-    ids::{SessionId, Ulid},
-    log::SessionLog,
-};
+use ws_core::ids::{SessionId, Ulid};
 
 /// Total transport budget for Stop and exit. Generated hooks add a 10 s parent margin.
 pub const STOP_CLI_BUDGET: Duration = Duration::from_secs(20);
@@ -523,13 +520,10 @@ impl Sessions {
         };
         // Rebuild from durable receipts so restart and spool replay retain the same ordering.
         // The current receipt is already durable but has not yet passed through reduction.
-        let entries = SessionLog::new(&self.state, session.id, session.device_id)
-            .read()?
-            .entries;
-        for entry in entries
-            .into_iter()
-            .filter(|entry| entry.event_type == "hook.received")
-        {
+        let entries = self
+            .registry
+            .session_events_of_type(session.id, "hook.received")?;
+        for entry in entries {
             if entry.body["callback_id"] == callback.callback_id.to_string()
                 || !entry.body["pane"].is_null()
             {
