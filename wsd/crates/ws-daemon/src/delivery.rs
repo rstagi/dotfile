@@ -38,6 +38,8 @@ pub struct Receipt {
 struct Batch {
     callback_id: Ulid,
     message_ids: Vec<EventId>,
+    #[serde(default)]
+    redelivered_ids: HashSet<EventId>,
     reason: String,
 }
 
@@ -519,6 +521,22 @@ impl Sessions {
             return Ok(StopDecision::Accept);
         }
         let messages = self.registry.messages()?;
+        // A stdout receipt does not prove that the agent accepted the hook output.
+        let redelivered: HashSet<_> = if callback.payload["stop_hook_active"] == false {
+            SessionLog::new(&self.state, session.id, session.device_id)
+                .read()?
+                .entries
+                .into_iter()
+                .filter(|entry| {
+                    entry.event_type == "message.delivered"
+                        && entry.body["batch_id"].is_null()
+                        && !entry.body["callback_id"].is_null()
+                })
+                .filter_map(|entry| serde_json::from_value(entry.body["message_id"].clone()).ok())
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let delivered: HashSet<_> = messages
             .iter()
             .filter(|message| message.delivered_at_ms.is_some())
@@ -528,6 +546,7 @@ impl Sessions {
             message.recipient == session.id
                 && message.delivered_at_ms.is_some()
                 && message.read_at_ms.is_none()
+                && !redelivered.contains(&message.id)
         }) {
             self.append(
                 session.id,
@@ -546,7 +565,9 @@ impl Sessions {
         let batch: Vec<_> = self
             .inbox(session.id)?
             .into_iter()
-            .filter(|message| !delivered.contains(&message.event_id))
+            .filter(|message| {
+                !delivered.contains(&message.event_id) || redelivered.contains(&message.event_id)
+            })
             .collect();
         if batch.is_empty() {
             return Ok(StopDecision::Accept);
@@ -554,6 +575,7 @@ impl Sessions {
         let batch = Batch {
             callback_id: callback.callback_id,
             message_ids: batch.iter().map(|message| message.event_id).collect(),
+            redelivered_ids: redelivered,
             reason: batch.iter().map(render).collect::<Vec<_>>().join("\n\n"),
         };
         self.append(
@@ -595,6 +617,13 @@ impl Sessions {
         let Some(batch) = self.delivery_batch(session, callback)? else {
             return Ok(reply);
         };
+        if self
+            .registry
+            .event_for_callback(session, "hook.confirmed", &callback.to_string())?
+            .is_some()
+        {
+            return Ok(json!({}));
+        }
         let settled: HashSet<_> = self
             .registry
             .messages()?
@@ -607,7 +636,8 @@ impl Sessions {
             .into_iter()
             .filter(|message| {
                 batch.message_ids.contains(&message.event_id)
-                    && !settled.contains(&message.event_id)
+                    && (!settled.contains(&message.event_id)
+                        || batch.redelivered_ids.contains(&message.event_id))
             })
             .collect();
         if pending.is_empty() {
@@ -641,6 +671,21 @@ impl Sessions {
                 session.id,
                 "message.delivered",
                 json!({"message_id":id, "callback_id":receipt.callback_id}),
+            )?;
+        }
+        if self
+            .registry
+            .event_for_callback(
+                session.id,
+                "hook.confirmed",
+                &receipt.callback_id.to_string(),
+            )?
+            .is_none()
+        {
+            self.append(
+                session.id,
+                "hook.confirmed",
+                json!({"callback_id":receipt.callback_id}),
             )?;
         }
         Ok(())

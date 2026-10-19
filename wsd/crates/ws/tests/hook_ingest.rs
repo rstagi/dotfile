@@ -793,3 +793,77 @@ fn a_numeric_legacy_ws_session_reaches_the_imported_session() {
         "{log}"
     );
 }
+
+#[test]
+fn a_cancelled_parent_redelivers_a_committed_batch_once() {
+    let sandbox = HookSandbox::new();
+    sandbox.queue("retain after parent cancellation");
+    let callback = sandbox.callback(
+        "stop",
+        json!({"hook_event_name":"Stop", "stop_hook_active":false}),
+        100,
+    );
+    let reply = sandbox.ingest(&callback);
+    assert_eq!(reply["decision"], "block");
+    sandbox.confirm(&callback);
+    let retry = sandbox.post(
+        "stop",
+        json!({"hook_event_name":"Stop", "stop_hook_active":false}),
+        200,
+    );
+    assert_eq!(retry["reason"], reply["reason"]);
+    let final_reply = sandbox.post(
+        "stop",
+        json!({"hook_event_name":"Stop", "stop_hook_active":true}),
+        300,
+    );
+    assert_eq!(final_reply, json!({}));
+    assert!(sandbox.options().starts_with("idle|idle|"));
+    assert_eq!(
+        sandbox
+            .log()
+            .iter()
+            .filter(|e| e["type"] == "message.delivered")
+            .count(),
+        1
+    );
+    assert_eq!(
+        sandbox
+            .log()
+            .iter()
+            .filter(|e| e["type"] == "message.read")
+            .count(),
+        1
+    );
+}
+
+impl HookSandbox {
+    fn queue(&self, text: &str) {
+        let response = request(
+            &self.socket,
+            "POST",
+            "/v1/messages",
+            &json!({"target":self.id,"body":text}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+    fn ingest(&self, callback: &ws_daemon::hooks::Callback) -> Value {
+        let response = request(
+            &self.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &serde_json::to_string(callback).unwrap(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+    fn confirm(&self, callback: &ws_daemon::hooks::Callback) {
+        let response = request(
+            &self.socket,
+            "POST",
+            "/v1/hooks/delivered",
+            &json!({"session_id":self.id,"callback_id":callback.callback_id}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+}
