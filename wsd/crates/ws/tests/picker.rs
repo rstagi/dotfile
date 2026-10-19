@@ -908,6 +908,9 @@ impl Sandbox {
                 .arg("-C")
                 .arg(args[1])
                 .args(["rev-parse", "--short", "HEAD"])
+                .env("HOME", self.home.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .output()
                 .unwrap();
             assert!(commit.status.success(), "{commit:?}");
