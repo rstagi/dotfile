@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Follow `CODING_STANDARDS.md` for plans, code and reviews. A plan or a PR blocks only on security, unprotected breakage of existing behavior, or a failing deterministic check. All other items are deferred.
+
 ## Repository Overview
 
 macOS dotfile repo w/ automated dev environment setup. Installs shell config, CLI tools, cloud tooling, and dev environment via homebrew.
