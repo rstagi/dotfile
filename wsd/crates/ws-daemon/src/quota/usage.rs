@@ -8,10 +8,7 @@ use std::{
 use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ws_core::{
-    log::{LogEntry, SessionLog},
-    semconv as sc,
-};
+use ws_core::{log::LogEntry, semconv as sc};
 
 use super::Source;
 use crate::{
@@ -61,34 +58,26 @@ async fn usage(State(store): State<Store>) -> Result<Json<Usage>, ApiError> {
 
 fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage> {
     let mut latest: BTreeMap<WindowKey, LogEntry> = BTreeMap::new();
-    for session in sessions.registry.sessions()? {
-        for entry in SessionLog::new(&sessions.state, session.id, sessions.device_id)
-            .read()?
-            .entries
+    for entry in sessions.registry.events_of_type("runner.usage.updated")? {
+        let body = &entry.body;
+        let (Some(runner), Some(account), Some(window)) = (
+            body[sc::RUNNER].as_str(),
+            body[sc::RUNNER_ACCOUNT_ID].as_str(),
+            body[sc::RUNNER_USAGE_WINDOW].as_str(),
+        ) else {
+            continue;
+        };
+        let key = (
+            runner.into(),
+            account.into(),
+            body[sc::RUNNER_USAGE_BUCKET].as_str().map(str::to_owned),
+            window.into(),
+        );
+        if latest
+            .get(&key)
+            .is_none_or(|previous| supersedes(&entry, previous, now))
         {
-            if entry.event_type != "runner.usage.updated" {
-                continue;
-            }
-            let body = &entry.body;
-            let (Some(runner), Some(account), Some(window)) = (
-                body[sc::RUNNER].as_str(),
-                body[sc::RUNNER_ACCOUNT_ID].as_str(),
-                body[sc::RUNNER_USAGE_WINDOW].as_str(),
-            ) else {
-                continue;
-            };
-            let key = (
-                runner.into(),
-                account.into(),
-                body[sc::RUNNER_USAGE_BUCKET].as_str().map(str::to_owned),
-                window.into(),
-            );
-            if latest
-                .get(&key)
-                .is_none_or(|previous| supersedes(&entry, previous, now))
-            {
-                latest.insert(key, entry);
-            }
+            latest.insert(key, entry);
         }
     }
     let mut windows: Vec<_> = latest

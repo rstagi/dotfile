@@ -671,3 +671,78 @@ fn v6_messages_deduplicate_event_ids_and_validate_sender_and_pair_sequence() {
     assert!(registry.apply(&duplicate_pair).is_err());
     assert_eq!(registry.messages().unwrap(), messages);
 }
+
+#[test]
+fn event_queries_survive_upgrade_reopen_and_rebuild() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let path = sandbox.path().join("registry.sqlite");
+    let id = Ulid::new();
+    let log = SessionLog::new(sandbox.path(), id, Ulid::new());
+    log.append(0, "session.created", json!({"alias": 1}))
+        .unwrap();
+    let usage = log
+        .append(0, "runner.usage.updated", json!({"remaining": 0.75}))
+        .unwrap();
+    let process_exit = log.append(0, "exit", json!({"code": 7})).unwrap();
+    let hook_exit = log
+        .append(0, "exit", json!({"callback_id": "exit-hook", "code": 0}))
+        .unwrap();
+    log.append(0, "test.noise", json!({})).unwrap();
+    let mut registry = Registry::open(&path, 1).unwrap();
+    registry.rebuild(sandbox.path()).unwrap();
+    drop(registry);
+    // Simulate the installed unversioned schema, with its existing callback index.
+    let legacy = Connection::open(&path).unwrap();
+    legacy
+        .execute_batch("DROP INDEX IF EXISTS applied_type;
+            DROP INDEX applied_callback;
+            CREATE INDEX applied_callback ON applied_events(session_id, json_extract(entry, '$.type'), json_extract(entry, '$.body.callback_id'));
+            PRAGMA user_version = 0;")
+        .unwrap();
+    drop(legacy);
+    let mut registry = Registry::open(&path, 1).unwrap();
+    for rebuild in [false, true] {
+        if rebuild {
+            registry.rebuild(sandbox.path()).unwrap();
+        }
+        assert_eq!(
+            registry.events_of_type("runner.usage.updated").unwrap(),
+            vec![usage.clone()]
+        );
+        assert!(registry.events_of_type("missing").unwrap().is_empty());
+        assert_eq!(
+            registry
+                .session_events_of_type(id, "runner.usage.updated")
+                .unwrap(),
+            vec![usage.clone()]
+        );
+        assert!(
+            registry
+                .session_events_of_type(Ulid::new(), "runner.usage.updated")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            registry.latest_event(id, "exit").unwrap(),
+            Some(hook_exit.clone())
+        );
+        assert_eq!(
+            registry.latest_process_exit(id).unwrap(),
+            Some(process_exit.clone())
+        );
+        assert_eq!(registry.sessions().unwrap()[0].exit_code, Some(0));
+        assert_eq!(
+            registry
+                .event_for_callback(id, "exit", "exit-hook")
+                .unwrap(),
+            Some(hook_exit.clone())
+        );
+    }
+    assert_eq!(
+        registry
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}

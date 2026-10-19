@@ -34,6 +34,7 @@ mod projection;
 use projection::apply_entry;
 
 const SCHEMA: &str = include_str!("schema.sql");
+const SCHEMA_VERSION: i64 = 1;
 
 pub struct Registry {
     connection: Connection,
@@ -109,10 +110,22 @@ impl Registry {
                 "The alias floor must be positive.".into(),
             ));
         }
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
-        connection.execute_batch(SCHEMA)?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version > SCHEMA_VERSION {
+            return Err(Error::InvalidEvent(
+                "The registry schema is newer than this binary supports.".into(),
+            ));
+        }
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if version < 1 {
+            tx.execute_batch("DROP INDEX IF EXISTS applied_callback;")?;
+        }
+        tx.execute_batch(SCHEMA)?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
         Ok(Self {
             connection,
             alias_floor,
@@ -143,6 +156,30 @@ impl Registry {
         entry
             .map(|entry| serde_json::from_str(&entry).map_err(Error::Json))
             .transpose()
+    }
+
+    /// Reads one event type from the index without scanning unrelated log entries.
+    pub fn events_of_type(&self, event_type: &str) -> Result<Vec<LogEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT entry FROM applied_events WHERE json_extract(entry, '$.type') = ?1 ORDER BY session_id, seq",
+        )?;
+        let rows = statement.query_map([event_type], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    /// Reads one session's events of this type in sequence order.
+    pub fn session_events_of_type(
+        &self,
+        session: SessionId,
+        event_type: &str,
+    ) -> Result<Vec<LogEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT entry FROM applied_events WHERE json_extract(entry, '$.type') = ?1 AND session_id = ?2 ORDER BY seq",
+        )?;
+        let rows = statement.query_map(params![event_type, session.to_string()], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
     /// Returns the latest recorded event of this type for a session.

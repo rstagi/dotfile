@@ -54,7 +54,11 @@ impl Daemon {
     }
 
     pub fn wait_ready(&mut self, socket: &Path) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        self.wait_ready_for(socket, Duration::from_secs(10));
+    }
+
+    pub fn wait_ready_for(&mut self, socket: &Path, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 panic!("The daemon exited with {status}: {}", self.stderr());
