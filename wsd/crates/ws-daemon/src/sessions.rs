@@ -201,6 +201,15 @@ impl Sessions {
 
     pub fn stop(&mut self, input: &str, parent_session_id: Option<SessionId>) -> Result<Session> {
         self.record_call(parent_session_id, "session.stop", Some(input))?;
+        let session = self.get_record(input)?;
+        if session.body["agent"].is_string()
+            && !["finished", "failed"].contains(&session.state.as_str())
+        {
+            self.finish_spawned_session(&session)?;
+            if !self.process_exited(session.id)? {
+                self.append(session.id, "exit", json!({"code":null, "reason":"stopped"}))?;
+            }
+        }
         self.change_state(input, SessionState::Finished, parent_session_id)
     }
 

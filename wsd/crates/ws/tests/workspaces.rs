@@ -461,7 +461,12 @@ fn open_restores_stopped_tabs_once_and_preserves_each_session_identity() {
         .unwrap()["window_id"]
         .as_str()
         .unwrap();
-    sandbox.tmux(&["kill-window", "-t", window]);
+    assert!(
+        !sandbox
+            .tmux(&["list-windows", "-a", "-F", "#{window_id}"])
+            .lines()
+            .any(|id| id == window)
+    );
     let output = sandbox.output(&["open", id, "--detach"]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(

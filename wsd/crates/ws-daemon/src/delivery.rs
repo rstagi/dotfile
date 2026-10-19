@@ -145,7 +145,7 @@ async fn retry(store: Store, server: &Server, timeout: Duration, clock: &Clock) 
             .into_iter()
             .filter(|s| s.device_id == sessions.device_id && pending.contains(&s.id))
             .collect();
-        let mut available = HashSet::new();
+        let mut available = Vec::new();
         for session in local {
             let id = session.id;
             if let Some(paste) = sessions.active_paste(id)? {
@@ -153,24 +153,15 @@ async fn retry(store: Store, server: &Server, timeout: Duration, clock: &Clock) 
                     sessions.requeue_paste(id, paste.batch_id)?;
                 }
             } else if !matches!(session.state.as_str(), "finished" | "failed") {
-                available.insert(id);
+                available.push(session);
             }
         }
         let mut targets = Vec::new();
-        for workspace in sessions.registry.workspaces()? {
-            for window in workspace.body["windows"].as_array().into_iter().flatten() {
-                let Some(id) = window["session_id"]
-                    .as_str()
-                    .and_then(|s| s.parse::<SessionId>().ok())
-                else {
-                    continue;
-                };
-                if available.contains(&id)
-                    && let Some(window) = window["window_id"]
-                        .as_str()
-                        .filter(|s| valid_target(s, '@'))
-                {
-                    targets.push((id, window.to_owned()));
+        for session in available {
+            let id = session.id;
+            for window in sessions.session_windows(&session)? {
+                if valid_target(&window, '@') {
+                    targets.push((id, window));
                 }
             }
         }
@@ -910,6 +901,10 @@ mod tests {
 
     impl PasteSandbox {
         async fn new() -> Self {
+            Self::with_session_window(false).await
+        }
+
+        async fn with_session_window(session_window: bool) -> Self {
             let sandbox = Sandbox::new();
             let server = sandbox.home.tmux_socket();
             let tmux = crate::tmux::Tmux::named(&server);
@@ -984,9 +979,24 @@ mod tests {
                     .set_window_option(&result.window, key, &value)
                     .unwrap();
             }
-            result.sandbox.store.lock().unwrap().append(result.sandbox.recipient, "workspace.created", json!({
-                "workspace_id":"paste", "windows":[{"window_id":result.window,"session_id":result.sandbox.recipient}]
-            })).unwrap();
+            {
+                let mut sessions = result.sandbox.store.lock().unwrap();
+                if session_window {
+                    sessions
+                        .append(
+                            result.sandbox.recipient,
+                            "session.window",
+                            json!({
+                                "window_id":result.window, "pane":result.pane
+                            }),
+                        )
+                        .unwrap();
+                } else {
+                    sessions.append(result.sandbox.recipient, "workspace.created", json!({
+                        "workspace_id":"paste", "windows":[{"window_id":result.window,"session_id":result.sandbox.recipient}]
+                    })).unwrap();
+                }
+            }
             result
                 .wait(|| {
                     result
@@ -1076,6 +1086,19 @@ mod tests {
             callback.payload = json!({"hook_event_name":event, "turn_id":"paste-turn"});
             callback
         }
+    }
+
+    #[tokio::test]
+    async fn a_session_window_receives_messages_without_a_workspace() {
+        let sandbox = PasteSandbox::with_session_window(true).await;
+        sandbox.sandbox.send("session window message");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox.wait_for_submit().await;
+        assert!(
+            String::from_utf8(sandbox.bytes())
+                .unwrap()
+                .contains("session window message")
+        );
     }
 
     #[tokio::test]

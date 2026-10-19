@@ -730,7 +730,13 @@ impl Sessions {
             )));
         }
         let pending = crate::agents::launch::PendingLaunch::new(id)?;
-        let slot = crate::agents::slots::register(wt, preferred_slot, agent, &id.to_string())?;
+        let slot = crate::agents::slots::register(
+            &self.state,
+            wt,
+            preferred_slot,
+            agent,
+            &id.to_string(),
+        )?;
         if let Some(session) = resume {
             if ["finished", "failed"].contains(&session.state.as_str()) {
                 self.transition(
@@ -741,7 +747,7 @@ impl Sessions {
             }
         } else {
             let alias = self.next_alias()?;
-            let mut body = json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)});
+            let mut body = json!({"alias": alias, "workspace_id": name, "cwd": wt, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)});
             if let Some(origin) = &spawn {
                 body["spawned"] = json!(true);
                 body["trigger_id"] = json!(origin.trigger_id);
@@ -854,7 +860,7 @@ impl Sessions {
         let window = match launched {
             Ok(window) => window,
             Err(error) => {
-                crate::agents::slots::remove(wt, &id.to_string())?;
+                crate::agents::slots::remove(&self.state, wt, &id.to_string())?;
                 self.transition(
                     &id.to_string(),
                     ws_core::state::SessionState::Failed,
@@ -885,7 +891,9 @@ impl Sessions {
                     "The workspace {name} was removed during the launch."
                 )));
             }
-            if crate::agents::slots::register(wt, Some(slot), agent, &id.to_string())? != slot {
+            if crate::agents::slots::register(&self.state, wt, Some(slot), agent, &id.to_string())?
+                != slot
+            {
                 return Err(failure(format!(
                     "The slot {slot} was reassigned during the launch."
                 )));
@@ -924,6 +932,11 @@ impl Sessions {
                     wt.to_str().unwrap(),
                 ])?;
             }
+            self.append(
+                id,
+                "session.window",
+                json!({"window_id":window, "pane":pane, "slot":slot}),
+            )?;
             windows.retain(|window| window["session_id"].as_str() != Some(&id.to_string()));
             windows
                 .push(json!({"window_id": window, "session_id": id, "agent": agent, "slot": slot}));
@@ -933,7 +946,9 @@ impl Sessions {
             } else {
                 "workspace.created"
             };
-            self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
+            if session.workspace_id.is_some() {
+                self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
+            }
             if !was_running {
                 self.transition(
                     &id.to_string(),
@@ -944,7 +959,7 @@ impl Sessions {
             Ok(json!({"window_id": window, "session_id": id}))
         })();
         if result.is_err() {
-            let _ = crate::agents::slots::remove(wt, &id.to_string());
+            let _ = crate::agents::slots::remove(&self.state, wt, &id.to_string());
             if run.is_none() {
                 let _ = tmux.execute(&["kill-window", "-t", &window]);
             } else {

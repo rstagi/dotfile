@@ -185,16 +185,11 @@ async fn ingest_callback(
         );
     }
     if let Some(window) = window.as_mut().filter(|window| window.session.is_empty()) {
-        let session = callback.session_id.to_string();
+        let session = callback.session_id;
         let id = window.id.clone();
         window.owned = api::call(store.clone(), move |sessions| {
-            Ok(sessions.registry.workspaces()?.iter().any(|workspace| {
-                workspace.body["windows"].as_array().is_some_and(|windows| {
-                    windows
-                        .iter()
-                        .any(|window| window["window_id"] == id && window["session_id"] == session)
-                })
-            }))
+            let session = sessions.get_record(&session.to_string())?;
+            Ok(sessions.session_windows(&session)?.contains(&id))
         })
         .await
         .map_err(|error| error.0)?;
