@@ -2,6 +2,7 @@
 
 use crate::{
     api::{self, ApiError, CallContext, Store},
+    places::Place,
     sessions::{Error, Result, Sessions},
     tmux::Tmux,
 };
@@ -201,8 +202,10 @@ async fn create_workspace(
     .await?;
     let started = start_agent(
         store.clone(),
-        plan.name.clone(),
-        plan.wt.clone(),
+        Place::Workspace {
+            name: plan.name.clone(),
+            directory: plan.wt.clone(),
+        },
         agent,
         parent,
     )
@@ -242,17 +245,15 @@ async fn create_workspace(
 }
 
 /// Starts a new agent window. The tmux launch runs without the store lock.
-async fn start_agent(
+pub(crate) async fn start_agent(
     store: Store,
-    name: String,
-    wt: PathBuf,
+    place: Place,
     agent: String,
     parent: Option<SessionId>,
 ) -> std::result::Result<Value, ApiError> {
     let plan = api::call(store.clone(), move |sessions| {
-        sessions.plan_workspace_agent(
-            &name,
-            &wt,
+        sessions.plan_agent(
+            place,
             &agent,
             parent,
             LaunchContext {
@@ -275,10 +276,7 @@ async fn start_agent(
     })
     .await
     .map_err(|_| ApiError(Error::Io(io::Error::other("The workspace worker failed."))))?;
-    api::call(store, move |sessions| {
-        sessions.commit_workspace_agent(plan, launched)
-    })
-    .await
+    api::call(store, move |sessions| sessions.commit_agent(plan, launched)).await
 }
 
 // The test releases this gate after the pane requests preparation, before the commit.
@@ -351,7 +349,18 @@ async fn add(
         workspace_path(&request.target)
     })
     .await?;
-    Ok(Json(start_agent(store, name, wt, agent, parent).await?))
+    Ok(Json(
+        start_agent(
+            store,
+            Place::Workspace {
+                name,
+                directory: wt,
+            },
+            agent,
+            parent,
+        )
+        .await?,
+    ))
 }
 
 async fn pin(
@@ -667,20 +676,29 @@ impl Sessions {
         parent_session_id: Option<SessionId>,
         context: LaunchContext<'_>,
     ) -> Result<Value> {
-        let plan = self.plan_workspace_agent(name, wt, agent, parent_session_id, context)?;
+        let plan = self.plan_agent(
+            Place::Workspace {
+                name: name.to_owned(),
+                directory: wt.to_owned(),
+            },
+            agent,
+            parent_session_id,
+            context,
+        )?;
         let launched = plan.launch();
-        self.commit_workspace_agent(plan, launched)
+        self.commit_agent(plan, launched)
     }
 
     /// Step 1: checks the request and records the session and slot under the store lock.
-    fn plan_workspace_agent(
+    fn plan_agent(
         &mut self,
-        name: &str,
-        wt: &Path,
+        place: Place,
         agent: &str,
         parent_session_id: Option<SessionId>,
         context: LaunchContext<'_>,
     ) -> Result<AgentLaunch> {
+        let name = place.workspace_id();
+        let wt = place.directory();
         let LaunchContext { resume, run, spawn } = context;
         if resume.is_none() {
             self.check_spawn_limits(parent_session_id)?;
@@ -689,7 +707,7 @@ impl Sessions {
             .registry
             .workspaces()?
             .into_iter()
-            .find(|workspace| workspace.id == name);
+            .find(|workspace| Some(workspace.id.as_str()) == name);
         let id = spawn
             .as_ref()
             .map(|origin| origin.id)
@@ -710,7 +728,7 @@ impl Sessions {
         let session_name = if let Some(run) = run {
             tmux.execute(&["display-message", "-p", "-t", &run.pane, "#{session_name}"])?
         } else {
-            name.replace(['.', ':'], "_")
+            name.map_or_else(|| id.to_string(), |name| name.replace(['.', ':'], "_"))
         };
         let live_session = if tmux
             .execute(&["has-session", "-t", &format!("={session_name}")])
@@ -784,12 +802,10 @@ impl Sessions {
             "-c".into(),
             wt.to_str().unwrap().into(),
         ];
-        for (key, value) in [
-            ("WS_WORKSPACE", name.to_owned()),
-            ("WS_SESSION_ID", id.to_string()),
-        ] {
-            args.extend(["-e".into(), format!("{key}={value}")]);
+        if let Some(name) = name {
+            args.extend(["-e".into(), format!("WS_WORKSPACE={name}")]);
         }
+        args.extend(["-e".into(), format!("WS_SESSION_ID={id}")]);
         for key in [
             "HOME",
             "WS_HOME",
@@ -819,8 +835,7 @@ impl Sessions {
             id.to_string(),
         ]);
         Ok(AgentLaunch {
-            name: name.to_owned(),
-            wt: wt.to_owned(),
+            place,
             agent: agent.to_owned(),
             parent_session_id,
             id,
@@ -835,14 +850,9 @@ impl Sessions {
     }
 
     /// Step 3: rechecks the session, workspace and slot, then registers the window.
-    fn commit_workspace_agent(
-        &mut self,
-        plan: AgentLaunch,
-        launched: Result<String>,
-    ) -> Result<Value> {
+    fn commit_agent(&mut self, plan: AgentLaunch, launched: Result<String>) -> Result<Value> {
         let AgentLaunch {
-            name,
-            wt,
+            place,
             agent,
             parent_session_id,
             id,
@@ -854,7 +864,7 @@ impl Sessions {
             pending: _pending,
             args: _,
         } = plan;
-        let (name, wt, agent) = (name.as_str(), wt.as_path(), agent.as_str());
+        let (name, wt, agent) = (place.workspace_id(), place.directory(), agent.as_str());
         let run = run_pane.as_deref();
         let tmux = Tmux::from_env();
         let window = match launched {
@@ -873,7 +883,7 @@ impl Sessions {
             .registry
             .workspaces()?
             .into_iter()
-            .find(|workspace| workspace.id == name);
+            .find(|workspace| Some(workspace.id.as_str()) == name);
         let mut windows = existing
             .as_ref()
             .and_then(|workspace| workspace.body["windows"].as_array())
@@ -886,7 +896,10 @@ impl Sessions {
                     "The session {id} ended during its launch."
                 )));
             }
-            if existed && existing.is_none() {
+            if let Some(name) = name
+                && existed
+                && existing.is_none()
+            {
                 return Err(failure(format!(
                     "The workspace {name} was removed during the launch."
                 )));
@@ -940,13 +953,13 @@ impl Sessions {
             windows.retain(|window| window["session_id"].as_str() != Some(&id.to_string()));
             windows
                 .push(json!({"window_id": window, "session_id": id, "agent": agent, "slot": slot}));
-            let owner = self.registry.workspace_owner(name)?.unwrap_or(id);
-            let event = if existing.is_some() {
-                "workspace.updated"
-            } else {
-                "workspace.created"
-            };
-            if session.workspace_id.is_some() {
+            if let Some(name) = name.filter(|_| session.workspace_id.is_some()) {
+                let owner = self.registry.workspace_owner(name)?.unwrap_or(id);
+                let event = if existing.is_some() {
+                    "workspace.updated"
+                } else {
+                    "workspace.created"
+                };
                 self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
             }
             if !was_running {
@@ -986,8 +999,7 @@ impl Sessions {
 
 /// An agent launch recorded under the store lock. Step 2 runs tmux without the lock.
 pub(crate) struct AgentLaunch {
-    name: String,
-    wt: PathBuf,
+    place: Place,
     agent: String,
     parent_session_id: Option<SessionId>,
     id: Ulid,
