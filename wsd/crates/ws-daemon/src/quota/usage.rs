@@ -85,7 +85,7 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
             );
             if latest
                 .get(&key)
-                .is_none_or(|previous| order(&entry) > order(previous))
+                .is_none_or(|previous| supersedes(&entry, previous, now))
             {
                 latest.insert(key, entry);
             }
@@ -162,6 +162,24 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
     Ok(Usage { windows })
 }
 
+/// Returns true when `entry` replaces `previous` as the selected reading of one window.
+/// A report whose window has not reset wins over any estimate (semconv: an estimate
+/// must not silently replace a reported reading). Otherwise the newest reading wins.
+fn supersedes(entry: &LogEntry, previous: &LogEntry, now: u64) -> bool {
+    match (live_report(entry, now), live_report(previous, now)) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => order(entry) > order(previous),
+    }
+}
+
+fn live_report(entry: &LogEntry, now: u64) -> bool {
+    entry.body[sc::RUNNER_USAGE_SOURCE] == "reported"
+        && entry.body[sc::RUNNER_USAGE_WINDOW_RESET]
+            .as_u64()
+            .is_none_or(|reset| reset > now)
+}
+
 fn order(entry: &LogEntry) -> (u64, bool, u64, u64) {
     let body: &Value = &entry.body;
     (
@@ -170,4 +188,67 @@ fn order(entry: &LogEntry) -> (u64, bool, u64, u64) {
         body["received_at_ms"].as_u64().unwrap_or(0),
         entry.ts_ms,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use ws_core::ids::Ulid;
+
+    use super::*;
+
+    const NOW: u64 = 1_000_000;
+
+    fn entry(body: Value) -> LogEntry {
+        LogEntry {
+            event_id: Ulid::nil(),
+            session_id: Ulid::nil(),
+            epoch: 0,
+            seq: 0,
+            prev_hash: String::new(),
+            ts_ms: 0,
+            event_type: "runner.usage.updated".into(),
+            body,
+            device_id: Ulid::nil(),
+            sig: String::new(),
+        }
+    }
+
+    fn reported(reset: u64) -> LogEntry {
+        entry(json!({
+            (sc::RUNNER_USAGE_SOURCE): "reported",
+            (sc::RUNNER_USAGE_OBSERVED_AT): NOW - 2_000,
+            (sc::RUNNER_USAGE_REMAINING_RATIO): 0.75,
+            (sc::RUNNER_USAGE_WINDOW_RESET): reset,
+        }))
+    }
+
+    fn estimated() -> LogEntry {
+        entry(json!({
+            (sc::RUNNER_USAGE_SOURCE): "estimated",
+            (sc::RUNNER_USAGE_OBSERVED_AT): NOW - 1_000,
+        }))
+    }
+
+    #[test]
+    fn unexpired_report_wins_over_newer_estimate() {
+        let report = reported(NOW + 60_000);
+        let estimate = estimated();
+        assert!(
+            !supersedes(&estimate, &report, NOW),
+            "A newer estimate must not replace an unexpired reported window."
+        );
+        assert!(
+            supersedes(&report, &estimate, NOW),
+            "An unexpired report must replace an estimate."
+        );
+    }
+
+    #[test]
+    fn expired_report_loses_to_newer_estimate() {
+        let report = reported(NOW - 500);
+        let estimate = estimated();
+        assert!(supersedes(&estimate, &report, NOW));
+        assert!(!supersedes(&report, &estimate, NOW));
+    }
 }
