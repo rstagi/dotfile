@@ -364,9 +364,13 @@ launch_engine() {
     return $?
   fi
   local key environment=()
-  for key in ${(k)parameters}; do
-    [[ "${parameters[$key]}" == *export* ]] && environment+=(--env "$key=${(P)key}")
-  done
+  if "$WS_BIN" session run --help 2>/dev/null | grep -q -- '--inherit-env'; then
+    environment=(--inherit-env)
+  else
+    for key in ${(k)parameters}; do
+      [[ "${parameters[$key]}" == *export* ]] && environment+=(--env "$key=${(P)key}")
+    done
+  fi
   "$WS_BIN" session run --headless --cwd "$WT" "${environment[@]}" \
     --stdin "$PROMPT_IN" --stdout "$TRANSCRIPT" --stderr "$STDERR" -- \
     zsh -c '
