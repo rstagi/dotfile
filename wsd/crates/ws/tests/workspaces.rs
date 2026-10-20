@@ -1498,6 +1498,41 @@ fn add_registers_an_existing_worktree_and_allocates_another_tab() {
 }
 
 #[test]
+fn add_in_a_detached_worktree_records_the_repo_without_a_branch() {
+    let mut sandbox = Sandbox::new();
+    let repo = sandbox.repo("api").canonicalize().unwrap();
+    let wt = sandbox.home.path().join("worktrees/api/task");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            wt.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let output = sandbox.output(&["add", wt.to_str().unwrap(), "--agent", "claude", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let output = sandbox.output(&["new", "--scratch", "--agent", "codex", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(sessions.as_array().unwrap().len(), 2);
+    let attached = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["body"]["agent"] == "claude")
+        .unwrap();
+    assert_eq!(attached["repos"], serde_json::json!([{"path": repo}]));
+}
+
+#[test]
 fn new_honors_conductor_includes_and_runs_setup_in_the_worktree() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo("shop");

@@ -1018,10 +1018,13 @@ impl Sessions {
             self.append(id, "session.created", body)?;
         }
         if name.is_some() {
+            // A detached HEAD has no current branch. The event then records null.
+            let branch = git(wt, &["branch", "--show-current"])?;
+            let branch = (!branch.is_empty()).then_some(branch);
             self.append(
                 id,
                 "session.repo_attached",
-                json!({"path": main_checkout(wt)?, "branch": git(wt, &["branch", "--show-current"])?}),
+                json!({"path": main_checkout(wt)?, "branch": branch}),
             )?;
         }
         let tab = if slot > 1 {
