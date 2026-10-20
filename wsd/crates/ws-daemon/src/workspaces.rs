@@ -442,6 +442,27 @@ impl Sessions {
             Err(ws_core::registry::Error::NotFound(_)) => None,
             Err(error) => return Err(error.into()),
         };
+        if let Some(session) = &session
+            && session.workspace_id.is_none()
+        {
+            let directory = session
+                .cwd
+                .as_deref()
+                .ok_or(Error::InvalidRequest("The session has no directory place."))?;
+            return self.open_directory(
+                Path::new(directory),
+                vec![session.clone()],
+                request.parent_session_id,
+            );
+        }
+        if session.is_none()
+            && workspace_path(&request.target).is_err()
+            && let Ok(directory) = Path::new(&request.target).canonicalize()
+            && directory.is_dir()
+        {
+            let sessions = self.directory_sessions(&directory)?;
+            return self.open_directory(&directory, sessions, request.parent_session_id);
+        }
         let workspace = if let Some(session) = &session {
             self.registry
                 .workspaces()?
@@ -514,6 +535,75 @@ impl Sessions {
             Some(window) => Ok(window.clone()),
             None => self.start_workspace(&workspace.id, wt, "claude", request.parent_session_id),
         }
+    }
+
+    fn directory_sessions(&self, directory: &Path) -> Result<Vec<Session>> {
+        Ok(self
+            .registry
+            .sessions()?
+            .into_iter()
+            .filter(|session| {
+                session.workspace_id.is_none()
+                    && session.body["agent"].is_string()
+                    && session.cwd.as_deref().is_some_and(|cwd| {
+                        Path::new(cwd).canonicalize().ok().as_deref() == Some(directory)
+                    })
+            })
+            .collect())
+    }
+
+    fn open_directory(
+        &mut self,
+        directory: &Path,
+        sessions: Vec<Session>,
+        parent: Option<SessionId>,
+    ) -> Result<Value> {
+        if !directory.is_dir() {
+            return Err(failure(format!(
+                "The session directory no longer exists: {}",
+                directory.display()
+            )));
+        }
+        let tmux = Tmux::from_env();
+        for session in &sessions {
+            for window in self.session_windows(session)? {
+                if tmux
+                    .window_option(&window, "@ws_session")
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(&session.id.to_string())
+                {
+                    return Ok(json!({"window_id": window, "session_id": session.id}));
+                }
+            }
+        }
+        let mut first = None;
+        for session in sessions
+            .into_iter()
+            .filter(|session| !["finished", "failed"].contains(&session.state.as_str()))
+        {
+            let window = self.start_place_agent(
+                Place::Directory {
+                    directory: directory.to_owned(),
+                },
+                session.body["agent"].as_str().unwrap_or("claude"),
+                parent,
+                LaunchContext {
+                    resume: Some(&session),
+                    run: None,
+                    spawn: None,
+                    start: None,
+                },
+            )?;
+            first.get_or_insert(window);
+        }
+        first.ok_or_else(|| {
+            failure(format!(
+                "No stopped session exists in directory: {}",
+                directory.display()
+            ))
+        })
     }
 
     /// Step 1 of a removal: checks the target and reserves its name under the store lock.

@@ -14,6 +14,66 @@ struct Sandbox {
 }
 
 #[test]
+fn open_directory_restores_stopped_sessions_once_with_the_same_identity() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("notes with spaces");
+    std::fs::create_dir(&directory).unwrap();
+    assert!(
+        sandbox
+            .output(&["new", "--cwd", directory.to_str().unwrap(), "--detach"])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&[
+                "add",
+                directory.to_str().unwrap(),
+                "--agent",
+                "codex",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    let before = sandbox.json(&["sessions", "--json"]);
+    let rows = sandbox.tmux(&["list-windows", "-a", "-F", "#{window_id}\t#{@ws_session}"]);
+    for row in rows
+        .lines()
+        .filter(|row| row.split_once('\t').is_some_and(|(_, id)| !id.is_empty()))
+    {
+        sandbox.tmux(&["kill-window", "-t", row.split_once('\t').unwrap().0]);
+    }
+    for _ in 0..2 {
+        let output = sandbox
+            .command()
+            .current_dir(sandbox.home.path())
+            .args(["open", "notes with spaces", "--detach"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let after = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(
+        before
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| &s["id"])
+            .collect::<Vec<_>>(),
+        after
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| &s["id"])
+            .collect::<Vec<_>>()
+    );
+    let rows = sandbox.tmux(&["list-windows", "-a", "-F", "#{@ws_session}"]);
+    assert_eq!(rows.lines().filter(|id| !id.is_empty()).count(), 2);
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+}
+
+#[test]
 fn new_scratch_starts_a_codex_session_without_a_workspace() {
     let sandbox = Sandbox::new();
     let output = sandbox.output(&["new", "--scratch", "--agent", "codex", "--detach"]);
