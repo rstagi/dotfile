@@ -173,7 +173,6 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
             } else {
                 if !arguments.command.is_empty()
                     || arguments.parent.is_some()
-                    || arguments.cwd.is_some()
                     || arguments.inherit_env
                     || !arguments.environment.is_empty()
                     || arguments.stdin.is_some()
@@ -185,7 +184,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 let value = crate::mcp::Control::for_caller(socket, super::caller(socket).await?)
                     .call(
                         "session_create",
-                        serde_json::json!({"name":name, "workspace_id":workspace_id}),
+                        serde_json::json!({"name":name, "workspace_id":workspace_id, "cwd":arguments.cwd}),
                     )
                     .await?;
                 if json {

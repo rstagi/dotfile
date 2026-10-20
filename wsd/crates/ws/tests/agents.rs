@@ -167,6 +167,121 @@ fn start_api_creates_named_and_unnamed_scratch_directories() {
     }
 }
 
+#[tokio::test]
+async fn mcp_session_create_starts_an_interactive_agent_in_a_directory() {
+    use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("mcp notes");
+    fs::create_dir(&directory).unwrap();
+    let response = common::request(&sandbox.socket, "POST", "/v1/sessions", "{}");
+    let parent: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let mut command = tokio::process::Command::from(sandbox.command());
+    command
+        .arg("mcp")
+        .env("WS_SESSION_ID", parent["id"].as_str().unwrap())
+        .current_dir(sandbox.home.path());
+    let client = tokio::time::timeout(
+        Duration::from_secs(30),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("session_create").with_arguments(
+                json!({"cwd":"mcp notes", "name":"mcp-notes"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let session: Value = serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(result.structured_content.as_ref(), Some(&session));
+    let (agent, _running) = sandbox.capture();
+    assert_eq!(session["id"], agent["id"]);
+    assert_eq!(
+        session["cwd"],
+        directory.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(agent["cwd"], session["cwd"]);
+    assert_eq!(session["name"], "mcp-notes");
+    assert_eq!(session["parent_session_id"], parent["id"]);
+    assert!(session["workspace_id"].is_null());
+    assert!(session["body"]["spawned"].is_null());
+    assert_eq!(sandbox.json(&["list", "--json"]), json!([]));
+    let rejected = client
+        .call_tool(
+            CallToolRequestParams::new("session_create").with_arguments(
+                json!({"cwd":"mcp notes", "workspace_id":"unused"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.is_error, Some(true), "{rejected:?}");
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    client.cancel().await.unwrap();
+}
+
+#[test]
+fn session_create_starts_an_interactive_agent_in_a_directory() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("create notes");
+    fs::create_dir(&directory).unwrap();
+    let result = sandbox
+        .command()
+        .current_dir(sandbox.home.path())
+        .args([
+            "session",
+            "create",
+            "--cwd",
+            "create notes",
+            "--name",
+            "notes",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let created: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let (agent, _running) = sandbox.capture();
+    assert_eq!(agent["id"], id);
+    assert_eq!(agent["agent"], "claude");
+    assert_eq!(
+        agent["cwd"],
+        directory.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(created["cwd"], agent["cwd"]);
+    assert_eq!(created["name"], "notes");
+    assert!(created["workspace_id"].is_null());
+    assert!(created["body"]["spawned"].is_null());
+    assert_eq!(sandbox.json(&["list", "--json"]), json!([]));
+    let window = sandbox.window(id);
+    let done = sandbox
+        .command()
+        .env("WS_SESSION_ID", id)
+        .arg("done")
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "{done:?}");
+    assert_eq!(sandbox.window(id), window);
+}
+
 #[test]
 fn start_api_runs_an_agent_in_a_directory_without_registering_a_workspace() {
     let sandbox = Sandbox::new();
@@ -707,6 +822,120 @@ fn failed_trigger_launch_releases_its_slot_and_keeps_diagnostics() {
             .as_str()
             .unwrap()
             .contains("synthetic launch failure")
+    );
+}
+
+#[test]
+fn terminal_spawn_trigger_uses_the_current_directory() {
+    let sandbox = Sandbox::new();
+    let response = common::request(&sandbox.socket, "POST", "/v1/sessions", "{}");
+    let source: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let id = source["id"].as_str().unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{id}/done"),
+        "{}",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let result = sandbox
+        .command()
+        .current_dir(sandbox.home.path())
+        .args(["on", id, "done", "--spawn", "claude", "Continue."])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let (child, _running) = sandbox.capture();
+    assert_eq!(
+        child["cwd"],
+        sandbox
+            .home
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert!(
+        sandbox.json(&["show", child["id"].as_str().unwrap(), "--json"])["workspace_id"].is_null()
+    );
+    assert_eq!(sandbox.json(&["list", "--json"]), json!([]));
+}
+
+#[test]
+fn trigger_spawn_uses_the_owners_directory_without_a_workspace() {
+    let mut sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("owner notes");
+    fs::create_dir(&directory).unwrap();
+    let directory = directory.canonicalize().unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/sessions/start",
+        &json!({"cwd":directory, "agent":"claude"}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    let (owner, _running) = sandbox.capture();
+    let owner_id = owner["id"].as_str().unwrap();
+    let response = common::request(&sandbox.socket, "POST", "/v1/sessions", "{}");
+    let source: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let source_id = source["id"].as_str().unwrap();
+    let output = sandbox
+        .command()
+        .env("WS_SESSION_ID", owner_id)
+        .args([
+            "on",
+            source_id,
+            "done",
+            "--spawn",
+            "codex",
+            "Continue {id}: {output}",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let trigger = sandbox.json(&["triggers", "--json"]);
+    assert_eq!(trigger[0]["cwd"], directory.to_str().unwrap());
+    assert!(trigger[0]["workspace"].is_null());
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    sandbox._daemon = common::Daemon::start(sandbox.command(), &sandbox.socket);
+    assert_eq!(sandbox.json(&["triggers", "--json"]), trigger);
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        &format!("/v1/sessions/{source_id}/done"),
+        r#"{"output":"the result"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let (child, _child_running) = sandbox.capture();
+    let child_id = child["id"].as_str().unwrap();
+    assert_eq!(child["cwd"], directory.to_str().unwrap());
+    assert!(
+        child["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(format!("Continue {source_id}: the result")))
+    );
+    let session = sandbox.json(&["show", child_id, "--json"]);
+    assert_eq!(session["body"]["parent_session_id"], owner_id);
+    assert!(session["workspace_id"].is_null());
+    assert_eq!(session["body"]["spawned"], true);
+    assert_eq!(session["cwd"], directory.to_str().unwrap());
+    assert_eq!(sandbox.json(&["list", "--json"]), json!([]));
+    let window = sandbox.window(child_id);
+    let done = sandbox
+        .command()
+        .env("WS_SESSION_ID", child_id)
+        .arg("done")
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "{done:?}");
+    assert!(
+        !sandbox
+            .tmux(&["list-windows", "-a", "-F", "#{window_id}"])
+            .lines()
+            .any(|id| id == window)
     );
 }
 

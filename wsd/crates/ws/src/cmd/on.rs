@@ -70,10 +70,11 @@ pub async fn run(socket: &Path, arguments: Vec<String>) -> Result<()> {
             }
             if caller.is_none() {
                 let path = std::env::current_dir()?;
-                let (name, _) = ws_daemon::workspaces::workspace_path(
-                    path.to_str().ok_or("The workspace path is not UTF-8.")?,
-                )?;
-                request["workspace"] = json!(name);
+                let directory = path.to_str().ok_or("The directory path is not UTF-8.")?;
+                match ws_daemon::workspaces::workspace_path(directory) {
+                    Ok((name, _)) => request["workspace"] = json!(name),
+                    Err(_) => request["cwd"] = json!(directory),
+                }
             }
         }
         _ => return Err("on: expected --send-to or --spawn".into()),
