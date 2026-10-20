@@ -47,6 +47,42 @@ The TSV activity column describes tmux activity, such as `idle`, `working`, `wai
 An idle or stopped agent did not necessarily complete its task.
 `ws show` prints the output path. Read that file to obtain the result.
 
+## Session places and repos
+
+A session's place and its repos are separate. Both are optional.
+The place supplies the working directory (`cwd`) and optional workspace (`workspace_id`).
+A workspace combines a git worktree and a tmux session.
+A directory place uses an existing directory without creating a git worktree.
+A scratch place uses a new directory under `$WS_HOME/scratch/<ulid8>`.
+Directory and scratch sessions have no workspace. The picker shows both.
+
+```sh
+ws new --repo /path/to/repo --branch feat/task --detach
+ws new --cwd /path/to/notes --detach
+ws new --scratch --agent codex --detach
+ws add /path/to/notes --agent codex --detach
+ws open /path/to/notes --detach
+ws sessions --json
+```
+
+`--cwd` accepts directories inside or outside git repositories.
+`--repo` accepts a non-git directory when `--branch` is absent.
+`ws add <dir>` starts another agent in that directory.
+`ws open <dir>` resumes stopped sessions with their existing IDs.
+`ws rm <dir>` stops its sessions and preserves external files.
+Scratch removal requires confirmation, including with `--force`.
+`ws pin <dir>` rejects directory places. Pins apply only to workspaces.
+
+JSON includes `cwd` and `repos`. Each repo has a `path` and optional `remote`, `branch` and `base`.
+The registry merges repo entries by path. Repo events do not change `cwd`.
+When the daemon starts a workspace session, it records the main checkout and workspace branch in `session.repo_attached`.
+`workspace.created` also records `repo` and `branch`.
+Phase spawns record their execution repo and base in `session.repo_attached`.
+`ws phase worktree` records a detached checkout through `phase.worktree`.
+Its checkout path enters `repos`, with the reference as `base`.
+The daemon does not detect repos from directory sessions or hooks.
+Human and TSV output keep their existing format.
+
 ## Send and acknowledge messages
 
 ```sh

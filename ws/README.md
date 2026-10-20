@@ -6,9 +6,15 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 
 - A workspace combines a git worktree and a tmux session. Each interactive agent uses a window in that session.
 - `ws new [--repo <path>] [--branch <branch>] [--agent claude|codex|grok] [--detach]` creates a workspace.
+- `ws new --scratch [--agent claude|codex|grok] [--detach]` starts a session in `$WS_HOME/scratch/<ulid8>`.
+- `ws new --cwd <dir> [--agent claude|codex|grok] [--detach]` starts a session in an existing directory.
 - `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
-- `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace or session.
+- `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace, directory place or session.
+- If every session of a directory ended, `ws open <dir>` resumes its most recent session.
 - `ws list [--json]`, `ws pin <workspace|path>` and `ws rm [<workspace|path>]` manage registered workspaces.
+- `ws rm <dir>` stops the sessions of a directory place and closes their windows. It preserves files outside `$WS_HOME/scratch/`.
+- Removal of a scratch directory always requires confirmation, including with `--force`. `--interactive` also confirms removal of other places.
+- `ws pin <dir>` rejects directory places. Pins apply only to workspaces.
 - `ws merge` merges the workspace PR through `gh`, then offers to remove the worktree and branch.
 - `ws claude|codex|grok [args]` starts a tracked agent in the current workspace window.
 - `ws sessions [<id>|<name>] [--json]`, `ws whoami [--json]`, `ws name <label>` and `ws show <target> [--json]` manage session identity.
@@ -24,12 +30,43 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws mcp` serves local stdio MCP tools. Agent launches configure this server without changing Claude or Codex configuration files.
 - `ws backend rust` imports any remaining legacy records. Rust is the only backend.
 
-The picker uses fzf. Enter opens a workspace. Ctrl-N creates a Claude workspace, Ctrl-O uses Codex, and Ctrl-R uses Grok.
+The picker uses fzf. Enter opens a workspace or directory place. Ctrl-N creates a Claude workspace, Ctrl-O uses Codex, and Ctrl-R uses Grok.
 Ctrl-A adds Claude, Ctrl-T adds Codex, and Ctrl-V adds Grok. Ctrl-S shows sessions, Ctrl-P changes pins, and Ctrl-X removes workspaces.
 The tmux bindings include `prefix+w` for the picker and `prefix+M` for merge.
 Agent starts use permission bypass flags.
 The [ws-sessions skill](../.claude/skills/ws-sessions/SKILL.md) describes agent coordination.
 `./install-agent-skills.sh` shares that skill with Claude, Codex and Ratel Local.
+
+## Session places and repos
+
+A session's place and its repos are separate. Both are optional.
+The place supplies its working directory (`cwd`) and optional workspace (`workspace_id`).
+A workspace combines a git worktree and a tmux session.
+A directory place uses an existing directory without creating a git worktree.
+A scratch place uses a new directory under `$WS_HOME/scratch/<ulid8>`.
+
+```sh
+ws new --repo /path/to/repo --branch feat/task --detach
+ws new --cwd /path/to/notes --detach
+ws new --scratch --agent codex --detach
+ws sessions --json
+```
+
+`--cwd` accepts directories inside or outside git repositories.
+`--repo` also accepts a non-git directory when `--branch` is absent.
+Directory and scratch sessions have no workspace. The picker still shows them.
+Use `ws add <dir>` to add an agent and `ws open <dir>` to resume stopped sessions.
+`ws rm <dir>` preserves external files. Scratch removal requires confirmation, including with `--force`.
+Pins apply only to workspaces.
+
+The registry derives `repos` from events without changing the session's `cwd`.
+Workspace launches record the main checkout path and workspace branch through `session.repo_attached`.
+The `workspace.created` event also records `repo` and `branch`.
+Phase spawns record their execution repo and base through `session.repo_attached`.
+`ws phase worktree` records the detached checkout path and reference through `phase.worktree`.
+Its checkout path becomes a `repos` entry, with the reference as `base`.
+Directory launches do not detect repos from their cwd or hooks.
+The `cwd` and `repos` fields appear in JSON. Human and TSV output keep their existing format.
 
 ## Notification adapters
 
@@ -166,7 +203,10 @@ Legacy windows and `WS_SESSION` can contain a bare numeric alias.
 Session lists, picker rows and child creation resolve that alias.
 `WS_TMUX_SOCKET` selects the tmux server by name or socket path.
 
-JSON returns the registry session fields, including the ULID `id`, numeric `alias` and lifecycle `state`.
+JSON returns the registry session fields, including the ULID `id`, numeric `alias`, lifecycle `state`, `cwd` and `repos`.
+`cwd` is null when the session has no recorded directory. Legacy imports use their recorded `path` as `cwd`.
+`repos` contains entries with `path` and optional `remote`, `branch` and `base` fields.
+The registry merges repo entries by path. A `phase.worktree` event records its checkout path and uses its `reference` as `base`.
 `sessions --json` returns an array. The other commands return one session object. `show --json` adds the `output` path.
 Human output maps `finished` to `done`, `failed` to `closed`, and other lifecycle states to `active`.
 The TSV state column reports the live tmux state or `stopped` when no tagged window exists.
@@ -189,7 +229,7 @@ Daemon shutdown releases pending waits with HTTP 503.
 `POST /v1/sessions/{id}/done` accepts `{"output":"completion text"}`. Both routes accept `parent_session_id` for caller audit.
 
 `ws on <id,id,...> done|exit --send-to <id|me> [--template <text>]` registers a one-shot action.
-`ws on <ids> done|exit --spawn <claude|codex|grok> [prompt]` starts a tracked child in the owner's workspace.
+`ws on <ids> done|exit --spawn <claude|codex|grok> [prompt]` starts a tracked child in the owner's workspace or directory.
 The legacy forms `--send-to <id> <text>` and `--spawn <prompt> [--agent <agent>]` also work.
 Omitted text uses a completion message with `{id}` and `{output}`. Expansion preserves literal text and source order.
 Templates must contain text or `{id}` in addition to `{output}`.
@@ -197,24 +237,30 @@ Done triggers accept earlier completion events. Exit triggers require a new exit
 A self-send waits for the launch wrapper to retire before it reopens the session.
 All sources must satisfy the condition. Repeated events and daemon restarts do not repeat a completed action.
 The owner log stores `edge.action_registered` with the sources, offsets, dependency edges, and action.
-A terminal caller uses the local human session as the owner. A send records `message.sent` in that owner's log.
+A terminal caller uses the local human session as the owner. A terminal spawn uses the current workspace or directory.
+A send records `message.sent` in that owner's log.
 A spawn records its claim before launch. Failed actions record `edge.action_failed` and do not retry.
 Trigger changes use the daemon's serialized store, without trigger lock files.
 `ws triggers [--json]` lists pending actions. Human output keeps the six-column TSV format.
 `ws on --rm <trigger-ULID>` removes a pending action and its projected edges.
 `ws done` closes a spawned child's tab after it publishes the output.
 The API uses `POST /v1/triggers`, `GET /v1/triggers`, and `POST /v1/triggers/{id}/remove`.
-Registration accepts `sources`, `event`, either `target` or `spawn`, optional `template`, and `parent_session_id`.
-A terminal spawn also supplies the registered `workspace`. Removal accepts the caller context.
+Registration accepts `sources`, `event`, either `target` or `spawn`, optional `template`, `workspace`, `cwd`, and `parent_session_id`.
+A spawn without a workspace retains the owner's `cwd` in its trigger record. Older trigger records can omit `cwd`.
+A terminal spawn supplies `workspace` or `cwd`. Removal accepts the caller context.
 
 Dependency edges use `POST /v1/sessions/{id}/depends_on` or `/block_on` with `{"target":"<id|name>"}`.
 `GET /v1/edges` returns the projected graph. A cycle returns HTTP 409 and the cycle's session IDs.
 The source log records `session.depends_on` or `session.block_on`. The registry rebuild restores these edges.
 
-`ws session create --headless [--parent <id>] [--cwd <dir>] [--env K=V]... [--stdin <file>] [--stdout <file>] [--stderr <file>] -- <cmd>`
+`ws session create --headless [--parent <id>] [--cwd <dir>] [--inherit-env] [--env K=V]... [--stdin <file>] [--stdout <file>] [--stderr <file>] -- <cmd>`
 starts a process under the daemon and prints its session ULID. The process leads its own process group.
 The working directory defaults to the CLI's current directory. Relative I/O paths use that same CLI directory, independent of `--cwd`.
 Environment overrides extend the daemon environment. Repeated keys use the last value.
+`--inherit-env` reads the CLI process environment and sends it over the Unix socket.
+Explicit `--env K=V` assignments override inherited values, regardless of flag order.
+The daemon does not persist these environment values in its registry, events, spans or diagnostic logs.
+A command can still write its own environment values to its output files.
 The process receives its session ULID in `WS_SESSION_ID` only.
 Claude, Codex and Grok use the shared agent preparation contract in headless mode.
 Stdin defaults to EOF. Stdout and stderr default to `$WS_STATE/sessions/<id>/stdout.log` and `stderr.log`.
@@ -227,14 +273,23 @@ Signal exits use code `128 + signal`. `GET /v1/sessions/{id}` returns `exit_code
 `POST /v1/sessions/{id}/stop` sends SIGTERM to the headless process group.
 After a 10-second grace period, it sends SIGKILL if the group still exists.
 The response waits for the entire group to disappear and for the daemon to record the exit.
+For an interactive agent, `ws session stop <id>` closes its owned tmux window and frees its slot.
+The daemon records an `exit` event and marks the session `finished`.
 `ws session run [--headless] …` accepts the same command and I/O options as `session create --headless`.
 It waits in the foreground and returns the child exit code. Output stays in the session log files.
+Use `ws session run --inherit-env -- <cmd>` to keep inherited environment values out of process arguments.
+The Loop runner and orchestrator use this flag when the installed CLI lists it in `session run --help`.
+They retain `--env K=V` forwarding for older binaries. Install milestone 4 to remove that argument exposure.
 SIGTERM, SIGINT and SIGHUP stop the session group. The client waits for the recorded exit before it exits.
 The daemon persists the process id, process group and process start identity in `session.running`.
 After a restart, it adopts each matching live headless process and polls its liveness.
 A missing process or a changed identity produces `session.failed` with a reason.
 An adopted process has no waitable exit status. Its eventual exit produces a failure with a null `exit_code` and a reason.
 Run `cd wsd && cargo test -p ws --test headless` to check the I/O contract with sandbox processes.
+
+Interactive window bindings use `session.window` events. The daemon also reads older workspace window records.
+For directories outside a repository, slot files use `$WS_STATE/places/<hash>/ws-sessions`.
+Git worktrees keep their slot file in the git directory.
 
 `ws agent prepare --agent claude|codex|grok --mode headless --session <ULID> [--resume <id>] --format json|sh`
 prepares an agent command for an external runner. It uses the same builder as interactive sessions.
@@ -274,7 +329,10 @@ The Rust bus returns exit 75 with a queue warning. A live Stop hook returns `{de
 The batch follows `pair_seq` order for each sender. Its headers use sender metadata.
 
 After the hook writes and flushes its reply, it confirms delivery through `POST /v1/hooks/delivered`.
-The daemon writes `message.delivered` in the recipient log. Failed confirmations remain in `$WS_STATE/delivery-spool/` for replay at startup or before the next hook.
+The daemon writes `message.delivered` in the recipient log. Failed confirmations remain in `$WS_STATE/delivery-spool/` for background replay or before the next hook.
+A hook batch stays provisional until the next Stop. If that Stop reports `stop_hook_active: false`, the daemon returns the batch again.
+If the client does not confirm a block and no receipt exists in the spool, recovery returns the same window to `idle` after the CLI budget.
+The idle paste worker then submits the pending inbox. Recovery checks ownership and the sequence before it changes the window, so it preserves newer turns.
 
 For an idle agent window, the daemon pastes a durable batch into the recorded agent pane with bracketed paste and a separate Enter.
 A newer `UserPromptSubmit` confirms the batch and writes `message.delivered`. Tool hooks and older prompts do not confirm it.
@@ -292,6 +350,7 @@ The Rust backend accepts `--force` before the target or after the message. The f
 If the agent cannot resume, the message stays queued. Sessions on other devices do not launch locally.
 
 The next accepted Stop or matching cancellation writes `message.read` with `implicit: true` for delivered messages that lack an explicit acknowledgement.
+A Stop with `stop_hook_active: false` retains provisional hook deliveries instead. Older hook payloads that omit this field keep the implicit-read behavior.
 Hook spool replay does not inject a new batch. Only the session's local device can inject messages.
 
 Run `cd wsd && cargo test -p ws --test messages` to check persistence, ordering, acknowledgements and stdin.
@@ -318,6 +377,10 @@ The tools return the daemon JSON in both text and structured content.
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
 
 The record form accepts a name and a workspace ID. The headless form rejects both fields.
+`ws session create --cwd <dir> [--name <name>] --json` starts an interactive Claude session in that directory.
+MCP `session_create` accepts the same `cwd` and `name` fields. Relative directories use the caller's current directory.
+This form calls `POST /v1/sessions/start`. It returns the session record and creates no workspace.
+Use either `cwd` or `workspace_id` for an interactive session.
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.
@@ -514,13 +577,18 @@ Run `cd wsd && cargo test -p ws --test phases` to check phase launches, review w
 
 The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,
 `add [repo/branch|path] [--agent <agent>] [--detach]`, and `list|ls [--json]`.
-`new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.
-Without `--repo`, `new` offers the current repository, the read-only Loop mappings, and repositories under `$WS_REPO_ROOTS` through fzf.
-Without `--branch`, it reads the branch from the terminal.
-It copies ignored files that match `.conductor/settings.toml` `file_include_globs`, with `.env*` as the default.
-It runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux window.
-`add` registers an existing worktree or adds a tab to a registered workspace.
-When the target is absent, it uses the current directory or tmux workspace.
+With a repository and branch, `new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.
+Without `--repo`, `new` offers `scratch`, the current repository, the read-only Loop mappings, and repositories under `$WS_REPO_ROOTS` through fzf.
+Select `scratch` or use `new --scratch` to create a session in `$WS_HOME/scratch/<ulid8>`.
+Use `new --cwd <dir>` to start in an existing directory, including a repository.
+`--cwd` and `--scratch` each conflict with `--repo` and `--branch`. They also conflict with each other.
+For a repository selection, `new` reads the branch from the terminal unless `--branch` supplies it.
+A directory outside git skips the branch prompt and starts a session without a workspace.
+Workspace creation copies ignored files that match `.conductor/settings.toml` `file_include_globs`, with `.env*` as the default.
+Workspace creation runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux window.
+`add` registers an existing worktree or adds a window to a workspace or an existing directory.
+Directory sessions share one tmux session and allocate successive agent slots.
+When the target is absent, `add` uses the current tmux window's `@ws_path`, then the current directory.
 `list` selects workspaces from the registry. A worktree directory without a registry entry does not appear.
 Workspace tabs start the selected agent through one preparation contract in `ws-daemon`.
 `ws claude`, `ws codex` and `ws grok` run tracked agents in the current workspace tab and forward their arguments.
@@ -533,8 +601,12 @@ The Rust `hook` command records every callback and its original payload in the s
 It retains prompt, turn and tool identifiers. Receipt times remain separate from agent durations.
 The daemon records callbacks before it reduces the window state. Repeated `working` callbacks stay separate log events.
 The window options retain the zsh sequence, turn and background subagent rules. A blocked Stop keeps its turn active.
-A failed transport writes the callback to `$WS_STATE/spool/`. The daemon replays pending callbacks at startup.
-Every hook exits 0. Stop returns its decision as JSON. Each tmux command that the daemon runs for a hook has a 2 s deadline.
+A failed transport writes the callback to `$WS_STATE/spool/`. The daemon serves its socket before background replay starts.
+It scans the spool each second and gives new files priority over the startup backlog.
+Older callbacks retain their events but cannot replace newer window state.
+Every hook exits 0. Stop returns its decision as JSON. Stop and exit share one 20 s CLI budget across resolve, ingest and confirmation.
+Generated Claude Stop and SessionEnd hooks and Grok Stop hooks have a 30 s parent timeout.
+Each tmux command that the daemon runs for a hook has a 2 s deadline.
 The Rust daemon sends the same desktop notification events through terminal-notifier, osascript, boringnotch, or a custom adapter.
 Hooks retain their notification settings, including `WS_NOTIFY=0`, when the daemon replays their spool records.
 Built-in banners and sounds require an unfocused tab in `idle` or `waiting`. Custom adapters and boringnotch receive every state transition.

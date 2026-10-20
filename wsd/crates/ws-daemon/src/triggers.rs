@@ -29,6 +29,8 @@ pub struct Trigger {
     pub template: String,
     pub agent: Option<String>,
     pub workspace: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     pub spawned_session: Option<SessionId>,
     pub event_offsets: BTreeMap<SessionId, u64>,
     pub edges: Vec<Value>,
@@ -43,6 +45,7 @@ struct Register {
     spawn: Option<String>,
     template: Option<String>,
     workspace: Option<String>,
+    cwd: Option<String>,
     parent_session_id: Option<SessionId>,
 }
 
@@ -146,14 +149,32 @@ impl Sessions {
         // The human device session owns actions registered outside an agent session.
         let owner = self.message_session(request.parent_session_id)?;
         let workspace = request.workspace.or(owner.workspace_id.clone());
-        if request.spawn.is_some() && workspace.is_none() {
-            return Err(Error::InvalidRequest(
-                "A spawn trigger requires a workspace.",
-            ));
-        }
+        let cwd = if request.spawn.is_some() && workspace.is_none() {
+            let directory = request
+                .cwd
+                .or(owner.cwd.clone())
+                .ok_or(Error::InvalidRequest(
+                    "A spawn trigger requires a workspace or a directory.",
+                ))?;
+            let directory = std::path::Path::new(&directory)
+                .canonicalize()
+                .map_err(|_| Error::InvalidRequest("The spawn directory does not exist."))?;
+            if !directory.is_dir() {
+                return Err(Error::InvalidRequest("The spawn directory does not exist."));
+            }
+            Some(
+                directory
+                    .to_str()
+                    .ok_or(Error::InvalidRequest("Use a directory with a UTF-8 path."))?
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
         if request.spawn.is_some()
+            && let Some(workspace) = &workspace
             && !self.registry.workspaces()?.iter().any(|record| {
-                Some(&record.id) == workspace.as_ref()
+                &record.id == workspace
                     && record.body["path"]
                         .as_str()
                         .is_some_and(|path| std::path::Path::new(path).is_dir())
@@ -189,6 +210,7 @@ impl Sessions {
             template,
             agent: request.spawn,
             workspace,
+            cwd,
             spawned_session,
             event_offsets: offsets,
             edges,
@@ -323,33 +345,20 @@ impl Sessions {
         &mut self,
         session: &ws_core::registry::Session,
     ) -> Result<()> {
-        let workspace = self
-            .registry
-            .workspaces()?
-            .into_iter()
-            .find(|record| Some(record.id.as_str()) == session.workspace_id.as_deref())
-            .ok_or(Error::InvalidRequest(
-                "The spawned session has no workspace.",
-            ))?;
-        if let Some(path) = workspace.body["path"].as_str() {
-            crate::agents::slots::remove(std::path::Path::new(path), &session.id.to_string())?;
+        match self.agent_directory(session) {
+            Ok(directory) => {
+                crate::agents::slots::remove(&self.state, &directory, &session.id.to_string())?
+            }
+            Err(Error::InvalidRequest(_)) => {}
+            Err(error) => return Err(error),
         }
         let tmux = crate::tmux::Tmux::from_env();
-        for window in workspace.body["windows"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|window| window["session_id"] == session.id.to_string())
-        {
-            if let Some(id) = window["window_id"].as_str()
-                && tmux
-                    .window_option(id, "@ws_session")
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    == Some(&session.id.to_string())
-            {
-                tmux.execute(&["kill-window", "-t", id])?;
+        let id = session.id.to_string();
+        let alias = session.alias.to_string();
+        for window in self.session_windows(session)? {
+            let owner = tmux.window_option(&window, "@ws_session").ok().flatten();
+            if owner.as_deref() == Some(&id) || owner.as_deref() == Some(&alias) {
+                tmux.execute(&["kill-window", "-t", &window])?;
             }
         }
         Ok(())
@@ -400,21 +409,36 @@ impl Sessions {
             }
             self.send_trigger_message(&target.to_string(), trigger.owner, &message, trigger.id)?;
         } else {
-            let workspace = trigger
-                .workspace
-                .as_deref()
-                .ok_or(Error::InvalidRequest("The spawn trigger has no workspace."))?;
-            let record = self
-                .registry
-                .workspaces()?
-                .into_iter()
-                .find(|record| record.id == workspace)
-                .ok_or(Error::InvalidRequest(
-                    "The spawn workspace no longer exists.",
-                ))?;
-            let path = record.body["path"]
-                .as_str()
-                .ok_or(Error::InvalidRequest("The spawn workspace has no path."))?;
+            let place = if let Some(workspace) = &trigger.workspace {
+                let record = self
+                    .registry
+                    .workspaces()?
+                    .into_iter()
+                    .find(|record| &record.id == workspace)
+                    .ok_or(Error::InvalidRequest(
+                        "The spawn workspace no longer exists.",
+                    ))?;
+                let path = record.body["path"]
+                    .as_str()
+                    .ok_or(Error::InvalidRequest("The spawn workspace has no path."))?;
+                crate::places::Place::Workspace {
+                    name: workspace.clone(),
+                    directory: path.into(),
+                }
+            } else {
+                let directory = trigger
+                    .cwd
+                    .as_deref()
+                    .ok_or(Error::InvalidRequest("The spawn trigger has no directory."))?;
+                if !std::path::Path::new(directory).is_dir() {
+                    return Err(Error::InvalidRequest(
+                        "The spawn directory no longer exists.",
+                    ));
+                }
+                crate::places::Place::Directory {
+                    directory: directory.into(),
+                }
+            };
             let child = trigger
                 .spawned_session
                 .ok_or(Error::InvalidRequest("The spawn trigger has no child id."))?;
@@ -424,14 +448,14 @@ impl Sessions {
                 "edge.action_fired",
                 json!({"trigger_id":trigger.id, "spawned_session":child}),
             )?;
-            self.start_workspace_agent(
-                workspace,
-                std::path::Path::new(path),
+            self.start_place_agent(
+                place,
                 trigger.agent.as_deref().unwrap_or("claude"),
                 Some(trigger.owner),
                 crate::workspaces::LaunchContext {
                     resume: None,
                     run: None,
+                    start: None,
                     spawn: Some(crate::workspaces::SpawnOrigin {
                         id: child,
                         trigger_id: trigger.id,
@@ -496,6 +520,34 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn replay_restores_a_trigger_record_without_cwd() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let owner = sessions.create(Default::default()).unwrap();
+        let source = sessions.create(Default::default()).unwrap();
+        let id = ws_core::ids::Ulid::new();
+        sessions
+            .append(
+                owner.id,
+                "edge.action_registered",
+                json!({
+                    "id":id, "owner":owner.id, "sources":[source.id], "event":"done",
+                    "action":"send", "target":owner.id, "template":"Continue {id}",
+                    "agent":null, "workspace":null, "spawned_session":null,
+                    "event_offsets":{}, "edges":[]
+                }),
+            )
+            .unwrap();
+        drop(sessions);
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (status, triggers) = request(&app, "GET", "/v1/triggers", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(triggers.as_array().unwrap().len(), 1);
+        assert_eq!(triggers[0]["id"], id.to_string());
+        assert_eq!(triggers[0]["cwd"], Value::Null);
     }
 
     #[tokio::test]

@@ -350,6 +350,225 @@ fn empty_picker_matches_zsh() {
 }
 
 #[test]
+fn directory_sessions_follow_workspaces_and_group_by_cwd() {
+    let sandbox = Sandbox::seeded(&[("api/alpha", false)]);
+    let first = sandbox.start_directory("notes with spaces", "claude");
+    let other = sandbox.start_directory("other notes", "grok");
+    let second = sandbox.start_directory("notes with spaces", "codex");
+    let rows = String::from_utf8(sandbox.run(&["_rows"])).unwrap();
+    let rows: Vec<_> = rows
+        .lines()
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .collect();
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    assert!(rows.iter().all(|fields| fields.len() == 3), "{rows:?}");
+    assert!(rows[0][0].contains("api"));
+    assert!(rows[1][0].contains("scratch"));
+    assert_eq!(&rows[1][1..], &["", ""]);
+    assert_eq!(rows[2][1], first["cwd"].as_str().unwrap());
+    assert!(rows[2][0].contains("notes with spaces"));
+    assert!(rows[2][0].contains("2 sessions"));
+    assert!(
+        [
+            first["window_id"].as_str().unwrap(),
+            second["window_id"].as_str().unwrap()
+        ]
+        .contains(&rows[2][2])
+    );
+    assert_eq!(rows[3][1], other["cwd"].as_str().unwrap());
+    assert_eq!(rows[3][2], other["window_id"].as_str().unwrap());
+    assert!(rows[3][0].contains("grok"));
+    let list = String::from_utf8(sandbox.run(&["list"])).unwrap();
+    assert_eq!(list.lines().count(), 1);
+    assert!(!list.contains("notes"));
+    let workspaces: serde_json::Value =
+        serde_json::from_slice(&sandbox.run(&["list", "--json"])).unwrap();
+    assert_eq!(workspaces.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn directory_sessions_keep_state_icons_counts_and_unread_targets() {
+    let sandbox = Sandbox::new();
+    let first = sandbox.start_directory("notes", "claude");
+    let second = sandbox.start_directory("notes", "codex");
+    for (session, state) in [(&first, "working"), (&second, "waiting")] {
+        sandbox.server.tmux(
+            sandbox.home.path(),
+            &[
+                "set",
+                "-w",
+                "-t",
+                session["window_id"].as_str().unwrap(),
+                "@ws_state",
+                state,
+            ],
+        );
+    }
+    sandbox.server.tmux(
+        sandbox.home.path(),
+        &[
+            "set",
+            "-w",
+            "-t",
+            second["window_id"].as_str().unwrap(),
+            "@ws_unread",
+            "1",
+        ],
+    );
+    let rows = String::from_utf8(sandbox.run(&["_rows"])).unwrap();
+    let group = rows.lines().nth(1).unwrap();
+    assert!(group.contains("\x1b[31m●\x1b[0m"), "{rows}");
+    assert!(
+        group.ends_with(second["window_id"].as_str().unwrap()),
+        "{rows}"
+    );
+    assert_eq!(
+        String::from_utf8(sandbox.run(&["_summary"]))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+        "\x1b[31m●\x1b[0m 1 waiting · \x1b[33m◐\x1b[0m 1 working · \x1b[36m•\x1b[0m 1 unread"
+    );
+    sandbox.run(&["_toggle_sessions"]);
+    let expanded = String::from_utf8(sandbox.run(&["_rows"])).unwrap();
+    assert_eq!(expanded.lines().count(), 4, "{expanded}");
+    for session in [&first, &second] {
+        assert!(
+            expanded
+                .lines()
+                .any(|line| line.contains("└")
+                    && line.ends_with(session["window_id"].as_str().unwrap())),
+            "{expanded}"
+        );
+    }
+    assert!(expanded.contains("\x1b[33m◐\x1b[0m"), "{expanded}");
+}
+
+#[test]
+fn directory_preview_captures_a_registered_non_git_pane() {
+    let sandbox = Sandbox::new();
+    let session = sandbox.start_directory("notes without git", "claude");
+    let window = session["window_id"].as_str().unwrap();
+    sandbox.server.tmux(
+        sandbox.home.path(),
+        &[
+            "send-keys",
+            "-t",
+            window,
+            "directory-preview-marker",
+            "Enter",
+        ],
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let expected = loop {
+        let output = sandbox.server.tmux(
+            sandbox.home.path(),
+            &["capture-pane", "-e", "-p", "-t", window],
+        );
+        if output.contains("directory-preview-marker\ndirectory-preview-marker") {
+            break output;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "The directory pane did not print the marker."
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    for cwd in [session["cwd"].as_str().unwrap(), ""] {
+        let output = sandbox
+            .command()
+            .args(["_preview", cwd, window])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim_end(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn directory_completion_removes_a_live_session_from_rows_counts_and_preview() {
+    let sandbox = Sandbox::new();
+    let session = sandbox.start_directory("completed notes", "codex");
+    let output = sandbox
+        .command()
+        .arg("done")
+        .env("WS_SESSION_ID", session["session_id"].as_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(sandbox.run(&["_rows"]).is_empty());
+    sandbox.parity("empty/summary", &["_summary"]);
+    assert!(sandbox.run(&["list"]).is_empty());
+    assert!(
+        sandbox
+            .run(&[
+                "_preview",
+                session["cwd"].as_str().unwrap(),
+                session["window_id"].as_str().unwrap()
+            ])
+            .is_empty()
+    );
+}
+
+#[test]
+fn directory_picker_excludes_headless_and_terminal_sessions() {
+    let sandbox = Sandbox::fixture_with_sessions(
+        &[],
+        false,
+        &[
+            ("interactive", "running"),
+            ("headless", "running"),
+            ("interactive", "finished"),
+            ("interactive", "failed"),
+        ],
+    );
+    let rows = String::from_utf8(sandbox.run(&["_rows"])).unwrap();
+    assert_eq!(rows.lines().count(), 2, "{rows}");
+    let fields: Vec<_> = rows.lines().nth(1).unwrap().split('\t').collect();
+    assert_eq!(fields.len(), 3);
+    assert_eq!(
+        fields[1],
+        sandbox.home.path().join("directory-0").to_str().unwrap()
+    );
+    assert_eq!(fields[2], "");
+    assert!(fields[0].contains("\x1b[2m·\x1b[0m"), "{rows}");
+    assert_eq!(
+        String::from_utf8(sandbox.run(&["_summary"]))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+        "\x1b[2m·\x1b[0m 1 stopped"
+    );
+    assert!(sandbox.run(&["list"]).is_empty());
+}
+
+#[test]
+fn stopped_directory_preview_lists_files_without_git_errors() {
+    let sandbox = Sandbox::fixture_with_sessions(&[], false, &[("interactive", "running")]);
+    let cwd = sandbox.home.path().join("directory-0");
+    for name in ["zeta.txt", "alpha.txt"] {
+        std::fs::write(cwd.join(name), "notes").unwrap();
+    }
+    let output = sandbox
+        .command()
+        .args(["_preview", cwd.to_str().unwrap(), ""])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "stopped — enter restores its sessions\nalpha.txt\nzeta.txt\n"
+    );
+}
+
+#[test]
 fn stopped_workspaces_match_zsh_and_pins_sort_first() {
     let sandbox = Sandbox::seeded(&[
         ("web/zeta", true),
@@ -632,7 +851,7 @@ fn picker_preserves_unicode_and_long_names() {
 }
 
 #[test]
-fn repository_discovery_matches_zsh_and_preserves_read_only_mapping() {
+fn repository_discovery_includes_scratch_and_preserves_read_only_mapping() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::new();
     let home = sandbox.home.path();
@@ -676,7 +895,7 @@ fn repository_discovery_matches_zsh_and_preserves_read_only_mapping() {
     )
     .unwrap();
     std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let expected = format!("{}\n", repo.display()).into_bytes();
+    let expected = format!("scratch\n{}\n", repo.display()).into_bytes();
     let output = sandbox
         .command()
         .args(["new", "--branch", "registry-test", "--detach"])
@@ -689,10 +908,6 @@ fn repository_discovery_matches_zsh_and_preserves_read_only_mapping() {
     assert_eq!(
         std::fs::read(home.join("repo-candidates")).unwrap(),
         expected
-    );
-    assert_eq!(
-        String::from_utf8(expected).unwrap(),
-        format!("{}\n", repo.display())
     );
     assert_eq!(std::fs::read(&registry).unwrap(), mappings);
     assert_eq!(
@@ -757,6 +972,23 @@ impl Sandbox {
         Self::seeded(&[])
     }
 
+    fn start_directory(&self, name: &str, agent: &str) -> serde_json::Value {
+        let cwd = self.home.path().join(name);
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        let response = common::request(
+            &self.socket,
+            "POST",
+            "/v1/sessions/start",
+            &json!({"cwd": cwd, "agent": agent}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        let mut result: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        result["cwd"] = json!(cwd);
+        result
+    }
+
     fn seeded(workspaces: &[(&str, bool)]) -> Self {
         Self::fixture(workspaces, false)
     }
@@ -766,6 +998,14 @@ impl Sandbox {
     }
 
     fn fixture(workspaces: &[(&str, bool)], live: bool) -> Self {
+        Self::fixture_with_sessions(workspaces, live, &[])
+    }
+
+    fn fixture_with_sessions(
+        workspaces: &[(&str, bool)],
+        live: bool,
+        sessions: &[(&str, &str)],
+    ) -> Self {
         let home = common::SandboxRoot::new();
         fixtures::copy("picker", &home.path().join("picker-fixtures"));
         let socket = home.path().join("ws.sock");
@@ -863,6 +1103,19 @@ impl Sandbox {
             }
         }
         std::fs::write(home.path().join(".ws/pins"), pins).unwrap();
+        for (index, (kind, lifecycle)) in sessions.iter().enumerate() {
+            let cwd = home.path().join(format!("directory-{index}"));
+            std::fs::create_dir(&cwd).unwrap();
+            let log = SessionLog::new(&state, Ulid::new(), device.device_id);
+            log.append(
+                0,
+                "session.created",
+                json!({"alias": index + 100, "cwd": cwd, "kind": kind, "agent": "codex"}),
+            )
+            .unwrap();
+            log.append(0, &format!("session.{lifecycle}"), json!({}))
+                .unwrap();
+        }
         let mut command = common::ws(home.path(), &socket);
         command
             .env("WS_TMUX_SOCKET", &server.0)

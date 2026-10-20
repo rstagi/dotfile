@@ -596,9 +596,7 @@ async fn json_send_uses_ws_session_id_without_resolving_a_legacy_session() {
 #[tokio::test]
 async fn record_creation_rejects_process_options_without_headless() {
     let server = TestServer::start().await;
-    for option in [
-        "--cwd", "--parent", "--stdin", "--stdout", "--stderr", "--env",
-    ] {
+    for option in ["--parent", "--stdin", "--stdout", "--stderr", "--env"] {
         let output = common::ws(server.home.path(), &server.socket)
             .args(["session", "create", "--json", option, "unused"])
             .env("WS_SESSION_ID", &server.parent)

@@ -14,29 +14,49 @@ pub async fn run(
     force_delete_branch: bool,
     interactive: bool,
 ) -> Result<()> {
+    let target = super::open::normalize_target(target)?;
+    let directory = ws_daemon::workspaces::directory_path(
+        &target,
+        &client::sessions(socket).await?,
+        &super::list::workspaces(socket).await?,
+    );
+    let scratch = match &directory {
+        Some(directory) => ws_daemon::workspaces::is_scratch_directory(directory)?,
+        None => false,
+    };
+    let mut confirmed = false;
     let parent_session_id = super::caller(socket).await?;
-    if interactive {
-        let (name, _) = ws_daemon::workspaces::workspace_path(target)?;
+    if interactive || scratch {
+        let name = match &directory {
+            Some(directory) => directory.display().to_string(),
+            None => ws_daemon::workspaces::workspace_path(&target)?.0,
+        };
         let mut tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/tty")?;
-        write!(
-            tty,
-            "remove {} and all its sessions? [y/N/b=also delete branch] ",
-            name
-        )?;
+        if scratch {
+            write!(tty, "Delete {name} and stop all its sessions? [y/N] ")?;
+        } else if directory.is_some() {
+            write!(tty, "Stop all sessions in {name}? [y/N] ")?;
+        } else {
+            write!(
+                tty,
+                "remove {name} and all its sessions? [y/N/b=also delete branch] "
+            )?;
+        }
         tty.flush()?;
         let mut answer = String::new();
         std::io::BufReader::new(tty).read_line(&mut answer)?;
         match answer.trim() {
             "y" | "Y" => {}
-            "b" | "B" => delete_branch = true,
+            "b" | "B" if directory.is_none() => delete_branch = true,
             _ => return Ok(()),
         }
+        confirmed = true;
     }
     let body = client::request(socket, Method::POST, "/v1/workspaces/remove", serde_json::to_vec(&json!({
-        "target": target, "force": force, "delete_branch": delete_branch, "force_delete_branch": force_delete_branch, "parent_session_id": parent_session_id
+        "target": target, "force": force, "delete_branch": delete_branch, "force_delete_branch": force_delete_branch, "parent_session_id": parent_session_id, "confirmed": confirmed
     }))?).await?;
     let response: serde_json::Value = serde_json::from_slice(&body)?;
     if let Some(stderr) = response["git_stderr"].as_str() {

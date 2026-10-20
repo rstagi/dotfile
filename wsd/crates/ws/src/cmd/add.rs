@@ -5,8 +5,18 @@ use std::path::Path;
 
 pub async fn run(socket: &Path, target: Option<String>, agent: String, detach: bool) -> Result<()> {
     let target = match target {
-        Some(target) => target,
-        None => current_workspace()?,
+        Some(target) => {
+            let path = super::new::expand_home(&target)?;
+            if path.is_dir() {
+                path.canonicalize()?
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_| "The directory path is not UTF-8.")?
+            } else {
+                target
+            }
+        }
+        None => current_place()?,
     };
     let parent_session_id = super::caller(socket).await?;
     let body = client::request(
@@ -22,7 +32,7 @@ pub async fn run(socket: &Path, target: Option<String>, agent: String, detach: b
     super::new::focus(
         response["window_id"]
             .as_str()
-            .ok_or("The workspace response has no window id.")?,
+            .ok_or("The session response has no window id.")?,
         detach,
     )
 }
@@ -48,6 +58,20 @@ pub(super) fn current_workspace() -> Result<String> {
             return Ok(top);
         }
     }
+    tmux_path()?.ok_or_else(|| "add: not inside a workspace (pass <repo/branch>)".into())
+}
+
+fn current_place() -> Result<String> {
+    match tmux_path()? {
+        Some(path) => Ok(path),
+        None => std::env::current_dir()?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "The current directory path is not UTF-8.".into()),
+    }
+}
+
+fn tmux_path() -> Result<Option<String>> {
     let target = std::env::var("TMUX_PANE")
         .ok()
         .filter(|pane| !pane.is_empty())
@@ -56,12 +80,10 @@ pub(super) fn current_workspace() -> Result<String> {
                 .filter(|tmux| !tmux.is_empty())
                 .map(|_| ":".into())
         });
-    if let Some(target) = target
-        && let Some(path) = ws_daemon::tmux::Tmux::from_env()
+    match target {
+        Some(target) => Ok(ws_daemon::tmux::Tmux::from_env()
             .window_option(&target, "@ws_path")?
-            .filter(|path| !path.is_empty())
-    {
-        return Ok(path);
+            .filter(|path| !path.is_empty())),
+        None => Ok(None),
     }
-    Err("add: not inside a workspace (pass <repo/branch>)".into())
 }

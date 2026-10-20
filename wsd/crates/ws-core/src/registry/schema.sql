@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     name TEXT,
     state TEXT NOT NULL,
     workspace_id TEXT,
+    cwd TEXT,
+    repos TEXT NOT NULL DEFAULT '[]',
     device_id TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
@@ -43,5 +45,10 @@ CREATE TABLE IF NOT EXISTS applied_events (
     UNIQUE(session_id, seq)
 );
 CREATE INDEX IF NOT EXISTS applied_callback ON applied_events(
-    session_id, json_extract(entry, '$.type'), json_extract(entry, '$.body.callback_id')
+    session_id, json_extract(entry, '$.type'), json_extract(entry, '$.body.callback_id'), seq
+);
+
+-- Equality on type and session also supplies sequence order for latest-event queries.
+CREATE INDEX IF NOT EXISTS applied_type ON applied_events(
+    json_extract(entry, '$.type'), session_id, seq
 );

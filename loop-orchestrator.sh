@@ -37,9 +37,13 @@ if [[ "${LOOP_WS_SESSIONS:-1}" != 0 ]]; then
       "$WS_BIN" ping >/dev/null 2>&1; then
     if (( ! WS_ACTIVE )); then
       ws_environment=()
-      for key in ${(k)parameters}; do
-        [[ "${parameters[$key]}" == *export* ]] && ws_environment+=(--env "$key=${(P)key}")
-      done
+      if "$WS_BIN" session run --help 2>/dev/null | grep -q -- '--inherit-env'; then
+        ws_environment=(--inherit-env)
+      else
+        for key in ${(k)parameters}; do
+          [[ "${parameters[$key]}" == *export* ]] && ws_environment+=(--env "$key=${(P)key}")
+        done
+      fi
       exec "$WS_BIN" session run --headless --cwd "$PWD" "${ws_environment[@]}" \
         --stdout "${DIR:A}/sub/orchestrator.stdout.log" --stderr "${DIR:A}/sub/orchestrator.stderr.log" -- \
         zsh "$SCRIPT_DIR/loop-orchestrator.sh" "${ORIGINAL_ARGS[@]}" --ws-session

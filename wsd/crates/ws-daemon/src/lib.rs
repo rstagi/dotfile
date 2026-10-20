@@ -33,6 +33,7 @@ pub mod loops;
 pub mod notify;
 pub mod otlp;
 pub mod phases;
+mod places;
 pub mod quota;
 mod semconv_emit;
 pub mod sessions;
@@ -92,7 +93,6 @@ pub async fn run(socket: &Path) -> io::Result<()> {
     supervisor::adopt(store.clone())
         .await
         .map_err(|error| io::Error::other(error.0))?;
-    hooks::replay(store.clone(), &state).await?;
     api::call(store.clone(), |sessions| sessions.evaluate_triggers())
         .await
         .map_err(|error| io::Error::other(error.0))?;
@@ -118,8 +118,11 @@ pub async fn run(socket: &Path) -> io::Result<()> {
         .await;
     });
     let result = tokio::select! {
+        // Poll the socket server before the initial spool scan.
+        biased;
         result = server.into_future() => result,
         result = telemetry.wait() => result,
+        result = hooks::drain(store.clone(), &state) => result,
     };
     let _ = api::call(store, |sessions| {
         sessions.shutdown.send_replace(true);

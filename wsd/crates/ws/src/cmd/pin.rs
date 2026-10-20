@@ -4,6 +4,7 @@ use serde_json::json;
 use std::path::Path;
 
 pub async fn run(socket: &Path, target: &str) -> Result<()> {
+    let target = super::open::normalize_target(target)?;
     client::request(
         socket,
         Method::POST,

@@ -2,6 +2,7 @@
 
 use crate::{
     api::{self, ApiError, CallContext, Store},
+    places::Place,
     sessions::{Error, Result, Sessions},
     tmux::Tmux,
 };
@@ -28,6 +29,7 @@ pub(crate) struct LaunchContext<'a> {
     pub resume: Option<&'a Session>,
     pub run: Option<&'a crate::agents::launch::RunAgent>,
     pub spawn: Option<SpawnOrigin<'a>>,
+    pub start: Option<crate::places::StartOptions>,
 }
 
 pub(crate) struct SpawnOrigin<'a> {
@@ -64,6 +66,8 @@ pub struct WorkspaceTarget {
 #[serde(deny_unknown_fields)]
 pub struct RemoveWorkspace {
     pub target: String,
+    #[serde(default)]
+    pub confirmed: bool,
     #[serde(default)]
     pub force: bool,
     #[serde(default)]
@@ -116,6 +120,49 @@ pub fn workspace_path(target: &str) -> Result<(String, PathBuf)> {
         .ok_or(Error::InvalidRequest("The workspace path is not UTF-8."))?
         .to_owned();
     Ok((name, wt))
+}
+
+/// Resolves a directory place. Registered workspaces keep their existing behavior.
+pub fn directory_path(
+    target: &str,
+    sessions: &[Session],
+    workspaces: &[Workspace],
+) -> Option<PathBuf> {
+    let directory = Path::new(target)
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_dir())?;
+    let same_path = |path: &str| Path::new(path).canonicalize().ok().as_ref() == Some(&directory);
+    if workspaces
+        .iter()
+        .any(|workspace| workspace.body["path"].as_str().is_some_and(same_path))
+        || (workspace_path(target).is_ok()
+            && !sessions.iter().any(|session| {
+                session.workspace_id.is_none()
+                    && session.body["agent"].is_string()
+                    && session.cwd.as_deref().is_some_and(same_path)
+            }))
+    {
+        return None;
+    }
+    Some(directory)
+}
+
+/// Checks the resolved path against the scratch root. The root itself is excluded.
+pub fn is_scratch_directory(directory: &Path) -> Result<bool> {
+    let home = env::var_os("WS_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".ws")))
+        .ok_or(Error::InvalidRequest(
+            "Set WS_HOME or HOME to locate scratch directories.",
+        ))?;
+    let root = match home.join("scratch").canonicalize() {
+        Ok(root) => root,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let directory = directory.canonicalize()?;
+    Ok(directory != root && directory.starts_with(root))
 }
 
 async fn list(
@@ -201,8 +248,10 @@ async fn create_workspace(
     .await?;
     let started = start_agent(
         store.clone(),
-        plan.name.clone(),
-        plan.wt.clone(),
+        Place::Workspace {
+            name: plan.name.clone(),
+            directory: plan.wt.clone(),
+        },
         agent,
         parent,
     )
@@ -242,23 +291,32 @@ async fn create_workspace(
 }
 
 /// Starts a new agent window. The tmux launch runs without the store lock.
-async fn start_agent(
+pub(crate) async fn start_agent(
     store: Store,
-    name: String,
-    wt: PathBuf,
+    place: Place,
     agent: String,
     parent: Option<SessionId>,
 ) -> std::result::Result<Value, ApiError> {
+    start_agent_with_options(store, place, agent, parent, None).await
+}
+
+pub(crate) async fn start_agent_with_options(
+    store: Store,
+    place: Place,
+    agent: String,
+    parent: Option<SessionId>,
+    start: Option<crate::places::StartOptions>,
+) -> std::result::Result<Value, ApiError> {
     let plan = api::call(store.clone(), move |sessions| {
-        sessions.plan_workspace_agent(
-            &name,
-            &wt,
+        sessions.plan_agent(
+            place,
             &agent,
             parent,
             LaunchContext {
                 resume: None,
                 run: None,
                 spawn: None,
+                start,
             },
         )
     })
@@ -275,10 +333,7 @@ async fn start_agent(
     })
     .await
     .map_err(|_| ApiError(Error::Io(io::Error::other("The workspace worker failed."))))?;
-    api::call(store, move |sessions| {
-        sessions.commit_workspace_agent(plan, launched)
-    })
-    .await
+    api::call(store, move |sessions| sessions.commit_agent(plan, launched)).await
 }
 
 // The test releases this gate after the pane requests preparation, before the commit.
@@ -345,13 +400,24 @@ async fn add(
 ) -> std::result::Result<Json<Value>, ApiError> {
     let agent = request.agent.clone();
     let parent = request.parent_session_id;
-    let (name, wt) = api::call(store.clone(), move |sessions| {
+    let place = api::call(store.clone(), move |sessions| {
         sessions.record_call(request.parent_session_id, "workspace.add", None)?;
         check_agent(&request.agent)?;
-        workspace_path(&request.target)
+        match workspace_path(&request.target) {
+            Ok((name, directory)) => Ok(Place::Workspace { name, directory }),
+            Err(error) => {
+                let directory = Path::new(&request.target).canonicalize();
+                match directory {
+                    Ok(directory) if directory.is_dir() && directory.to_str().is_some() => {
+                        Ok(Place::Directory { directory })
+                    }
+                    _ => Err(error),
+                }
+            }
+        }
     })
     .await?;
-    Ok(Json(start_agent(store, name, wt, agent, parent).await?))
+    Ok(Json(start_agent(store, place, agent, parent).await?))
 }
 
 async fn pin(
@@ -364,6 +430,11 @@ async fn pin(
             "workspace.pin",
             Some(&request.target),
         )?;
+        if sessions.directory_place(&request.target)?.is_some() {
+            return Err(Error::InvalidRequest(
+                "Pins for directory places are not supported.",
+            ));
+        }
         let workspace = sessions.register_workspace(&request.target, request.parent_session_id)?;
         let pinned = !workspace.body["pinned"].as_bool().unwrap_or(false);
         sessions.append(
@@ -385,6 +456,49 @@ async fn remove(
     State(store): State<Store>,
     Json(request): Json<RemoveWorkspace>,
 ) -> std::result::Result<Json<Value>, ApiError> {
+    let target = request.target.clone();
+    let directory = api::call(store.clone(), move |sessions| {
+        sessions.directory_place(&target)
+    })
+    .await?;
+    if let Some(directory) = directory {
+        let delete = is_scratch_directory(&directory).map_err(ApiError)?;
+        let removed_directory = directory.clone();
+        let response = api::call(store, move |sessions| {
+            sessions.record_call(
+                request.parent_session_id,
+                "workspace.remove",
+                Some(&request.target),
+            )?;
+            if delete && !request.confirmed {
+                return Err(Error::InvalidRequest(
+                    "Confirm the removal of the scratch directory before deleting it.",
+                ));
+            }
+            for session in sessions.directory_sessions(&directory)? {
+                if !["finished", "failed"].contains(&session.state.as_str()) {
+                    sessions.stop(&session.id.to_string(), request.parent_session_id)?;
+                } else {
+                    sessions.finish_spawned_session(&session)?;
+                }
+            }
+            Ok(json!({}))
+        })
+        .await?;
+        if delete {
+            off_lock(move || {
+                if !is_scratch_directory(&removed_directory)? {
+                    return Err(Error::InvalidRequest(
+                        "The directory is outside the scratch root.",
+                    ));
+                }
+                fs::remove_dir_all(removed_directory)?;
+                Ok(())
+            })
+            .await?;
+        }
+        return Ok(Json(response));
+    }
     let plan = api::call(store.clone(), move |sessions| {
         sessions.begin_remove(request)
     })
@@ -421,6 +535,35 @@ impl Sessions {
             Err(ws_core::registry::Error::NotFound(_)) => None,
             Err(error) => return Err(error.into()),
         };
+        if let Some(session) = &session
+            && session.workspace_id.is_none()
+        {
+            let directory = session
+                .cwd
+                .as_deref()
+                .ok_or(Error::InvalidRequest("The session has no directory place."))?;
+            return self.open_directory(
+                Path::new(directory),
+                vec![session.clone()],
+                request.parent_session_id,
+            );
+        }
+        if session.is_none()
+            && let Some(directory) = self.directory_place(&request.target)?
+        {
+            let mut sessions = self.directory_sessions(&directory)?;
+            let active =
+                |session: &Session| !["finished", "failed"].contains(&session.state.as_str());
+            if sessions.iter().any(active) {
+                sessions.retain(active);
+            } else {
+                sessions.sort_by_key(|session| {
+                    std::cmp::Reverse((session.updated_at_ms, session.alias))
+                });
+                sessions.truncate(1);
+            }
+            return self.open_directory(&directory, sessions, request.parent_session_id);
+        }
         let workspace = if let Some(session) = &session {
             self.registry
                 .workspaces()?
@@ -493,6 +636,80 @@ impl Sessions {
             Some(window) => Ok(window.clone()),
             None => self.start_workspace(&workspace.id, wt, "claude", request.parent_session_id),
         }
+    }
+
+    fn directory_place(&self, target: &str) -> Result<Option<PathBuf>> {
+        Ok(directory_path(
+            target,
+            &self.registry.sessions()?,
+            &self.registry.workspaces()?,
+        ))
+    }
+
+    fn directory_sessions(&self, directory: &Path) -> Result<Vec<Session>> {
+        Ok(self
+            .registry
+            .sessions()?
+            .into_iter()
+            .filter(|session| {
+                session.workspace_id.is_none()
+                    && session.body["agent"].is_string()
+                    && session.cwd.as_deref().is_some_and(|cwd| {
+                        Path::new(cwd).canonicalize().ok().as_deref() == Some(directory)
+                    })
+            })
+            .collect())
+    }
+
+    fn open_directory(
+        &mut self,
+        directory: &Path,
+        sessions: Vec<Session>,
+        parent: Option<SessionId>,
+    ) -> Result<Value> {
+        if !directory.is_dir() {
+            return Err(failure(format!(
+                "The session directory no longer exists: {}",
+                directory.display()
+            )));
+        }
+        let tmux = Tmux::from_env();
+        for session in &sessions {
+            for window in self.session_windows(session)? {
+                if tmux
+                    .window_option(&window, "@ws_session")
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(&session.id.to_string())
+                {
+                    return Ok(json!({"window_id": window, "session_id": session.id}));
+                }
+            }
+        }
+        let mut first = None;
+        for session in sessions {
+            let window = self.start_place_agent(
+                Place::Directory {
+                    directory: directory.to_owned(),
+                },
+                session.body["agent"].as_str().unwrap_or("claude"),
+                parent,
+                LaunchContext {
+                    resume: Some(&session),
+                    run: None,
+                    spawn: None,
+                    start: None,
+                },
+            )?;
+            first.get_or_insert(window);
+        }
+        first.ok_or_else(|| {
+            failure(format!(
+                "No stopped session exists in directory: {}",
+                directory.display()
+            ))
+        })
     }
 
     /// Step 1 of a removal: checks the target and reserves its name under the store lock.
@@ -600,9 +817,16 @@ impl Sessions {
             .registry
             .workspace_owner(&name)?
             .unwrap_or_else(Ulid::new);
-        self.append(owner, "workspace.created", json!({
-            "workspace_id": name, "path": wt, "windows": [], "parent_session_id": parent_session_id
-        }))?;
+        let repo = main_checkout(&wt)?;
+        let branch = git(&wt, &["branch", "--show-current"])?;
+        self.append(
+            owner,
+            "workspace.created",
+            json!({
+                "workspace_id": name, "path": wt, "repo": repo, "branch": branch,
+                "windows": [], "parent_session_id": parent_session_id
+            }),
+        )?;
         self.workspace(target)
     }
 
@@ -655,6 +879,7 @@ impl Sessions {
                 resume,
                 run,
                 spawn: None,
+                start: None,
             },
         )
     }
@@ -667,32 +892,60 @@ impl Sessions {
         parent_session_id: Option<SessionId>,
         context: LaunchContext<'_>,
     ) -> Result<Value> {
-        let plan = self.plan_workspace_agent(name, wt, agent, parent_session_id, context)?;
+        self.start_place_agent(
+            Place::Workspace {
+                name: name.to_owned(),
+                directory: wt.to_owned(),
+            },
+            agent,
+            parent_session_id,
+            context,
+        )
+    }
+
+    pub(crate) fn start_place_agent(
+        &mut self,
+        place: Place,
+        agent: &str,
+        parent_session_id: Option<SessionId>,
+        context: LaunchContext<'_>,
+    ) -> Result<Value> {
+        let plan = self.plan_agent(place, agent, parent_session_id, context)?;
         let launched = plan.launch();
-        self.commit_workspace_agent(plan, launched)
+        self.commit_agent(plan, launched)
     }
 
     /// Step 1: checks the request and records the session and slot under the store lock.
-    fn plan_workspace_agent(
+    fn plan_agent(
         &mut self,
-        name: &str,
-        wt: &Path,
+        place: Place,
         agent: &str,
         parent_session_id: Option<SessionId>,
         context: LaunchContext<'_>,
     ) -> Result<AgentLaunch> {
-        let LaunchContext { resume, run, spawn } = context;
+        let name = place.workspace_id();
+        let wt = place.directory();
+        let LaunchContext {
+            resume,
+            run,
+            spawn,
+            start,
+        } = context;
         if resume.is_none() {
             self.check_spawn_limits(parent_session_id)?;
+        }
+        if let Some(start) = &start {
+            start.validate(self)?;
         }
         let existing = self
             .registry
             .workspaces()?
             .into_iter()
-            .find(|workspace| workspace.id == name);
+            .find(|workspace| Some(workspace.id.as_str()) == name);
         let id = spawn
             .as_ref()
             .map(|origin| origin.id)
+            .or_else(|| start.as_ref().map(|start| start.id))
             .unwrap_or_else(|| resume.map_or_else(Ulid::new, |session| session.id));
         let windows = existing
             .as_ref()
@@ -710,7 +963,7 @@ impl Sessions {
         let session_name = if let Some(run) = run {
             tmux.execute(&["display-message", "-p", "-t", &run.pane, "#{session_name}"])?
         } else {
-            name.replace(['.', ':'], "_")
+            place.tmux_session_name()
         };
         let live_session = if tmux
             .execute(&["has-session", "-t", &format!("={session_name}")])
@@ -725,12 +978,23 @@ impl Sessions {
                 .as_ref()
                 .is_some_and(|path| Path::new(path).canonicalize().ok() != wt.canonicalize().ok())
         {
+            let kind = if name.is_some() {
+                "workspace"
+            } else {
+                "directory"
+            };
             return Err(failure(format!(
-                "The tmux session {session_name} belongs to another workspace."
+                "The tmux session {session_name} belongs to another {kind}."
             )));
         }
         let pending = crate::agents::launch::PendingLaunch::new(id)?;
-        let slot = crate::agents::slots::register(wt, preferred_slot, agent, &id.to_string())?;
+        let slot = crate::agents::slots::register(
+            &self.state,
+            wt,
+            preferred_slot,
+            agent,
+            &id.to_string(),
+        )?;
         if let Some(session) = resume {
             if ["finished", "failed"].contains(&session.state.as_str()) {
                 self.transition(
@@ -741,13 +1005,27 @@ impl Sessions {
             }
         } else {
             let alias = self.next_alias()?;
-            let mut body = json!({"alias": alias, "workspace_id": name, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)});
+            let mut body = json!({"alias": alias, "workspace_id": name, "cwd": wt, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)});
+            if let Some(start) = &start {
+                body["name"] = json!(start.name);
+                body["prompt"] = json!(start.prompt);
+            }
             if let Some(origin) = &spawn {
                 body["spawned"] = json!(true);
                 body["trigger_id"] = json!(origin.trigger_id);
                 body["prompt"] = json!(origin.prompt);
             }
             self.append(id, "session.created", body)?;
+        }
+        if name.is_some() {
+            // A detached HEAD has no current branch. The event then records null.
+            let branch = git(wt, &["branch", "--show-current"])?;
+            let branch = (!branch.is_empty()).then_some(branch);
+            self.append(
+                id,
+                "session.repo_attached",
+                json!({"path": main_checkout(wt)?, "branch": branch}),
+            )?;
         }
         let tab = if slot > 1 {
             format!("{agent}#{slot}")
@@ -778,12 +1056,10 @@ impl Sessions {
             "-c".into(),
             wt.to_str().unwrap().into(),
         ];
-        for (key, value) in [
-            ("WS_WORKSPACE", name.to_owned()),
-            ("WS_SESSION_ID", id.to_string()),
-        ] {
-            args.extend(["-e".into(), format!("{key}={value}")]);
+        if let Some(name) = name {
+            args.extend(["-e".into(), format!("WS_WORKSPACE={name}")]);
         }
+        args.extend(["-e".into(), format!("WS_SESSION_ID={id}")]);
         for key in [
             "HOME",
             "WS_HOME",
@@ -813,8 +1089,7 @@ impl Sessions {
             id.to_string(),
         ]);
         Ok(AgentLaunch {
-            name: name.to_owned(),
-            wt: wt.to_owned(),
+            place,
             agent: agent.to_owned(),
             parent_session_id,
             id,
@@ -829,14 +1104,9 @@ impl Sessions {
     }
 
     /// Step 3: rechecks the session, workspace and slot, then registers the window.
-    fn commit_workspace_agent(
-        &mut self,
-        plan: AgentLaunch,
-        launched: Result<String>,
-    ) -> Result<Value> {
+    fn commit_agent(&mut self, plan: AgentLaunch, launched: Result<String>) -> Result<Value> {
         let AgentLaunch {
-            name,
-            wt,
+            place,
             agent,
             parent_session_id,
             id,
@@ -848,13 +1118,13 @@ impl Sessions {
             pending: _pending,
             args: _,
         } = plan;
-        let (name, wt, agent) = (name.as_str(), wt.as_path(), agent.as_str());
+        let (name, wt, agent) = (place.workspace_id(), place.directory(), agent.as_str());
         let run = run_pane.as_deref();
         let tmux = Tmux::from_env();
         let window = match launched {
             Ok(window) => window,
             Err(error) => {
-                crate::agents::slots::remove(wt, &id.to_string())?;
+                crate::agents::slots::remove(&self.state, wt, &id.to_string())?;
                 self.transition(
                     &id.to_string(),
                     ws_core::state::SessionState::Failed,
@@ -867,7 +1137,7 @@ impl Sessions {
             .registry
             .workspaces()?
             .into_iter()
-            .find(|workspace| workspace.id == name);
+            .find(|workspace| Some(workspace.id.as_str()) == name);
         let mut windows = existing
             .as_ref()
             .and_then(|workspace| workspace.body["windows"].as_array())
@@ -880,12 +1150,17 @@ impl Sessions {
                     "The session {id} ended during its launch."
                 )));
             }
-            if existed && existing.is_none() {
+            if let Some(name) = name
+                && existed
+                && existing.is_none()
+            {
                 return Err(failure(format!(
                     "The workspace {name} was removed during the launch."
                 )));
             }
-            if crate::agents::slots::register(wt, Some(slot), agent, &id.to_string())? != slot {
+            if crate::agents::slots::register(&self.state, wt, Some(slot), agent, &id.to_string())?
+                != slot
+            {
                 return Err(failure(format!(
                     "The slot {slot} was reassigned during the launch."
                 )));
@@ -924,16 +1199,27 @@ impl Sessions {
                     wt.to_str().unwrap(),
                 ])?;
             }
+            self.append(
+                id,
+                "session.window",
+                json!({"window_id":window, "pane":pane, "slot":slot}),
+            )?;
             windows.retain(|window| window["session_id"].as_str() != Some(&id.to_string()));
             windows
                 .push(json!({"window_id": window, "session_id": id, "agent": agent, "slot": slot}));
-            let owner = self.registry.workspace_owner(name)?.unwrap_or(id);
-            let event = if existing.is_some() {
-                "workspace.updated"
-            } else {
-                "workspace.created"
-            };
-            self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
+            if let Some(name) = name.filter(|_| session.workspace_id.is_some()) {
+                let owner = self.registry.workspace_owner(name)?.unwrap_or(id);
+                let event = if existing.is_some() {
+                    "workspace.updated"
+                } else {
+                    "workspace.created"
+                };
+                self.append(owner, event, json!({
+                    "workspace_id": name, "path": wt,
+                    "repo": main_checkout(wt)?, "branch": git(wt, &["branch", "--show-current"])?,
+                    "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id
+                }))?;
+            }
             if !was_running {
                 self.transition(
                     &id.to_string(),
@@ -944,7 +1230,7 @@ impl Sessions {
             Ok(json!({"window_id": window, "session_id": id}))
         })();
         if result.is_err() {
-            let _ = crate::agents::slots::remove(wt, &id.to_string());
+            let _ = crate::agents::slots::remove(&self.state, wt, &id.to_string());
             if run.is_none() {
                 let _ = tmux.execute(&["kill-window", "-t", &window]);
             } else {
@@ -971,8 +1257,7 @@ impl Sessions {
 
 /// An agent launch recorded under the store lock. Step 2 runs tmux without the lock.
 pub(crate) struct AgentLaunch {
-    name: String,
-    wt: PathBuf,
+    place: Place,
     agent: String,
     parent_session_id: Option<SessionId>,
     id: Ulid,

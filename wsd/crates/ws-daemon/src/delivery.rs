@@ -38,6 +38,8 @@ pub struct Receipt {
 struct Batch {
     callback_id: Ulid,
     message_ids: Vec<EventId>,
+    #[serde(default)]
+    redelivered_ids: HashSet<EventId>,
     reason: String,
 }
 
@@ -143,7 +145,7 @@ async fn retry(store: Store, server: &Server, timeout: Duration, clock: &Clock) 
             .into_iter()
             .filter(|s| s.device_id == sessions.device_id && pending.contains(&s.id))
             .collect();
-        let mut available = HashSet::new();
+        let mut available = Vec::new();
         for session in local {
             let id = session.id;
             if let Some(paste) = sessions.active_paste(id)? {
@@ -151,24 +153,15 @@ async fn retry(store: Store, server: &Server, timeout: Duration, clock: &Clock) 
                     sessions.requeue_paste(id, paste.batch_id)?;
                 }
             } else if !matches!(session.state.as_str(), "finished" | "failed") {
-                available.insert(id);
+                available.push(session);
             }
         }
         let mut targets = Vec::new();
-        for workspace in sessions.registry.workspaces()? {
-            for window in workspace.body["windows"].as_array().into_iter().flatten() {
-                let Some(id) = window["session_id"]
-                    .as_str()
-                    .and_then(|s| s.parse::<SessionId>().ok())
-                else {
-                    continue;
-                };
-                if available.contains(&id)
-                    && let Some(window) = window["window_id"]
-                        .as_str()
-                        .filter(|s| valid_target(s, '@'))
-                {
-                    targets.push((id, window.to_owned()));
+        for session in available {
+            let id = session.id;
+            for window in sessions.session_windows(&session)? {
+                if valid_target(&window, '@') {
+                    targets.push((id, window));
                 }
             }
         }
@@ -361,9 +354,12 @@ async fn submit(
 }
 
 fn ownership(paste: &Paste, id: SessionId) -> String {
+    ownership_guard(id, &paste.window, &paste.pane)
+}
+
+pub(crate) fn ownership_guard(id: SessionId, window: &str, pane: &str) -> String {
     format!(
-        "#{{&&:#{{==:#{{@ws_session}},{id}}},#{{&&:#{{==:#{{window_id}},{}}},#{{&&:#{{||:#{{==:#{{@ws_pane}},}},#{{==:#{{@ws_pane}},{}}}}},#{{==:#{{pane_dead}},0}}}}}}}}",
-        paste.window, paste.pane
+        "#{{&&:#{{==:#{{@ws_session}},{id}}},#{{&&:#{{==:#{{window_id}},{window}}},#{{&&:#{{||:#{{==:#{{@ws_pane}},}},#{{==:#{{@ws_pane}},{pane}}}}},#{{==:#{{pane_dead}},0}}}}}}}}"
     )
 }
 
@@ -414,6 +410,25 @@ impl Server {
 }
 
 impl Sessions {
+    pub(crate) fn unconfirmed_delivery(&self, callback: &Callback) -> Result<bool> {
+        if self
+            .state
+            .join("delivery-spool")
+            .join(format!("{}.json", callback.callback_id))
+            .exists()
+            || self.get_record(&callback.session_id.to_string())?.device_id != self.device_id
+        {
+            return Ok(false);
+        }
+        let Some(batch) = self.delivery_batch(callback.session_id, callback.callback_id)? else {
+            return Ok(false);
+        };
+        Ok(!self.registry.messages()?.iter().any(|message| {
+            batch.message_ids.contains(&message.id)
+                && (message.delivered_at_ms.is_some() || message.read_at_ms.is_some())
+        }))
+    }
+
     fn active_paste(&self, session: SessionId) -> Result<Option<Paste>> {
         let record = self.get_record(&session.to_string())?;
         let entries = SessionLog::new(&self.state, session, record.device_id)
@@ -519,6 +534,22 @@ impl Sessions {
             return Ok(StopDecision::Accept);
         }
         let messages = self.registry.messages()?;
+        // A stdout receipt does not prove that the agent accepted the hook output.
+        let redelivered: HashSet<_> = if callback.payload["stop_hook_active"] == false {
+            SessionLog::new(&self.state, session.id, session.device_id)
+                .read()?
+                .entries
+                .into_iter()
+                .filter(|entry| {
+                    entry.event_type == "message.delivered"
+                        && entry.body["batch_id"].is_null()
+                        && !entry.body["callback_id"].is_null()
+                })
+                .filter_map(|entry| serde_json::from_value(entry.body["message_id"].clone()).ok())
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let delivered: HashSet<_> = messages
             .iter()
             .filter(|message| message.delivered_at_ms.is_some())
@@ -528,6 +559,7 @@ impl Sessions {
             message.recipient == session.id
                 && message.delivered_at_ms.is_some()
                 && message.read_at_ms.is_none()
+                && !redelivered.contains(&message.id)
         }) {
             self.append(
                 session.id,
@@ -546,7 +578,9 @@ impl Sessions {
         let batch: Vec<_> = self
             .inbox(session.id)?
             .into_iter()
-            .filter(|message| !delivered.contains(&message.event_id))
+            .filter(|message| {
+                !delivered.contains(&message.event_id) || redelivered.contains(&message.event_id)
+            })
             .collect();
         if batch.is_empty() {
             return Ok(StopDecision::Accept);
@@ -554,6 +588,7 @@ impl Sessions {
         let batch = Batch {
             callback_id: callback.callback_id,
             message_ids: batch.iter().map(|message| message.event_id).collect(),
+            redelivered_ids: redelivered,
             reason: batch.iter().map(render).collect::<Vec<_>>().join("\n\n"),
         };
         self.append(
@@ -595,6 +630,13 @@ impl Sessions {
         let Some(batch) = self.delivery_batch(session, callback)? else {
             return Ok(reply);
         };
+        if self
+            .registry
+            .event_for_callback(session, "hook.confirmed", &callback.to_string())?
+            .is_some()
+        {
+            return Ok(json!({}));
+        }
         let settled: HashSet<_> = self
             .registry
             .messages()?
@@ -607,7 +649,8 @@ impl Sessions {
             .into_iter()
             .filter(|message| {
                 batch.message_ids.contains(&message.event_id)
-                    && !settled.contains(&message.event_id)
+                    && (!settled.contains(&message.event_id)
+                        || batch.redelivered_ids.contains(&message.event_id))
             })
             .collect();
         if pending.is_empty() {
@@ -641,6 +684,21 @@ impl Sessions {
                 session.id,
                 "message.delivered",
                 json!({"message_id":id, "callback_id":receipt.callback_id}),
+            )?;
+        }
+        if self
+            .registry
+            .event_for_callback(
+                session.id,
+                "hook.confirmed",
+                &receipt.callback_id.to_string(),
+            )?
+            .is_none()
+        {
+            self.append(
+                session.id,
+                "hook.confirmed",
+                json!({"callback_id":receipt.callback_id}),
             )?;
         }
         Ok(())
@@ -843,6 +901,10 @@ mod tests {
 
     impl PasteSandbox {
         async fn new() -> Self {
+            Self::with_session_window(false).await
+        }
+
+        async fn with_session_window(session_window: bool) -> Self {
             let sandbox = Sandbox::new();
             let server = sandbox.home.tmux_socket();
             let tmux = crate::tmux::Tmux::named(&server);
@@ -917,9 +979,24 @@ mod tests {
                     .set_window_option(&result.window, key, &value)
                     .unwrap();
             }
-            result.sandbox.store.lock().unwrap().append(result.sandbox.recipient, "workspace.created", json!({
-                "workspace_id":"paste", "windows":[{"window_id":result.window,"session_id":result.sandbox.recipient}]
-            })).unwrap();
+            {
+                let mut sessions = result.sandbox.store.lock().unwrap();
+                if session_window {
+                    sessions
+                        .append(
+                            result.sandbox.recipient,
+                            "session.window",
+                            json!({
+                                "window_id":result.window, "pane":result.pane
+                            }),
+                        )
+                        .unwrap();
+                } else {
+                    sessions.append(result.sandbox.recipient, "workspace.created", json!({
+                        "workspace_id":"paste", "windows":[{"window_id":result.window,"session_id":result.sandbox.recipient}]
+                    })).unwrap();
+                }
+            }
             result
                 .wait(|| {
                     result
@@ -1009,6 +1086,19 @@ mod tests {
             callback.payload = json!({"hook_event_name":event, "turn_id":"paste-turn"});
             callback
         }
+    }
+
+    #[tokio::test]
+    async fn a_session_window_receives_messages_without_a_workspace() {
+        let sandbox = PasteSandbox::with_session_window(true).await;
+        sandbox.sandbox.send("session window message");
+        let _worker = sandbox.worker(std::time::Duration::from_secs(30));
+        sandbox.wait_for_submit().await;
+        assert!(
+            String::from_utf8(sandbox.bytes())
+                .unwrap()
+                .contains("session window message")
+        );
     }
 
     #[tokio::test]

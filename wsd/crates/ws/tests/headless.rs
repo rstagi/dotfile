@@ -19,6 +19,39 @@ struct Sandbox {
 }
 
 #[test]
+fn inherited_environment_reaches_the_child_without_entering_durable_state() {
+    let mut sandbox = Sandbox::new();
+    let marker = Ulid::new().to_string();
+    let value = format!("{marker} spaces=and\nnewlines");
+    let output = sandbox
+        .command()
+        .env("WS_TEST_INHERITED", &value)
+        .env("WS_TEST_EXPECTED", &value)
+        .env("WS_TEST_OVERRIDE", &value)
+        .args([
+            "session", "run", "--inherit-env",
+            "--env", "WS_TEST_OVERRIDE=explicit",
+            "--", "/bin/sh", "-c",
+            "test -n \"$WS_TEST_INHERITED\" && test \"$WS_TEST_INHERITED\" = \"$WS_TEST_EXPECTED\" && test \"$WS_TEST_OVERRIDE\" = explicit",
+        ])
+        .output();
+    let _ = sandbox.daemon.child.kill();
+    let _ = sandbox.daemon.child.wait();
+    let daemon_errors = sandbox.daemon.stderr();
+    // Drop before assertions so a failure cannot print daemon environment values.
+    drop(sandbox.daemon);
+    let output = output.unwrap();
+    assert!(
+        output.status.success(),
+        "The child did not receive the expected environment."
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&marker));
+    assert!(!daemon_errors.contains(&marker));
+    assert_directory_has_no_marker(sandbox.home.path(), marker.as_bytes());
+}
+
+#[test]
 fn headless_command_has_a_process_group_separate_logs_and_a_durable_successful_exit() {
     let mut sandbox = Sandbox::new();
     let id = sandbox.create(&[
@@ -319,6 +352,21 @@ fn headless_defaults_stdin_to_eof_and_reports_a_signal_as_a_failed_exit() {
     .unwrap()
     .entries;
     assert_eq!(entries[2].body["signal"], 15);
+}
+
+fn assert_directory_has_no_marker(directory: &std::path::Path, marker: &[u8]) {
+    for entry in fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            assert_directory_has_no_marker(&path, marker);
+        } else if path.is_file() {
+            let bytes = fs::read(&path).unwrap();
+            assert!(
+                !bytes.windows(marker.len()).any(|part| part == marker),
+                "An environment value entered a sandbox file."
+            );
+        }
+    }
 }
 
 impl Sandbox {

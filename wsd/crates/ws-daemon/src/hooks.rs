@@ -8,22 +8,23 @@ use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fs,
     io::{self, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use ws_core::{
-    ids::{SessionId, Ulid},
-    log::SessionLog,
-};
+use ws_core::ids::{SessionId, Ulid};
 
-/// Guards the daemon against a hung tmux server. The hook client has its own transport
-/// deadline, so this bound never delays the agent. It must stay above the tmux latency
-/// that ordinary scheduling load causes, because a timeout drops the window update.
+/// Total transport budget for Stop and exit. Generated hooks add a 10 s parent margin.
+pub const STOP_CLI_BUDGET: Duration = Duration::from_secs(20);
+
+// Bound each tmux call independently of the hook client.
 const TMUX_DEADLINE: Duration = Duration::from_secs(2);
+// Recovery of an unconfirmed block retries this many times when a tmux call times out.
+const RECOVERY_ATTEMPTS: u32 = 3;
+const SPOOL_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) static INGEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -76,6 +77,42 @@ pub async fn ingest(
     decision: StopDecision,
 ) -> crate::sessions::Result<Value> {
     ingest_callback(store, callback, decision, true).await
+}
+
+/// Drains callbacks concurrently with the socket server until daemon shutdown.
+pub(crate) async fn drain(store: Store, state: &Path) -> io::Result<()> {
+    let mut pending = VecDeque::new();
+    let mut seen = BTreeSet::new();
+    let mut scan_at = tokio::time::Instant::now();
+    loop {
+        if pending.is_empty() {
+            tokio::time::sleep_until(scan_at).await;
+            // Retry failed files once the current queue completes.
+            seen.clear();
+        }
+        if tokio::time::Instant::now() >= scan_at {
+            scan_at = tokio::time::Instant::now() + SPOOL_INTERVAL;
+            if let Err(error) = api::call(store.clone(), crate::bus::delivery::replay).await {
+                eprintln!("Cannot drain the delivery spool: {}", error.0);
+            }
+            match spool_paths(state) {
+                Ok(paths) => {
+                    // Preserve each scan's order. New arrivals precede the existing backlog.
+                    let fresh: Vec<_> = paths
+                        .into_iter()
+                        .filter(|path| seen.insert(path.clone()))
+                        .collect();
+                    for path in fresh.into_iter().rev() {
+                        pending.push_front(path);
+                    }
+                }
+                Err(error) => eprintln!("Cannot scan the hook spool: {error}"),
+            }
+        }
+        if let Some(path) = pending.pop_front() {
+            replay_file(store.clone(), &path).await;
+        }
+    }
 }
 
 async fn ingest_callback(
@@ -148,16 +185,11 @@ async fn ingest_callback(
         );
     }
     if let Some(window) = window.as_mut().filter(|window| window.session.is_empty()) {
-        let session = callback.session_id.to_string();
+        let session = callback.session_id;
         let id = window.id.clone();
         window.owned = api::call(store.clone(), move |sessions| {
-            Ok(sessions.registry.workspaces()?.iter().any(|workspace| {
-                workspace.body["windows"].as_array().is_some_and(|windows| {
-                    windows
-                        .iter()
-                        .any(|window| window["window_id"] == id && window["session_id"] == session)
-                })
-            }))
+            let session = sessions.get_record(&session.to_string())?;
+            Ok(sessions.session_windows(&session)?.contains(&id))
         })
         .await
         .map_err(|error| error.0)?;
@@ -289,12 +321,19 @@ pub fn spool(state: &Path, callback: &Callback) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+#[cfg(test)]
 pub(crate) async fn replay(store: Store, state: &Path) -> io::Result<()> {
     api::call(store.clone(), crate::bus::delivery::replay)
         .await
         .map_err(|error| io::Error::other(error.0))?;
-    let directory = state.join("spool");
-    let mut paths = match fs::read_dir(&directory) {
+    for path in spool_paths(state)? {
+        replay_file(store.clone(), &path).await;
+    }
+    Ok(())
+}
+
+fn spool_paths(state: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut paths = match fs::read_dir(state.join("spool")) {
         Ok(entries) => entries
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| {
@@ -302,25 +341,26 @@ pub(crate) async fn replay(store: Store, state: &Path) -> io::Result<()> {
                     .is_some_and(|extension| extension == "json")
             })
             .collect::<Vec<_>>(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
     paths.sort();
-    for path in paths {
-        // Preserve a malformed or failed record. It must not prevent other sessions from replaying.
-        let result = async {
-            let callback = serde_json::from_slice(&fs::read(&path)?)?;
-            ingest_callback(store.clone(), callback, StopDecision::Accept, false)
-                .await
-                .map_err(io::Error::other)?;
-            fs::remove_file(&path)
-        }
-        .await;
-        if let Err(error) = result {
-            eprintln!("Cannot replay hook {}: {error}", path.display());
-        }
+    Ok(paths)
+}
+
+async fn replay_file(store: Store, path: &Path) {
+    // Preserve malformed or failed records without blocking another session.
+    let result = async {
+        let callback = serde_json::from_slice(&fs::read(path)?)?;
+        ingest_callback(store, callback, StopDecision::Accept, false)
+            .await
+            .map_err(io::Error::other)?;
+        fs::remove_file(path)
     }
-    Ok(())
+    .await;
+    if let Err(error) = result {
+        eprintln!("Cannot replay hook {}: {error}", path.display());
+    }
 }
 
 async fn record(
@@ -328,11 +368,92 @@ async fn record(
     Json(callback): Json<Callback>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     // The hook client has a short deadline. Its disconnect must not cancel ingest.
-    let reply = tokio::spawn(ingest(store, callback, StopDecision::Accept))
-        .await
-        .map_err(|error| ApiError(io::Error::other(error).into()))?
-        .map_err(ApiError)?;
+    let reply = tokio::spawn(async move {
+        let reply = ingest(store.clone(), callback.clone(), StopDecision::Accept).await?;
+        if reply["decision"] == "block" {
+            // Recovery must survive cancellation of the HTTP handler as well as ingest.
+            tokio::spawn(async move {
+                tokio::time::sleep(STOP_CLI_BUDGET).await;
+                recover_unconfirmed_with_retries(store, callback).await;
+            });
+        }
+        Ok::<_, Error>(reply)
+    })
+    .await
+    .map_err(|error| ApiError(io::Error::other(error).into()))?
+    .map_err(ApiError)?;
     Ok((StatusCode::CREATED, Json(reply)))
+}
+
+/// A slow tmux (a loaded machine) must not leave the window at `working` for good.
+async fn recover_unconfirmed_with_retries(store: Store, callback: Callback) {
+    for attempt in 1..=RECOVERY_ATTEMPTS {
+        match recover_unconfirmed(store.clone(), callback.clone()).await {
+            Ok(()) => return,
+            Err(error) if attempt < RECOVERY_ATTEMPTS && is_tmux_timeout(&error) => {
+                eprintln!("Recovery attempt {attempt} of the unconfirmed hook timed out: {error}");
+                tokio::time::sleep(TMUX_DEADLINE).await;
+            }
+            Err(error) => {
+                eprintln!("Cannot recover the unconfirmed hook: {error}");
+                return;
+            }
+        }
+    }
+}
+
+fn is_tmux_timeout(error: &crate::sessions::Error) -> bool {
+    matches!(error, crate::sessions::Error::Io(error) if error.kind() == io::ErrorKind::TimedOut)
+}
+
+async fn recover_unconfirmed(store: Store, callback: Callback) -> crate::sessions::Result<()> {
+    let _guard = INGEST_LOCK.lock().await;
+    let raw = callback.clone();
+    let pending = api::call(store.clone(), move |sessions| {
+        sessions.unconfirmed_delivery(&raw)
+    })
+    .await
+    .map_err(|error| error.0)?;
+    if !pending {
+        return Ok(());
+    }
+    let Some(window) = window(&callback).await? else {
+        return Ok(());
+    };
+    if !owns_window(&callback, &window) || window.seq != callback.observed_at_us {
+        return Ok(());
+    }
+    let Some(pane) = callback.pane.as_deref() else {
+        return Ok(());
+    };
+    // Match submit's ownership guard and preserve any newer turn, including external tmux changes.
+    let ownership = crate::bus::delivery::ownership_guard(callback.session_id, &window.id, pane);
+    let guard = format!(
+        "#{{&&:{ownership},#{{&&:#{{==:#{{@ws_seq}},{}}},#{{&&:#{{==:#{{@ws_state}},working}},#{{==:#{{@ws_main}},working}}}}}}}}",
+        callback.observed_at_us
+    );
+    let state = if window.subagents.is_empty() {
+        "idle"
+    } else {
+        "working"
+    };
+    let release = format!(
+        "set-option -w -t {} @ws_main idle; set-option -w -t {} @ws_state {state}; set-option -wu -t {} @ws_turn; display-message -p released",
+        window.id, window.id, window.id
+    );
+    if tmux(&callback, &["if-shell", "-F", "-t", pane, &guard, &release]).await? == "released" {
+        api::call(store, move |sessions| {
+            sessions.append(
+                callback.session_id,
+                "hook.abandoned",
+                json!({"callback_id":callback.callback_id}),
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.0)?;
+    }
+    Ok(())
 }
 
 fn stop_reply(decision: &StopDecision) -> Value {
@@ -394,13 +515,10 @@ impl Sessions {
         };
         // Rebuild from durable receipts so restart and spool replay retain the same ordering.
         // The current receipt is already durable but has not yet passed through reduction.
-        let entries = SessionLog::new(&self.state, session.id, session.device_id)
-            .read()?
-            .entries;
-        for entry in entries
-            .into_iter()
-            .filter(|entry| entry.event_type == "hook.received")
-        {
+        let entries = self
+            .registry
+            .session_events_of_type(session.id, "hook.received")?;
+        for entry in entries {
             if entry.body["callback_id"] == callback.callback_id.to_string()
                 || !entry.body["pane"].is_null()
             {
@@ -818,7 +936,7 @@ pub(crate) async fn tmux_server(
         ));
     }
     let output = tokio::time::timeout(
-        TMUX_DEADLINE,
+        tmux_deadline(),
         command.args(args).kill_on_drop(true).output(),
     )
     .await
@@ -836,4 +954,14 @@ pub(crate) async fn tmux_server(
     String::from_utf8(output.stdout)
         .map(|text| text.trim_end_matches('\n').to_owned())
         .map_err(io::Error::other)
+}
+
+// Sandboxes can extend the hang guard without changing the production deadline.
+fn tmux_deadline() -> Duration {
+    std::env::var("WS_TEST_HOOK_TMUX_DEADLINE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .filter(|deadline| *deadline >= TMUX_DEADLINE)
+        .unwrap_or(TMUX_DEADLINE)
 }

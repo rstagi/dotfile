@@ -7,7 +7,7 @@ pub async fn run(socket: &Path, target: &str, detach: bool) -> Result<()> {
     let target = if target == "me" {
         super::whoami::current(socket).await?.id.to_string()
     } else {
-        target.to_owned()
+        normalize_target(target)?
     };
     let body = client::request(
         socket,
@@ -25,4 +25,16 @@ pub async fn run(socket: &Path, target: &str, detach: bool) -> Result<()> {
             .ok_or("The workspace response has no window id.")?,
         detach,
     )
+}
+
+pub(super) fn normalize_target(target: &str) -> Result<String> {
+    let path = super::new::expand_home(target)?;
+    if path.is_dir() {
+        return path
+            .canonicalize()?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "The directory path is not UTF-8.".into());
+    }
+    Ok(target.to_owned())
 }
