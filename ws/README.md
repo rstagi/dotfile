@@ -6,6 +6,8 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 
 - A workspace combines a git worktree and a tmux session. Each interactive agent uses a window in that session.
 - `ws new [--repo <path>] [--branch <branch>] [--agent claude|codex|grok] [--detach]` creates a workspace.
+- `ws new --scratch [--agent claude|codex|grok] [--detach]` starts a session in `$WS_HOME/scratch/<ulid8>`.
+- `ws new --cwd <dir> [--agent claude|codex|grok] [--detach]` starts a session in an existing directory.
 - `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
 - `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace or session.
 - `ws list [--json]`, `ws pin <workspace|path>` and `ws rm [<workspace|path>]` manage registered workspaces.
@@ -534,13 +536,18 @@ Run `cd wsd && cargo test -p ws --test phases` to check phase launches, review w
 
 The Rust CLI also supports `new [--repo <path>] [--branch <branch>] [--agent <agent>] [--detach]`,
 `add [repo/branch|path] [--agent <agent>] [--detach]`, and `list|ls [--json]`.
-`new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.
-Without `--repo`, `new` offers the current repository, the read-only Loop mappings, and repositories under `$WS_REPO_ROOTS` through fzf.
-Without `--branch`, it reads the branch from the terminal.
-It copies ignored files that match `.conductor/settings.toml` `file_include_globs`, with `.env*` as the default.
-It runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux window.
-`add` registers an existing worktree or adds a tab to a registered workspace.
-When the target is absent, it uses the current directory or tmux workspace.
+With a repository and branch, `new` creates `$WS_ROOT/<repo>/<branch>` and replaces branch slashes with hyphens.
+Without `--repo`, `new` offers `scratch`, the current repository, the read-only Loop mappings, and repositories under `$WS_REPO_ROOTS` through fzf.
+Select `scratch` or use `new --scratch` to create a session in `$WS_HOME/scratch/<ulid8>`.
+Use `new --cwd <dir>` to start in an existing directory, including a repository.
+`--cwd` and `--scratch` each conflict with `--repo` and `--branch`. They also conflict with each other.
+For a repository selection, `new` reads the branch from the terminal unless `--branch` supplies it.
+A directory outside git skips the branch prompt and starts a session without a workspace.
+Workspace creation copies ignored files that match `.conductor/settings.toml` `file_include_globs`, with `.env*` as the default.
+Workspace creation runs `[scripts] setup`, or an executable `.ws-setup`, in a separate tmux window.
+`add` registers an existing worktree or adds a window to a workspace or an existing directory.
+Directory sessions share one tmux session and allocate successive agent slots.
+When the target is absent, `add` uses the current tmux window's `@ws_path`, then the current directory.
 `list` selects workspaces from the registry. A worktree directory without a registry entry does not appear.
 Workspace tabs start the selected agent through one preparation contract in `ws-daemon`.
 `ws claude`, `ws codex` and `ws grok` run tracked agents in the current workspace tab and forward their arguments.

@@ -355,24 +355,24 @@ async fn add(
 ) -> std::result::Result<Json<Value>, ApiError> {
     let agent = request.agent.clone();
     let parent = request.parent_session_id;
-    let (name, wt) = api::call(store.clone(), move |sessions| {
+    let place = api::call(store.clone(), move |sessions| {
         sessions.record_call(request.parent_session_id, "workspace.add", None)?;
         check_agent(&request.agent)?;
-        workspace_path(&request.target)
+        match workspace_path(&request.target) {
+            Ok((name, directory)) => Ok(Place::Workspace { name, directory }),
+            Err(error) => {
+                let directory = Path::new(&request.target).canonicalize();
+                match directory {
+                    Ok(directory) if directory.is_dir() && directory.to_str().is_some() => {
+                        Ok(Place::Directory { directory })
+                    }
+                    _ => Err(error),
+                }
+            }
+        }
     })
     .await?;
-    Ok(Json(
-        start_agent(
-            store,
-            Place::Workspace {
-                name,
-                directory: wt,
-            },
-            agent,
-            parent,
-        )
-        .await?,
-    ))
+    Ok(Json(start_agent(store, place, agent, parent).await?))
 }
 
 async fn pin(

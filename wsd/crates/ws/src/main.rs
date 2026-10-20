@@ -204,18 +204,9 @@ enum Command {
     Daemon,
     /// Show the daemon version and uptime.
     Ping,
-    /// Create a workspace and its first session.
-    New {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-        #[arg(long, default_value = "claude")]
-        agent: String,
-        #[arg(long)]
-        detach: bool,
-    },
-    /// Add a session to a workspace.
+    /// Start a session in a workspace, an existing directory or a scratch directory.
+    New(cmd::new::Options),
+    /// Add a session to a workspace or an existing directory.
     Add {
         target: Option<String>,
         #[arg(long, default_value = "claude")]
@@ -421,12 +412,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 response.version, response.uptime_secs
             );
         }
-        Command::New {
-            repo,
-            branch,
-            agent,
-            detach,
-        } => cmd::new::run(&socket_path()?, repo, branch, agent, detach).await?,
+        Command::New(options) => cmd::new::run(&socket_path()?, options).await?,
         Command::Add {
             target,
             agent,

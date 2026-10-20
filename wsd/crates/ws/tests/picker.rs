@@ -632,7 +632,7 @@ fn picker_preserves_unicode_and_long_names() {
 }
 
 #[test]
-fn repository_discovery_matches_zsh_and_preserves_read_only_mapping() {
+fn repository_discovery_includes_scratch_and_preserves_read_only_mapping() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::new();
     let home = sandbox.home.path();
@@ -676,7 +676,7 @@ fn repository_discovery_matches_zsh_and_preserves_read_only_mapping() {
     )
     .unwrap();
     std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let expected = format!("{}\n", repo.display()).into_bytes();
+    let expected = format!("scratch\n{}\n", repo.display()).into_bytes();
     let output = sandbox
         .command()
         .args(["new", "--branch", "registry-test", "--detach"])
@@ -689,10 +689,6 @@ fn repository_discovery_matches_zsh_and_preserves_read_only_mapping() {
     assert_eq!(
         std::fs::read(home.join("repo-candidates")).unwrap(),
         expected
-    );
-    assert_eq!(
-        String::from_utf8(expected).unwrap(),
-        format!("{}\n", repo.display())
     );
     assert_eq!(std::fs::read(&registry).unwrap(), mappings);
     assert_eq!(
