@@ -47,6 +47,11 @@ pub struct TelemetryTail {
     pub restarted: bool,
 }
 
+#[derive(Deserialize)]
+struct ReceivedAt {
+    received_at_ms: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct TelemetryLog {
     directory: PathBuf,
@@ -94,17 +99,20 @@ impl TelemetryLog {
 
     /// Returns complete records in ingestion order. Ignores an incomplete crash tail.
     pub fn read(&self) -> io::Result<Vec<TelemetryRecord>> {
-        let _lock = self.lock()?;
-        match File::open(self.directory.join("log.jsonl")) {
-            Ok(mut file) => Ok(read_file(&mut file)?.0),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(error) => Err(error),
-        }
+        let bytes = {
+            let _lock = self.lock()?;
+            match File::open(self.directory.join("log.jsonl")) {
+                Ok(mut file) => read_bytes(&mut file)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(error),
+            }
+        };
+        Ok(parse_records(&bytes)?.0)
     }
 
     /// Returns complete records after the cursor in ingestion order. Ignores an incomplete crash tail.
     pub fn read_after(&self, cursor: TelemetryCursor) -> io::Result<TelemetryTail> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
         let mut file = match File::open(self.directory.join("log.jsonl")) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -121,7 +129,9 @@ impl TelemetryLog {
             && cursor.offset <= metadata.len();
         let offset = if same { cursor.offset } else { 0 };
         file.seek(SeekFrom::Start(offset))?;
-        let (records, valid_bytes) = read_file(&mut file)?;
+        let bytes = read_bytes(&mut file)?;
+        drop(lock);
+        let (records, valid_bytes) = parse_records(&bytes)?;
         Ok(TelemetryTail {
             records,
             cursor: TelemetryCursor {
@@ -141,20 +151,25 @@ impl TelemetryLog {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
             Err(error) => return Err(error),
         };
-        let (records, _) = read_file(&mut file)?;
-        let removed = records
-            .iter()
-            .filter(|record| record.received_at_ms < cutoff_ms)
-            .count();
+        let bytes = read_bytes(&mut file)?;
+        // Parse only the timestamps. Full payloads make this scan hold the append lock for seconds.
+        let mut kept = Vec::new();
+        let mut removed = 0;
+        for line in complete_lines(&bytes) {
+            let stamp: ReceivedAt = serde_json::from_slice(line)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if stamp.received_at_ms < cutoff_ms {
+                removed += 1;
+            } else {
+                kept.push(line);
+            }
+        }
         if removed == 0 {
             return Ok(0);
         }
         let mut replacement = tempfile::NamedTempFile::new_in(&self.directory)?;
-        for record in records
-            .iter()
-            .filter(|record| record.received_at_ms >= cutoff_ms)
-        {
-            serde_json::to_writer(&mut replacement, record)?;
+        for line in kept {
+            replacement.write_all(line)?;
             replacement.write_all(b"\n")?;
         }
         replacement.as_file().sync_all()?;
@@ -233,24 +248,35 @@ fn repair_tail(file: &mut File) -> io::Result<()> {
     file.set_len(0)
 }
 
-fn read_file(file: &mut File) -> io::Result<(Vec<TelemetryRecord>, u64)> {
+fn read_bytes(file: &mut File) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
-    let valid_bytes = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index + 1);
+    Ok(bytes)
+}
+
+fn parse_records(bytes: &[u8]) -> io::Result<(Vec<TelemetryRecord>, u64)> {
     let mut records = Vec::new();
-    for line in bytes[..valid_bytes]
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-    {
+    for line in complete_lines(bytes) {
         records.push(
             serde_json::from_slice(line)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         );
     }
-    Ok((records, valid_bytes as u64))
+    Ok((records, valid_length(bytes) as u64))
+}
+
+/// Non-empty lines before the last newline. Ignores an incomplete crash tail.
+fn complete_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes[..valid_length(bytes)]
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+}
+
+fn valid_length(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1)
 }
 
 #[cfg(test)]

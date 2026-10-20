@@ -1134,6 +1134,69 @@ fn token_estimates_deduplicate_model_records_and_keep_unknown_denominators() {
     assert!(body.get(sc::RUNNER_USAGE_USED_RATIO).is_none());
 }
 
+#[test]
+fn token_estimates_follow_appends_and_retention_between_calls() {
+    use std::fs;
+    use ws_core::{
+        device::Device,
+        ids::Ulid,
+        telemetry_log::{Signal, TelemetryLog},
+    };
+    let sandbox = tempfile::tempdir().unwrap();
+    let device = Device::init(sandbox.path(), "test-host").unwrap();
+    let log = TelemetryLog::new(sandbox.path(), device.device_id);
+    let session = Ulid::new().to_string();
+    let path = sandbox.path().join("sessions").join(&session);
+    fs::create_dir_all(&path).unwrap();
+    fs::write(
+        path.join("quota-binding.json"),
+        json!({"runner":"claude","account_id":"account-a"}).to_string(),
+    )
+    .unwrap();
+    let model = |span: &str, tokens: u64| {
+        json!({
+            "resourceSpans":[{"resource":{"attributes":[{"key":sc::SESSION_ID,"value":{"stringValue":session}}]},
+            "scopeSpans":[{"spans":[{"name":sc::MODEL_CALL_SPAN,"traceId":session,"spanId":span,
+            "endTimeUnixNano":"2000000000","attributes":[
+                {"key":sc::GEN_AI_INPUT_TOKENS,"value":{"intValue":tokens.to_string()}},
+                {"key":sc::GEN_AI_OUTPUT_TOKENS,"value":{"intValue":"0"}}
+            ]}]}]}]
+        })
+    };
+    let missing = Reading {
+        runner: "claude".into(),
+        account_id: "account-a".into(),
+        bucket: None,
+        window: "five_hour".into(),
+        duration_secs: Some(4),
+        start_ms: Some(1000),
+        reset_ms: Some(5000),
+        source: Source::Reported,
+        source_name: "status-line".into(),
+        observed_at_ms: 4000,
+        received_at_ms: 4000,
+        used_ratio: None,
+        tokens: None,
+        coverage: None,
+    };
+    let tokens = || {
+        estimator::estimate_missing(sandbox.path(), vec![missing.clone()], 4000)
+            .unwrap()
+            .remove(0)
+            .tokens
+    };
+    log.append(Signal::Traces, vec![model("a", 100)], 1)
+        .unwrap();
+    assert_eq!(tokens(), Some(100));
+    log.append(Signal::Traces, vec![model("b", 20)], 2).unwrap();
+    assert_eq!(tokens(), Some(120));
+    // Retention replaces the file. The estimate must drop the expired record.
+    log.prune_before(2).unwrap();
+    assert_eq!(tokens(), Some(20));
+    log.append(Signal::Traces, vec![model("c", 3)], 3).unwrap();
+    assert_eq!(tokens(), Some(23));
+}
+
 #[tokio::test]
 async fn grok_collector_discovers_billing_and_persists_an_estimate_with_coverage() {
     use crate::sessions::{CreateSession, Sessions};

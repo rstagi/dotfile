@@ -5,21 +5,28 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
 };
 use ws_core::{
     device::Device,
     semconv as sc,
-    telemetry_log::{Signal, TelemetryLog},
+    telemetry_log::{Signal, TelemetryCursor, TelemetryLog, TelemetryRecord},
 };
 
 type Accounts = HashMap<String, (String, String)>;
+type ModelRecords = HashMap<(String, String), ModelRecord>;
 
+#[derive(Clone)]
 struct ModelRecord {
     session: String,
     at_ms: u64,
     tokens: u64,
 }
+
+/// Model records per state directory. Each call parses only the log tail after the cursor.
+static MODEL_RECORDS: LazyLock<Mutex<HashMap<PathBuf, (TelemetryCursor, ModelRecords)>>> =
+    LazyLock::new(Mutex::default);
 
 /// Estimates missing values. Token counts alone cannot establish a subscription denominator.
 pub fn estimate_missing(
@@ -178,52 +185,64 @@ fn accounts(state: &Path) -> io::Result<Accounts> {
 
 fn model_records(state: &Path) -> io::Result<Vec<ModelRecord>> {
     let device = Device::load(state)?;
-    let mut records = HashMap::new();
-    for record in TelemetryLog::new(state, device.device_id).read()? {
-        if record.signal != Signal::Traces {
-            continue;
-        }
-        for resource in record.payload["resourceSpans"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            for scope in resource["scopeSpans"].as_array().into_iter().flatten() {
-                for span in scope["spans"].as_array().into_iter().flatten() {
-                    // Native logs and native spans can describe the same call. Only the
-                    // Phase 43 canonical span contributes to this account total.
-                    if span["name"] != sc::MODEL_CALL_SPAN {
-                        continue;
-                    }
-                    let Some(session) = attribute(&resource["resource"], sc::SESSION_ID)
-                        .or_else(|| attribute(span, sc::SESSION_ID))
-                        .and_then(Value::as_str)
-                    else {
-                        continue;
-                    };
-                    let (Some(trace), Some(id), Some(end), Some(input), Some(output)) = (
-                        span["traceId"].as_str().filter(|id| !id.is_empty()),
-                        span["spanId"].as_str().filter(|id| !id.is_empty()),
-                        number(&span["endTimeUnixNano"]).filter(|time| *time > 0),
-                        attribute(span, sc::GEN_AI_INPUT_TOKENS).and_then(number),
-                        attribute(span, sc::GEN_AI_OUTPUT_TOKENS).and_then(number),
-                    ) else {
-                        continue;
-                    };
-                    // Canonical input already includes cache tokens. Output includes reasoning.
-                    records.insert(
-                        (trace.to_owned(), id.to_owned()),
-                        ModelRecord {
-                            session: session.into(),
-                            at_ms: end / 1_000_000,
-                            tokens: input.saturating_add(output),
-                        },
-                    );
+    let mut cache = MODEL_RECORDS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let (cursor, records) = cache.entry(state.to_path_buf()).or_default();
+    let tail = TelemetryLog::new(state, device.device_id).read_after(*cursor)?;
+    if tail.restarted {
+        records.clear();
+    }
+    for record in &tail.records {
+        add_model_records(records, record);
+    }
+    *cursor = tail.cursor;
+    Ok(records.values().cloned().collect())
+}
+
+fn add_model_records(records: &mut ModelRecords, record: &TelemetryRecord) {
+    if record.signal != Signal::Traces {
+        return;
+    }
+    for resource in record.payload["resourceSpans"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        for scope in resource["scopeSpans"].as_array().into_iter().flatten() {
+            for span in scope["spans"].as_array().into_iter().flatten() {
+                // Native logs and native spans can describe the same call. Only the
+                // Phase 43 canonical span contributes to this account total.
+                if span["name"] != sc::MODEL_CALL_SPAN {
+                    continue;
                 }
+                let Some(session) = attribute(&resource["resource"], sc::SESSION_ID)
+                    .or_else(|| attribute(span, sc::SESSION_ID))
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                let (Some(trace), Some(id), Some(end), Some(input), Some(output)) = (
+                    span["traceId"].as_str().filter(|id| !id.is_empty()),
+                    span["spanId"].as_str().filter(|id| !id.is_empty()),
+                    number(&span["endTimeUnixNano"]).filter(|time| *time > 0),
+                    attribute(span, sc::GEN_AI_INPUT_TOKENS).and_then(number),
+                    attribute(span, sc::GEN_AI_OUTPUT_TOKENS).and_then(number),
+                ) else {
+                    continue;
+                };
+                // Canonical input already includes cache tokens. Output includes reasoning.
+                records.insert(
+                    (trace.to_owned(), id.to_owned()),
+                    ModelRecord {
+                        session: session.into(),
+                        at_ms: end / 1_000_000,
+                        tokens: input.saturating_add(output),
+                    },
+                );
             }
         }
     }
-    Ok(records.into_values().collect())
 }
 
 fn attribute<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
