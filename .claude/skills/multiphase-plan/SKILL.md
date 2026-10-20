@@ -42,7 +42,7 @@ pass the 3 rules. A short plan is better.
 rounds** (step 3) before step 4 registers it. `LOOP_PLAN_REVIEW_ROUNDS` (a maximum, default 2)
 sets the limit. Round 2 runs only when a blocking finding changed the plan. If the argument starts with the word `light` (e.g.
 `/multiphase-plan light add a --json flag`), strip it from the goal and skip step 3. Use
-`light` for small or low-risk plans. A `light` plan also skips the visual explainer (step 5).
+`light` for small or low-risk plans. A `light` plan also skips the visual checkpoint (step 5).
 
 **Front-load the interaction.** All questions go to the user in step 1, before drafting. From
 step 2 on, work autonomously through review and registration to the report. Come back to the
@@ -281,19 +281,32 @@ the review phase starts: rewrite its `` `[review: …]` `` / `` `[rounds: …]` 
 `loop-plan.sh push`, or `m` on the review phase in `loop-top`.) Only if step 1 left it open —
 e.g. the user skipped it — ask it now, in one message.
 
-### 5. Explain the plan (skipped in `light` mode)
+### 5. Visual checkpoint (skipped in `light` mode)
+
+Show the plan to the user as a page and a short video. The user reads the page from top to
+bottom: the TL;DR with what you need from them, the Done when table, the phases, one
+before/after architecture diagram, the decision cards, and the rabbit holes.
 
 Run the `visual-explainer` skill in `plan` mode for the whole plan. Step 4 must give the
 planId first. Use the output directory `.loop/explainers/plan/`.
 
 - Take the facts from `.loop/plan.md`: the Goal, the key decisions, the milestones, the
-  phases and the risks.
-- Use the step 3 dispositions for the rejected options and the risks.
+  phases, the risks and the `## Deferred / Not now` section.
+- `tldr.goal` is the Goal in one or two sentences. `tldr.ask` is what you need from the user:
+  the approvals and the unresolved questions of the plan. `tldr.risks` has the top 2 or 3
+  risks.
+- `doneWhen`: the criteria that end the plan, each with how a person checks it. Take them from
+  the Done when lines of the phases. Merge the lines that check the same result.
+- Give each phase a one-line `summary`. Give each architecture component and flow its status:
+  `new`, `changed`, `existing` or `removed`. The page draws the before and after diagrams from
+  these statuses.
+- Give each decision a short `title`. Use the step 3 dispositions for the rejected options and
+  the risks.
+- `rabbitHoles`: the `## Deferred / Not now` items and the scope limits, one line each.
 - Set `meta.planId` to the planId. Omit `meta.milestone`.
 - Write `.loop/explainers/plan/narration.json` beside `props.json`, as the skill tells you.
-  The narration explains the plan from the same facts.
-- Render the page, then the video with its voiceover (`render-video.mjs`, the video step of
-  the skill). Then render the page again with the video at the top.
+  The narration explains the plan in 45 to 180 seconds from the same facts.
+- Render the page, the screenshots and the video with its voiceover, as the skill tells you.
 - Publish the page and the video as the skill tells you. The link goes to
   `.loop/explainers/plan/link.txt`.
 - A failed explainer does not block the report. State the failure in the report. A failed
@@ -304,7 +317,7 @@ planId first. Use the output directory `.loop/explainers/plan/`.
 State the shape honestly — do not imply parallelism that isn't there. Fill every `<…>` in
 the templates below with the real captured value (planId, phase & lane counts) — never print
 a literal placeholder. The pickup/execute argument is the **planId** (or effort name). Add the
-step 5 explainer link, or its failure, on its own line after the first line. Omit that line
+step 5 page link and the video result, or the failure, on its own line after the first line. Omit that line
 for a `light` plan.
 
 **Single-lane (sequential) plan — the common case:**

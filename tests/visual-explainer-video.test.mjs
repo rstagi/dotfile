@@ -6,10 +6,9 @@ import os from "node:os";
 import path from "node:path";
 
 const SKILL = path.join(import.meta.dirname, "..", ".claude", "skills", "visual-explainer");
-const RENDER = path.join(SKILL, "scripts", "render.mjs");
 const RENDER_VIDEO = path.join(SKILL, "scripts", "render-video.mjs");
-const { clip, storyboard } = await import(path.join(SKILL, "video", "src", "storyboard.mjs"));
-const { cacheDir, cacheKey, parseArgs, pruneCaches, renderAttempts, videoSettings } = await import(RENDER_VIDEO);
+const { checkpointOf, clip, modeLabel, sceneData, storyboard, terminalLines, verdictOf, TERMINAL } = await import(path.join(SKILL, "video", "src", "storyboard.mjs"));
+const { cacheDir, cacheKey, findChrome, parseArgs, pngSize, previewArgs, pruneCaches, renderAttempts, videoSettings } = await import(RENDER_VIDEO);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "visual-explainer-video-"));
 // Not a root after() hook: with --test-name-pattern, node runs it before a long filtered test ends.
 process.on("exit", () => fs.rmSync(TMP, { recursive: true, force: true }));
@@ -18,6 +17,10 @@ const EXAMPLES = Object.fromEntries(fs.readdirSync(path.join(SKILL, "examples"))
   const props = JSON.parse(fs.readFileSync(path.join(SKILL, "examples", file), "utf8"));
   return [props.mode, props];
 }));
+const EXAMPLE_NARRATION_FILE = Object.fromEntries(Object.keys(EXAMPLES).map((mode) => [mode, path.join(SKILL, "examples",
+  fs.readdirSync(path.join(SKILL, "examples")).find((f) => f.startsWith(mode) && f.endsWith(".narration.json")))]));
+// The example props file beside each narration file: props.media paths are relative to it.
+const EXAMPLE_PROPS_FILE = Object.fromEntries(Object.entries(EXAMPLE_NARRATION_FILE).map(([mode, file]) => [mode, file.replace(".narration.json", ".props.json")]));
 
 const planProps = (over = {}) => ({
   mode: "plan",
@@ -26,8 +29,8 @@ const planProps = (over = {}) => ({
   architecture: {
     summary: "A thin HTTP layer over a store.",
     layers: [
-      { name: "Interface", components: [{ name: "HTTP API", role: "Routes `GET /widgets`" }] },
-      { name: "Storage", components: [{ name: "Widget store", role: "SQLite tables" }] },
+      { name: "Interface", components: [{ name: "HTTP API", role: "Routes `GET /widgets`", status: "new" }] },
+      { name: "Storage", components: [{ name: "Widget store", role: "SQLite tables" }, { name: "Flat files", role: "Old store", status: "removed" }] },
     ],
     flows: [{ from: "HTTP API", to: "Widget store", label: "reads widgets" }],
   },
@@ -35,14 +38,18 @@ const planProps = (over = {}) => ({
     {
       number: 1, title: "Read path",
       phases: [
-        { number: 1, title: "Add the widget store", kind: "work" },
+        { number: 1, title: "Add the widget store", kind: "work", estimate: "1 d", doneWhen: "The store passes its tests." },
         { number: 2, title: "Review milestone 1", kind: "pr-review", gate: true, dependsOn: [1] },
       ],
     },
-    { number: 2, title: "Write path", phases: [{ number: 3, title: "Accept POST /widgets", kind: "work" }] },
+    { number: 2, title: "Write path", phases: [{ number: 3, title: "Accept POST /widgets", kind: "work", summary: "one handler" }] },
   ],
-  decisions: [{ decision: "Use SQLite", why: "One file, no server.", rejected: [{ option: "Postgres", reason: "Needs a server." }] }],
-  risks: [{ risk: "Lock contention", impact: "high", mitigation: "WAL mode." }],
+  decisions: [{ decision: "Use SQLite for the widget store", why: "One file, no server.", rejected: [{ option: "Postgres", reason: "Needs a server." }] }],
+  risks: [
+    { risk: "Slow queries", impact: "low", mitigation: "Indexes." },
+    { risk: "Lock contention", impact: "high", mitigation: "WAL mode." },
+    { risk: "Disk full", impact: "medium", mitigation: "Alerts." },
+  ],
   ...over,
 });
 
@@ -58,9 +65,21 @@ const shipProps = (over = {}) => ({
   ...over,
 });
 
-const EXAMPLE_NARRATION = Object.fromEntries(Object.keys(EXAMPLES).map((mode) => [mode, JSON.parse(fs.readFileSync(path.join(SKILL, "examples",
-  fs.readdirSync(path.join(SKILL, "examples")).find((f) => f.startsWith(mode) && f.endsWith(".narration.json"))), "utf8"))]));
-const introOnly = (mode) => ({ mode, sections: [{ id: "intro", text: "Hello." }] });
+// A mid-milestone progress checkpoint: no review yet, some delivered rows still pending.
+const checkpointProps = () => shipProps({
+  meta: { title: "Widget ship report", subtitle: "Checkpoint", date: "2026-10-18", checkpoint: { number: 2, phasesDone: 3, phasesTotal: 5 } },
+  reviews: [],
+  delivered: [
+    { criterion: "a", result: "ra", status: "pending" }, { criterion: "b", result: "rb", status: "met" },
+    { criterion: "c", result: "rc", status: "partial" }, { criterion: "d", result: "rd", status: "pending" },
+  ],
+});
+
+// Narration helpers: a text of `n` words, and a v3 narration of the given scenes.
+const words = (n, word = "word") => Array.from({ length: n }, () => word).join(" ");
+const scene = (id, n = 20) => ({ scene: id, text: words(n) });
+const v3 = (mode, scenes) => ({ version: 3, mode, scenes });
+const introOnly = (mode) => v3(mode, [scene("intro", 80)]);
 
 function run(script, args, { props, narration, env = {}, timeout } = {}) {
   const dir = fs.mkdtempSync(path.join(TMP, "case-"));
@@ -70,60 +89,95 @@ function run(script, args, { props, narration, env = {}, timeout } = {}) {
   if (narration !== undefined) fs.writeFileSync(narrationFile, JSON.stringify(narration));
   const argv = args.map((a) => a.replace("<props>", propsFile).replace("<narration>", narrationFile).replace("<out>", path.join(dir, "out")));
   const res = spawnSync(process.execPath, [script, ...argv], { encoding: "utf8", env: { ...process.env, ...env }, timeout });
-  const page = path.join(dir, "out", "index.html");
-  return { ...res, dir, html: fs.existsSync(page) ? fs.readFileSync(page, "utf8") : null };
+  return { ...res, dir };
 }
 
-// ---- narration check ----
+// ---- narration v3: one text for each scene ----
 
 const NARRATION = path.join(SKILL, "scripts", "narration.mjs");
-const { checkNarration } = await import(NARRATION);
+const { checkNarration, countWords, hasSceneData, SCENES, tourStops } = await import(NARRATION);
 
 function narrationFile(narration) {
   const file = path.join(fs.mkdtempSync(path.join(TMP, "narration-")), "narration.json");
   fs.writeFileSync(file, typeof narration === "string" ? narration : JSON.stringify(narration));
   return file;
 }
+const check = (narration, props) => checkNarration(narrationFile(narration), props);
+const lines = (errors) => errors.map((e) => `${e.path}: ${e.message}`);
 
-const say = (id, text = `The ${id} section.`) => ({ id, text });
-
-test("narration: the committed examples are valid for their props", () => {
+test("narration: the committed examples are valid for their props, concise, and in scene order", () => {
   for (const [mode, props] of Object.entries(EXAMPLES)) {
-    const file = path.join(SKILL, "examples", fs.readdirSync(path.join(SKILL, "examples")).find((f) => f.startsWith(mode) && f.endsWith(".narration.json")));
-    assert.deepEqual(checkNarration(file, props).errors, [], mode);
+    const { errors, scenes } = checkNarration(EXAMPLE_NARRATION_FILE[mode], props);
+    assert.deepEqual(errors, [], mode);
+    const order = scenes.map((s) => SCENES[mode].indexOf(s.id));
+    assert.deepEqual(order, [...order].sort((a, b) => a - b), `${mode}: canonical order`);
+    const total = scenes.reduce((n, s) => n + countWords(s.text), 0);
+    assert.ok(total >= 150 && total <= 380, `${mode}: ${total} words, about 60 to 150 s`);
   }
 });
 
-test("narration: a section id must exist for the mode, appear once, and have its props section", () => {
-  const props = shipProps();
-  const { errors } = checkNarration(narrationFile({
-    mode: "ship",
-    sections: [say("intro"), say("goal"), say("intro"), say("changes"), say("setbacks"), say("summary")],
-  }), props);
-  assert.deepEqual(errors.map((e) => `${e.path}: ${e.message}`), [
-    'narration.sections[1].id: "goal" is not a ship section',
-    'narration.sections[2].id: "intro" appears more than once',
-    'narration.sections[3].id: the props have no changes section',
-    'narration.sections[4].id: the props have no setbacks section',
+test("narration: a valid narration resolves to its scenes in video order", () => {
+  const { errors, scenes } = check(v3("plan", [scene("intro"), scene("phases"), scene("decisions"), scene("outro")]), planProps());
+  assert.deepEqual(errors, []);
+  assert.deepEqual(scenes.map((s) => s.id), ["intro", "phases", "decisions", "outro"]);
+  assert.equal(scenes[0].text, words(20));
+});
+
+test("narration: each scene id must belong to the mode, appear once, follow the scene order, and intro is required", () => {
+  const { errors } = check(v3("ship", [scene("tldr"), scene("phases"), scene("rollback"), scene("hand-test"), scene("rollback")]), shipProps());
+  assert.deepEqual(lines(errors), [
+    'narration.scenes[1].scene: "phases" is not a ship scene (intro, tldr, done-when, changes, findings, hand-test, rollback, outro)',
+    'narration.scenes[3].scene: "hand-test" must come before "rollback" (scene order: intro, tldr, done-when, changes, findings, hand-test, rollback, outro)',
+    'narration.scenes[4].scene: "rollback" appears more than once',
+    'narration.scenes: must have the "intro" scene',
   ]);
-  const withSections = shipProps({ changes: [{ area: "a", how: "h", why: "w" }], setbacks: [{ kind: "retry", title: "t", what: "w", resolution: "r" }] });
-  assert.deepEqual(checkNarration(narrationFile({ mode: "ship", sections: [say("changes"), say("setbacks")] }), withSections).errors, []);
 });
 
-test("narration: the schema rejects an unknown id, an empty or long text and a wrong mode", () => {
-  const { errors } = checkNarration(narrationFile({
-    mode: "plan",
-    sections: [say("foo"), { id: "goal", text: "" }, { id: "risks", text: "x".repeat(1501) }, { id: "outro" }],
-  }), planProps());
-  assert.deepEqual(errors.map((e) => e.path), ["narration.sections[0].id", "narration.sections[1].text", "narration.sections[2].text", "narration.sections[3].text"]);
-  const wrongMode = checkNarration(narrationFile({ mode: "ship", sections: [say("intro")] }), planProps());
-  assert.deepEqual(wrongMode.errors.map((e) => `${e.path}: ${e.message}`), ["narration.mode: must be plan, the mode of the props"]);
+test("narration: a scene whose props data is empty is rejected with the field path of that data", () => {
+  const ship = check(v3("ship", [scene("intro", 30), scene("changes", 30), scene("findings", 30)]), shipProps());
+  assert.deepEqual(lines(ship.errors), [
+    'narration.scenes[1].scene: the props have no data for "changes" ($.changes)',
+    'narration.scenes[2].scene: the props have no data for "findings" ($.reviews[].findings)',
+  ]);
+  const plan = check(v3("plan", [scene("intro", 40), scene("rabbit-holes", 40)]), planProps());
+  assert.deepEqual(lines(plan.errors), ['narration.scenes[1].scene: the props have no data for "rabbit-holes" ($.rabbitHoles)']);
+  const withData = planProps({ rabbitHoles: ["No mobile layout."] });
+  assert.deepEqual(check(v3("plan", [scene("intro", 40), scene("rabbit-holes", 40)]), withData).errors, []);
+  assert.equal(hasSceneData(planProps(), "done-when"), true, "done-when falls back to the doneWhen of the first milestone's phases");
+  const noDoneWhen = planProps();
+  delete noDoneWhen.milestones[0].phases[0].doneWhen;
+  assert.equal(hasSceneData(noDoneWhen, "done-when"), false);
+  assert.equal(hasSceneData(shipProps(), "outro"), true, "intro, tldr and outro always have data");
 });
 
-test("narration: more than 9000 characters in total is rejected", () => {
-  const sections = ["intro", "goal", "architecture", "milestones", "decisions", "risks", "outro"].map((id) => say(id, "x".repeat(1300)));
-  const { errors } = checkNarration(narrationFile({ mode: "plan", sections }), planProps());
-  assert.deepEqual(errors.map((e) => `${e.path}: ${e.message}`), ["narration.sections: has 9100 characters in total, the limit is 9000"]);
+test("narration: a progress checkpoint has no review yet, so a findings scene is rejected; the other ship scenes stay valid", () => {
+  const props = checkpointProps();
+  const bad = check(v3("ship", [scene("intro", 30), scene("done-when", 30), scene("findings", 30)]), props);
+  assert.deepEqual(lines(bad.errors), ['narration.scenes[2].scene: the props have no data for "findings" ($.reviews[].findings): a progress checkpoint has no review yet, omit the scene']);
+  assert.deepEqual(check(v3("ship", [scene("intro", 30), scene("done-when", 30), scene("hand-test", 30), scene("outro", 30)]), props).errors, []);
+});
+
+test("narration: 10 to 90 words in each scene and 80 to 450 words in total", () => {
+  const short = check(v3("plan", [scene("intro", 9), scene("phases", 91), scene("outro", 40)]), planProps());
+  assert.deepEqual(lines(short.errors), [
+    "narration.scenes[0].text: has 9 words, it must have 10 to 90",
+    "narration.scenes[1].text: has 91 words, it must have 10 to 90",
+  ]);
+  assert.deepEqual(lines(check(v3("plan", [scene("intro", 30), scene("outro", 40)]), planProps()).errors),
+    ["narration.scenes: has 70 words in total, it must have 80 to 450"]);
+  const long = planProps({ rabbitHoles: ["No mobile layout."], doneWhen: [{ criterion: "c", check: "k" }] });
+  const all = SCENES.plan.map((id) => scene(id, 60));
+  assert.deepEqual(lines(check(v3("plan", all), long).errors), ["narration.scenes: has 480 words in total, it must have 80 to 450"]);
+});
+
+test("narration: the schema needs version 3, a mode, and scenes with a known id and a text of at most 900 characters", () => {
+  const { errors } = check({ version: 2, mode: "plan", scenes: [{ scene: "goal", text: "" }, { scene: "intro", text: "x".repeat(901), extra: 1 }] }, planProps());
+  assert.deepEqual(errors.map((e) => e.path), ["narration.version", "narration.scenes[0].scene", "narration.scenes[0].text", "narration.scenes[1].text", "narration.scenes[1].extra"]);
+  assert.deepEqual(lines(check({ mode: "plan" }, planProps()).errors), ["narration.version: required", "narration.scenes: required"]);
+  assert.deepEqual(lines(check({ mode: "plan", sections: [{ id: "intro", text: "Hello." }] }, planProps()).errors),
+    ["narration.version: required", "narration.scenes: required", "narration.sections: unknown field"], "a version 1 narration is not valid any more");
+  assert.deepEqual(lines(check(v3("ship", [scene("intro", 80)]), planProps()).errors), ["narration.mode: must be plan, the mode of the props"]);
+  assert.ok(!fs.existsSync(path.join(SKILL, "schema", "narration-v1.schema.json")), "the version 1 schema is gone");
 });
 
 test("narration: invalid JSON is one error, an unreadable file throws", () => {
@@ -131,108 +185,13 @@ test("narration: invalid JSON is one error, an unreadable file throws", () => {
   assert.throws(() => checkNarration(path.join(TMP, "missing.json"), planProps()), /cannot read/);
 });
 
-// ---- narration v2: stops on the graph ----
-
-const stop = (focus, text = `About ${focus.join(" and ")}.`, extra = {}) => ({ focus, text, ...extra });
-const v2 = (mode, stops) => ({ version: 2, mode, stops });
-
-test("narration v2: each stop resolves to its nodes; all is the overview and a group id names its nodes", () => {
-  const props = planProps();
-  const { errors, stops } = checkNarration(narrationFile(v2("plan", [
-    stop(["all"], "The whole plan."),
-    stop(["risk-1", "phase-2"], "A risky phase.", { title: "Risky phase" }),
-    stop(["group-timeline"]),
-    stop(["component-http-api"]),
-  ])), props);
-  assert.deepEqual(errors, []);
-  assert.deepEqual(stops.map((s) => s.id), ["stop-1", "stop-2", "stop-3", "stop-4"]);
-  assert.equal(stops[0].overview, true);
-  assert.equal(stops[0].nodes.length, 12, "the overview lights every node");
-  assert.deepEqual(stops[1].nodes, ["phase-2", "risk-1"], "in graph order");
-  assert.equal(stops[1].title, "Risky phase");
-  assert.deepEqual(stops[2].nodes, ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
-  assert.equal(stops[2].title, "Timeline", "a group stop is titled by its group");
-  assert.equal(stops[3].title, "HTTP API", "a one-node stop is titled by its node");
-  assert.deepEqual(stops.map((s) => s.text), ["The whole plan.", "A risky phase.", "About group-timeline.", "About component-http-api."]);
-});
-
-test("narration v2: an unknown or repeated focus id, a wrong mode and the length limit fail with field paths", () => {
-  const { errors } = checkNarration(narrationFile(v2("plan", [
-    stop(["goal", "phase-9"]), stop(["risk-1", "risk-1"]), stop(["group-nope"]),
-  ])), planProps());
-  assert.deepEqual(errors.map((e) => `${e.path}: ${e.message}`), [
-    'narration.stops[0].focus[1]: "phase-9" is not a node id or a group id (render.mjs --ids lists them)',
-    'narration.stops[1].focus[1]: "risk-1" appears more than once in this stop',
-    'narration.stops[2].focus[0]: "group-nope" is not a node id or a group id (render.mjs --ids lists them)',
-  ]);
-  const wrongMode = checkNarration(narrationFile(v2("ship", [stop(["summary"])])), planProps());
-  assert.deepEqual(wrongMode.errors.map((e) => `${e.path}: ${e.message}`), ["narration.mode: must be plan, the mode of the props"]);
-  const long = checkNarration(narrationFile(v2("plan", Array.from({ length: 7 }, () => stop(["goal"], "x".repeat(1300))))), planProps());
-  assert.deepEqual(long.errors.map((e) => `${e.path}: ${e.message}`), ["narration.stops: has 9100 characters in total, the limit is 9000"]);
-});
-
-test("narration v2: the schema needs version 2 and stops with a focus list and a text", () => {
-  const { errors } = checkNarration(narrationFile({ version: 3, mode: "plan", stops: [{ focus: [], text: "" }, { text: "t", extra: 1 }] }), planProps());
-  assert.deepEqual(errors.map((e) => e.path), [
-    "narration.version", "narration.stops[0].focus", "narration.stops[0].text", "narration.stops[1].focus", "narration.stops[1].extra",
-  ]);
-  const missing = checkNarration(narrationFile({ mode: "plan" }), planProps());
-  assert.deepEqual(missing.errors.map((e) => `${e.path}: ${e.message}`), ["narration.version: required", "narration.stops: required"]);
-});
-
-// ---- narration v1: each section maps to its cluster of nodes ----
-
-test("narration v1 (plan): each section becomes one stop on its cluster, in video order, with or without text", () => {
-  const { errors, stops } = checkNarration(narrationFile({ mode: "plan", sections: [say("risks"), say("intro"), say("milestones")] }), planProps());
-  assert.deepEqual(errors, []);
-  assert.deepEqual(stops.map((s) => s.id), ["intro", "goal", "architecture", "milestones", "decisions", "risks", "outro"]);
-  const byId = Object.fromEntries(stops.map((s) => [s.id, s]));
-  assert.deepEqual([byId.intro.overview, byId.outro.overview], [true, true]);
-  assert.deepEqual(byId.goal.nodes, ["goal"]);
-  assert.deepEqual(byId.architecture.nodes, ["layer-1", "component-http-api", "layer-2", "component-widget-store"]);
-  assert.deepEqual(byId.milestones.nodes, ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
-  assert.deepEqual(byId.risks.nodes, ["risk-1"]);
-  assert.deepEqual([byId.risks.text, byId.intro.text], ["The risks section.", "The intro section."]);
-  assert.equal(byId.goal.text, "", "a section without narration has no voice");
-  assert.ok(byId.goal.caption.length > 0, "but the page tour still has a caption");
-});
-
-test("narration v1 (ship): an empty cluster maps to the outcome node, and optional clusters follow the props", () => {
-  const props = shipProps({ changes: [{ area: "Read API", how: "h", why: "w" }], process: { attempts: 2 } });
-  const { errors, stops } = checkNarration(narrationFile({ mode: "ship", sections: [say("deviations"), say("setbacks"), say("changes")] }), props);
-  assert.deepEqual(errors, []);
-  assert.deepEqual(stops.map((s) => s.id), ["intro", "summary", "changes", "delivered", "deviations", "setbacks", "reviews", "handTest", "rollback", "outro"]);
-  const byId = Object.fromEntries(stops.map((s) => [s.id, s]));
-  assert.deepEqual(byId.deviations.nodes, ["summary"], "no deviations: the outcome node");
-  assert.deepEqual(byId.setbacks.nodes, ["process"]);
-  assert.deepEqual(byId.changes.nodes, ["change-1"]);
-  assert.deepEqual(byId.reviews.nodes, ["review-1"]);
-});
-
-// ---- the page tour comes from the narration ----
-
-test("page tour: render.mjs takes narration.json beside the props, or --narration, as the tour captions", () => {
-  const narration = v2("plan", [stop(["all"], "Welcome."), stop(["phase-2"], "The read phase.")]);
-  const beside = run(RENDER, ["--props", "<props>", "--out", "<out>"], { props: planProps(), narration });
-  assert.equal(beside.status, 0, beside.stderr);
-  assert.equal(beside.stderr, "");
-  const data = (html) => JSON.parse(/<script type="application\/json" id="ve-data">([^<]*)<\/script>/.exec(html)[1]);
-  assert.deepEqual(data(beside.html).stops.map((s) => [s.text, s.nodes.length, s.overview]), [["Welcome.", 12, true], ["The read phase.", 1, false]]);
-  const explicit = run(RENDER, ["--props", "<props>", "--out", "<out>", "--narration", "<narration>"], { props: planProps(), narration });
-  assert.equal(explicit.status, 0, explicit.stderr);
-  assert.equal(data(explicit.html).stops[1].text, "The read phase.");
-});
-
-test("page tour: a bad narration.json beside the props gives one warning and the default tour; a bad --narration exits 1", () => {
-  const narration = v2("plan", [stop(["phase-99"], "Gone.")]);
-  const beside = run(RENDER, ["--props", "<props>", "--out", "<out>"], { props: planProps(), narration });
-  assert.equal(beside.status, 0, beside.stderr);
-  assert.deepEqual(beside.stderr.trim().split("\n"), ['render.mjs: the tour ignores narration.json: narration.stops[0].focus[0]: "phase-99" is not a node id or a group id (render.mjs --ids lists them)']);
-  assert.ok(beside.html, "the page is written");
-  const explicit = run(RENDER, ["--props", "<props>", "--out", "<out>", "--narration", "<narration>"], { props: planProps(), narration });
-  assert.equal(explicit.status, 1);
-  assert.match(explicit.stderr, /^narration\.stops\[0\]\.focus\[0\]: "phase-99" is not a node id/);
-  assert.equal(explicit.html, null);
+test("graph tour: tourStops(graph, null, props) is the default tour of the graph page", async () => {
+  const { buildGraph } = await import(path.join(SKILL, "scripts", "graph.mjs"));
+  const graph = buildGraph(planProps());
+  const stops = tourStops(graph, null, planProps());
+  assert.deepEqual(stops.map((s) => s.id), ["overview", "goal", ...graph.groups.map((g) => g.id), "explore"]);
+  assert.ok(stops.every((s) => s.text === "" && s.caption && Array.isArray(s.nodes) && typeof s.overview === "boolean"));
+  assert.deepEqual([stops[0].overview, stops.at(-1).overview], [true, true]);
 });
 
 // ---- text to speech ----
@@ -458,6 +417,7 @@ test("tts: wavSeconds reads the duration from the WAV header", () => {
   assert.equal(wavSeconds(file), 3);
 });
 
+
 // ---- render-video.mjs: arguments ----
 
 test("render-video: parseArgs reads the flags and applies the defaults", () => {
@@ -496,23 +456,23 @@ test("render-video: invalid props exit 1 with one field-path line each, and no c
 
 test("render-video: an invalid narration exits 1 with one field-path line each", () => {
   const r = run(RENDER_VIDEO, ["--props", "<props>", "--narration", "<narration>", "--out", "<out>"], {
-    props: shipProps(), narration: { mode: "ship", sections: [{ id: "goal", text: "Hi." }, { id: "intro", text: "" }] },
+    props: shipProps(), narration: v3("ship", [scene("intro", 80), { scene: "outro", text: "" }]),
   });
   assert.equal(r.status, 1, r.stderr);
-  assert.deepEqual(r.stderr.trim().split("\n"), ["narration.sections[1].text: must not be empty"]);
+  assert.deepEqual(r.stderr.trim().split("\n"), ["narration.scenes[1].text: must not be empty"]);
   const second = run(RENDER_VIDEO, ["--props", "<props>", "--narration", "<narration>", "--check"], {
-    props: shipProps(), narration: { mode: "ship", sections: [{ id: "goal", text: "Hi." }] },
+    props: shipProps(), narration: v3("ship", [scene("intro", 40), scene("findings", 40)]),
   });
-  assert.deepEqual(second.stderr.trim().split("\n"), ['narration.sections[0].id: "goal" is not a ship section']);
+  assert.equal(second.status, 1);
+  assert.deepEqual(second.stderr.trim().split("\n"), ['narration.scenes[1].scene: the props have no data for "findings" ($.reviews[].findings)']);
   assert.ok(!fs.existsSync(path.join(r.dir, "out")), "no output directory");
 });
 
 test("render-video: --check validates the props and the narration of either mode and makes nothing", () => {
   const cache = fs.mkdtempSync(path.join(TMP, "cache-"));
-  for (const [mode, props] of Object.entries(EXAMPLES)) {
-    const r = run(RENDER_VIDEO, ["--props", "<props>", "--narration", "<narration>", "--check"], {
-      props, narration: EXAMPLE_NARRATION[mode], env: { XDG_CACHE_HOME: cache },
-    });
+  for (const mode of Object.keys(EXAMPLES)) {
+    const r = spawnSync(process.execPath, [RENDER_VIDEO, "--props", EXAMPLE_PROPS_FILE[mode], "--narration", EXAMPLE_NARRATION_FILE[mode], "--check"],
+      { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cache } });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.stdout, "");
   }
@@ -533,14 +493,14 @@ test("render-video: an unreadable props or narration file exits 2", () => {
 
 // ---- render-video.mjs: encoder settings ----
 
-test("encoder: the defaults are 24 fps, x264 veryfast, ANGLE and all cores but 2", () => {
+test("encoder: the defaults are 30 fps, x264 veryfast, ANGLE and all cores but 2", () => {
   assert.deepEqual(videoSettings({}),
-    { fps: 24, concurrency: Math.max(1, os.availableParallelism() - 2), hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" });
+    { fps: 30, concurrency: Math.max(1, os.availableParallelism() - 2), hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" });
 });
 
 test("encoder: VE_VIDEO_* variables override each default, and a bad value is an error", () => {
-  assert.deepEqual(videoSettings({ VE_VIDEO_FPS: "30", VE_VIDEO_CONCURRENCY: "8", VE_VIDEO_HWACCEL: "if-possible", VE_VIDEO_X264_PRESET: "medium", VE_VIDEO_GL: "swangle" }),
-    { fps: 30, concurrency: 8, hardwareAcceleration: "if-possible", x264Preset: "medium", gl: "swangle" });
+  assert.deepEqual(videoSettings({ VE_VIDEO_FPS: "24", VE_VIDEO_CONCURRENCY: "8", VE_VIDEO_HWACCEL: "if-possible", VE_VIDEO_X264_PRESET: "medium", VE_VIDEO_GL: "swangle" }),
+    { fps: 24, concurrency: 8, hardwareAcceleration: "if-possible", x264Preset: "medium", gl: "swangle" });
   assert.equal(videoSettings({ VE_VIDEO_GL: "default" }).gl, null, "default lets Chrome choose");
   for (const [name, value] of [["VE_VIDEO_FPS", "0"], ["VE_VIDEO_FPS", "29.97"], ["VE_VIDEO_CONCURRENCY", "-2"], ["VE_VIDEO_HWACCEL", "yes"], ["VE_VIDEO_X264_PRESET", "turbo"], ["VE_VIDEO_GL", "metal"]]) {
     assert.throws(() => videoSettings({ [name]: value }), new RegExp(`^Error: ${name} must be`), `${name}=${value}`);
@@ -558,22 +518,19 @@ test("encoder: render-video rejects a bad VE_VIDEO_* value with exit 2 before an
 });
 
 test("encoder: x264 attempts lower the quality, then the size", () => {
-  const attempts = renderAttempts({ fps: 24, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" }, 120, 14);
+  const attempts = renderAttempts({ fps: 30, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" }, 120, 14);
   assert.deepEqual(attempts.map((a) => [a.scale, a.crf, a.x264Preset, a.videoBitrate]), [[1, 23, "veryfast", undefined], [1, 30, "veryfast", undefined], [2 / 3, 30, "veryfast", undefined]]);
-  assert.ok(attempts.every((a) => a.fps === 24 && a.concurrency === 8 && a.hardwareAcceleration === "disable" && a.gl === "angle"));
+  assert.ok(attempts.every((a) => a.fps === 30 && a.concurrency === 8 && a.hardwareAcceleration === "disable" && a.gl === "angle"));
 });
 
-// The graph video moves a camera, so it needs more bytes per second than the slide video did.
-// Measured on the graph video of the examples, x264 veryfast, 24 fps, 1920x1080, on an Apple M4:
-// plan 165.75 s -> 7.90 MB at CRF 23 · ship 231.5 s -> 14.40 MB at CRF 23, 8.10 MB at CRF 30.
-test("encoder: the first x264 quality comes from the video length, so a 4 minute graph video fits 14 MB on the first render", () => {
-  const x264 = { fps: 24, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" };
+// The scene video is short: the size model only matters for a long narration. The model stays
+// conservative (render-video.mjs X264 has the measured numbers).
+test("encoder: the first x264 quality comes from the video length and the size limit", () => {
+  const x264 = { fps: 30, concurrency: 8, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" };
   const crfs = (seconds, maxMb = 14) => renderAttempts(x264, seconds, maxMb).map((a) => [a.label, a.scale, a.crf]);
   const backup = [["1920x1080 at a lower quality", 1, 30], ["1280x720", 2 / 3, 30]];
   assert.deepEqual(crfs(60), [["1920x1080", 1, 23], ...backup], "a short video keeps CRF 23");
-  assert.deepEqual(crfs(165.75), [["1920x1080", 1, 23], ...backup], "plan example: 7.9 MB at CRF 23 fits");
-  assert.deepEqual(crfs(231.5), [["1920x1080", 1, 26], ...backup], "ship example: 14.4 MB at CRF 23 is above the limit, 8.1 MB at CRF 30");
-  assert.deepEqual(crfs(300), [["1920x1080", 1, 29], ...backup], "5 minutes");
+  assert.deepEqual(crfs(180), [["1920x1080", 1, 23], ...backup], "the longest concise video keeps CRF 23");
   assert.deepEqual(crfs(300, 30), [["1920x1080", 1, 23], ...backup], "a larger limit keeps CRF 23");
   assert.deepEqual(crfs(600), [["1920x1080", 1, 30], ["1280x720", 2 / 3, 30]], "CRF 30 is the lowest first quality, then only 1280x720 is left");
   let last = 0;
@@ -585,7 +542,7 @@ test("encoder: the first x264 quality comes from the video length, so a 4 minute
 });
 
 test("encoder: a hardware encoder gets a bitrate that fits the size limit for the duration", () => {
-  const settings = { fps: 24, concurrency: 8, hardwareAcceleration: "if-possible", x264Preset: "veryfast", gl: "angle" };
+  const settings = { fps: 30, concurrency: 8, hardwareAcceleration: "if-possible", x264Preset: "veryfast", gl: "angle" };
   const attempts = renderAttempts(settings, 300, 14);
   assert.deepEqual(attempts.map((a) => [a.scale, a.videoBitrate, a.crf]), [[1, "272k", undefined], [2 / 3, "190k", undefined]],
     "14 MB x 8 x 0.9 / 300 s = 336 kbps, minus 64 kbps of audio");
@@ -607,7 +564,7 @@ test("cache key: 12 hex characters that depend on the content, not on the locati
   assert.equal(cacheKey(copyVideoProject()), key, "a copy of the project has the same key");
 });
 
-test("cache key: a change to the lock file or to a source file changes the key", () => {
+test("cache key: a change to the lock file, a source file or a vendored snapcn file changes the key", () => {
   const base = cacheKey(path.join(SKILL, "video"));
   const lock = copyVideoProject();
   fs.appendFileSync(path.join(lock, "package-lock.json"), "\n");
@@ -615,6 +572,9 @@ test("cache key: a change to the lock file or to a source file changes the key",
   const source = copyVideoProject();
   fs.appendFileSync(path.join(source, "src", "theme.mjs"), "\n");
   assert.notEqual(cacheKey(source), base, "source file");
+  const vendored = copyVideoProject();
+  fs.appendFileSync(path.join(vendored, "src", "components", "snap-cn", "word-captions.jsx"), "\n");
+  assert.notEqual(cacheKey(vendored), base, "vendored snapcn file");
   const added = copyVideoProject();
   fs.writeFileSync(path.join(added, "src", "extra.mjs"), "");
   assert.notEqual(cacheKey(added), base, "new source file");
@@ -668,10 +628,39 @@ test("render-video: a timeout exits 3, removes the partial cache and writes no v
   assert.deepEqual(fs.readdirSync(path.join(r.dir, "out")), [], "no video and no temporary file");
 });
 
+// ---- render-video.mjs: screenshots and the preview ----
+
+test("screenshots: findChrome finds the browser of the cache, pngSize reads a PNG header", () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "chrome-"));
+  assert.equal(findChrome(dir), null, "no browser yet");
+  const bin = path.join(dir, "node_modules", ".remotion", "chrome-headless-shell", "mac-arm64", "chrome-headless-shell-mac-arm64");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "chrome-headless-shell"), "");
+  assert.equal(findChrome(dir), path.join(bin, "chrome-headless-shell"));
+  const png = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+  png.writeUInt32BE(2200, 16);
+  png.writeUInt32BE(1400, 20);
+  assert.deepEqual(pngSize(png), { width: 2200, height: 1400 });
+  assert.equal(pngSize(Buffer.from("GIF89a and more bytes here")), null);
+});
+
+test("preview: one input of 1.5 s from the middle of each scene, then fps, width and a palette", () => {
+  const board = { fps: 30, scenes: [{ from: 0, durationInFrames: 150 }, { from: 150, durationInFrames: 600 }, { from: 750, durationInFrames: 30 }] };
+  const args = previewArgs("v.mp4", board, { fps: 10, width: 720 }, "out.gif");
+  const inputs = [];
+  for (let i = 0; i < args.length; i += 1) if (args[i] === "-ss") inputs.push([args[i + 1], args[i + 3], args[i + 5]]);
+  assert.deepEqual(inputs, [["1.75", "1.5", "v.mp4"], ["14.25", "1.5", "v.mp4"], ["24.75", "1.5", "v.mp4"]]);
+  const filter = args[args.indexOf("-filter_complex") + 1];
+  assert.match(filter, /^\[0:v\]\[1:v\]\[2:v\]concat=n=3:v=1:a=0,fps=10,scale=720:-1:flags=lanczos,split\[a\]\[b\];\[a\]palettegen/);
+  assert.equal(args.at(-1), "out.gif");
+});
+
 // ---- render-video.mjs: the text to speech engine, end to end with fakes ----
 
 // A fake world for one render-video.mjs process: a fetch preload (FAKE_FETCH=ok|401), `say` and
-// `afconvert` on PATH, and a ready cache whose engine.mjs records its input and writes a tiny MP4.
+// `afconvert` on PATH, a browser path that does not exist (the screenshots fail and only warn),
+// and a ready cache whose engine.mjs records its input and writes a tiny MP4.
 function fakeWorld() {
   const root = fs.mkdtempSync(path.join(TMP, "world-"));
   const bin = path.join(root, "bin");
@@ -697,12 +686,12 @@ fs.copyFileSync(a[a.indexOf("--input") + 1], process.env.FAKE_ENGINE_INPUT);
 fs.writeFileSync(a[a.indexOf("--out") + 1], "mp4");\n`);
   const out = path.join(root, "out");
   const env = {
-    ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_CACHE_HOME: xdg, VE_TTS_VOICE: "",
+    ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_CACHE_HOME: xdg, VE_TTS_VOICE: "", VE_CHROME: path.join(root, "no-browser"),
     FAKE_WAV: wav, FAKE_SAY_LOG: path.join(root, "say.log"), FAKE_ENGINE_INPUT: path.join(root, "engine-input.json"),
   };
   const render = (args, extraEnv) => spawnSync(process.execPath, ["--import", preload, RENDER_VIDEO,
-    "--props", path.join(SKILL, "examples", "plan-visual-explainer.props.json"), "--narration", path.join(SKILL, "examples", "plan-visual-explainer.narration.json"),
-    "--out", out, ...args], { encoding: "utf8", env: { ...env, ...extraEnv }, timeout: 60_000 });
+    "--props", EXAMPLE_PROPS_FILE.plan, "--narration", EXAMPLE_NARRATION_FILE.plan,
+    "--out", out, ...args], { encoding: "utf8", env: { ...env, ...extraEnv }, timeout: 120_000 });
   const sayCalls = () => (fs.existsSync(env.FAKE_SAY_LOG) ? fs.readFileSync(env.FAKE_SAY_LOG, "utf8").trim().split("\n") : []);
   return { root, out, render, sayCalls, engineInput: () => JSON.parse(fs.readFileSync(env.FAKE_ENGINE_INPUT, "utf8")) };
 }
@@ -714,10 +703,8 @@ function treeContains(dir, needle) {
   });
 }
 
-// The narrated stops of the plan example: one clip each. The narration was a list of sections; it
-// is now a list of stops, so the clip ids are the stop ids.
-const PLAN_EXAMPLE_FILE = path.join(SKILL, "examples", "plan-visual-explainer.narration.json");
-const PLAN_STOPS = checkNarration(PLAN_EXAMPLE_FILE, EXAMPLES.plan).stops.filter((s) => s.text);
+// The scenes of the plan example: one clip each, with the scene id as the clip id.
+const PLAN_SCENES = checkNarration(EXAMPLE_NARRATION_FILE.plan, EXAMPLES.plan).scenes;
 
 test("render-video: when ElevenLabs fails in auto mode, the video uses say, one stderr line says so, and the result names the engine", () => {
   const world = fakeWorld();
@@ -726,31 +713,33 @@ test("render-video: when ElevenLabs fails in auto mode, the video uses say, one 
   assert.deepEqual(r.stdout.trim().split("\n"), [path.join(world.out, "video.mp4"), "tts: say (fallback: HTTP 401 quota_exceeded)"]);
   assert.deepEqual(r.stderr.split("\n").filter((l) => l.includes("ElevenLabs failed")),
     ["render-video: ElevenLabs failed (HTTP 401 quota_exceeded): the video uses the macOS voice"]);
-  assert.match(r.stderr, new RegExp(`render-video: tts: say voice Samantha model say: ${PLAN_STOPS.length} clips, 0 cached`));
-  assert.equal(world.sayCalls().length, PLAN_STOPS.length, "say speaks every stop");
-  assert.deepEqual(Object.keys(world.engineInput().voiceover).sort(), PLAN_STOPS.map((s) => s.id).sort());
+  assert.match(r.stderr, new RegExp(`render-video: tts: say voice Samantha model say: ${PLAN_SCENES.length} clips, 0 cached`));
+  assert.equal(world.sayCalls().length, PLAN_SCENES.length, "say speaks every scene");
+  assert.deepEqual(Object.keys(world.engineInput().voiceover).sort(), PLAN_SCENES.map((s) => s.id).sort());
   assert.ok(![r.stdout, r.stderr].some((text) => text.includes(KEY)), "no key in stdout or stderr");
   assert.ok(!treeContains(world.root, KEY), "no key in a file name or a file");
 });
 
-test("render-video: the composition gets the graph of the page and the resolved stops", () => {
+test("render-video: the composition gets the props, the narration scenes and the screenshots; failed screenshots and a failed GIF only warn", () => {
   const world = fakeWorld();
   const r = world.render(["--tts", "say"], {});
   assert.equal(r.status, 0, r.stderr);
-  const { props } = world.engineInput();
-  const graph = buildGraph(EXAMPLES.plan);
-  assert.deepEqual(Object.keys(props).sort(), ["graph", "kinds", "meta", "mode", "stops"]);
-  assert.deepEqual(props.kinds.phase, { label: "Phases", color: "accent" }, "the kind labels and colors of graph.mjs");
-  assert.deepEqual(props.graph.nodes.map((n) => [n.id, n.x, n.y]), graph.nodes.map((n) => [n.id, n.x, n.y]), "the positions of the page");
-  assert.deepEqual(props.stops.map((s) => s.id), checkNarration(PLAN_EXAMPLE_FILE, EXAMPLES.plan).stops.map((s) => s.id));
-  assert.ok(props.stops.every((s) => Array.isArray(s.nodes) && typeof s.overview === "boolean"));
+  const { props, video } = world.engineInput();
+  assert.deepEqual(Object.keys(props).sort(), ["mode", "props", "scenes", "shots"]);
+  assert.deepEqual(props.props, EXAMPLES.plan);
+  assert.deepEqual(props.scenes, PLAN_SCENES);
+  assert.deepEqual(props.shots, {}, "the browser does not exist, so no screenshot");
+  assert.match(r.stderr, /render-video: screenshots skipped, the scenes draw their native view: screenshots failed/);
+  assert.match(r.stderr, /render-video: preview\.gif skipped: /, "the fake MP4 is not a video");
+  assert.equal(video.fps, 30);
+  assert.deepEqual(fs.readdirSync(world.out), ["video.mp4"], "no temporary file stays");
 });
 
 test("render-video: an explicit --tts elevenlabs still fails with exit 3 and writes no video", () => {
   const world = fakeWorld();
   const r = world.render(["--tts", "elevenlabs"], { ELEVENLABS_API_KEY: KEY, FAKE_FETCH: "401" });
   assert.equal(r.status, 3, r.stderr);
-  assert.match(r.stderr, new RegExp(`render-video\\.mjs: text to speech failed for section ${PLAN_STOPS[0].id}: ElevenLabs returned HTTP 401`));
+  assert.match(r.stderr, new RegExp(`render-video\\.mjs: text to speech failed for section ${PLAN_SCENES[0].id}: ElevenLabs returned HTTP 401`));
   assert.ok(!r.stderr.includes("macOS voice"));
   assert.equal(r.stdout, "");
   assert.deepEqual(fs.readdirSync(world.out), [], "no video");
@@ -766,55 +755,6 @@ test("render-video: the result names the engine when no fallback happens", () =>
   const say = fakeWorld().render(["--tts", "say"], { ELEVENLABS_API_KEY: KEY });
   assert.equal(say.status, 0, say.stderr);
   assert.equal(say.stdout.trim().split("\n")[1], "tts: say");
-});
-
-// ---- page embed: render.mjs --video ----
-
-// The video was a block at the top of the report. The graph page keeps it in a drawer that the bar opens.
-test("page: --video adds one video in a closed drawer, opened from the bar, after the graph and the outline", () => {
-  const r = run(RENDER, ["--props", "<props>", "--out", "<out>", "--video", "video.mp4"], { props: EXAMPLES.ship });
-  assert.equal(r.status, 0, r.stderr);
-  const videos = r.html.match(/<video\b[^>]*>/g) ?? [];
-  assert.equal(videos.length, 1, "exactly one video element");
-  assert.match(videos[0], /\bcontrols\b/);
-  assert.match(videos[0], /\bpreload="metadata"/);
-  assert.match(videos[0], /\bplaysinline\b/);
-  assert.match(videos[0], /\bsrc="video\.mp4"/);
-  assert.match(r.html, /<div class="drawer" id="video-panel" role="dialog" aria-label="Video" hidden>/, "a closed drawer");
-  assert.match(r.html, /<button type="button" class="btn" data-video aria-controls="video-panel" aria-expanded="false">Video<\/button>/, "a bar button opens it");
-  const graph = r.html.indexOf('<svg class="graph"');
-  const outline = r.html.indexOf('id="outline"');
-  const video = r.html.indexOf("<video");
-  assert.ok(graph > 0 && graph < outline && outline < video, "the video is not at the top");
-});
-
-test("page: without --video the page has no video markup", () => {
-  for (const props of Object.values(EXAMPLES)) {
-    const r = run(RENDER, ["--props", "<props>", "--out", "<out>"], { props });
-    assert.equal(r.status, 0, r.stderr);
-    assert.ok(!/<video|id="video-panel"|data-video aria-controls/.test(r.html), "no video markup");
-  }
-});
-
-test("page: --video rejects a path that is absolute, has a '..' segment, a scheme or another extension", () => {
-  for (const bad of ["/tmp/video.mp4", "../video.mp4", "a/../../video.mp4", "javascript:alert(1).mp4", "https://x.test/v.mp4",
-    "video.webm", "video.mp4.html", "%2e%2e/video.mp4", "a b.mp4", "a\\b.mp4", "a//b.mp4", "x/.."]) {
-    const r = run(RENDER, ["--props", "<props>", "--out", "<out>", "--video", bad], { props: EXAMPLES.ship });
-    assert.equal(r.status, 2, `${bad}: ${r.stderr}`);
-    assert.match(r.stderr, /--video must be a relative path that ends in \.mp4/, bad);
-    assert.equal(r.html, null, `${bad}: no page is written`);
-  }
-  for (const good of ["video.mp4", "media/video-1.mp4", "./video.mp4"]) {
-    const r = run(RENDER, ["--props", "<props>", "--out", "<out>", "--video", good], { props: EXAMPLES.plan });
-    assert.equal(r.status, 0, `${good}: ${r.stderr}`);
-    assert.ok(r.html.includes(`src="${good}"`), good);
-  }
-});
-
-test("page: --video needs --out", () => {
-  const r = run(RENDER, ["--props", "<props>", "--check", "--video", "video.mp4"], { props: EXAMPLES.ship });
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /^usage: render\.mjs/);
 });
 
 // ---- text cut rule ----
@@ -835,165 +775,283 @@ test("clip: a cut inside inline code closes the code span", () => {
   assert.equal(clip("Run `ws migrate --from-zsh --dry-run` first", 24), "Run `ws migrate…`");
 });
 
-// ---- storyboard: the camera moves over the graph from stop to stop ----
-// The video had one scene per report section, with lists split across scenes. Now it draws the
-// graph of the page and moves a camera between the stops of the narration: these tests replace the
-// scene and list-split tests.
-
-const { buildGraph } = await import(path.join(SKILL, "scripts", "graph.mjs"));
-const { tourStops } = await import(NARRATION);
-const { cameraAt, CARD, GRAPH_AREA, MAX_SCALE } = await import(path.join(SKILL, "video", "src", "storyboard.mjs"));
+// ---- storyboard: scenes, timing and captions ----
 
 // The input props of a composition: what render-video.mjs passes.
-function videoInput(props, narration = null) {
-  const graph = buildGraph(props);
-  return { mode: props.mode, meta: props.meta, graph, stops: tourStops(graph, narration, props) };
-}
-const planStops = (stops) => videoInput(planProps(), { version: 2, mode: "plan", stops });
-const ids = (board) => board.stops.map((s) => s.id);
-const stopOf = (board, id) => board.stops.find((s) => s.id === id);
-
-// The screen box of a world box under a camera: the camera point sits at the frame center.
-function onScreen(camera, box) {
-  return { x: (box.x - camera.x) * camera.scale + 960, y: (box.y - camera.y) * camera.scale + 540, w: box.w * camera.scale, h: box.h * camera.scale };
-}
-function inside(inner, outer, slack = 1) {
-  return inner.x >= outer.x - slack && inner.y >= outer.y - slack && inner.x + inner.w <= outer.x + outer.w + slack && inner.y + inner.h <= outer.y + outer.h + slack;
-}
-
-test("storyboard: 1920x1080 at 30 fps by default", () => {
-  const board = storyboard(videoInput(planProps()));
-  assert.deepEqual([board.width, board.height, board.fps], [1920, 1080, 30]);
+const input = (props, ids, shots = {}) => ({ mode: props.mode, props, scenes: ids.map((id) => ({ id, text: `The ${id} scene, in eleven words of plain spoken narration text.` })), shots });
+const PLAN_ALL = SCENES.plan;
+const SHIP_ALL = SCENES.ship;
+const richPlan = () => planProps({ rabbitHoles: ["No mobile layout.", "Do not tune the cache."] });
+const finding = (severity, status, title = `${severity} ${status}`) => ({ severity, status, title });
+const richShip = () => shipProps({
+  stats: { files: 9, additions: 812, deletions: 14 },
+  changes: Array.from({ length: 6 }, (_, i) => ({ area: `Area ${i + 1}`, how: "h", why: "w", files: Array.from({ length: i + 1 }, (_, j) => ({ path: `f${j}.ts`, additions: j, deletions: 0 })) })),
+  delivered: [
+    { criterion: "a", result: "ra", status: "met" }, { criterion: "b", result: "rb", status: "partial" },
+    { criterion: "c", result: "rc", status: "met" }, { criterion: "d", result: "rd", status: "missed" },
+  ],
+  reviews: [
+    { verdict: "COMMENT", summary: "s", validation: [], findings: [finding("minor", "open"), finding("nit", "fixed"), finding("major", "fixed"), finding("minor", "deferred")] },
+    { verdict: "APPROVE", summary: "s", validation: [], findings: [finding("style", "open"), finding("minor", "fixed")] },
+  ],
 });
-
-test("storyboard: one stop for each narration stop, with a title stop and an end stop when the narration does not start and end on the overview", () => {
-  const board = storyboard(planStops([stop(["goal"]), stop(["phase-2"])]));
-  assert.deepEqual(ids(board), ["title", "stop-1", "stop-2", "end"]);
-  assert.deepEqual(board.stops.map((s) => [s.card.type, s.overview]), [["title", true], ["node", false], ["node", false], ["end", true]]);
-  const framed = storyboard(planStops([stop(["all"]), stop(["phase-2"]), stop(["all"])]));
-  assert.deepEqual(ids(framed), ["stop-1", "stop-2", "stop-3"], "an overview at the start and at the end carries the title and the end card");
-  assert.deepEqual(framed.stops.map((s) => s.card.type), ["title", "node", "end"]);
-});
-
-test("storyboard: a version 1 narration and the default tour visit every cluster", () => {
-  const v1 = storyboard(videoInput(planProps(), { mode: "plan", sections: [{ id: "intro", text: "Hi." }] }));
-  assert.deepEqual(ids(v1), ["intro", "goal", "architecture", "milestones", "decisions", "risks", "outro"]);
-  assert.deepEqual(stopOf(v1, "milestones").nodes, ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
-  const ship = storyboard(videoInput(shipProps()));
-  assert.ok(ids(ship).includes("group-hand-test") && ids(ship).includes("group-review"));
-});
-
-test("storyboard: the camera frames the focus nodes in the graph area, left of the card, up to the zoom limit", () => {
-  const board = storyboard(planStops([stop(["all"]), stop(["phase-2"]), stop(["risk-1", "component-widget-store", "milestone-2"]), stop(["group-timeline"])]));
-  const graph = buildGraph(planProps());
-  const box = (idsOf) => {
-    const nodes = graph.nodes.filter((n) => idsOf.includes(n.id));
-    const x = Math.min(...nodes.map((n) => n.x));
-    const y = Math.min(...nodes.map((n) => n.y));
-    return { x, y, w: Math.max(...nodes.map((n) => n.x + n.w)) - x, h: Math.max(...nodes.map((n) => n.y + n.h)) - y };
-  };
-  assert.ok(GRAPH_AREA.x + GRAPH_AREA.w <= CARD.x, "the card is right of the graph area");
-  for (const s of board.stops) {
-    const target = s.overview ? { x: 0, y: 0, w: graph.width, h: graph.height } : box(s.nodes);
-    const shown = onScreen(s.camera, target);
-    assert.ok(inside(shown, GRAPH_AREA), `${s.id}: ${JSON.stringify(shown)} inside the graph area`);
-    assert.ok(s.camera.scale <= MAX_SCALE, `${s.id}: zoom ${s.camera.scale}`);
-    const fills = Math.max(shown.w / GRAPH_AREA.w, shown.h / GRAPH_AREA.h);
-    assert.ok(s.camera.scale === MAX_SCALE || fills > 0.97, `${s.id}: the focus fills the area (${fills.toFixed(2)})`);
-  }
-  assert.equal(stopOf(board, "stop-2").camera.scale, MAX_SCALE, "one node zooms to the limit");
-});
-
-test("storyboard: the camera reaches each stop after its transition and holds it to the end of the stop", () => {
-  const board = storyboard(planStops([stop(["all"]), stop(["phase-2"]), stop(["risk-1"]), stop(["group-architecture"]), stop(["all"])]));
-  const same = (a, b) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6 && Math.abs(a.scale - b.scale) < 1e-9;
-  board.stops.forEach((s, i) => {
-    assert.ok(s.transitionInFrames < s.durationInFrames, `${s.id}: the move ends inside the stop`);
-    assert.ok(same(cameraAt(board, s.from + s.transitionInFrames), s.camera), `${s.id}: the camera arrives`);
-    assert.ok(same(cameraAt(board, s.from + s.durationInFrames - 1), s.camera), `${s.id}: the camera holds`);
-    if (i) assert.ok(same(cameraAt(board, s.from), board.stops[i - 1].camera), `${s.id}: the move starts at the previous stop`);
-  });
-  const s = board.stops[1];
-  const midway = cameraAt(board, s.from + Math.floor(s.transitionInFrames / 2));
-  assert.ok(midway.scale > board.stops[0].camera.scale && midway.scale < s.camera.scale, "the zoom moves between the two stops");
-  assert.equal(board.stops[0].transitionInFrames, 0, "the first stop starts in place");
-});
-
-test("storyboard: the card shows the key facts of one node, or a list of the focus nodes", () => {
-  const props = planProps();
-  props.risks[0].mitigation = "WAL mode. ".repeat(40);
-  const board = storyboard(videoInput(props, { version: 2, mode: "plan", stops: [stop(["risk-1"]), stop(["group-timeline"], "All phases.", { title: "The timeline" })] }));
-  const one = stopOf(board, "stop-1").card;
-  assert.equal(one.type, "node");
-  assert.deepEqual([one.kind, one.title], ["risk", "Lock contention"]);
-  assert.deepEqual(one.facts.map((f) => f.label), ["Impact", "Mitigation"]);
-  assert.ok(one.facts[1].text.length <= 160 && one.facts[1].text.endsWith("…"), "a long fact is cut");
-  const list = stopOf(board, "stop-2").card;
-  assert.equal(list.type, "list");
-  assert.equal(list.title, "The timeline");
-  assert.deepEqual(list.items.map((i) => i.id), ["milestone-1", "phase-1", "phase-2", "milestone-2", "phase-3"]);
-  assert.equal(list.more, 0);
-  const big = storyboard(videoInput(planProps(), { version: 2, mode: "plan", stops: [stop(["all"]), stop(["goal", "milestone-1", "milestone-2", "phase-1", "phase-2", "phase-3", "risk-1", "decision-1"])] }));
-  assert.deepEqual([stopOf(big, "stop-2").card.items.length, stopOf(big, "stop-2").card.more], [6, 2]);
-  assert.equal(stopOf(big, "stop-1").card.type, "title");
-});
-
-test("theme: the video colors are the dark color tokens of the page", async () => {
-  const { COLORS } = await import(path.join(SKILL, "video", "src", "theme.mjs"));
-  const page = fs.readFileSync(path.join(SKILL, "template", "page.html"), "utf8");
-  const block = /:root\[data-theme="dark"\] \{([^}]*)\}/.exec(page)[1];
-  const tokens = Object.fromEntries([...block.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/g)].map((m) => [m[1], m[2]]));
-  assert.ok(Object.keys(tokens).length >= 10, "the page has dark color tokens");
-  assert.deepEqual(COLORS, tokens);
-});
-
-// ---- storyboard: duration ----
+const dataOf = (board, id) => board.scenes.find((s) => s.id === id).data;
 
 function assertContiguous(board) {
   let at = 0;
-  for (const s of board.stops) {
-    assert.equal(s.from, at, `${s.id} starts where the previous stop ends`);
+  for (const s of board.scenes) {
+    assert.equal(s.from, at, `${s.id} starts where the previous scene ends`);
     assert.ok(Number.isInteger(s.durationInFrames) && s.durationInFrames > 0);
     at += s.durationInFrames;
   }
-  assert.equal(at, board.durationInFrames, "the stops fill the whole video");
+  assert.equal(at, board.durationInFrames, "the scenes fill the whole video");
 }
 
-test("duration: without audio each stop plays its minimum visual time, 5 to 9 s; the added title stop 5 s and end stop 4 s", () => {
-  for (const input of [videoInput(planProps()), videoInput(shipProps()), ...Object.values(EXAMPLES).map((p) => videoInput(p))]) {
-    const board = storyboard(input);
-    assertContiguous(board);
-    assert.ok(board.stops.every((s) => s.durationInFrames >= 5 * 30 && s.durationInFrames <= 9 * 30 && s.audio === null), input.mode);
-  }
-  const added = storyboard(planStops([stop(["goal"])]));
-  assert.deepEqual(added.stops.map((s) => s.durationInFrames / 30), [5, stopOf(added, "stop-1").durationInFrames / 30, 4]);
+test("storyboard: 1920x1080 at 30 fps, one scene for each narration scene, numbered like the report sections", () => {
+  const board = storyboard(input(richPlan(), PLAN_ALL));
+  assert.deepEqual([board.width, board.height, board.fps], [1920, 1080, 30]);
+  assert.deepEqual(board.scenes.map((s) => [s.id, s.number]), [
+    ["intro", null], ["tldr", null], ["done-when", 1], ["phases", 2], ["architecture", 3], ["decisions", 4], ["rabbit-holes", 5], ["outro", null],
+  ]);
+  assert.deepEqual(board.scenes.map((s) => s.title), ["", "", "Done when", "Phases", "Architecture: before / after", "Decisions", "Rabbit holes & no-gos", ""]);
+  assert.deepEqual(board.scenes.map((s) => s.label), ["Intro", "TL;DR", "Done when", "Phases", "Architecture: before / after", "Decisions", "Rabbit holes & no-gos", "Wrap-up"]);
+  const ship = storyboard(input(richShip(), ["intro", "changes", "rollback"]));
+  assert.deepEqual(ship.scenes.map((s) => [s.id, s.number, s.title]), [["intro", null, ""], ["changes", 1, "Changes, in reading order"], ["rollback", 2, "Rollback"]],
+    "an omitted scene is not in the video, and the numbers follow the scenes that are");
 });
 
-test("duration: a narrated stop lasts its audio plus 0.6 s, and the audio starts 0.3 s into the stop", () => {
-  const board = storyboard(planStops([stop(["all"]), stop(["goal"])]), { "stop-2": { src: "tts/b.wav", seconds: 20 } });
-  const s = stopOf(board, "stop-2");
+test("duration: without audio each scene plays its minimum visual time, 4 to 20 s", () => {
+  for (const board of [storyboard(input(richPlan(), PLAN_ALL)), storyboard(input(richShip(), SHIP_ALL)),
+    ...Object.entries(EXAMPLES).map(([mode, props]) => storyboard(input(props, checkNarration(EXAMPLE_NARRATION_FILE[mode], props).scenes.map((s) => s.id))))]) {
+    assertContiguous(board);
+    assert.ok(board.scenes.every((s) => s.durationInFrames >= 4 * 30 && s.durationInFrames <= 20 * 30 && s.audio === null));
+  }
+  const outro = storyboard(input(richPlan(), ["outro"])).scenes[0];
+  assert.equal(outro.durationInFrames, 198, "the outro plays at least the 198 frames of status-cycle");
+  assert.deepEqual(outro.data.statuses, ["planned in 3 phases", "ready for review"]);
+  assert.ok(24 + outro.data.statusHold * outro.data.statuses.length <= outro.durationInFrames, "the last status holds to the end: the chip act never starts");
+});
+
+test("duration: a narrated scene lasts its audio plus 0.6 s, and the audio starts 0.3 s into the scene", () => {
+  const board = storyboard(input(richPlan(), ["intro", "phases"]), { phases: { src: "tts/b.wav", seconds: 20 } });
+  const s = board.scenes[1];
   assert.equal(s.durationInFrames, 618, "20.6 s at 30 fps");
   assert.deepEqual(s.audio, { src: "tts/b.wav", from: s.from + 9, durationInFrames: 600 });
   assertContiguous(board);
-});
-
-test("duration: a short audio keeps the minimum visual time, and another frame rate keeps the times in seconds", () => {
-  const silent = stopOf(storyboard(planStops([stop(["all"]), stop(["goal"])])), "stop-2").durationInFrames;
-  const short = storyboard(planStops([stop(["all"]), stop(["goal"])]), { "stop-2": { src: "tts/b.wav", seconds: 1 } });
-  assert.equal(stopOf(short, "stop-2").durationInFrames, silent);
-  const at24 = storyboard(planStops([stop(["all"]), stop(["goal"])]), { "stop-2": { src: "tts/b.wav", seconds: 20 } }, { fps: 24 });
-  assert.equal(at24.fps, 24);
-  assert.equal(stopOf(at24, "stop-2").durationInFrames, 480 + 14, "20 s of audio plus 0.6 s at 24 fps");
-  assert.equal(stopOf(at24, "stop-2").audio.from, stopOf(at24, "stop-2").from + 7, "0.3 s lead");
+  const silent = storyboard(input(richPlan(), ["intro", "phases"])).scenes[1].durationInFrames;
+  const short = storyboard(input(richPlan(), ["intro", "phases"]), { phases: { src: "tts/b.wav", seconds: 1 } });
+  assert.equal(short.scenes[1].durationInFrames, silent, "a short audio keeps the minimum visual time");
+  const at24 = storyboard(input(richPlan(), ["intro", "phases"]), { phases: { src: "tts/b.wav", seconds: 20 } }, { fps: 24 });
+  assert.deepEqual([at24.fps, at24.scenes[1].durationInFrames, at24.scenes[1].audio.from - at24.scenes[1].from], [24, 480 + 14, 7]);
   assertContiguous(at24);
 });
 
-test("duration: the narration sets the length, with no upper limit", () => {
-  const stops = Array.from({ length: 7 }, (_, i) => stop([i % 2 ? "goal" : "all"]));
-  const voiceover = Object.fromEntries(stops.map((_, i) => [`stop-${i + 1}`, { src: `tts/${i}.wav`, seconds: 60 }]));
-  const board = storyboard(planStops(stops), voiceover);
-  assert.equal(board.durationInFrames, 7 * 1818, "7 stops of 60.6 s");
-  assertContiguous(board);
+test("captions: each word is timed in proportion to its length across the voice clip of its scene", () => {
+  const props = richPlan();
+  const text = "One shared skill renders every explainer from a props file.";
+  const board = storyboard({ mode: "plan", props, scenes: [{ id: "intro", text }], shots: {} }, { intro: { src: "tts/a.wav", seconds: 6 } });
+  const { captions, audio, from } = board.scenes[0];
+  assert.deepEqual(captions.map((w) => w.text), text.split(" "));
+  assert.equal(captions[0].startFrame, audio.from - from, "the first word starts with the voice");
+  assert.equal(captions.at(-1).endFrame, audio.from - from + audio.durationInFrames, "the last word ends with the voice");
+  captions.forEach((w, i) => {
+    assert.ok(w.endFrame > w.startFrame);
+    if (i) assert.equal(w.startFrame, captions[i - 1].endFrame, "no gap and no overlap");
+  });
+  const long = captions.find((w) => w.text === "explainer");
+  const short = captions.find((w) => w.text === "a");
+  assert.ok(long.endFrame - long.startFrame > short.endFrame - short.startFrame, "a long word stays longer");
+});
+
+test("beats: the tldr beats, the decision pages, the featured changes and the hand-test steps start in order inside their scene", () => {
+  const plan = storyboard(input(planProps({ decisions: Array.from({ length: 5 }, (_, i) => ({ decision: `D${i}`, why: "w", rejected: [{ option: "o", reason: "r" }] })) }), ["tldr", "decisions"]));
+  const ship = storyboard(input(richShip(), ["changes", "hand-test"]));
+  for (const [board, id] of [[plan, "tldr"], [plan, "decisions"], [ship, "changes"], [ship, "hand-test"]]) {
+    const s = board.scenes.find((x) => x.id === id);
+    const starts = s.data.starts;
+    assert.ok(starts.length >= 1 && starts.every((f, i) => f >= 0 && f < s.durationInFrames && (!i || f > starts[i - 1])), `${id}: ${starts}`);
+  }
+  assert.equal(dataOf(plan, "decisions").pages.length, 2, "5 decisions: pages of 3");
+});
+
+// ---- storyboard: plan scene data ----
+
+test("plan data: the TL;DR falls back to the goal and the first 2 risks by impact; tldr wins when present", () => {
+  const fallback = sceneData({ mode: "plan", props: planProps() }, "tldr");
+  assert.deepEqual(fallback.beats, [{ label: "Goal", text: "Serve widgets over HTTP." }, { label: "Top risks", text: "① Lock contention  ② Disk full" }]);
+  const given = sceneData({ mode: "plan", props: planProps({ tldr: { goal: "G", ask: "Approve X.", risks: ["R1"] } }) }, "tldr");
+  assert.deepEqual(given.beats.map((b) => b.label), ["Goal", "What I need from you", "Top risks"]);
+});
+
+test("plan data: done-when falls back to the phases of the first milestone; phases group by milestone with a review chip", () => {
+  assert.deepEqual(sceneData({ mode: "plan", props: planProps() }, "done-when"),
+    { columns: ["Criterion", "How we'll check"], rows: [{ cells: ["Add the widget store — The store passes its tests.", "—"] }], more: 0 });
+  const many = sceneData({ mode: "plan", props: planProps({ doneWhen: Array.from({ length: 9 }, (_, i) => ({ criterion: `c${i}`, check: "k" })) }) }, "done-when");
+  assert.deepEqual([many.rows.length, many.more], [5, 4]);
+  const phases = sceneData({ mode: "plan", props: planProps() }, "phases");
+  assert.deepEqual(phases.groups.map((g) => g.title), ["Milestone 1 — Read path", "Milestone 2 — Write path"]);
+  assert.deepEqual(phases.groups[0].rows.map((r) => [r.title, r.summary, r.estimate, r.review]), [
+    ["Add the widget store", "The store passes its tests.", "1 d", false], ["Review milestone 1", "", "", true],
+  ]);
+  assert.equal(phases.groups[1].rows[0].summary, "one handler", "the summary comes before doneWhen");
+});
+
+test("plan data: architecture uses the screenshots when present, else the layers without removed components", () => {
+  const shot = { src: "shots/a.png", width: 2200, height: 1400 };
+  const withShot = sceneData({ mode: "plan", props: planProps(), shots: { architecture: shot } }, "architecture");
+  assert.deepEqual([withShot.shot, withShot.media], [shot, null]);
+  const native = sceneData({ mode: "plan", props: planProps() }, "architecture");
+  assert.deepEqual(native.layers.map((l) => l.components.map((c) => `${c.name}:${c.status}`)), [["HTTP API:new"], ["Widget store:existing"]]);
+});
+
+test("plan data: decision cards have a title, the rejected options and the why; rabbit holes split a leading No", () => {
+  const [card] = sceneData({ mode: "plan", props: planProps() }, "decisions").pages[0];
+  assert.deepEqual(card, { title: "Use SQLite for the widget store", decision: "Use SQLite for the widget store", why: "One file, no server.", rejected: ["Postgres"] });
+  const titled = sceneData({ mode: "plan", props: planProps({ decisions: [{ title: "SQLite", decision: "d", why: "w", rejected: [{ option: "o", reason: "r" }] }] }) }, "decisions");
+  assert.equal(titled.pages[0][0].title, "SQLite");
+  assert.deepEqual(sceneData({ mode: "plan", props: richPlan() }, "rabbit-holes").items, [{ lead: "No", text: "mobile layout." }, { lead: "", text: "Do not tune the cache." }]);
+});
+
+// ---- storyboard: ship scene data ----
+
+test("verdict: changes requested for an open blocker or a REQUEST_CHANGES review, else ready with the worst finding that is not fixed", () => {
+  const reviews = (verdict, findings) => ({ reviews: [{ verdict, summary: "s", validation: [], findings }] });
+  assert.deepEqual(verdictOf(shipProps()), { tone: "ok", label: "Ready to merge" });
+  assert.deepEqual(verdictOf(shipProps(reviews("APPROVE", [finding("blocker", "open"), finding("blocker", "open")]))), { tone: "bad", label: "Changes requested, 2 blocking" });
+  assert.deepEqual(verdictOf(shipProps(reviews("REQUEST_CHANGES", [finding("minor", "open")]))), { tone: "bad", label: "Changes requested" });
+  assert.deepEqual(verdictOf(shipProps(reviews("COMMENT", [finding("blocker", "fixed"), finding("minor", "open"), finding("nit", "open")]))), { tone: "ok", label: "Ready to merge, 1 minor finding" });
+  assert.deepEqual(verdictOf(shipProps(reviews("COMMENT", [finding("major", "deferred"), finding("minor", "open")]))), { tone: "ok", label: "Ready to merge, 1 major finding" });
+  assert.deepEqual(verdictOf(richShip()), { tone: "ok", label: "Ready to merge, 2 minor findings" }, "every review counts");
+  assert.deepEqual(verdictOf(EXAMPLES.ship), { tone: "ok", label: "Ready to merge, 1 major finding" });
+});
+
+test("ship data: the intro has the stats and the verdict; the TL;DR falls back to the summary", () => {
+  const intro = sceneData({ mode: "ship", props: richShip() }, "intro");
+  assert.deepEqual([intro.chip, intro.stats, intro.verdict.label], ["mode: ship · PR review", { files: 9, additions: 812, deletions: 14 }, "Ready to merge, 2 minor findings"]);
+  assert.deepEqual(intro.facts, [{ label: "Date", value: "2026-10-18" }], "without meta.facts: the date");
+  assert.deepEqual(sceneData({ mode: "ship", props: shipProps() }, "tldr").beats, [{ label: "What changed", text: "The widget service answers `GET /widgets`." }]);
+  const given = sceneData({ mode: "ship", props: shipProps({ tldr: { changed: "C", lookFirst: "L", risk: "R" } }) }, "tldr");
+  assert.deepEqual(given.beats.map((b) => b.label), ["What changed", "Look at first", "Risk"]);
+});
+
+test("ship data: done-when counts each status and shows the rows that are not met first", () => {
+  const data = sceneData({ mode: "ship", props: richShip() }, "done-when");
+  assert.deepEqual(data.counts, [{ status: "met", n: 2 }, { status: "partial", n: 1 }, { status: "missed", n: 1 }]);
+  assert.deepEqual(data.rows.map((r) => r.cells[0]), ["b", "d", "a", "c"]);
+});
+
+test("ship data: changes list every area and feature the first ones, with the sequence change and its screenshot", () => {
+  const props = richShip();
+  props.changes[5].sequence = { participants: [{ name: "A" }, { name: "B" }], messages: [{ from: "A", to: "B", label: "call" }] };
+  const shot = { src: "shots/s.png", width: 1800, height: 900 };
+  const data = sceneData({ mode: "ship", props, shots: { sequence: shot } }, "changes");
+  assert.deepEqual(data.list.map((c) => c.n), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(data.featured.map((c) => [c.n, c.sequence]), [[1, false], [2, false], [3, false], [6, true]]);
+  assert.deepEqual(data.beats, [{ type: "card", n: 1 }, { type: "card", n: 2 }, { type: "card", n: 3 }, { type: "card", n: 6 }, { type: "shot", n: 6 }],
+    "the sequence diagram gets its own beat after its change");
+  assert.deepEqual([data.featured[3].files.length, data.featured[3].filesMore], [5, 1]);
+  assert.equal(data.sequenceShot, shot);
+  const noShot = sceneData({ mode: "ship", props }, "changes");
+  assert.equal(noShot.featured[3].sequence, false, "without the screenshot the card shows the file rows");
+  assert.equal(noShot.beats.length, 4, "and there is no screenshot beat");
+});
+
+test("ship data: findings of every review sort by severity, then status, with a count of each severity", () => {
+  const data = sceneData({ mode: "ship", props: richShip() }, "findings");
+  assert.deepEqual(data.items.map((f) => `${f.severity}/${f.status}`), ["major/fixed", "minor/open", "minor/deferred", "minor/fixed", "nit/fixed"]);
+  assert.equal(data.more, 1);
+  assert.deepEqual(data.counts, [{ severity: "major", n: 1 }, { severity: "minor", n: 3 }, { severity: "nit", n: 1 }, { severity: "style", n: 1 }]);
+});
+
+test("hand test: the terminal rows wrap long commands, end each step with its expect line, and stop at the row budget", () => {
+  const long = `cd ~/dotfile/wsd && cargo build --release && ./target/release/ws migrate --from-zsh --dry-run --verbose`;
+  const { lines, shown } = terminalLines([
+    { n: 1, title: "Build", command: long, expect: "A plan with 3 sessions." },
+    { n: 2, title: "Send", command: "ws send '#N' \"hi\"\n# in the tab of #N:\nws inbox" },
+    { n: 3, title: "Wait", command: "x ".repeat(200) },
+  ]);
+  assert.ok(lines.every((l) => l.text.length <= TERMINAL.cols), "every row fits the terminal width");
+  assert.equal(lines[0].text, "# 1. Build");
+  assert.ok(lines[1].text.startsWith("$ cd ~/dotfile/wsd") && lines[1].text.endsWith(" \\"), "a long command wraps with a continuation");
+  assert.ok(lines[2].text.startsWith("    "));
+  assert.deepEqual(lines.filter((l) => l.step === 0).at(-1), { text: "→ A plan with 3 sessions.", type: "success", step: 0 });
+  assert.deepEqual(lines.filter((l) => l.step === 1).map((l) => l.text), ["# 2. Send", "$ ws send '#N' \"hi\"", "> # in the tab of #N:", "> ws inbox"]);
+  assert.equal(shown, 2, "the third step does not fit");
+  assert.ok(lines.length <= TERMINAL.rows);
+  const data = sceneData({ mode: "ship", props: EXAMPLES.ship }, "hand-test");
+  assert.equal(data.steps[0].title, "Check out the PR head");
+  assert.ok(data.terminalSteps >= 1 && data.lines.length <= TERMINAL.rows);
+  const titleless = sceneData({ mode: "ship", props: shipProps() }, "hand-test");
+  assert.equal(titleless.steps[0].title, "The server listens on port 3000", "no title: the first sentence of why");
+});
+
+test("hand test: the terminal delays make the first row of each step start at its beat", () => {
+  const board = storyboard(input(EXAMPLES.ship, ["hand-test"]), { "hand-test": { src: "tts/h.wav", seconds: 20 } });
+  const { lines, starts } = board.scenes[0].data;
+  let at = TERMINAL.leadFrames;
+  lines.forEach((line, i) => {
+    at += line.delay;
+    if (i === 0 || lines[i - 1].step !== line.step) assert.ok(at >= starts[line.step], `step ${line.step} starts at ${at}, its beat is ${starts[line.step]}`);
+    at += Math.ceil(line.text.length / (TERMINAL.charsPerFrame * TERMINAL.chunkSize));
+  });
+});
+
+test("examples: every scene of both examples has data, and the scenes fit the limits of one frame", () => {
+  for (const [mode, props] of Object.entries(EXAMPLES)) {
+    for (const id of SCENES[mode].filter((s) => hasSceneData(props, s))) {
+      const data = sceneData({ mode, props }, id);
+      assert.ok(data && typeof data === "object", `${mode} ${id}`);
+      if (data.rows) assert.ok(data.rows.length <= 5);
+      if (data.items) assert.ok(data.items.length <= 7);
+    }
+  }
+});
+
+test("checkpoint: the intro shows the phase progress instead of a verdict, the header and the outro say so, pending rows come last", () => {
+  const props = checkpointProps();
+  assert.deepEqual(checkpointOf(props), { number: 2, done: 3, total: 5, since: "" });
+  assert.equal(checkpointOf(shipProps()), null);
+  const intro = sceneData({ mode: "ship", props }, "intro");
+  assert.deepEqual([intro.chip, intro.verdict, intro.checkpoint], ["mode: ship · progress checkpoint", null, { number: 2, done: 3, total: 5, since: "" }]);
+  assert.equal(sceneData({ mode: "ship", props: shipProps() }, "intro").checkpoint, null);
+  assert.deepEqual([modeLabel({ mode: "ship", props }), modeLabel({ mode: "ship", props: shipProps() }), modeLabel({ mode: "plan", props: planProps() })],
+    ["Progress checkpoint", "PR review", "Plan"]);
+  assert.deepEqual(sceneData({ mode: "ship", props }, "outro").statuses, ["in progress", "3 of 5 done"]);
+  const done = sceneData({ mode: "ship", props }, "done-when");
+  assert.deepEqual(done.counts, [{ status: "met", n: 1 }, { status: "partial", n: 1 }, { status: "pending", n: 2 }]);
+  assert.deepEqual(done.rows.map((r) => r.cells[0]), ["c", "b", "a", "d"], "attention, then met, then pending");
+});
+
+test("theme: the video colors are the dark color tokens of the report page", async () => {
+  const { COLORS } = await import(path.join(SKILL, "video", "src", "theme.mjs"));
+  const page = fs.readFileSync(path.join(SKILL, "template", "report.html"), "utf8");
+  const block = /:root\[data-theme="dark"\] \{([^}]*)\}/.exec(page)[1];
+  const tokens = Object.fromEntries([...block.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/g)].map((m) => [m[1], m[2]]));
+  assert.ok(Object.keys(tokens).length >= 10, "the report page has dark color tokens");
+  assert.deepEqual(COLORS, tokens);
+});
+
+test("theme: every tone names a color token", async () => {
+  const { COLORS, TONES } = await import(path.join(SKILL, "video", "src", "theme.mjs"));
+  for (const [name, [ink, bg]] of Object.entries(TONES)) assert.ok(COLORS[ink] && COLORS[bg], name);
+  assert.ok(Object.values(COLORS).every((c) => /^#[0-9a-f]{6}$/.test(c)));
+});
+
+test("snapcn: the vendored components carry the MIT notice, and no source loads a Google font at render time", () => {
+  const video = path.join(SKILL, "video");
+  const notice = fs.readFileSync(path.join(video, "src", "components", "snap-cn", "NOTICE"), "utf8");
+  assert.match(notice, /MIT License/);
+  assert.match(notice, /snapcn/);
+  const components = JSON.parse(fs.readFileSync(path.join(video, "components.json"), "utf8"));
+  assert.equal(components.aliases.components, "@/components");
+  const sources = fs.readdirSync(path.join(video, "src"), { recursive: true }).filter((f) => /\.(m?js|jsx)$/.test(f));
+  for (const rel of sources) {
+    const text = fs.readFileSync(path.join(video, "src", rel), "utf8");
+    assert.ok(!/from "@remotion\/google-fonts/.test(text), `${rel} imports @remotion/google-fonts`);
+  }
+  const pkg = JSON.parse(fs.readFileSync(path.join(video, "package.json"), "utf8"));
+  assert.ok(!pkg.dependencies["@remotion/google-fonts"]);
+  assert.match(fs.readFileSync(path.join(video, "engine.mjs"), "utf8"), /"@": SRC_DIR/, "the @ alias is set in the bundler");
 });
 
 // ---- real render (VE_VIDEO_E2E=1) ----
@@ -1002,24 +1060,25 @@ const E2E = process.env.VE_VIDEO_E2E === "1";
 const FFPROBE = spawnSync("ffprobe", ["-version"]).status === 0;
 
 for (const mode of ["plan", "ship"]) {
-  test(`e2e (${mode}): renders the narrated example to an MP4 under the size limit, then embeds it in the page`, {
+  test(`e2e (${mode}): renders the narrated example to a concise MP4 under the size limit, with a preview GIF`, {
     skip: !E2E && "set VE_VIDEO_E2E=1 to render real videos with real text to speech", timeout: 20 * 60_000,
   }, () => {
-    const r = run(RENDER_VIDEO, ["--props", "<props>", "--narration", "<narration>", "--out", "<out>"], {
-      props: EXAMPLES[mode], narration: EXAMPLE_NARRATION[mode], timeout: 18 * 60_000,
-    });
+    const out = fs.mkdtempSync(path.join(TMP, `e2e-${mode}-`));
+    const r = spawnSync(process.execPath, [RENDER_VIDEO, "--props", EXAMPLE_PROPS_FILE[mode],
+      "--narration", EXAMPLE_NARRATION_FILE[mode], "--out", out], { encoding: "utf8", timeout: 18 * 60_000 });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /render-video: tts: (elevenlabs|say) voice .+: \d+ clips, \d+ cached, \d+ characters sent/);
+    assert.match(r.stderr, /render-video: screenshots: /);
     if (process.env.ELEVENLABS_API_KEY) assert.ok(!r.stderr.includes(process.env.ELEVENLABS_API_KEY), "the key is never in the log");
-    const out = path.join(r.dir, "out");
     const video = path.join(out, "video.mp4");
     const [line, engine, ...rest] = r.stdout.trim().split("\n");
     assert.equal(line, video, "stdout starts with the absolute MP4 path");
     assert.match(engine, /^tts: (elevenlabs|say|say \(fallback: .+\))$/, "then the engine line");
     assert.deepEqual(rest, []);
-    assert.deepEqual(fs.readdirSync(out), ["video.mp4"], "no temporary file stays");
+    assert.deepEqual(fs.readdirSync(out).sort(), ["preview.gif", "video.mp4"], "no temporary file stays");
     const size = fs.statSync(video).size;
     assert.ok(size > 0 && size <= 14_000_000, `${size} bytes`);
+    assert.ok(fs.statSync(path.join(out, "preview.gif")).size <= 4_000_000);
     assert.ok(!["node_modules", "bundle", ".ready"].some((name) => fs.existsSync(path.join(SKILL, "video", name))), "the skill directory stays clean");
     if (FFPROBE) {
       const probe = JSON.parse(spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", video], { encoding: "utf8" }).stdout);
@@ -1028,10 +1087,8 @@ for (const mode of ["plan", "ship"]) {
       assert.equal(streams.video.codec_name, "h264");
       assert.ok([[1920, 1080], [1280, 720]].some(([w, h]) => streams.video.width === w && streams.video.height === h));
       assert.equal(streams.audio.codec_name, "aac");
-      assert.ok(Number(probe.format.duration) >= 60, `${probe.format.duration} s: the narration sets the length`);
+      const seconds = Number(probe.format.duration);
+      assert.ok(seconds >= 45 && seconds <= 180, `${seconds} s: concise`);
     }
-    const page = run(RENDER, ["--props", "<props>", "--out", out, "--video", "video.mp4"], { props: EXAMPLES[mode] });
-    assert.equal(page.status, 0, page.stderr);
-    assert.match(fs.readFileSync(path.join(out, "index.html"), "utf8"), /<video controls preload="metadata" playsinline src="video\.mp4"/);
   });
 }

@@ -1,8 +1,8 @@
 {
   "name": "visual-explainer-video",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Remotion compositions for the visual-explainer MP4. scripts/render-video.mjs copies this project to a cache directory and renders it there.",
+  "description": "Remotion scene compositions for the visual-explainer MP4, with vendored snapcn components (src/components/snap-cn/NOTICE). scripts/render-video.mjs copies this project to a cache directory and renders it there.",
   "type": "module",
   "engines": {
     "node": ">=20.11"
@@ -10,6 +10,7 @@
   "dependencies": {
     "@remotion/bundler": "4.0.532",
     "@remotion/renderer": "4.0.532",
+    "culori": "4.0.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "remotion": "4.0.532"

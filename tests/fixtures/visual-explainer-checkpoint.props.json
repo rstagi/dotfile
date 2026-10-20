@@ -1,0 +1,85 @@
+{
+  "mode": "ship",
+  "meta": {
+    "title": "Explainer v3 checkpoint",
+    "subtitle": "Progress of milestone 1 of the visual-explainer v3 effort: the report page and the screenshots are in, the snapcn video is in progress.",
+    "date": "2026-10-21",
+    "milestone": 1,
+    "checkpoint": { "number": 1, "phasesDone": 5, "phasesTotal": 12, "since": "2026-10-20 22:30" },
+    "facts": [
+      { "label": "Branch", "value": "`feat/explainer-report`" },
+      { "label": "Skill", "value": "`.claude/skills/visual-explainer`" }
+    ]
+  },
+  "summary": "`render.mjs` writes the report page (`index.html`) and the concept graph (`graph.html`). `shoot.mjs` takes one PNG for each report section. The snapcn video and the GitHub media upload are not done yet.",
+  "tldr": {
+    "changed": "the report page replaces the graph as `index.html`; the graph moves to `graph.html`.",
+    "lookFirst": "the sequence diagram in change 2 and the short Done when table.",
+    "risk": "low so far; the video phases can still change the narration format."
+  },
+  "stats": { "files": 14, "additions": 2310, "deletions": 180 },
+  "changes": [
+    {
+      "area": "Report page",
+      "how": "`report.mjs` renders the props top to bottom into `template/report.html`: TL;DR, Done when, changes, findings, hand test, rollback.",
+      "why": "A reviewer reads the page in reading order; the graph stays one link away.",
+      "phases": [1, 2],
+      "files": [
+        { "path": ".claude/skills/visual-explainer/scripts/report.mjs", "additions": 380, "deletions": 0 },
+        { "path": ".claude/skills/visual-explainer/template/report.html", "additions": 330, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "Screenshots",
+      "how": "`shoot.mjs` drives a headless Chrome over CDP and writes one PNG for each `data-shot` element.",
+      "why": "GitHub reviews show the sections as images.",
+      "phases": [4],
+      "files": [{ "path": ".claude/skills/visual-explainer/scripts/shoot.mjs", "additions": 260, "deletions": 0 }],
+      "sequence": {
+        "participants": [{ "name": "shoot.mjs", "status": "new" }, { "name": "Chrome", "status": "existing" }, { "name": "Report page", "status": "new" }],
+        "messages": [
+          { "from": "shoot.mjs", "to": "Chrome", "label": "launch --remote-debugging-port=0" },
+          { "from": "Chrome", "to": "shoot.mjs", "label": "DevTools port", "kind": "return" },
+          { "from": "shoot.mjs", "to": "Report page", "label": "navigate, set data-theme" },
+          { "from": "Report page", "to": "shoot.mjs", "label": "data-shot boxes", "kind": "return" },
+          { "from": "shoot.mjs", "to": "shoot.mjs", "label": "write one PNG per box", "kind": "self" }
+        ]
+      }
+    }
+  ],
+  "delivered": [
+    { "phase": 1, "criterion": "The report renders both examples with every section.", "result": "Both examples render; the test checks the data-shot ids.", "status": "met" },
+    { "phase": 2, "criterion": "The page is readable at 360 px with no page scroll.", "result": "Tables stack and diagrams scroll inside their box.", "status": "met" },
+    { "phase": 3, "criterion": "A Done when table or hand test longer than 8 rows stays short.", "result": "Not met rows first, the rest in a collapsed block.", "status": "met" },
+    { "phase": 4, "criterion": "`shoot.mjs` writes one PNG per section in light and dark.", "result": "PNG files for each data-shot id; a failed cache Chrome gives way to the next.", "status": "met" },
+    { "phase": 5, "criterion": "The architecture arrows do not cross boxes.", "result": "Arrows run in the bands between rows; one long label still overlaps a line.", "status": "partial" },
+    { "phase": 6, "criterion": "The video has one scene for each report section.", "result": "Not started.", "status": "pending" },
+    { "phase": 7, "criterion": "The voiceover follows narration v3.", "result": "Not started.", "status": "pending" },
+    { "phase": 8, "criterion": "`preview.gif` is at most 4 MB.", "result": "Not started.", "status": "pending" },
+    { "phase": 9, "criterion": "`gh-media.mjs` uploads the shots to the media branch.", "result": "Not started.", "status": "pending" },
+    { "phase": 10, "criterion": "pr-review posts the shots in its review.", "result": "Not started.", "status": "pending" },
+    { "phase": 11, "criterion": "loop-execute runs a checkpoint every 5 phases.", "result": "Not started.", "status": "pending" },
+    { "phase": 12, "criterion": "SKILL.md describes the report, the shots and the video.", "result": "Not started.", "status": "pending" }
+  ],
+  "deviations": [],
+  "reviews": [],
+  "handTest": [
+    {
+      "title": "Render the example plan",
+      "command": "node .claude/skills/visual-explainer/scripts/render.mjs --props .claude/skills/visual-explainer/examples/plan-visual-explainer.props.json --out /tmp/ve-plan",
+      "ref": ".claude/skills/visual-explainer/scripts/render.mjs:34",
+      "why": "Run it on the integration branch. It prints the paths of index.html and graph.html.",
+      "expect": "Open `/tmp/ve-plan/index.html`: the report, with a link to the graph at the end."
+    },
+    {
+      "title": "Take the screenshots",
+      "command": "node .claude/skills/visual-explainer/scripts/shoot.mjs --page /tmp/ve-plan/index.html --out /tmp/ve-plan/shots --theme dark",
+      "ref": ".claude/skills/visual-explainer/scripts/shoot.mjs:46",
+      "why": "The script finds Chrome by itself; pass `--chrome` to choose one.",
+      "expect": "One PNG path per line, starting with page.png."
+    }
+  ],
+  "rollback": [
+    { "step": "Nothing is merged yet. Delete the integration branch to drop the work.", "command": "git push origin --delete feat/explainer-report" }
+  ]
+}

@@ -5,7 +5,8 @@
 //   node engine.mjs prepare                         download the browser, bundle src/ to bundle/
 //   node engine.mjs render --input <file> --out <file.mp4>
 //
-// The input file is { props, voiceover, video }. The voiceover clips are in bundle/public/tts/.
+// The input file is { props, voiceover, video }. The voiceover clips are in bundle/public/tts/ and
+// the screenshots of the report page in bundle/public/shots/.
 // `video` holds the encoder settings: fps, scale, concurrency, and either crf with x264Preset or
 // hardwareAcceleration with videoBitrate.
 // No licenseKey: Remotion then sends no usage event. The free license covers this use (see SKILL.md).
@@ -17,6 +18,7 @@ import { ensureBrowser, renderMedia, selectComposition } from "@remotion/rendere
 const BUNDLE_DIR = path.resolve("bundle");
 const LOG_LEVEL = "warn";
 const AUDIO_BITRATE = "64k"; // enough for one voice, and it keeps a 10 minute video under the size limit
+const SRC_DIR = path.resolve("src");
 
 const [command, ...rest] = process.argv.slice(2);
 try {
@@ -30,7 +32,21 @@ try {
 
 async function prepare() {
   await ensureBrowser({ logLevel: LOG_LEVEL });
-  await bundle({ entryPoint: path.resolve("src", "index.jsx"), outDir: BUNDLE_DIR, enableCaching: false });
+  await bundle({ entryPoint: path.join(SRC_DIR, "index.jsx"), outDir: BUNDLE_DIR, enableCaching: false, webpackOverride });
+}
+
+// The vendored snapcn sources import "@/components/..." and "@/lib/...": Remotion ignores the
+// paths of jsconfig.json, so the alias goes here. They also import "./color" without an
+// extension, which webpack refuses in a "type": "module" package unless fullySpecified is off.
+function webpackOverride(config) {
+  return {
+    ...config,
+    resolve: { ...config.resolve, alias: { ...config.resolve?.alias, "@": SRC_DIR } },
+    module: {
+      ...config.module,
+      rules: [...(config.module?.rules ?? []), { test: /\.m?jsx?$/, resolve: { fullySpecified: false } }],
+    },
+  };
 }
 
 async function render({ input, out }) {

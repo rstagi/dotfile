@@ -1,42 +1,50 @@
-// Narration: the tour of the graph. Version 2 is an ordered list of stops, each with node or group
-// ids to focus and a text. A version 1 narration (one text for each section) still works: each
-// section becomes one stop on its cluster of nodes. Without a narration, the page tour visits the
-// root node and each group.
+// Narration: the spoken text of the video. Version 3 has one entry for each scene of the video:
+// { version: 3, mode, scenes: [{ scene, text }] }. The scenes follow the sections of the report
+// page (SCENES). A scene that the narration omits is not in the video.
 //
-// A resolved stop: { id, title, text, caption, focus, nodes, overview }. `text` is the spoken text
-// ("" for a version 1 section without narration). `caption` is the text of the page tour.
-// `nodes` lists the focus nodes in graph order. `overview` is true for "all".
+// The graph page (graph.html) does not read a narration. Its tour is the default tour of
+// tourStops: the overview, the root node, each group, then a last "explore" stop.
 import fs from "node:fs";
 import path from "node:path";
-import { buildGraph, groupIds, resolveFocus } from "./graph.mjs";
+import { resolveFocus } from "./graph.mjs";
 import { validate } from "./validate.mjs";
 
-const SCHEMA_DIR = path.join(import.meta.dirname, "..", "schema");
-const MAX_TOTAL_CHARS = 9000;
+const SCHEMA_FILE = path.join(import.meta.dirname, "..", "schema", "narration.schema.json");
 const TITLE_CHARS = 60;
-const ID_HINT = "(render.mjs --ids lists them)";
 
-// The version 1 section ids of each mode, in video order, with the focus of each section.
-// A group id with no nodes in the props falls back to the root node.
-const SECTIONS = {
-  plan: [
-    ["intro", "Introduction", ["all"]], ["goal", "Goal", ["goal"]], ["architecture", "Architecture", ["group-architecture"]],
-    ["milestones", "Timeline", ["group-timeline"]], ["decisions", "Decisions", ["group-decisions"]], ["risks", "Risks", ["group-risks"]],
-    ["outro", "Wrap-up", ["all"]],
-  ],
-  ship: [
-    ["intro", "Introduction", ["all"]], ["summary", "Outcome", ["summary"]], ["changes", "Changes", ["group-changes"]],
-    ["delivered", "Delivered", ["group-delivered"]], ["deviations", "Deviations", ["group-deviations"]],
-    ["setbacks", "Setbacks and hiccups", ["group-setbacks"]], ["reviews", "Review", ["group-review"]],
-    ["handTest", "Hand test", ["group-hand-test"]], ["rollback", "Rollback", ["group-rollback"]], ["outro", "Wrap-up", ["all"]],
-  ],
+// The scene ids of each mode, in video order.
+export const SCENES = {
+  plan: ["intro", "tldr", "done-when", "phases", "architecture", "decisions", "rabbit-holes", "outro"],
+  ship: ["intro", "tldr", "done-when", "changes", "findings", "hand-test", "rollback", "outro"],
+};
+// Word limits: one scene, and all scenes together. At about 2.5 words a second, a narration
+// of 80 to 450 words gives a video of about 45 s to 3 min.
+export const WORDS = { scene: [10, 90], total: [80, 450] };
+
+// The props field that each scene shows, for the scenes that can have no data. The test gets
+// valid props and returns true when the scene has something to show.
+const DATA = {
+  plan: {
+    "done-when": ["$.doneWhen", (p) => p.doneWhen?.length > 0 || (p.milestones?.[0]?.phases ?? []).some((ph) => ph.doneWhen)],
+    phases: ["$.milestones[].phases", (p) => (p.milestones ?? []).some((m) => m.phases?.length)],
+    architecture: ["$.architecture.layers", (p) => p.architecture?.layers?.length > 0],
+    decisions: ["$.decisions", (p) => p.decisions?.length > 0],
+    "rabbit-holes": ["$.rabbitHoles", (p) => p.rabbitHoles?.length > 0],
+  },
+  ship: {
+    "done-when": ["$.delivered", (p) => p.delivered?.length > 0],
+    changes: ["$.changes", (p) => p.changes?.length > 0],
+    findings: ["$.reviews[].findings", (p) => (p.reviews ?? []).some((r) => r.findings?.length)],
+    "hand-test": ["$.handTest", (p) => p.handTest?.length > 0],
+    rollback: ["$.rollback", (p) => p.rollback?.length > 0],
+  },
 };
 
-// checkNarration(file, props) -> { narration, stops, errors }. `props` must be valid. `errors` is []
-// for a valid narration, else [{ path, message }] with paths that start with "narration". `stops`
-// is the resolved tour of a valid narration, else null.
+// checkNarration(file, props) -> { narration, scenes, errors }. `props` must be valid. `errors`
+// is [] for a valid narration, else [{ path, message }] with paths that start with "narration".
+// `scenes` is [{ id, text }] in video order for a valid narration, else null.
 // Throws an Error "cannot read <file>: <reason>" when the file cannot be read.
-export function checkNarration(file, props, graph = buildGraph(props)) {
+export function checkNarration(file, props) {
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
@@ -47,71 +55,90 @@ export function checkNarration(file, props, graph = buildGraph(props)) {
   try {
     narration = JSON.parse(text);
   } catch (err) {
-    return { narration: null, stops: null, errors: [{ path: "narration", message: `invalid JSON (${err.message})` }] };
+    return { narration: null, scenes: null, errors: [{ path: "narration", message: `invalid JSON (${err.message})` }] };
   }
-  const v1 = isV1(narration);
-  const schema = JSON.parse(fs.readFileSync(path.join(SCHEMA_DIR, v1 ? "narration-v1.schema.json" : "narration.schema.json"), "utf8"));
-  const schemaErrors = validate(schema, narration);
-  const errors = schemaErrors.length ? schemaErrors : v1 ? v1Errors(narration, props) : v2Errors(narration, props, graph);
+  const schemaErrors = validate(JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8")), narration);
+  const errors = schemaErrors.length ? schemaErrors : sceneErrors(narration, props);
   return {
     narration,
-    stops: errors.length ? null : tourStops(graph, narration, props),
+    scenes: errors.length ? null : narration.scenes.map((s) => ({ id: s.scene, text: s.text })),
     errors: errors.map((e) => ({ ...e, path: e.path.replace(/^\$/, "narration") })),
   };
 }
 
-// tourStops(graph, narration, props) -> the resolved stops of a valid narration, or the default
-// tour when `narration` is null.
-export function tourStops(graph, narration, props) {
-  if (!narration) return defaultStops(graph);
-  if (isV1(narration)) return v1Stops(graph, narration, props);
-  return narration.stops.map((s, i) => stopOf(graph, `stop-${i + 1}`, s.focus, s.text, s.title));
+// hasSceneData(props, id) -> true when the props have data for the scene. intro, tldr and outro
+// always have data.
+export function hasSceneData(props, id) {
+  const rule = DATA[props.mode]?.[id];
+  return !rule || Boolean(rule[1](props));
 }
 
-// sectionIds(props) -> the version 1 section ids that these props show, in video order.
-export function sectionIds(props) {
-  if (props.mode === "plan") return SECTIONS.plan.map(([id]) => id);
-  return SECTIONS.ship.map(([id]) => id).filter((id) => (id !== "changes" || props.changes?.length) && (id !== "setbacks" || props.process || props.setbacks));
+// countWords(text) -> the number of words, split on white space.
+export function countWords(text) {
+  return String(text).split(/\s+/).filter(Boolean).length;
 }
 
-// The default tour: the overview, the root node, each group, the overview.
-function defaultStops(graph) {
+// tourStops(graph, narration, props) -> the default tour of the graph page. The page no longer
+// reads a narration, so `narration` and `props` do not change the tour; the signature stays for
+// the callers. A stop: { id, title, text, caption, focus, nodes, overview }.
+export function tourStops(graph, _narration = null, _props = null) {
   const root = graph.nodes.find((n) => n.group === null);
   return [
-    stopOf(graph, "overview", ["all"], "", graph.title, graph.subtitle),
-    stopOf(graph, root.id, [root.id], "", null, root.summary),
-    ...graph.groups.map((g) => stopOf(graph, g.id, [g.id], "", g.name, groupCaption(graph, g))),
-    stopOf(graph, "explore", ["all"], "", "Explore", "Open any node for all of its facts and connections. Search, filter or follow the links between the nodes."),
+    stopOf(graph, "overview", ["all"], graph.title, graph.subtitle),
+    stopOf(graph, root.id, [root.id], null, root.summary),
+    ...graph.groups.map((g) => stopOf(graph, g.id, [g.id], g.name, groupCaption(graph, g))),
+    stopOf(graph, "explore", ["all"], "Explore", "Open any node for all of its facts and connections. Search, filter or follow the links between the nodes."),
   ];
 }
 
-function v1Stops(graph, narration, props) {
-  const texts = new Map(narration.sections.map((s) => [s.id, s.text]));
-  const root = graph.nodes.find((n) => n.group === null);
-  const present = new Set(sectionIds(props));
-  return SECTIONS[props.mode].filter(([id]) => present.has(id)).map(([id, title, focus]) => {
-    const known = focus.filter((f) => f === "all" || graph.nodes.some((n) => n.id === f) || graph.groups.some((g) => g.id === f));
-    const group = graph.groups.find((g) => g.id === focus[0]);
-    const caption = focus[0] === "all" ? graph.subtitle : group ? groupCaption(graph, group) : root.summary;
-    return stopOf(graph, id, known.length ? known : [root.id], texts.get(id) ?? "", title, caption);
+// The checks after the schema: the mode, the scene ids and their order, the word limits, then the data.
+function sceneErrors(narration, props) {
+  if (narration.mode !== props.mode) return [{ path: "$.mode", message: `must be ${props.mode}, the mode of the props` }];
+  const order = SCENES[props.mode];
+  const errors = [];
+  const seen = new Set();
+  let last = -1;
+  narration.scenes.forEach(({ scene }, i) => {
+    const at = `$.scenes[${i}].scene`;
+    const index = order.indexOf(scene);
+    if (index < 0) errors.push({ path: at, message: `"${scene}" is not a ${props.mode} scene (${order.join(", ")})` });
+    else if (seen.has(scene)) errors.push({ path: at, message: `"${scene}" appears more than once` });
+    else if (index < last) errors.push({ path: at, message: `"${scene}" must come before "${order[last]}" (scene order: ${order.join(", ")})` });
+    else if (!hasSceneData(props, scene)) errors.push({ path: at, message: `the props have no data for "${scene}" (${DATA[props.mode][scene][0]})${noDataHint(props, scene)}` });
+    seen.add(scene);
+    last = Math.max(last, index);
   });
+  if (!seen.has("intro")) errors.push({ path: "$.scenes", message: 'must have the "intro" scene' });
+  return [...errors, ...wordErrors(narration.scenes)];
 }
 
-function stopOf(graph, id, focus, text, title, caption) {
+// A progress checkpoint (meta.checkpoint) comes before the review, so it has no findings yet.
+function noDataHint(props, scene) {
+  return scene === "findings" && props.meta?.checkpoint ? ": a progress checkpoint has no review yet, omit the scene" : "";
+}
+
+function wordErrors(scenes) {
+  const errors = [];
+  const [min, max] = WORDS.scene;
+  let total = 0;
+  scenes.forEach(({ text }, i) => {
+    const n = countWords(text);
+    total += n;
+    if (n < min || n > max) errors.push({ path: `$.scenes[${i}].text`, message: `has ${n} words, it must have ${min} to ${max}` });
+  });
+  const [low, high] = WORDS.total;
+  if (total < low || total > high) errors.push({ path: "$.scenes", message: `has ${total} words in total, it must have ${low} to ${high}` });
+  return errors;
+}
+
+function stopOf(graph, id, focus, title, caption) {
   const { nodes, overview } = resolveFocus(graph, focus);
-  return { id, title: title ?? stopTitle(graph, focus), text, caption: text || caption || "", focus, nodes, overview };
+  return { id, title: title ?? stopTitle(graph, focus), text: "", caption: caption || "", focus, nodes, overview };
 }
 
 function stopTitle(graph, focus) {
-  const label = (id) => {
-    if (id === "all") return graph.title;
-    const group = graph.groups.find((g) => g.id === id);
-    if (group) return group.name;
-    const node = graph.nodes.find((n) => n.id === id);
-    return node.title.replaceAll("`", "");
-  };
-  const first = clip(label(focus[0]), TITLE_CHARS);
-  return focus.length === 1 ? first : `${first} and ${focus.length - 1} more`;
+  const node = graph.nodes.find((n) => n.id === focus[0]);
+  return clip(node ? node.title.replaceAll("`", "") : graph.title, TITLE_CHARS);
 }
 
 function groupCaption(graph, group) {
@@ -134,48 +161,7 @@ const KIND_WORDS = {
 };
 
 function kindWord(kind, n) {
-  return KIND_WORDS[kind][n === 1 ? 0 : 1];
-}
-
-function isV1(narration) {
-  return narration !== null && typeof narration === "object" && !("version" in narration) && "sections" in narration;
-}
-
-function v1Errors(narration, props) {
-  if (narration.mode !== props.mode) return [{ path: "$.mode", message: `must be ${props.mode}, the mode of the props` }];
-  const ids = SECTIONS[props.mode].map(([id]) => id);
-  const present = new Set(sectionIds(props));
-  const seen = new Set();
-  const errors = [];
-  narration.sections.forEach(({ id }, i) => {
-    const at = `$.sections[${i}].id`;
-    if (!ids.includes(id)) errors.push({ path: at, message: `"${id}" is not a ${props.mode} section` });
-    else if (seen.has(id)) errors.push({ path: at, message: `"${id}" appears more than once` });
-    else if (!present.has(id)) errors.push({ path: at, message: `the props have no ${id} section` });
-    seen.add(id);
-  });
-  return [...errors, ...lengthErrors(narration.sections, "$.sections")];
-}
-
-function v2Errors(narration, props, graph) {
-  if (narration.mode !== props.mode) return [{ path: "$.mode", message: `must be ${props.mode}, the mode of the props` }];
-  const known = new Set([...graph.nodes.map((n) => n.id), ...groupIds(graph).map((g) => g.id)]);
-  const errors = [];
-  narration.stops.forEach((s, si) => {
-    const seen = new Set();
-    s.focus.forEach((id, fi) => {
-      const at = `$.stops[${si}].focus[${fi}]`;
-      if (!known.has(id)) errors.push({ path: at, message: `"${id}" is not a node id or a group id ${ID_HINT}` });
-      else if (seen.has(id)) errors.push({ path: at, message: `"${id}" appears more than once in this stop` });
-      seen.add(id);
-    });
-  });
-  return [...errors, ...lengthErrors(narration.stops, "$.stops")];
-}
-
-function lengthErrors(items, at) {
-  const total = items.reduce((n, s) => n + s.text.length, 0);
-  return total > MAX_TOTAL_CHARS ? [{ path: at, message: `has ${total} characters in total, the limit is ${MAX_TOTAL_CHARS}` }] : [];
+  return KIND_WORDS[kind]?.[n === 1 ? 0 : 1] ?? kind;
 }
 
 function clip(text, max) {

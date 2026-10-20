@@ -5,11 +5,38 @@
     "subtitle": "Replace the per-run Remotion video with one shared skill that renders a fixed HTML page from props.",
     "date": "2026-10-18",
     "planId": "loop-visual-explainer-2026-10-18-0900",
-    "milestone": 1
+    "milestone": 1,
+    "facts": [
+      { "label": "Skill", "value": "`.claude/skills/visual-explainer`" },
+      { "label": "Modes", "value": "`plan` · `ship`" },
+      { "label": "Est.", "value": "~1 hour of runner time" }
+    ]
   },
   "goal": "Every plan, milestone gate and PR review gets the same animated HTML explainer. The agent writes only a props JSON file. A zero-dependency script validates it and renders one self-contained page.",
-  "architecture": {
+  "tldr": {
+    "goal": "one shared skill renders the explainer of every plan, milestone gate and PR review from a props JSON file, so each run looks the same and nothing is built in `/tmp`.",
+    "ask": "approve (1) a fixed HTML page instead of a per-run Remotion video and (2) a required `path:line` reference on each hand-test step.",
+    "risks": ["an explainer failure blocks a milestone park or resume", "a wrong code reference looks like proof"]
+  },
+  "doneWhen": [
+    { "criterion": "`render.mjs` writes one self-contained page for valid props in both modes", "check": "`node --test tests/visual-explainer.test.mjs`: both examples render, no external scripts or styles" },
+    { "criterion": "Invalid props fail with one `<field path>: <error>` line each and exit 1", "check": "Test with a bad title, date, status and hand-test reference" },
+    { "criterion": "Props text cannot inject markup or script", "check": "Escaping test with `<script>`, quotes and `{{SLOT}}` text in every field" },
+    { "criterion": "pr-review, multiphase-plan and loop-execute call the renderer in the right mode", "check": "Read each SKILL.md step; run `render.mjs --check` on the examples" },
+    { "criterion": "A failed explainer never blocks a park or a resume", "check": "loop-execute protocol test with a render that exits 1" }
+  ],
+  "rabbitHoles": [
+    "No video in this milestone: the page is the only output.",
+    "No per-caller themes or layouts; the skill owns the look.",
+    "No npm dependencies in the renderer, not even for validation.",
+    "Do not chase pixel parity with the old Remotion scenes; match the facts, not the frames."
+  ],
+  "media": [
+    { "path": "media/plan-render-check.png", "caption": "`render.mjs --check` on bad props: one field-path error per line, exit 1." }
+  ],  "architecture": {
     "summary": "Three skills call one renderer. The renderer owns the page. The caller owns the facts.",
+    "beforeTitle": "a video per run",
+    "afterTitle": "one shared renderer",
     "layers": [
       {
         "name": "Callers",
@@ -32,11 +59,21 @@
           { "name": "render.mjs", "role": "Validates props with field paths, then writes `index.html`.", "status": "new" },
           { "name": "page.html", "role": "Template with tokens, dark mode, reduced motion and fixed scene styles.", "status": "new" }
         ]
+      },
+      {
+        "name": "Per-run output",
+        "components": [
+          { "name": "Remotion project", "role": "Built in `/tmp` by each pr-review run, then rendered to MP4.", "status": "removed" }
+        ]
       }
     ],
     "flows": [
-      { "from": "loop-execute", "to": "render.mjs", "label": "props from a detached runner" },
-      { "from": "render.mjs", "to": "page.html", "label": "escaped scene markup into fixed slots" }
+      { "from": "pr-review", "to": "Remotion project", "label": "a new project and video each run", "status": "removed" },
+      { "from": "multiphase-plan", "to": "render.mjs", "label": "plan props after registration", "status": "new" },
+      { "from": "loop-execute", "to": "render.mjs", "label": "props from a detached runner", "status": "new" },
+      { "from": "pr-review", "to": "render.mjs", "label": "ship props in Step 4", "status": "new" },
+      { "from": "render.mjs", "to": "Schemas", "label": "validates the props", "status": "new" },
+      { "from": "render.mjs", "to": "page.html", "label": "escaped scene markup into fixed slots", "status": "new" }
     ]
   },
   "milestones": [
@@ -45,15 +82,16 @@
       "title": "One explainer for plans, gates and reviews",
       "outcome": "All three callers use the shared renderer. No Remotion, MP4 or browser render step remains.",
       "phases": [
-        { "number": 1, "title": "Add the renderer, schemas and template test-first", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "estimate": "20-25 min", "doneWhen": "`node --test tests/visual-explainer.test.mjs` covers field-path errors, escaping, both modes and the hand-test reference rule.", "components": ["render.mjs", "page.html", "Schemas"] },
-        { "number": 2, "title": "Write the skill text and the example props", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [1], "estimate": "15-20 min", "doneWhen": "The STE linter reports no hard violations. The examples render.", "components": ["SKILL.md", "Schemas"] },
-        { "number": 3, "title": "Connect pr-review, multiphase-plan and loop-execute", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [2], "estimate": "20-25 min", "doneWhen": "Each caller runs the right mode. A failed explainer never blocks a park or a resume.", "components": ["pr-review", "multiphase-plan", "loop-execute"] },
-        { "number": 4, "title": "Review milestone 1", "kind": "pr-review", "dependsOn": [3] }
+        { "number": 1, "title": "Add the renderer, schemas and template test-first", "summary": "renderer, both schemas and the page template, tests first", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "estimate": "20-25 min", "doneWhen": "`node --test tests/visual-explainer.test.mjs` covers field-path errors, escaping, both modes and the hand-test reference rule.", "components": ["render.mjs", "page.html", "Schemas"] },
+        { "number": 2, "title": "Write the skill text and the example props", "summary": "SKILL.md in STE and one example props file per mode", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [1], "estimate": "15-20 min", "doneWhen": "The STE linter reports no hard violations. The examples render.", "components": ["SKILL.md", "Schemas"] },
+        { "number": 3, "title": "Connect pr-review, multiphase-plan and loop-execute", "summary": "each caller runs the right mode, best-effort", "kind": "work", "lane": "A", "repository": "rstagi/dotfile", "dependsOn": [2], "estimate": "20-25 min", "doneWhen": "Each caller runs the right mode. A failed explainer never blocks a park or a resume.", "components": ["pr-review", "multiphase-plan", "loop-execute"] },
+        { "number": 4, "title": "Review milestone 1", "summary": "max-tier review of the milestone PR", "kind": "pr-review", "dependsOn": [3] }
       ]
     }
   ],
   "decisions": [
     {
+      "title": "SVG + CSS, no video",
       "decision": "Animate with SVG and CSS inside the page.",
       "why": "The page opens anywhere, needs no render step, and respects reduced motion.",
       "phases": [1],
@@ -64,6 +102,7 @@
       ]
     },
     {
+      "title": "Props JSON only",
       "decision": "The agent writes only props JSON.",
       "why": "Fixed scenes give the same look every run. One escaping function protects every field.",
       "phases": [1, 2],
@@ -73,6 +112,7 @@
       ]
     },
     {
+      "title": "Code-checked hand tests",
       "decision": "A `ship` hand-test step must carry a `path:line` reference.",
       "why": "The milestone 2 checklist had the install before the dry run. The reference forces a read of the code.",
       "phases": [1, 2],

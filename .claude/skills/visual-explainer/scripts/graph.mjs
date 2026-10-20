@@ -76,11 +76,11 @@ export const EDGE_LABELS = {
 
 const IMPACT_ORDER = { high: 0, medium: 1, low: 2 };
 const SEVERITIES = ["blocker", "major", "minor", "nit", "style"];
-const STATUS_RANK = { met: 0, partial: 1, missed: 2 };
+const STATUS_RANK = { met: 0, pending: 1, partial: 2, missed: 3 };
 const TONE = {
   status: { new: "ok", changed: "warn", existing: "muted", removed: "bad" },
   level: { high: "bad", medium: "warn", low: "ok" },
-  delivered: { met: "ok", partial: "warn", missed: "bad" },
+  delivered: { met: "ok", pending: "muted", partial: "warn", missed: "bad" },
   verdict: { APPROVE: "ok", COMMENT: "warn", REQUEST_CHANGES: "bad" },
   severity: { blocker: "bad", major: "warn", minor: "info", nit: "muted", style: "muted" },
 };
@@ -340,7 +340,7 @@ function shipModel(p) {
     facts: [
       fact("Summary", p.summary, true), fact("Subtitle", p.meta.subtitle),
       { label: "Done when met", text: `${met} of ${p.delivered.length}` },
-      { label: "Review verdicts", text: p.reviews.map((r) => VERDICT_LABEL[r.verdict]).join(", ") },
+      { label: "Review verdicts", text: p.reviews.map((r) => VERDICT_LABEL[r.verdict]).join(", ") || "No review yet" },
       { label: "Unresolved findings", text: String(unresolved) },
       !p.deviations.length && { label: "Deviations", text: "No deviations from the plan." },
       ...metaFacts(p.meta),
