@@ -67,6 +67,8 @@ pub struct WorkspaceTarget {
 pub struct RemoveWorkspace {
     pub target: String,
     #[serde(default)]
+    pub confirmed: bool,
+    #[serde(default)]
     pub force: bool,
     #[serde(default)]
     pub delete_branch: bool,
@@ -118,6 +120,49 @@ pub fn workspace_path(target: &str) -> Result<(String, PathBuf)> {
         .ok_or(Error::InvalidRequest("The workspace path is not UTF-8."))?
         .to_owned();
     Ok((name, wt))
+}
+
+/// Resolves a directory place. Registered workspaces keep their existing behavior.
+pub fn directory_path(
+    target: &str,
+    sessions: &[Session],
+    workspaces: &[Workspace],
+) -> Option<PathBuf> {
+    let directory = Path::new(target)
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_dir())?;
+    let same_path = |path: &str| Path::new(path).canonicalize().ok().as_ref() == Some(&directory);
+    if workspaces
+        .iter()
+        .any(|workspace| workspace.body["path"].as_str().is_some_and(same_path))
+        || (workspace_path(target).is_ok()
+            && !sessions.iter().any(|session| {
+                session.workspace_id.is_none()
+                    && session.body["agent"].is_string()
+                    && session.cwd.as_deref().is_some_and(same_path)
+            }))
+    {
+        return None;
+    }
+    Some(directory)
+}
+
+/// Checks the resolved path against the scratch root. The root itself is excluded.
+pub fn is_scratch_directory(directory: &Path) -> Result<bool> {
+    let home = env::var_os("WS_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".ws")))
+        .ok_or(Error::InvalidRequest(
+            "Set WS_HOME or HOME to locate scratch directories.",
+        ))?;
+    let root = match home.join("scratch").canonicalize() {
+        Ok(root) => root,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let directory = directory.canonicalize()?;
+    Ok(directory != root && directory.starts_with(root))
 }
 
 async fn list(
@@ -385,6 +430,11 @@ async fn pin(
             "workspace.pin",
             Some(&request.target),
         )?;
+        if sessions.directory_place(&request.target)?.is_some() {
+            return Err(Error::InvalidRequest(
+                "Pins for directory places are not supported.",
+            ));
+        }
         let workspace = sessions.register_workspace(&request.target, request.parent_session_id)?;
         let pinned = !workspace.body["pinned"].as_bool().unwrap_or(false);
         sessions.append(
@@ -406,6 +456,49 @@ async fn remove(
     State(store): State<Store>,
     Json(request): Json<RemoveWorkspace>,
 ) -> std::result::Result<Json<Value>, ApiError> {
+    let target = request.target.clone();
+    let directory = api::call(store.clone(), move |sessions| {
+        sessions.directory_place(&target)
+    })
+    .await?;
+    if let Some(directory) = directory {
+        let delete = is_scratch_directory(&directory).map_err(ApiError)?;
+        let removed_directory = directory.clone();
+        let response = api::call(store, move |sessions| {
+            sessions.record_call(
+                request.parent_session_id,
+                "workspace.remove",
+                Some(&request.target),
+            )?;
+            if delete && !request.confirmed {
+                return Err(Error::InvalidRequest(
+                    "Confirm the removal of the scratch directory before deleting it.",
+                ));
+            }
+            for session in sessions.directory_sessions(&directory)? {
+                if !["finished", "failed"].contains(&session.state.as_str()) {
+                    sessions.stop(&session.id.to_string(), request.parent_session_id)?;
+                } else {
+                    sessions.finish_spawned_session(&session)?;
+                }
+            }
+            Ok(json!({}))
+        })
+        .await?;
+        if delete {
+            off_lock(move || {
+                if !is_scratch_directory(&removed_directory)? {
+                    return Err(Error::InvalidRequest(
+                        "The directory is outside the scratch root.",
+                    ));
+                }
+                fs::remove_dir_all(removed_directory)?;
+                Ok(())
+            })
+            .await?;
+        }
+        return Ok(Json(response));
+    }
     let plan = api::call(store.clone(), move |sessions| {
         sessions.begin_remove(request)
     })
@@ -442,6 +535,35 @@ impl Sessions {
             Err(ws_core::registry::Error::NotFound(_)) => None,
             Err(error) => return Err(error.into()),
         };
+        if let Some(session) = &session
+            && session.workspace_id.is_none()
+        {
+            let directory = session
+                .cwd
+                .as_deref()
+                .ok_or(Error::InvalidRequest("The session has no directory place."))?;
+            return self.open_directory(
+                Path::new(directory),
+                vec![session.clone()],
+                request.parent_session_id,
+            );
+        }
+        if session.is_none()
+            && let Some(directory) = self.directory_place(&request.target)?
+        {
+            let mut sessions = self.directory_sessions(&directory)?;
+            let active =
+                |session: &Session| !["finished", "failed"].contains(&session.state.as_str());
+            if sessions.iter().any(active) {
+                sessions.retain(active);
+            } else {
+                sessions.sort_by_key(|session| {
+                    std::cmp::Reverse((session.updated_at_ms, session.alias))
+                });
+                sessions.truncate(1);
+            }
+            return self.open_directory(&directory, sessions, request.parent_session_id);
+        }
         let workspace = if let Some(session) = &session {
             self.registry
                 .workspaces()?
@@ -514,6 +636,80 @@ impl Sessions {
             Some(window) => Ok(window.clone()),
             None => self.start_workspace(&workspace.id, wt, "claude", request.parent_session_id),
         }
+    }
+
+    fn directory_place(&self, target: &str) -> Result<Option<PathBuf>> {
+        Ok(directory_path(
+            target,
+            &self.registry.sessions()?,
+            &self.registry.workspaces()?,
+        ))
+    }
+
+    fn directory_sessions(&self, directory: &Path) -> Result<Vec<Session>> {
+        Ok(self
+            .registry
+            .sessions()?
+            .into_iter()
+            .filter(|session| {
+                session.workspace_id.is_none()
+                    && session.body["agent"].is_string()
+                    && session.cwd.as_deref().is_some_and(|cwd| {
+                        Path::new(cwd).canonicalize().ok().as_deref() == Some(directory)
+                    })
+            })
+            .collect())
+    }
+
+    fn open_directory(
+        &mut self,
+        directory: &Path,
+        sessions: Vec<Session>,
+        parent: Option<SessionId>,
+    ) -> Result<Value> {
+        if !directory.is_dir() {
+            return Err(failure(format!(
+                "The session directory no longer exists: {}",
+                directory.display()
+            )));
+        }
+        let tmux = Tmux::from_env();
+        for session in &sessions {
+            for window in self.session_windows(session)? {
+                if tmux
+                    .window_option(&window, "@ws_session")
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(&session.id.to_string())
+                {
+                    return Ok(json!({"window_id": window, "session_id": session.id}));
+                }
+            }
+        }
+        let mut first = None;
+        for session in sessions {
+            let window = self.start_place_agent(
+                Place::Directory {
+                    directory: directory.to_owned(),
+                },
+                session.body["agent"].as_str().unwrap_or("claude"),
+                parent,
+                LaunchContext {
+                    resume: Some(&session),
+                    run: None,
+                    spawn: None,
+                    start: None,
+                },
+            )?;
+            first.get_or_insert(window);
+        }
+        first.ok_or_else(|| {
+            failure(format!(
+                "No stopped session exists in directory: {}",
+                directory.display()
+            ))
+        })
     }
 
     /// Step 1 of a removal: checks the target and reserves its name under the store lock.
