@@ -8,19 +8,44 @@ use super::list::{self, Row};
 use crate::Result;
 
 pub async fn rows(socket: &Path) -> Result<()> {
-    let mut workspaces: BTreeMap<String, Vec<Row>> = BTreeMap::new();
+    let mut workspaces: BTreeMap<(bool, String), Vec<Row>> = BTreeMap::new();
     for row in list::rows(socket).await? {
-        workspaces.entry(row.path.clone()).or_default().push(row);
+        workspaces
+            .entry((row.scratch, row.path.clone()))
+            .or_default()
+            .push(row);
     }
     let mut groups: Vec<_> = workspaces.values().collect();
-    groups.sort_by_key(|rows| rows[0].name.split('#').next().unwrap());
+    groups.sort_by_key(|rows| {
+        let first = &rows[0];
+        (
+            first.scratch,
+            if first.scratch {
+                first.path.as_str()
+            } else {
+                first.name.split('#').next().unwrap()
+            },
+        )
+    });
     let expanded = sessions_marker()?.exists();
     let mut previous = String::new();
-    for pinned in [true, false] {
-        for sessions in groups.iter().filter(|rows| rows[0].pinned == pinned) {
+    for (scratch, pinned) in [(false, true), (false, false), (true, false)] {
+        let mut heading = false;
+        for sessions in groups
+            .iter()
+            .filter(|rows| rows[0].scratch == scratch && rows[0].pinned == pinned)
+        {
+            if scratch && !heading {
+                println!("\x1b[1mscratch\x1b[0m\t\t");
+                heading = true;
+            }
             let first = &sessions[0];
             let name = first.name.split('#').next().unwrap();
-            let (repo, branch) = name.split_once('/').unwrap_or((name, name));
+            let (repo, branch) = if scratch {
+                ("", first.path.as_str())
+            } else {
+                name.split_once('/').unwrap_or((name, name))
+            };
             let style = if pinned || repo != previous {
                 "\x1b[1m"
             } else {
@@ -118,7 +143,15 @@ pub async fn preview(socket: &Path, workspace: &str, window: &str) -> Result<Exi
                 .flatten()
                 .any(|entry| entry["window_id"].as_str() == Some(window))
         });
-        if !registered {
+        let directory_session = if registered {
+            false
+        } else {
+            list::rows(socket)
+                .await?
+                .iter()
+                .any(|row| row.scratch && row.window == window)
+        };
+        if !registered && !directory_session {
             return Ok(ExitCode::SUCCESS);
         }
         let mut command = ws_daemon::tmux::client();
@@ -151,6 +184,21 @@ pub async fn preview(socket: &Path, workspace: &str, window: &str) -> Result<Exi
                 .args(["-C", workspace, "status", "-s"])
                 .status()?,
         ));
+    }
+    if Path::new(workspace).is_dir()
+        && list::rows(socket)
+            .await?
+            .iter()
+            .any(|row| row.scratch && row.path == workspace)
+    {
+        println!("stopped — enter restores its sessions");
+        let mut entries = std::fs::read_dir(workspace)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort();
+        for entry in entries {
+            println!("{}", entry.to_string_lossy());
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
