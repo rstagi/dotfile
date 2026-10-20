@@ -168,15 +168,23 @@ impl Sessions {
                 }
             }
         }
-        let id = session.id.to_string();
-        let tmux_session = session.workspace_id.as_deref().unwrap_or(&id);
-        let launched = self.start_workspace_session(
-            tmux_session,
-            &directory,
+        let place = match &session.workspace_id {
+            Some(name) => crate::places::Place::Workspace {
+                name: name.clone(),
+                directory,
+            },
+            None => crate::places::Place::Directory { directory },
+        };
+        let launched = self.start_place_agent(
+            place,
             session.body["agent"].as_str().unwrap_or("claude"),
             caller,
-            Some(session),
-            None,
+            crate::workspaces::LaunchContext {
+                resume: Some(session),
+                run: None,
+                spawn: None,
+                start: None,
+            },
         )?;
         for window in old_windows {
             if launched["window_id"] == window

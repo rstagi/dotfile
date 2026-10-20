@@ -29,6 +29,7 @@ pub(crate) struct LaunchContext<'a> {
     pub resume: Option<&'a Session>,
     pub run: Option<&'a crate::agents::launch::RunAgent>,
     pub spawn: Option<SpawnOrigin<'a>>,
+    pub start: Option<crate::places::StartOptions>,
 }
 
 pub(crate) struct SpawnOrigin<'a> {
@@ -251,6 +252,16 @@ pub(crate) async fn start_agent(
     agent: String,
     parent: Option<SessionId>,
 ) -> std::result::Result<Value, ApiError> {
+    start_agent_with_options(store, place, agent, parent, None).await
+}
+
+pub(crate) async fn start_agent_with_options(
+    store: Store,
+    place: Place,
+    agent: String,
+    parent: Option<SessionId>,
+    start: Option<crate::places::StartOptions>,
+) -> std::result::Result<Value, ApiError> {
     let plan = api::call(store.clone(), move |sessions| {
         sessions.plan_agent(
             place,
@@ -260,6 +271,7 @@ pub(crate) async fn start_agent(
                 resume: None,
                 run: None,
                 spawn: None,
+                start,
             },
         )
     })
@@ -664,6 +676,7 @@ impl Sessions {
                 resume,
                 run,
                 spawn: None,
+                start: None,
             },
         )
     }
@@ -676,7 +689,7 @@ impl Sessions {
         parent_session_id: Option<SessionId>,
         context: LaunchContext<'_>,
     ) -> Result<Value> {
-        let plan = self.plan_agent(
+        self.start_place_agent(
             Place::Workspace {
                 name: name.to_owned(),
                 directory: wt.to_owned(),
@@ -684,7 +697,17 @@ impl Sessions {
             agent,
             parent_session_id,
             context,
-        )?;
+        )
+    }
+
+    pub(crate) fn start_place_agent(
+        &mut self,
+        place: Place,
+        agent: &str,
+        parent_session_id: Option<SessionId>,
+        context: LaunchContext<'_>,
+    ) -> Result<Value> {
+        let plan = self.plan_agent(place, agent, parent_session_id, context)?;
         let launched = plan.launch();
         self.commit_agent(plan, launched)
     }
@@ -699,9 +722,17 @@ impl Sessions {
     ) -> Result<AgentLaunch> {
         let name = place.workspace_id();
         let wt = place.directory();
-        let LaunchContext { resume, run, spawn } = context;
+        let LaunchContext {
+            resume,
+            run,
+            spawn,
+            start,
+        } = context;
         if resume.is_none() {
             self.check_spawn_limits(parent_session_id)?;
+        }
+        if let Some(start) = &start {
+            start.validate(self)?;
         }
         let existing = self
             .registry
@@ -711,6 +742,7 @@ impl Sessions {
         let id = spawn
             .as_ref()
             .map(|origin| origin.id)
+            .or_else(|| start.as_ref().map(|start| start.id))
             .unwrap_or_else(|| resume.map_or_else(Ulid::new, |session| session.id));
         let windows = existing
             .as_ref()
@@ -728,7 +760,7 @@ impl Sessions {
         let session_name = if let Some(run) = run {
             tmux.execute(&["display-message", "-p", "-t", &run.pane, "#{session_name}"])?
         } else {
-            name.map_or_else(|| id.to_string(), |name| name.replace(['.', ':'], "_"))
+            place.tmux_session_name()
         };
         let live_session = if tmux
             .execute(&["has-session", "-t", &format!("={session_name}")])
@@ -743,8 +775,13 @@ impl Sessions {
                 .as_ref()
                 .is_some_and(|path| Path::new(path).canonicalize().ok() != wt.canonicalize().ok())
         {
+            let kind = if name.is_some() {
+                "workspace"
+            } else {
+                "directory"
+            };
             return Err(failure(format!(
-                "The tmux session {session_name} belongs to another workspace."
+                "The tmux session {session_name} belongs to another {kind}."
             )));
         }
         let pending = crate::agents::launch::PendingLaunch::new(id)?;
@@ -766,6 +803,10 @@ impl Sessions {
         } else {
             let alias = self.next_alias()?;
             let mut body = json!({"alias": alias, "workspace_id": name, "cwd": wt, "agent": agent, "slot": slot, "parent_session_id": parent_session_id, "arguments": run.map(|r| &r.arguments)});
+            if let Some(start) = &start {
+                body["name"] = json!(start.name);
+                body["prompt"] = json!(start.prompt);
+            }
             if let Some(origin) = &spawn {
                 body["spawned"] = json!(true);
                 body["trigger_id"] = json!(origin.trigger_id);
