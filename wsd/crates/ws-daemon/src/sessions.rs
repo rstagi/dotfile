@@ -216,9 +216,7 @@ impl Sessions {
     pub(crate) fn get_record(&self, input: &str) -> Result<Session> {
         let id = self.registry.resolve(input)?;
         self.registry
-            .sessions()?
-            .into_iter()
-            .find(|session| session.id == id)
+            .session(id)?
             .ok_or_else(|| Error::Registry(registry::Error::NotFound(input.into())))
     }
 

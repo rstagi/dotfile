@@ -172,6 +172,8 @@ async fn ingest_callback(
             eprintln!("Cannot read the exiting agent window: {error}");
             None
         }
+        // A replayed record whose pane is gone stays undeliverable. Record it without the window.
+        Err(_) if !live => None,
         Err(error) => return Err(error.into()),
     };
     if callback.pane.is_none() {

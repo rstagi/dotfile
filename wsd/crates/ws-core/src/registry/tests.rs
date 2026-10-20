@@ -914,6 +914,62 @@ fn finds_a_callback_event_by_its_original_identifier_after_rebuild() {
 }
 
 #[test]
+fn reads_one_session_with_its_latest_exit_code() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let id = Ulid::new();
+    for (session, alias) in [(id, 1), (Ulid::new(), 2)] {
+        let log = SessionLog::new(sandbox.path(), session, Ulid::new());
+        registry
+            .apply(
+                &log.append(0, "session.created", json!({"alias": alias}))
+                    .unwrap(),
+            )
+            .unwrap();
+        for code in [alias, alias + 10] {
+            registry
+                .apply(&log.append(0, "exit", json!({"code": code})).unwrap())
+                .unwrap();
+        }
+    }
+    let session = registry.session(id).unwrap().unwrap();
+    assert_eq!(
+        (session.id, session.alias, session.exit_code),
+        (id, 1, Some(11))
+    );
+    assert_eq!(
+        registry
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id),
+        Some(session)
+    );
+    assert!(registry.session(Ulid::new()).unwrap().is_none());
+}
+
+#[test]
+fn lists_events_of_one_type_across_sessions_after_rebuild() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut expected = Vec::new();
+    for alias in [1, 2] {
+        let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        log.append(0, "session.created", json!({"alias": alias}))
+            .unwrap();
+        expected.push(
+            log.append(0, "runner.usage.updated", json!({"n": alias}))
+                .unwrap(),
+        );
+        log.append(0, "hook.received", json!({})).unwrap();
+    }
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    registry.rebuild(sandbox.path()).unwrap();
+    let mut events = registry.events_of_type("runner.usage.updated").unwrap();
+    events.sort_by_key(|entry| entry.body["n"].as_i64());
+    assert_eq!(events, expected);
+}
+
+#[test]
 fn v6_messages_deduplicate_event_ids_and_validate_sender_and_pair_sequence() {
     let sandbox = tempfile::tempdir().unwrap();
     let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();

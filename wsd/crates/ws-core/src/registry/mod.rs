@@ -329,12 +329,22 @@ impl Registry {
     }
 
     pub fn sessions(&self) -> Result<Vec<Session>> {
+        self.query_sessions(None)
+    }
+
+    /// Reads one session without a scan of all sessions.
+    pub fn session(&self, id: SessionId) -> Result<Option<Session>> {
+        Ok(self.query_sessions(Some(id))?.pop())
+    }
+
+    fn query_sessions(&self, id: Option<SessionId>) -> Result<Vec<Session>> {
         let mut statement = self.connection.prepare(
             "SELECT s.id, a.alias, s.name, s.state, s.workspace_id, s.device_id, s.created_at_ms, s.updated_at_ms, s.body,
              (SELECT json_extract(entry, '$.body.code') FROM applied_events
               WHERE session_id = s.id AND json_extract(entry, '$.type') = 'exit' ORDER BY seq DESC LIMIT 1), s.cwd, s.repos
-             FROM sessions s JOIN aliases a ON a.session_id = s.id ORDER BY a.alias")?;
-        let rows = statement.query_map([], |row| {
+             FROM sessions s JOIN aliases a ON a.session_id = s.id
+             WHERE ?1 IS NULL OR s.id = ?1 ORDER BY a.alias")?;
+        let rows = statement.query_map([id.map(|id| id.to_string())], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get(1)?,

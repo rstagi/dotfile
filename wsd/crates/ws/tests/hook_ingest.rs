@@ -282,6 +282,49 @@ fn missing_pane_exit_hooks_record_exit_fire_triggers_and_replay_once() {
 }
 
 #[test]
+fn spooled_hooks_of_a_removed_pane_replay_once_and_leave_the_spool() {
+    for server_present in [true, false] {
+        let mut sandbox = HookSandbox::new();
+        let tmux = ws_daemon::tmux::Tmux::named(&sandbox.server);
+        tmux.execute(&["new-window", "-d", "-t", "hooks:", "/bin/sleep", "300"])
+            .unwrap();
+        let callback = sandbox.callback(
+            "working",
+            json!({"hook_event_name":"PreToolUse"}),
+            ws_daemon::hooks::receipt_time_us().unwrap(),
+        );
+        tmux.execute(&["kill-window", "-t", &sandbox.window])
+            .unwrap();
+        if !server_present {
+            tmux.execute(&["kill-server"]).unwrap();
+        }
+        sandbox.daemon.take();
+        ws_daemon::hooks::spool(&sandbox.home.path().join("state"), &callback).unwrap();
+        sandbox.daemon = Some(Daemon::start(
+            ws(sandbox.home.path(), &sandbox.socket),
+            &sandbox.socket,
+        ));
+        // The daemon drains the spool after the socket opens.
+        let spool = sandbox.home.path().join("state/spool");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while fs::read_dir(&spool).unwrap().count() > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(
+            fs::read_dir(&spool).unwrap().count(),
+            0,
+            "server_present={server_present}"
+        );
+        let received = sandbox
+            .log()
+            .iter()
+            .filter(|entry| entry["type"] == "hook.received")
+            .count();
+        assert_eq!(received, 1, "server_present={server_present}");
+    }
+}
+
+#[test]
 fn hook_window_options_match_the_zsh_hook_scenarios() {
     let sandbox = HookSandbox::new();
     let mut actual = String::new();
