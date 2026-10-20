@@ -817,9 +817,16 @@ impl Sessions {
             .registry
             .workspace_owner(&name)?
             .unwrap_or_else(Ulid::new);
-        self.append(owner, "workspace.created", json!({
-            "workspace_id": name, "path": wt, "windows": [], "parent_session_id": parent_session_id
-        }))?;
+        let repo = main_checkout(&wt)?;
+        let branch = git(&wt, &["branch", "--show-current"])?;
+        self.append(
+            owner,
+            "workspace.created",
+            json!({
+                "workspace_id": name, "path": wt, "repo": repo, "branch": branch,
+                "windows": [], "parent_session_id": parent_session_id
+            }),
+        )?;
         self.workspace(target)
     }
 
@@ -1010,6 +1017,13 @@ impl Sessions {
             }
             self.append(id, "session.created", body)?;
         }
+        if name.is_some() {
+            self.append(
+                id,
+                "session.repo_attached",
+                json!({"path": main_checkout(wt)?, "branch": git(wt, &["branch", "--show-current"])?}),
+            )?;
+        }
         let tab = if slot > 1 {
             format!("{agent}#{slot}")
         } else {
@@ -1197,7 +1211,11 @@ impl Sessions {
                 } else {
                     "workspace.created"
                 };
-                self.append(owner, event, json!({"workspace_id": name, "path": wt, "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id}))?;
+                self.append(owner, event, json!({
+                    "workspace_id": name, "path": wt,
+                    "repo": main_checkout(wt)?, "branch": git(wt, &["branch", "--show-current"])?,
+                    "tmux_session": session_name, "windows": windows, "parent_session_id": parent_session_id
+                }))?;
             }
             if !was_running {
                 self.transition(
