@@ -74,6 +74,145 @@ fn open_directory_restores_stopped_sessions_once_with_the_same_identity() {
 }
 
 #[test]
+fn interactive_rm_stops_directory_sessions_and_preserves_external_files() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("notes");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("keep"), "important notes").unwrap();
+    assert!(
+        sandbox
+            .output(&["new", "--cwd", directory.to_str().unwrap(), "--detach"])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .output(&[
+                "add",
+                directory.to_str().unwrap(),
+                "--agent",
+                "codex",
+                "--detach"
+            ])
+            .status
+            .success()
+    );
+    let other = sandbox.home.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    assert!(
+        sandbox
+            .output(&["new", "--cwd", other.to_str().unwrap(), "--detach"])
+            .status
+            .success()
+    );
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", directory.to_str().unwrap(), "--interactive"],
+        "[y/N] ",
+        "n",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["state"] == "running")
+    );
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", directory.to_str().unwrap(), "--interactive"],
+        "[y/N] ",
+        "y",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(directory.join("keep")).unwrap(),
+        "important notes"
+    );
+    let directory = directory.canonicalize().unwrap();
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    for session in sessions.as_array().unwrap() {
+        assert_eq!(
+            session["state"],
+            if session["cwd"] == directory.to_str().unwrap() {
+                "finished"
+            } else {
+                "running"
+            }
+        );
+    }
+    let rows = sandbox.tmux(&["list-windows", "-a", "-F", "#{@ws_path}"]);
+    assert!(!rows.lines().any(|path| path == directory.to_str().unwrap()));
+    assert!(
+        rows.lines()
+            .any(|path| path == other.canonicalize().unwrap().to_str().unwrap())
+    );
+}
+
+#[test]
+fn rm_scratch_requires_confirmation_even_with_force_and_deletes_only_after_acceptance() {
+    let sandbox = Sandbox::new();
+    assert!(
+        sandbox
+            .output(&["new", "--scratch", "--detach"])
+            .status
+            .success()
+    );
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let directory = Path::new(sessions[0]["cwd"].as_str().unwrap());
+    std::fs::write(directory.join("notes"), "keep until confirmed").unwrap();
+    let request = serde_json::json!({"target": directory, "force": true}).to_string();
+    let response = common::request(&sandbox.socket, "POST", "/v1/workspaces/remove", &request);
+    assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("Confirm"), "{response}");
+    assert_eq!(sandbox.json(&["sessions", "--json"])[0]["state"], "running");
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", directory.to_str().unwrap(), "--force"],
+        "[y/N] ",
+        "n",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(directory.join("notes").is_file());
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", directory.to_str().unwrap()],
+        "[y/N] ",
+        "y",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(!directory.exists());
+    assert_eq!(
+        sandbox.json(&["sessions", "--json"])[0]["state"],
+        "finished"
+    );
+    assert!(directory.parent().unwrap().is_dir());
+}
+
+#[test]
+fn pin_rejects_directory_places_with_a_clear_error() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("notes");
+    std::fs::create_dir(&directory).unwrap();
+    let output = sandbox
+        .command()
+        .current_dir(sandbox.home.path())
+        .args(["pin", "notes"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("Pins for directory places are not supported.")
+    );
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    assert_eq!(sandbox.json(&["sessions", "--json"]), serde_json::json!([]));
+}
+
+#[test]
 fn new_scratch_starts_a_codex_session_without_a_workspace() {
     let sandbox = Sandbox::new();
     let output = sandbox.output(&["new", "--scratch", "--agent", "codex", "--detach"]);

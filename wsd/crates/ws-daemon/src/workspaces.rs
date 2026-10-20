@@ -67,6 +67,8 @@ pub struct WorkspaceTarget {
 pub struct RemoveWorkspace {
     pub target: String,
     #[serde(default)]
+    pub confirmed: bool,
+    #[serde(default)]
     pub force: bool,
     #[serde(default)]
     pub delete_branch: bool,
@@ -118,6 +120,34 @@ pub fn workspace_path(target: &str) -> Result<(String, PathBuf)> {
         .ok_or(Error::InvalidRequest("The workspace path is not UTF-8."))?
         .to_owned();
     Ok((name, wt))
+}
+
+/// Resolves an existing directory that is not a workspace.
+pub fn directory_path(target: &str) -> Option<PathBuf> {
+    if workspace_path(target).is_ok() {
+        return None;
+    }
+    Path::new(target)
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_dir())
+}
+
+/// Checks the resolved path against the scratch root. The root itself is excluded.
+pub fn is_scratch_directory(directory: &Path) -> Result<bool> {
+    let home = env::var_os("WS_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".ws")))
+        .ok_or(Error::InvalidRequest(
+            "Set WS_HOME or HOME to locate scratch directories.",
+        ))?;
+    let root = match home.join("scratch").canonicalize() {
+        Ok(root) => root,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let directory = directory.canonicalize()?;
+    Ok(directory != root && directory.starts_with(root))
 }
 
 async fn list(
@@ -385,6 +415,11 @@ async fn pin(
             "workspace.pin",
             Some(&request.target),
         )?;
+        if directory_path(&request.target).is_some() {
+            return Err(Error::InvalidRequest(
+                "Pins for directory places are not supported.",
+            ));
+        }
         let workspace = sessions.register_workspace(&request.target, request.parent_session_id)?;
         let pinned = !workspace.body["pinned"].as_bool().unwrap_or(false);
         sessions.append(
@@ -406,6 +441,42 @@ async fn remove(
     State(store): State<Store>,
     Json(request): Json<RemoveWorkspace>,
 ) -> std::result::Result<Json<Value>, ApiError> {
+    if let Some(directory) = directory_path(&request.target) {
+        let delete = is_scratch_directory(&directory).map_err(ApiError)?;
+        if delete && !request.confirmed {
+            return Err(ApiError(Error::InvalidRequest(
+                "Confirm the removal of the scratch directory before deleting it.",
+            )));
+        }
+        let removed_directory = directory.clone();
+        let response = api::call(store, move |sessions| {
+            sessions.record_call(
+                request.parent_session_id,
+                "workspace.remove",
+                Some(&request.target),
+            )?;
+            for session in sessions.directory_sessions(&directory)? {
+                if !["finished", "failed"].contains(&session.state.as_str()) {
+                    sessions.stop(&session.id.to_string(), request.parent_session_id)?;
+                }
+            }
+            Ok(json!({}))
+        })
+        .await?;
+        if delete {
+            off_lock(move || {
+                if !is_scratch_directory(&removed_directory)? {
+                    return Err(Error::InvalidRequest(
+                        "The directory is outside the scratch root.",
+                    ));
+                }
+                fs::remove_dir_all(removed_directory)?;
+                Ok(())
+            })
+            .await?;
+        }
+        return Ok(Json(response));
+    }
     let plan = api::call(store.clone(), move |sessions| {
         sessions.begin_remove(request)
     })
@@ -456,9 +527,7 @@ impl Sessions {
             );
         }
         if session.is_none()
-            && workspace_path(&request.target).is_err()
-            && let Ok(directory) = Path::new(&request.target).canonicalize()
-            && directory.is_dir()
+            && let Some(directory) = directory_path(&request.target)
         {
             let sessions = self.directory_sessions(&directory)?;
             return self.open_directory(&directory, sessions, request.parent_session_id);

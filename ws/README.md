@@ -9,8 +9,11 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws new --scratch [--agent claude|codex|grok] [--detach]` starts a session in `$WS_HOME/scratch/<ulid8>`.
 - `ws new --cwd <dir> [--agent claude|codex|grok] [--detach]` starts a session in an existing directory.
 - `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
-- `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace or session.
+- `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace, directory place or session.
 - `ws list [--json]`, `ws pin <workspace|path>` and `ws rm [<workspace|path>]` manage registered workspaces.
+- `ws rm <dir>` stops the sessions of a directory place and closes their windows. It preserves files outside `$WS_HOME/scratch/`.
+- Removal of a scratch directory always requires confirmation, including with `--force`. `--interactive` also confirms removal of other places.
+- `ws pin <dir>` rejects directory places. Pins apply only to workspaces.
 - `ws merge` merges the workspace PR through `gh`, then offers to remove the worktree and branch.
 - `ws claude|codex|grok [args]` starts a tracked agent in the current workspace window.
 - `ws sessions [<id>|<name>] [--json]`, `ws whoami [--json]`, `ws name <label>` and `ws show <target> [--json]` manage session identity.
@@ -26,7 +29,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws mcp` serves local stdio MCP tools. Agent launches configure this server without changing Claude or Codex configuration files.
 - `ws backend rust` imports any remaining legacy records. Rust is the only backend.
 
-The picker uses fzf. Enter opens a workspace. Ctrl-N creates a Claude workspace, Ctrl-O uses Codex, and Ctrl-R uses Grok.
+The picker uses fzf. Enter opens a workspace or directory place. Ctrl-N creates a Claude workspace, Ctrl-O uses Codex, and Ctrl-R uses Grok.
 Ctrl-A adds Claude, Ctrl-T adds Codex, and Ctrl-V adds Grok. Ctrl-S shows sessions, Ctrl-P changes pins, and Ctrl-X removes workspaces.
 The tmux bindings include `prefix+w` for the picker and `prefix+M` for merge.
 Agent starts use permission bypass flags.
