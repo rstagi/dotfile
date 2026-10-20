@@ -61,7 +61,7 @@ async fn spawn(
     }
     let metadata = serde_json::to_value(&request).map_err(|error| ApiError(Error::Json(error)))?;
     let session = supervisor::launch(
-        store,
+        store.clone(),
         CreateHeadless {
             headless: true,
             command: request.phase.command,
@@ -74,6 +74,16 @@ async fn spawn(
         },
         metadata,
     )
+    .await?;
+    let id = session.id;
+    let repo = serde_json::json!({"path": session.cwd, "base": request.base});
+    let session = crate::api::call(store, move |sessions| {
+        sessions.append(id, "session.repo_attached", repo)?;
+        // Keep the launch snapshot when the process exits before this append.
+        let mut session = session;
+        session.repos = sessions.get_record(&id.to_string())?.repos;
+        Ok(session)
+    })
     .await?;
     Ok((StatusCode::CREATED, Json(session.into())))
 }

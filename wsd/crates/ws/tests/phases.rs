@@ -67,7 +67,20 @@ fn phase_worktree_is_detached_hidden_from_list_and_removed_on_stop() {
             .entries(id)
             .iter()
             .any(|entry| entry.event_type == "phase.worktree"
-                && entry.body["path"] == path.to_str().unwrap())
+                && entry.body["path"] == path.to_str().unwrap()
+                && entry.body["repo"] == repo.canonicalize().unwrap().to_str().unwrap())
+    );
+    let sessions = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args(["sessions", id, "--json"])
+        .output()
+        .unwrap();
+    assert!(sessions.status.success(), "{sessions:?}");
+    let sessions: Value = serde_json::from_slice(&sessions.stdout).unwrap();
+    assert_eq!(
+        sessions[0]["repos"],
+        json!([
+            {"path": path, "base": "HEAD"}
+        ])
     );
     let list = common::ws(sandbox.home.path(), &sandbox.socket)
         .env("WS_SESSION_ID", id)
@@ -295,6 +308,18 @@ fn phase_spawn_runs_a_local_child_and_records_its_parent_and_phase_context() {
     assert_eq!(child["body"]["phase"], request["phase"]);
     assert_eq!(child["body"]["base"], "main");
     assert_eq!(child["body"]["caps_required"], json!([]));
+    let listed = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args(["sessions", id, "--json"])
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        listed[0]["repos"],
+        json!([
+            {"path": sandbox.home.path().canonicalize().unwrap(), "base": "main"}
+        ])
+    );
     let stdout = fs::read_to_string(
         sandbox
             .home
