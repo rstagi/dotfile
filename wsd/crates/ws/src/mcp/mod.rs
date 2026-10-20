@@ -147,13 +147,36 @@ impl Control {
                     })?
                 } else {
                     if !request.command.is_empty()
-                        || request.cwd.is_some()
                         || !request.env.is_empty()
                         || request.stdin.is_some()
                         || request.stdout.is_some()
                         || request.stderr.is_some()
                     {
                         return Err("Set headless to true to create a process.".into());
+                    }
+                    if let Some(cwd) = request.cwd {
+                        if request.workspace_id.is_some() {
+                            return Err(
+                                "Use either cwd or workspace_id for an interactive session.".into(),
+                            );
+                        }
+                        let launched = self
+                            .request(
+                                Method::POST,
+                                "/v1/sessions/start",
+                                Some(json!({
+                                    "cwd":std::env::current_dir()?.join(cwd),
+                                    "name":request.name,
+                                    "agent":"claude"
+                                })),
+                            )
+                            .await?;
+                        let id = launched["session_id"]
+                            .as_str()
+                            .ok_or("The daemon did not return a session id.")?;
+                        return self
+                            .request(Method::GET, &self.session_path(id)?, None)
+                            .await;
                     }
                     json!({"name":request.name,"workspace_id":request.workspace_id})
                 };
@@ -259,7 +282,7 @@ fn tools() -> Vec<Tool> {
         ),
         tool::<Create>(
             "session_create",
-            "Create a registered session or a headless process.",
+            "Create a registered session or a headless process. Set cwd to start an interactive Claude session in a directory.",
         ),
         tool::<Send>("session_send", "Queue a message for a session."),
         tool::<Wait>("wait", "Wait for a session state or event."),

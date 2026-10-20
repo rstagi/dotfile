@@ -170,6 +170,7 @@ pub(super) fn import(
             template: record.template.clone(),
             agent: (record.action == "spawn").then(|| record.agent.clone()),
             workspace,
+            cwd: None,
             spawned_session,
             event_offsets: offsets,
             edges,

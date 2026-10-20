@@ -23,6 +23,7 @@ pub struct Create {
     pub headless: bool,
     #[serde(default)]
     pub command: Vec<String>,
+    /// Start an interactive Claude session in this directory, or set the headless process directory.
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
