@@ -10,6 +10,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws new --cwd <dir> [--agent claude|codex|grok] [--detach]` starts a session in an existing directory.
 - `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
 - `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace, directory place or session.
+- If every session of a directory ended, `ws open <dir>` resumes its most recent session.
 - `ws list [--json]`, `ws pin <workspace|path>` and `ws rm [<workspace|path>]` manage registered workspaces.
 - `ws rm <dir>` stops the sessions of a directory place and closes their windows. It preserves files outside `$WS_HOME/scratch/`.
 - Removal of a scratch directory always requires confirmation, including with `--force`. `--interactive` also confirms removal of other places.

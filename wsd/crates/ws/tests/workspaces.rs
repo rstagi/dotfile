@@ -213,6 +213,122 @@ fn pin_rejects_directory_places_with_a_clear_error() {
 }
 
 #[test]
+fn rm_directory_closes_windows_of_finished_sessions() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("notes");
+    std::fs::create_dir(&directory).unwrap();
+    assert!(
+        sandbox
+            .output(&["new", "--cwd", directory.to_str().unwrap(), "--detach"])
+            .status
+            .success()
+    );
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let id = sessions[0]["id"].as_str().unwrap();
+    let output = sandbox
+        .command()
+        .env("WS_SESSION_ID", id)
+        .args(["done"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        sandbox.json(&["sessions", "--json"])[0]["state"],
+        "finished"
+    );
+    assert!(
+        sandbox
+            .tmux(&["list-windows", "-a", "-F", "#{@ws_session}"])
+            .lines()
+            .any(|window| window == id)
+    );
+    let output = sandbox.output(&["rm", directory.to_str().unwrap()]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !sandbox
+            .tmux(&["list-windows", "-a", "-F", "#{@ws_session}"])
+            .lines()
+            .any(|window| window == id)
+    );
+    assert!(directory.is_dir());
+}
+
+#[test]
+fn directory_removal_preserves_the_scratch_root_siblings_and_symlink_targets() {
+    let sandbox = Sandbox::new();
+    let scratch = sandbox.home.path().join(".ws/scratch");
+    let sibling = sandbox.home.path().join(".ws/scratch-other");
+    let external = sandbox.home.path().join("external");
+    for directory in [&scratch, &sibling, &external] {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(directory.join("keep"), "preserve this file").unwrap();
+    }
+    let link = scratch.join("external-link");
+    std::os::unix::fs::symlink(&external, &link).unwrap();
+    for target in [&sibling, &link, &scratch] {
+        let response = common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/workspaces/remove",
+            &serde_json::json!({"target": target, "confirmed": true, "force": true}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        for directory in [&scratch, &sibling, &external] {
+            assert_eq!(
+                std::fs::read_to_string(directory.join("keep")).unwrap(),
+                "preserve this file"
+            );
+        }
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+}
+
+#[test]
+fn open_directory_session_by_id_reopens_a_stopped_record() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("notes");
+    std::fs::create_dir(&directory).unwrap();
+    assert!(
+        sandbox
+            .output(&["new", "--cwd", directory.to_str().unwrap(), "--detach"])
+            .status
+            .success()
+    );
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let id = sessions[0]["id"].as_str().unwrap();
+    assert!(sandbox.output(&["session", "stop", id]).status.success());
+    let output = sandbox.output(&["open", id, "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let after = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(after.as_array().unwrap().len(), 1);
+    assert_eq!(after[0]["id"], id);
+    assert_eq!(after[0]["state"], "running");
+    assert!(after[0]["workspace_id"].is_null());
+}
+
+#[test]
+fn open_directory_restores_a_session_after_an_explicit_stop() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("notes");
+    std::fs::create_dir(&directory).unwrap();
+    assert!(
+        sandbox
+            .output(&["new", "--cwd", directory.to_str().unwrap(), "--detach"])
+            .status
+            .success()
+    );
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let id = sessions[0]["id"].as_str().unwrap();
+    assert!(sandbox.output(&["session", "stop", id]).status.success());
+    let output = sandbox.output(&["open", directory.to_str().unwrap(), "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let after = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(after.as_array().unwrap().len(), 1);
+    assert_eq!(after[0]["id"], id);
+    assert_eq!(after[0]["state"], "running");
+}
+
+#[test]
 fn new_scratch_starts_a_codex_session_without_a_workspace() {
     let sandbox = Sandbox::new();
     let output = sandbox.output(&["new", "--scratch", "--agent", "codex", "--detach"]);

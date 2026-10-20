@@ -443,11 +443,6 @@ async fn remove(
 ) -> std::result::Result<Json<Value>, ApiError> {
     if let Some(directory) = directory_path(&request.target) {
         let delete = is_scratch_directory(&directory).map_err(ApiError)?;
-        if delete && !request.confirmed {
-            return Err(ApiError(Error::InvalidRequest(
-                "Confirm the removal of the scratch directory before deleting it.",
-            )));
-        }
         let removed_directory = directory.clone();
         let response = api::call(store, move |sessions| {
             sessions.record_call(
@@ -455,9 +450,16 @@ async fn remove(
                 "workspace.remove",
                 Some(&request.target),
             )?;
+            if delete && !request.confirmed {
+                return Err(Error::InvalidRequest(
+                    "Confirm the removal of the scratch directory before deleting it.",
+                ));
+            }
             for session in sessions.directory_sessions(&directory)? {
                 if !["finished", "failed"].contains(&session.state.as_str()) {
                     sessions.stop(&session.id.to_string(), request.parent_session_id)?;
+                } else {
+                    sessions.finish_spawned_session(&session)?;
                 }
             }
             Ok(json!({}))
@@ -529,7 +531,17 @@ impl Sessions {
         if session.is_none()
             && let Some(directory) = directory_path(&request.target)
         {
-            let sessions = self.directory_sessions(&directory)?;
+            let mut sessions = self.directory_sessions(&directory)?;
+            let active =
+                |session: &Session| !["finished", "failed"].contains(&session.state.as_str());
+            if sessions.iter().any(active) {
+                sessions.retain(active);
+            } else {
+                sessions.sort_by_key(|session| {
+                    std::cmp::Reverse((session.updated_at_ms, session.alias))
+                });
+                sessions.truncate(1);
+            }
             return self.open_directory(&directory, sessions, request.parent_session_id);
         }
         let workspace = if let Some(session) = &session {
@@ -648,10 +660,7 @@ impl Sessions {
             }
         }
         let mut first = None;
-        for session in sessions
-            .into_iter()
-            .filter(|session| !["finished", "failed"].contains(&session.state.as_str()))
-        {
+        for session in sessions {
             let window = self.start_place_agent(
                 Place::Directory {
                     directory: directory.to_owned(),
