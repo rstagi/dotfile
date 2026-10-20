@@ -204,9 +204,9 @@ enum Command {
     Daemon,
     /// Show the daemon version and uptime.
     Ping,
-    /// Start a session in a workspace or a scratch directory.
+    /// Start a session in a workspace, an existing directory or a scratch directory.
     New(cmd::new::Options),
-    /// Add a session to a workspace.
+    /// Add a session to a workspace or an existing directory.
     Add {
         target: Option<String>,
         #[arg(long, default_value = "claude")]

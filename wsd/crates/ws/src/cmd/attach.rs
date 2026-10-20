@@ -10,6 +10,7 @@ pub async fn run(socket: &Path) -> Result<ExitCode> {
                 repo: None,
                 branch: None,
                 scratch: false,
+                cwd: None,
                 agent: "claude".into(),
                 detach: false,
             },

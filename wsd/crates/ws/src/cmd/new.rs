@@ -9,6 +9,10 @@ pub struct Options {
     pub repo: Option<String>,
     #[arg(long)]
     pub branch: Option<String>,
+    /// Start in an existing directory.
+    #[arg(long, conflicts_with_all = ["repo", "branch", "scratch"])]
+    pub cwd: Option<String>,
+    /// Start in a new scratch directory.
     #[arg(long, conflicts_with_all = ["repo", "branch"])]
     pub scratch: bool,
     #[arg(long, default_value = "claude")]
@@ -22,19 +26,45 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
         repo,
         branch,
         scratch,
+        cwd,
         agent,
         detach,
     } = options;
     if scratch {
         return start_directory(socket, json!({"scratch": true}), agent, detach).await;
     }
+    if let Some(cwd) = cwd {
+        let cwd = expand_home(&cwd)?
+            .canonicalize()
+            .map_err(|_| format!("Cannot resolve the directory: {cwd}"))?;
+        return start_directory(socket, json!({"cwd": cwd}), agent, detach).await;
+    }
     let repo = match repo {
-        Some(repo) => expand_home(&repo)?,
+        Some(repo) => Some(expand_home(&repo)?),
         None => pick_repo()?,
+    };
+    let Some(repo) = repo else {
+        if branch.is_some() {
+            return Err("Use --branch with a git repository.".into());
+        }
+        return start_directory(socket, json!({"scratch": true}), agent, detach).await;
     };
     let repo = repo
         .canonicalize()
         .map_err(|_| format!("not a git repo: {}", repo.display()))?;
+    if !std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()?
+        .status
+        .success()
+    {
+        if branch.is_some() {
+            return Err("Use --branch with a git repository.".into());
+        }
+        return start_directory(socket, json!({"cwd": repo}), agent, detach).await;
+    }
     let branch = match branch {
         Some(branch) => branch,
         None => {
@@ -74,28 +104,13 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
     )
 }
 
-async fn start_directory(
-    socket: &Path,
-    mut body: serde_json::Value,
-    agent: String,
-    detach: bool,
-) -> Result<()> {
-    body["agent"] = json!(agent);
-    body["parent_session_id"] = json!(super::caller(socket).await?);
-    let response = client::request(
-        socket,
-        Method::POST,
-        "/v1/sessions/start",
-        serde_json::to_vec(&body)?,
-    )
-    .await?;
-    let response: serde_json::Value = serde_json::from_slice(&response)?;
-    focus(
-        response["window_id"]
-            .as_str()
-            .ok_or("The session response has no window id.")?,
-        detach,
-    )
+pub(super) fn expand_home(path: &str) -> Result<std::path::PathBuf> {
+    if path == "~" || path.starts_with("~/") {
+        let home = std::env::var_os("HOME").ok_or("Set HOME to expand a repository path.")?;
+        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
+    } else {
+        Ok(path.into())
+    }
 }
 
 pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
@@ -128,16 +143,31 @@ pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
     Ok(())
 }
 
-fn expand_home(path: &str) -> Result<std::path::PathBuf> {
-    if path == "~" || path.starts_with("~/") {
-        let home = std::env::var_os("HOME").ok_or("Set HOME to expand a repository path.")?;
-        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
-    } else {
-        Ok(path.into())
-    }
+async fn start_directory(
+    socket: &Path,
+    mut body: serde_json::Value,
+    agent: String,
+    detach: bool,
+) -> Result<()> {
+    body["agent"] = json!(agent);
+    body["parent_session_id"] = json!(super::caller(socket).await?);
+    let response = client::request(
+        socket,
+        Method::POST,
+        "/v1/sessions/start",
+        serde_json::to_vec(&body)?,
+    )
+    .await?;
+    let response: serde_json::Value = serde_json::from_slice(&response)?;
+    focus(
+        response["window_id"]
+            .as_str()
+            .ok_or("The session response has no window id.")?,
+        detach,
+    )
 }
 
-fn pick_repo() -> Result<std::path::PathBuf> {
+fn pick_repo() -> Result<Option<std::path::PathBuf>> {
     use std::{
         env,
         io::Write,
@@ -202,6 +232,7 @@ fn pick_repo() -> Result<std::path::PathBuf> {
         .map_err(|_| "fzf not installed (or pass --repo)")?;
     let written = (|| -> std::io::Result<()> {
         let mut input = child.stdin.take().unwrap();
+        writeln!(input, "scratch")?;
         for path in candidates {
             writeln!(input, "{}", path.display())?;
         }
@@ -215,7 +246,11 @@ fn pick_repo() -> Result<std::path::PathBuf> {
         .last()
         .filter(|line| !line.is_empty())
         .ok_or("new: repository selection is empty")?;
-    expand_home(selected)
+    if selected == "scratch" {
+        Ok(None)
+    } else {
+        Ok(Some(expand_home(selected)?))
+    }
 }
 
 fn scan_repos(root: &Path, depth: usize, candidates: &mut Vec<std::path::PathBuf>) {
