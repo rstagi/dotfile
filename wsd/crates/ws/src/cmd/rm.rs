@@ -15,7 +15,11 @@ pub async fn run(
     interactive: bool,
 ) -> Result<()> {
     let target = super::open::normalize_target(target)?;
-    let directory = ws_daemon::workspaces::directory_path(&target);
+    let directory = ws_daemon::workspaces::directory_path(
+        &target,
+        &client::sessions(socket).await?,
+        &super::list::workspaces(socket).await?,
+    );
     let scratch = match &directory {
         Some(directory) => ws_daemon::workspaces::is_scratch_directory(directory)?,
         None => false,

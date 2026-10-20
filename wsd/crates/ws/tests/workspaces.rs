@@ -329,6 +329,63 @@ fn open_directory_restores_a_session_after_an_explicit_stop() {
 }
 
 #[test]
+fn directory_place_in_an_unregistered_worktree_keeps_its_directory_semantics() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api");
+    let directory = sandbox.home.path().join("worktrees/api/notes");
+    std::fs::create_dir_all(directory.parent().unwrap()).unwrap();
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-qb",
+            "notes",
+            directory.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        sandbox
+            .output(&["new", "--cwd", directory.to_str().unwrap(), "--detach"])
+            .status
+            .success()
+    );
+    let before = sandbox.json(&["sessions", "--json"]);
+    let id = before[0]["id"].as_str().unwrap();
+    assert!(sandbox.output(&["session", "stop", id]).status.success());
+    let output = sandbox.output(&["open", directory.to_str().unwrap(), "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let output = sandbox.output(&["pin", directory.to_str().unwrap()]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("Pins for directory places are not supported.")
+    );
+    let output = sandbox.tty_output(
+        sandbox.command(),
+        &["rm", directory.to_str().unwrap(), "--interactive"],
+        "? [",
+        "y",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(directory.join(".gitignore").is_file());
+    assert_eq!(
+        sandbox.json(&["sessions", "--json"])[0]["state"],
+        "finished"
+    );
+}
+
+#[test]
 fn new_scratch_starts_a_codex_session_without_a_workspace() {
     let sandbox = Sandbox::new();
     let output = sandbox.output(&["new", "--scratch", "--agent", "codex", "--detach"]);

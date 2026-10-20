@@ -122,15 +122,30 @@ pub fn workspace_path(target: &str) -> Result<(String, PathBuf)> {
     Ok((name, wt))
 }
 
-/// Resolves an existing directory that is not a workspace.
-pub fn directory_path(target: &str) -> Option<PathBuf> {
-    if workspace_path(target).is_ok() {
-        return None;
-    }
-    Path::new(target)
+/// Resolves a directory place. Registered workspaces keep their existing behavior.
+pub fn directory_path(
+    target: &str,
+    sessions: &[Session],
+    workspaces: &[Workspace],
+) -> Option<PathBuf> {
+    let directory = Path::new(target)
         .canonicalize()
         .ok()
-        .filter(|path| path.is_dir())
+        .filter(|path| path.is_dir())?;
+    let same_path = |path: &str| Path::new(path).canonicalize().ok().as_ref() == Some(&directory);
+    if workspaces
+        .iter()
+        .any(|workspace| workspace.body["path"].as_str().is_some_and(same_path))
+        || (workspace_path(target).is_ok()
+            && !sessions.iter().any(|session| {
+                session.workspace_id.is_none()
+                    && session.body["agent"].is_string()
+                    && session.cwd.as_deref().is_some_and(same_path)
+            }))
+    {
+        return None;
+    }
+    Some(directory)
 }
 
 /// Checks the resolved path against the scratch root. The root itself is excluded.
@@ -415,7 +430,7 @@ async fn pin(
             "workspace.pin",
             Some(&request.target),
         )?;
-        if directory_path(&request.target).is_some() {
+        if sessions.directory_place(&request.target)?.is_some() {
             return Err(Error::InvalidRequest(
                 "Pins for directory places are not supported.",
             ));
@@ -441,7 +456,12 @@ async fn remove(
     State(store): State<Store>,
     Json(request): Json<RemoveWorkspace>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    if let Some(directory) = directory_path(&request.target) {
+    let target = request.target.clone();
+    let directory = api::call(store.clone(), move |sessions| {
+        sessions.directory_place(&target)
+    })
+    .await?;
+    if let Some(directory) = directory {
         let delete = is_scratch_directory(&directory).map_err(ApiError)?;
         let removed_directory = directory.clone();
         let response = api::call(store, move |sessions| {
@@ -529,7 +549,7 @@ impl Sessions {
             );
         }
         if session.is_none()
-            && let Some(directory) = directory_path(&request.target)
+            && let Some(directory) = self.directory_place(&request.target)?
         {
             let mut sessions = self.directory_sessions(&directory)?;
             let active =
@@ -616,6 +636,14 @@ impl Sessions {
             Some(window) => Ok(window.clone()),
             None => self.start_workspace(&workspace.id, wt, "claude", request.parent_session_id),
         }
+    }
+
+    fn directory_place(&self, target: &str) -> Result<Option<PathBuf>> {
+        Ok(directory_path(
+            target,
+            &self.registry.sessions()?,
+            &self.registry.workspaces()?,
+        ))
     }
 
     fn directory_sessions(&self, directory: &Path) -> Result<Vec<Session>> {
