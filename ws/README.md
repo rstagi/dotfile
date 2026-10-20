@@ -6,6 +6,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 
 - A workspace combines a git worktree and a tmux session. Each interactive agent uses a window in that session.
 - `ws new [--repo <path>] [--branch <branch>] [--agent claude|codex|grok] [--detach]` creates a workspace.
+- `ws new --scratch [--agent claude|codex|grok] [--detach]` starts a session in `$WS_HOME/scratch/<ulid8>`.
 - `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
 - `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace or session.
 - `ws list [--json]`, `ws pin <workspace|path>` and `ws rm [<workspace|path>]` manage registered workspaces.

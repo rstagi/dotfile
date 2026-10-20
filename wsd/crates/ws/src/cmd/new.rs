@@ -3,13 +3,31 @@ use hyper::Method;
 use serde_json::json;
 use std::path::Path;
 
-pub async fn run(
-    socket: &Path,
-    repo: Option<String>,
-    branch: Option<String>,
-    agent: String,
-    detach: bool,
-) -> Result<()> {
+#[derive(clap::Args)]
+pub struct Options {
+    #[arg(long)]
+    pub repo: Option<String>,
+    #[arg(long)]
+    pub branch: Option<String>,
+    #[arg(long, conflicts_with_all = ["repo", "branch"])]
+    pub scratch: bool,
+    #[arg(long, default_value = "claude")]
+    pub agent: String,
+    #[arg(long)]
+    pub detach: bool,
+}
+
+pub async fn run(socket: &Path, options: Options) -> Result<()> {
+    let Options {
+        repo,
+        branch,
+        scratch,
+        agent,
+        detach,
+    } = options;
+    if scratch {
+        return start_directory(socket, json!({"scratch": true}), agent, detach).await;
+    }
     let repo = match repo {
         Some(repo) => expand_home(&repo)?,
         None => pick_repo()?,
@@ -52,6 +70,30 @@ pub async fn run(
         response["window_id"]
             .as_str()
             .ok_or("The workspace response has no window id.")?,
+        detach,
+    )
+}
+
+async fn start_directory(
+    socket: &Path,
+    mut body: serde_json::Value,
+    agent: String,
+    detach: bool,
+) -> Result<()> {
+    body["agent"] = json!(agent);
+    body["parent_session_id"] = json!(super::caller(socket).await?);
+    let response = client::request(
+        socket,
+        Method::POST,
+        "/v1/sessions/start",
+        serde_json::to_vec(&body)?,
+    )
+    .await?;
+    let response: serde_json::Value = serde_json::from_slice(&response)?;
+    focus(
+        response["window_id"]
+            .as_str()
+            .ok_or("The session response has no window id.")?,
         detach,
     )
 }

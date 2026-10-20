@@ -14,6 +14,36 @@ struct Sandbox {
 }
 
 #[test]
+fn new_scratch_starts_a_codex_session_without_a_workspace() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.output(&["new", "--scratch", "--agent", "codex", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(sessions.as_array().unwrap().len(), 1);
+    let session = &sessions[0];
+    assert!(session["workspace_id"].is_null());
+    assert_eq!(session["body"]["agent"], "codex");
+    let cwd = Path::new(session["cwd"].as_str().unwrap());
+    assert_eq!(
+        cwd.parent().unwrap(),
+        sandbox
+            .home
+            .path()
+            .join(".ws/scratch")
+            .canonicalize()
+            .unwrap()
+    );
+    assert!(cwd.is_dir());
+    let windows = sandbox.tmux(&["list-windows", "-a", "-F", "#{@ws_session}\t#{@ws_path}"]);
+    assert!(
+        windows
+            .lines()
+            .any(|line| line == format!("{}\t{}", session["id"].as_str().unwrap(), cwd.display()))
+    );
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+}
+
+#[test]
 fn explicit_open_and_remove_accept_worktrees_that_have_no_registry_row() {
     let sandbox = Sandbox::new();
     let repo = sandbox.repo("api");
