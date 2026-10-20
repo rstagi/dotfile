@@ -200,7 +200,7 @@ function json(value) {
 
 // Escape first, then turn `code` spans into <code>. Escaped text has no "<", so the only
 // markup in the result is the markup added here.
-function inline(text) {
+export function inline(text) {
   return esc(text).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\n/g, "<br>");
 }
 
@@ -212,6 +212,6 @@ function clip(text, max) {
   return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
-function href(url) {
+export function href(url) {
   return /^https?:\/\//i.test(url) ? esc(url) : "#";
 }

@@ -151,6 +151,49 @@ What makes a comment land:
 - **Quote their own docs and ADRs back.** The strongest findings are where the code contradicts a contract the author wrote.
 - Strip an em-dash out of a quoted error string rather than reproducing it; truncate with `...` instead.
 
+## Step 4: Visual checkpoint (`visual-explainer` ship page, screenshots and video)
+
+Make the visual review after the written report and before the post. The user reads this page to understand the PR: the verdict and the TL;DR, the Done when table, the changes in reading order, the findings by severity, the hand test and the rollback. Do this step also when you post nothing to GitHub. It does not change the review behavior above.
+
+**Output location.** Use `pr-review-output/<repo>-<pr>/` under the directory where the session started. Do not use the review worktree or the tracked files of the PR.
+
+```
+pr-review-output/<repo>-<pr>/
+  props.json     # the ship props that you write
+  narration.json # the voiceover text that you write
+  index.html     # the report page that visual-explainer renders
+  graph.html     # the concept graph of the same props
+  shots/*.png    # the screenshots of the page sections
+  video.mp4      # the narrated explainer video
+  preview.gif    # the short preview of the video
+  link.txt       # the artifact URL or the absolute path of index.html
+```
+
+**Never commit, push or add these outputs to the PR branch.** When the session directory is a clone of the repository, keep `pr-review-output/` untracked. Add it to `.git/info/exclude`, not to `.gitignore`.
+
+Run the `visual-explainer` skill in `ship` mode with this output directory. Write the props from this review:
+
+- `meta`: a title of 2 to 4 words, for example `PR 123 review`. Put the PR title and the repository in `subtitle`. Put the branch in `meta.facts`. Add the PR link to `links`.
+- `stats`: the files, additions and deletions of the PR diff (`gh pr view <n> --json files,additions,deletions`).
+- `summary`: what the PR does and how it does it.
+- `tldr`: `changed` is what the PR does in one or two sentences. `lookFirst` is the file or the module with the most important logic. `risk` is the risk level and the reason.
+- `changes`: the groups of the change in reading order: the order in which a reviewer reads the PR. Each group has `area`, `how`, `why` and its `files` with their additions and deletions. Give a `sequence` to the one group where the interactions between components changed. No other group gets a diagram.
+- `delivered`: one row for each claim of the PR description or of its linked issue. Use the Step 1 result as the evidence.
+- `deviations`: each difference between the PR description and the observed behavior. Use an empty array when there is none.
+- `process` and `setbacks`: optional. Take them from the review rounds, the fix rounds and the CI failures of the PR. Count only what the PR shows. Omit both fields when the PR shows no process cost. Do not write a retro file outside a Loop run.
+- `reviews`: one entry with `repository`, `pr`, `head` (the reviewed SHA) and `verdict`. The verdict is the event that you will post, or `COMMENT` when you post nothing. Put the verdict sentence and the footprint in `summary`. Put the Step 1 commands in `validation`.
+- `reviews[0].findings`: each Blocking item and each Deferred item. For a Blocking item, set `severity` to `blocker` and `status` to `open`, and start `title` with its category. For a Deferred item, set `severity` to `minor` and `status` to `deferred`. Put the file and the line in `location`. Put the mechanism and the evidence in `detail`. Put the fix or the follow-up in `fix`.
+- `reviews[0].split`: the stacked-PR split proposal, or `No split recommended.`
+- `handTest`: the commands that exercise the change, in order. Give each command a `path:line` reference in the PR head.
+- `rollback`: the steps that undo the merge, for example `git revert -m1 <merge-sha>`. Add any data or configuration undo.
+- `media`: optional screenshots of the changed behavior that you captured in Step 1, for example a UI state or a terminal output. Give each one a caption and the `change` area that it shows.
+
+Use the writing rules of the report: be concise, and use no em-dashes or en-dashes.
+
+**Video.** Write `narration.json` as the skill tells you. The narration explains what the PR does, how it does it, the findings and the hand test in 45 to 180 seconds. It does not read the page aloud. The skill renders the page, the screenshots, the video and the preview. Do not build a Remotion project by hand. When `ffprobe` is available, check that the video has an audio stream. When the video fails, keep the page without the video.
+
+**Checkpoint.** Publish the page as the skill tells you. Then show the user the page link, the video result and the review preview of the next section in one message. Wait for the approval before you post. When the render fails, keep the written report, state the failure and continue to the post.
+
 ## Posting to GitHub
 
 Default to one GitHub review with `event: "COMMENT"`. Put each Blocking item in an inline review comment on the relevant diff line. Do not repeat Blocking items in the overall body. Put the Deferred items only in the overall body, so that the author does not fix them in this PR.
@@ -161,9 +204,18 @@ The overall review body must be concise and contain:
 - the validation result,
 - the footprint, and the split proposal or `No split recommended.`,
 - the Deferred list, with a `path:line` for each item,
+- the media block of Step 4, when the page rendered,
 - and `:)` as its final characters.
 
-**Always show a preview and wait for approval before posting.** Print the review body, then each comment with its `path:line`. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
+**Media block.** Upload the screenshots, the preview and the video of Step 4 to the `explainer-media` branch of the repository, and get the Markdown block:
+
+```bash
+node <visual-explainer>/scripts/gh-media.mjs --repo <owner>/<repo> --key pr-<n> --dir pr-review-output/<repo>-<pr> --url "$(cat pr-review-output/<repo>-<pr>/link.txt)"
+```
+
+`<visual-explainer>` is the directory of the `visual-explainer` skill. For the preview, add `--dry-run`: the command uploads nothing and prints the same block. Upload only after the approval. Put the printed block in the review body before `:)`. Omit `--url` when `link.txt` holds a local path. The block shows the header and the TL;DR screenshots, the video preview with a link to the video, and the other sections in a collapsed list. When the command fails, post the review without the block and state the failure.
+
+**Always show a preview and wait for approval before posting.** Step 4 is that checkpoint. Print the review body, then each comment with its `path:line`. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
 
 Getting the line anchors right, which is the part that bites:
 
@@ -187,45 +239,6 @@ gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input review.jso
 
 Use `APPROVE` or `REQUEST_CHANGES` only when the user tells you to. The merge decision belongs to the user. When the user tells you to post the verdict as the event, use `APPROVE` for `Approve` and `REQUEST_CHANGES` for `Request changes`. Never post an event that does not agree with the verdict. Pin `commit_id` to the head SHA that you reviewed. After the post, read the posted comments again. Check that the review has the state that you intended.
 
-## Step 4: Visual report (`visual-explainer` ship page and video)
-
-Make a visual report after the written report. Do this also when you post nothing to GitHub. This step adds one deliverable. It does not change the review behavior above.
-
-**Output location.** Use `pr-review-output/<repo>-<pr>/` under the directory where the session started. Do not use the review worktree or the tracked files of the PR.
-
-```
-pr-review-output/<repo>-<pr>/
-  props.json     # the ship props that you write
-  narration.json # the voiceover text that you write
-  index.html     # the page that visual-explainer renders, with the video in a drawer
-  video.mp4      # the narrated explainer video that render-video.mjs renders
-  link.txt       # the artifact URL or the absolute path of index.html
-```
-
-**Never commit, push or add these outputs to the PR branch.** When the session directory is a clone of the repository, keep `pr-review-output/` untracked. Add it to `.git/info/exclude`, not to `.gitignore`.
-
-Run the `visual-explainer` skill in `ship` mode with this output directory. Write the props from this review:
-
-- `meta`: a title of 2 to 4 words, for example `PR 123 review`. Put the PR title and the repository in `subtitle`. Add the PR link to `links`.
-- `summary`: what the PR does and how it does it.
-- `changes`: the key files or modules, each with how and why. This field is optional.
-- `delivered`: one row for each claim of the PR description or of its linked issue. Use the Step 1 result as the evidence.
-- `deviations`: each difference between the PR description and the observed behavior. Use an empty array when there is none.
-- `process` and `setbacks`: optional. Take them from the review rounds, the fix rounds and the CI failures of the PR. Count only what the PR shows. Omit both fields when the PR shows no process cost. Do not write a retro file outside a Loop run.
-- `reviews`: one entry with `repository`, `pr`, `head` (the reviewed SHA) and `verdict`. The verdict is the posted event, or `COMMENT` when you post nothing. Put the verdict sentence and the footprint in `summary`. Put the Step 1 commands in `validation`.
-- `reviews[0].findings`: each Blocking item and each Deferred item. For a Blocking item, set `severity` to `blocker` and `status` to `open`, and start `title` with its category. For a Deferred item, set `severity` to `minor` and `status` to `deferred`. Put the file and the line in `location`. Put the mechanism and the evidence in `detail`. Put the fix or the follow-up in `fix`.
-- `reviews[0].split`: the stacked-PR split proposal, or `No split recommended.`
-- `handTest`: the commands that exercise the change, in order. Give each command a `path:line` reference in the PR head.
-- `rollback`: the steps that undo the merge, for example `git revert -m1 <merge-sha>`. Add any data or configuration undo.
-
-Use the writing rules of the report: be concise, and use no em-dashes or en-dashes.
-
-**Video.** Write `narration.json` as the skill tells you (its step 4). The narration explains what the PR does, how it does it, the findings and the hand test. It does not read the slides aloud. The skill renders the narrated explainer video from the same props (its step 7). `render-video.mjs` renders `video.mp4` with Remotion, in its cache directory and never in the PR checkout. Then the skill renders the page again with the video, and publishes both. Do not build a Remotion project by hand. When `ffprobe` is available, check that the video has an audio stream. When the video fails, keep the page without the video.
-
-When the render fails, keep the written report and any posted review. State the failure in the final message. A failed video never blocks the page.
-
-Finish with the artifact URL or the absolute paths of `index.html` and `video.mp4`.
-
 ## Headless mode
 
 In `--headless` mode, do not ask questions.
@@ -233,6 +246,7 @@ Do not change the starting checkout.
 Do not run `gh pr checkout`.
 Use the Step 1 block with `git fetch origin pull/<number>/head` and `REVIEW_REF=FETCH_HEAD`.
 Use `ws phase worktree` when `ws ping` succeeds.
+Skip Step 4 unless the prompt asks for it. A headless session has no person to show the checkpoint to.
 Otherwise, use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
 Keep the same shell active until the review ends.
 

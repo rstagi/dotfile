@@ -6,26 +6,189 @@
     "date": "2026-10-18",
     "planId": "loop-ws-v6-local-2026-10-16-210924",
     "milestone": 2,
+    "facts": [
+      { "label": "Branch", "value": "`feat/wsd-local-daemon`" },
+      { "label": "PR", "value": "`rstagi/dotfile#15`" },
+      { "label": "Phases", "value": "35 work + 1 review" },
+      { "label": "Tests", "value": "1013 passed" }
+    ],
     "links": [
       { "label": "PR #15", "url": "https://github.com/rstagi/dotfile/pull/15" },
       { "label": "Final review", "url": "https://github.com/rstagi/dotfile/pull/15#pullrequestreview-5559931758" }
     ]
   },
   "summary": "`ws` runs on a Rust daemon (`wsd`) instead of zsh scripts and lock files. The daemon owns sessions, logs, messages, dependency edges, triggers and a local MCP server. It runs Loop runners as ws sessions. Command names, flags, output and exit codes stay the same. `ws backend zsh` is the way back. 35 work phases and 1 review phase. 186 files, +33858/-749. The ws shell suite: 1013 tests passed.",
+  "tldr": {
+    "changed": "`ws` runs on one Rust daemon, `wsd`, instead of zsh scripts and lock files. Commands, flags, output and exit codes stay the same.",
+    "lookFirst": "Change 6, Messages: delivery moved from the file inbox to log events with acknowledgement.",
+    "risk": "medium; `ws backend zsh` switches back while the daemon runs, and 1 major finding (F4) waits for Phase 71."
+  },
+  "stats": { "files": 186, "additions": 33858, "deletions": 749 },
   "changes": [
-    { "area": "One binary", "how": "One `ws` binary: CLI, `ws daemon`, `ws mcp`. Cargo workspace `wsd/`, 3 crates.", "why": "One process owns all state. No shell lock files. Later milestones (telemetry, hub, sync) extend it." },
-    { "area": "Storage", "how": "Append-only, hash-chained log per session. The SQLite registry is a projection that can be rebuilt from the logs.", "why": "The log is the source of truth: replay, audit, later sync between machines. The registry is a disposable index.", "phases": [10, 11] },
-    { "area": "IDs", "how": "ULID per session plus the `#N` alias.", "why": "ULIDs are unique across devices (v6 sync). Aliases keep the user commands.", "phases": [11] },
-    { "area": "Sessions", "how": "Typed lifecycle state machine, tmux driver, headless supervisor with process groups. A daemon restart re-adopts running children.", "why": "Sessions survive a closed terminal and a daemon restart. A stop waits for the real exit.", "phases": [12, 13, 21, 57, 67] },
-    { "area": "Agent launch", "how": "One `prepare` function builds argv, environment and hook files for every Claude, Codex or Grok launch. Loop runners use it through `ws agent prepare`.", "why": "Hooks, MCP and milestone 3 telemetry come from one place.", "phases": [18, 58] },
-    { "area": "Messages", "how": "Log events: sent, delivered, read. Delivery at the agent Stop hook, or by paste when idle, with retries and acknowledgement. A message to a finished session reopens it.", "why": "Confirmed delivery. The order survives a crash. Replaces the file inbox.", "phases": [22, 23, 24, 25] },
-    { "area": "Coordination", "how": "Dependency edges, `ws done`, `ws wait`, `ws on … done --spawn/--send-to` triggers as edge actions in the log.", "why": "Event-driven waits. No lock files.", "phases": [26, 27] },
-    { "area": "MCP", "how": "Local stdio server, 12 tools (`session_*`, `wait`, `loop_*`, `phase_spawn`). Added to each agent launch through flags. Caller identity from `WS_SESSION_ID`. Spawn limits (children, depth).", "why": "Agents drive ws directly. No edits to Claude or Codex config files. The caller cannot be faked.", "phases": [29, 30] },
-    { "area": "Loop", "how": "Runners run as ws headless sessions when wsd answers. Otherwise they launch directly. `ws top`, `ws loop start/stop`. Review worktrees belong to a session and are removed after it.", "why": "Loop runs are visible and controllable in ws. The picker shows no review worktrees.", "phases": [31, 32, 33, 59] },
-    { "area": "Picker", "how": "The fzf picker and tmux bindings read data from Rust commands.", "why": "The picker matches the registry.", "phases": [34, 35] },
-    { "area": "Install", "how": "`./install.sh ws` builds `~/.ws/bin/ws-rs` and installs LaunchAgent `com.rstagi.wsd` with KeepAlive.", "why": "The daemon always runs. launchd restarts it after a crash.", "phases": [36] },
-    { "area": "Cutover", "how": "Backend file `~/.ws/backend` (rust or zsh). Both backends share the alias lock. Import of zsh state. `ws backend zsh` returns to zsh.", "why": "Live state migrates with a safe rollback. Phase 54 removes the zsh code in milestone 3.", "phases": [28, 37, 56, 64] },
-    { "area": "Parity", "how": "Golden tests from the zsh suite, written before each port.", "why": "Habits, scripts and the ws-sessions skill keep working.", "phases": [14, 15, 16, 17] },
+    {
+      "area": "One binary",
+      "how": "One `ws` binary: CLI, `ws daemon`, `ws mcp`. Cargo workspace `wsd/`, 3 crates.",
+      "why": "One process owns all state. No shell lock files. Later milestones (telemetry, hub, sync) extend it.",
+      "files": [
+        { "path": "wsd/crates/ws/src/main.rs", "additions": 380, "deletions": 30 },
+        { "path": "wsd/crates/ws-daemon/src/api.rs", "additions": 865, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/lib.rs", "additions": 78, "deletions": 59 },
+        { "path": "wsd/Cargo.lock", "additions": 1189, "deletions": 13, "note": "3 crates" }
+      ]
+    },
+    {
+      "area": "Storage",
+      "how": "Append-only, hash-chained log per session. The SQLite registry is a projection that can be rebuilt from the logs.",
+      "why": "The log is the source of truth: replay, audit, later sync between machines. The registry is a disposable index.",
+      "phases": [10, 11],
+      "files": [
+        { "path": "wsd/crates/ws-core/src/log.rs", "additions": 648, "deletions": 0 },
+        { "path": "wsd/crates/ws-core/src/registry/mod.rs", "additions": 481, "deletions": 0 },
+        { "path": "wsd/crates/ws-core/src/registry/projection.rs", "additions": 389, "deletions": 0 },
+        { "path": "wsd/crates/ws-core/src/registry/schema.sql", "additions": 47, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "IDs",
+      "how": "ULID per session plus the `#N` alias.",
+      "why": "ULIDs are unique across devices (v6 sync). Aliases keep the user commands.",
+      "phases": [11],
+      "files": [
+        { "path": "wsd/crates/ws-core/src/ids.rs", "additions": 7, "deletions": 0 },
+        { "path": "wsd/crates/ws-core/src/device.rs", "additions": 82, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "Sessions",
+      "how": "Typed lifecycle state machine, tmux driver, headless supervisor with process groups. A daemon restart re-adopts running children.",
+      "why": "Sessions survive a closed terminal and a daemon restart. A stop waits for the real exit.",
+      "phases": [12, 13, 21, 57, 67],
+      "files": [
+        { "path": "wsd/crates/ws-daemon/src/supervisor.rs", "additions": 770, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/tmux.rs", "additions": 454, "deletions": 5 },
+        { "path": "wsd/crates/ws-daemon/src/sessions.rs", "additions": 358, "deletions": 0 },
+        { "path": "wsd/crates/ws-core/src/state.rs", "additions": 101, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "Agent launch",
+      "how": "One `prepare` function builds argv, environment and hook files for every Claude, Codex or Grok launch. Loop runners use it through `ws agent prepare`.",
+      "why": "Hooks, MCP and milestone 3 telemetry come from one place.",
+      "phases": [18, 58],
+      "files": [
+        { "path": "wsd/crates/ws-daemon/src/agents/launch.rs", "additions": 363, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/agents/mod.rs", "additions": 265, "deletions": 0 },
+        { "path": "wsd/crates/ws/src/cmd/agent.rs", "additions": 247, "deletions": 0, "note": "ws agent prepare" }
+      ]
+    },
+    {
+      "area": "Messages",
+      "how": "Log events: sent, delivered, read. Delivery at the agent Stop hook, or by paste when idle, with retries and acknowledgement. A message to a finished session reopens it.",
+      "why": "Confirmed delivery. The order survives a crash. Replaces the file inbox.",
+      "phases": [22, 23, 24, 25],
+      "files": [
+        { "path": "wsd/crates/ws-daemon/src/delivery.rs", "additions": 1952, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/hooks.rs", "additions": 814, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/bus.rs", "additions": 285, "deletions": 0 },
+        { "path": "ws/lib/bus.sh", "additions": 6, "deletions": 1, "note": "zsh backend" }
+      ],
+      "sequence": {
+        "participants": [
+          { "name": "Sender agent", "status": "existing" },
+          { "name": "wsd", "status": "new" },
+          { "name": "Session log", "status": "new" },
+          { "name": "Receiver Stop hook", "status": "changed" }
+        ],
+        "messages": [
+          { "from": "Sender agent", "to": "wsd", "label": "ws send '#N' \"hi\"", "kind": "call" },
+          { "from": "wsd", "to": "Session log", "label": "append message.sent", "kind": "call" },
+          { "from": "wsd", "to": "Sender agent", "label": "queued (ULID)", "kind": "return" },
+          { "from": "Receiver Stop hook", "to": "wsd", "label": "turn ended: pending?", "kind": "call" },
+          { "from": "wsd", "to": "Receiver Stop hook", "label": "message + ack token", "kind": "return" },
+          { "from": "Receiver Stop hook", "to": "wsd", "label": "ws ack", "kind": "call" },
+          { "from": "wsd", "to": "Session log", "label": "append delivered, read", "kind": "call" },
+          { "from": "wsd", "to": "wsd", "label": "retry, or paste when idle", "kind": "self" }
+        ]
+      }
+    },
+    {
+      "area": "Coordination",
+      "how": "Dependency edges, `ws done`, `ws wait`, `ws on … done --spawn/--send-to` triggers as edge actions in the log.",
+      "why": "Event-driven waits. No lock files.",
+      "phases": [26, 27],
+      "files": [
+        { "path": "wsd/crates/ws-daemon/src/triggers.rs", "additions": 777, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/wait.rs", "additions": 234, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/edges.rs", "additions": 125, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "MCP",
+      "how": "Local stdio server, 12 tools (`session_*`, `wait`, `loop_*`, `phase_spawn`). Added to each agent launch through flags. Caller identity from `WS_SESSION_ID`. Spawn limits (children, depth).",
+      "why": "Agents drive ws directly. No edits to Claude or Codex config files. The caller cannot be faked.",
+      "phases": [29, 30],
+      "files": [
+        { "path": "wsd/crates/ws/src/mcp/mod.rs", "additions": 288, "deletions": 0 },
+        { "path": "wsd/crates/ws/src/mcp/params.rs", "additions": 100, "deletions": 0 },
+        { "path": "wsd/crates/ws/tests/mcp.rs", "additions": 729, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "Loop",
+      "how": "Runners run as ws headless sessions when wsd answers. Otherwise they launch directly. `ws top`, `ws loop start/stop`. Review worktrees belong to a session and are removed after it.",
+      "why": "Loop runs are visible and controllable in ws. The picker shows no review worktrees.",
+      "phases": [31, 32, 33, 59],
+      "files": [
+        { "path": "loop-runner.sh", "additions": 142, "deletions": 21 },
+        { "path": "loop-orchestrator.sh", "additions": 27, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/loops.rs", "additions": 206, "deletions": 0 },
+        { "path": "wsd/crates/ws/src/cmd/top.rs", "additions": 137, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "Picker",
+      "how": "The fzf picker and tmux bindings read data from Rust commands.",
+      "why": "The picker matches the registry.",
+      "phases": [34, 35],
+      "files": [
+        { "path": "wsd/crates/ws/src/cmd/picker.rs", "additions": 218, "deletions": 0 },
+        { "path": "ws/lib/picker.sh", "additions": 60, "deletions": 196 },
+        { "path": "ws/lib/picker-legacy.sh", "additions": 167, "deletions": 0, "note": "kept for the zsh backend" }
+      ]
+    },
+    {
+      "area": "Install",
+      "how": "`./install.sh ws` builds `~/.ws/bin/ws-rs` and installs LaunchAgent `com.rstagi.wsd` with KeepAlive.",
+      "why": "The daemon always runs. launchd restarts it after a crash.",
+      "phases": [36],
+      "files": [
+        { "path": "install.sh", "additions": 118, "deletions": 45 },
+        { "path": "wsd/launchd/com.rstagi.wsd.plist", "additions": 24, "deletions": 0 },
+        { "path": "tests/install-wsd.test.sh", "additions": 68, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "Cutover",
+      "how": "Backend file `~/.ws/backend` (rust or zsh). Both backends share the alias lock. Import of zsh state. `ws backend zsh` returns to zsh.",
+      "why": "Live state migrates with a safe rollback. Phase 54 removes the zsh code in milestone 3.",
+      "phases": [28, 37, 56, 64],
+      "files": [
+        { "path": "wsd/crates/ws-daemon/src/import/mod.rs", "additions": 420, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/import/snapshot.rs", "additions": 183, "deletions": 0 },
+        { "path": "wsd/crates/ws-daemon/src/import/backend.rs", "additions": 162, "deletions": 0 }
+      ]
+    },
+    {
+      "area": "Parity",
+      "how": "Golden tests from the zsh suite, written before each port.",
+      "why": "Habits, scripts and the ws-sessions skill keep working.",
+      "phases": [14, 15, 16, 17],
+      "files": [
+        { "path": "wsd/crates/ws/tests/picker.rs", "additions": 722, "deletions": 0 },
+        { "path": "wsd/crates/ws/tests/hook_ingest.rs", "additions": 704, "deletions": 0 },
+        { "path": "wsd/crates/ws/tests/session_commands.rs", "additions": 333, "deletions": 0 }
+      ]
+    },
     { "area": "Process", "how": "One lane, TDD, sandboxed tests (temporary HOME, private tmux sockets), max-tier review.", "why": "Parallel lanes conflict on `Cargo.lock`. Sandboxes protect live state." }
   ],
   "delivered": [

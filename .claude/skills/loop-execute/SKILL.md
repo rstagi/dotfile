@@ -45,8 +45,8 @@ its safe ceiling. So `loop-execute` runs in one of three shapes (contract:
   **THIN**. It does preflight / init / lock / the confirm gate, spawns ONE detached
   `loop-orchestrator.sh`, then only: polls **compact local** state for a 2-3 line progress read,
   answers HIL from on-disk briefs, and handles `sub/REVIEW_READY` barriers. It spawns **only** the
-  orchestrator, ledger-driven AR review/remediation runners (§8) and milestone explainer
-  runners (§8, §9) — the heavy scheduling/merge/escalation runs in
+  orchestrator, ledger-driven AR review/remediation runners (§8) and explainer
+  runners for milestones and progress checkpoints (§3b, §8, §9) — the heavy scheduling/merge/escalation runs in
   disposable **`sub`** instances that self-recycle, so this chat never fills up.
 - **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
   spawned by `loop-orchestrator.sh`, entered via `loop-execute resume` (signalled by env
@@ -187,7 +187,15 @@ session hands the heavy work to a detached orchestrator and stays thin:
    This operation writes `hil/<slug>.answer.md` and logs `hil.resolve` for the phase.
    Never write the answer file directly. The `sub` reads the answer and requeues that lane.
    Supervise asks the human. The SUB never asks the human.
-5. On `sub/REVIEW_READY` → reconcile the plan once more, then go to **step 8**. A late edit
+5. **Progress checkpoint (best-effort, in parallel).** Each poll, check the checkpoint trigger
+   (protocol § Progress checkpoints). The trigger fires when 5 phases of `state.milestone`
+   merged since the last checkpoint, or when 90 minutes of work passed since the last
+   checkpoint and at least one phase merged in that time. Whichever comes first fires it.
+   Spawn one detached explainer runner for the checkpoint page and continue to poll. Never wait
+   for it, never pause or delay a phase for it, and run at most one checkpoint at a time. At a
+   later poll, render, publish and notify as the protocol tells you. A failed checkpoint never
+   blocks the loop.
+6. On `sub/REVIEW_READY` → reconcile the plan once more, then go to **step 8**. A late edit
    that makes the review no longer ready clears the marker and respawns the orchestrator.
    Legacy `sub/PHASES_DONE` uses the legacy final-review path. On `fatal`/`blocked` with no
    path forward, surface it and stop.
@@ -528,6 +536,8 @@ final milestone is an ordinary terminal review (finish below):
      A failed video goes to `video-error.txt`, and the page goes out without it.
    - When the link is an artifact URL, add or replace one line in each gate PR body:
      `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
+   - Post the media on each gate PR (protocol § Milestone explainers → GitHub media): the
+     screenshots, the video preview and the video, in one PR comment.
    - On any failure, write the reason to `error.txt` in the output directory and go on
      with the park. A failed explainer never blocks the park.
 5. Notify once (`loop-notify.sh --level info --event milestone.awaiting-merge`): PR URLs, the
@@ -566,6 +576,8 @@ milestone of a plan, or the final review of a plan with no milestones.
      A failed video goes to `video-error.txt`, and the page goes out without it.
    - When the link is an artifact URL, add or replace one line in the PR body of each
      participating repository: `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
+   - Post the media on the PR of each participating repository (protocol § Milestone
+     explainers → GitHub media).
    - On any failure, write the reason to `error.txt` in the output directory and go on
      with the finish. A failed explainer never blocks the finish.
 3. Notify once (`loop-notify.sh --level info`): the final PRs and verdicts, and the
@@ -746,6 +758,6 @@ derives NOTE visibility from both file presence and unfinished lifecycle.
   orchestrators on one run id, which the reentrant lock does not prevent). Recycle only at a
   persisted checkpoint; never hard-kill a live phase runner to hit the token ceiling.
 - Supervise stays THIN: spawn only the orchestrator + staged review/remediation runners +
-  milestone explainer runners, and read only compact local state. A runner writes explainer
+  milestone and checkpoint explainer runners, and read only compact local state. A runner writes explainer
   props. Supervise only renders, publishes and links the page. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
   the main chat defeats the two-tier design — that work is the `sub`'s.

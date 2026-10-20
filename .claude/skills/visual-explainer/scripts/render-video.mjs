@@ -1,7 +1,10 @@
 #!/usr/bin/env node
-// visual-explainer video: props JSON + narration JSON -> <out>/video.mp4, a narrated video that
-// Remotion renders from the video/ project. The video draws the concept graph of the page
-// (graph.mjs) with the same positions, and a camera moves from stop to stop of the narration.
+// visual-explainer video: props JSON + narration JSON -> <out>/video.mp4, a short narrated video
+// that Remotion renders from the video/ project, and <out>/preview.gif. The video has one scene for
+// each narration scene, and each scene shows its section of the report page with snapcn components.
+// The diagrams and the media come from dark screenshots of a report page that this script renders
+// in a temporary directory (render.mjs, then shoot.mjs). Without screenshots, the scenes draw a
+// simpler native view: a failed screenshot step only warns.
 //
 //   node render-video.mjs --props <file> --narration <file> --out <dir> [--timeout-min <n>] [--max-mb <n>] [--tts <engine>]
 //   node render-video.mjs --props <file> --narration <file> --check     validate only
@@ -16,6 +19,9 @@
 // VE_VIDEO_FPS, VE_VIDEO_CONCURRENCY, VE_VIDEO_HWACCEL, VE_VIDEO_X264_PRESET and VE_VIDEO_GL override
 // the encoder defaults (videoSettings).
 //
+// After the MP4, ffmpeg writes preview.gif: about 1.5 s from the middle of each scene, at most 4 MB.
+// A failed GIF only warns.
+//
 // Stdout after a render: the absolute MP4 path, then "tts: elevenlabs", "tts: say" or
 // "tts: say (fallback: <reason>)".
 // Exit: 0 valid (MP4 written unless --check) · 1 invalid props or narration, one "<field path>: <error>"
@@ -27,19 +33,22 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { storyboard } from "../video/src/storyboard.mjs";
-import { buildGraph, KINDS } from "./graph.mjs";
 import { checkNarration } from "./narration.mjs";
 import { checkProps } from "./props.mjs";
 import { speak } from "./tts.mjs";
 import { formatErrors } from "./validate.mjs";
 
 const VIDEO_DIR = path.join(import.meta.dirname, "..", "video");
+const RENDER_PAGE = path.join(import.meta.dirname, "render.mjs");
+const SHOOT = path.join(import.meta.dirname, "shoot.mjs");
+// The screenshots of the report page that the scenes show (data-shot ids).
+const SHOT_IDS = ["architecture", "sequence", "media"];
 const USAGE = "usage: render-video.mjs --props <file> --narration <file> --out <dir> [--check] [--timeout-min <n>] [--max-mb <n>] [--tts auto|elevenlabs|say]";
 const DEFAULTS = { timeoutMin: 15, maxMb: 14, tts: "auto" };
 const NUMBER_FLAGS = { "--timeout-min": "timeoutMin", "--max-mb": "maxMb" };
 const PATH_FLAGS = ["--props", "--narration", "--out"];
 const TTS_ENGINES = ["auto", "elevenlabs", "say"];
-const SECRET_ENV = "ELEVENLABS_API_KEY";
+const SECRET_ENV = ["ELEVENLABS_API_KEY", "ANTHROPIC_API_KEY"];
 const BYTES_PER_MB = 1_000_000;
 const READY = ".ready";
 const CACHE = /^video-[0-9a-f]{12}$/;
@@ -51,21 +60,27 @@ const KILL_GRACE_MS = 3000;
 // Encoder defaults: the fastest measured combination that keeps the text sharp (see SKILL.md, The video).
 // Frame capture in the browser takes most of the time, so fewer frames and GPU compositing help most.
 // VE_VIDEO_FPS, VE_VIDEO_CONCURRENCY, VE_VIDEO_HWACCEL, VE_VIDEO_X264_PRESET and VE_VIDEO_GL override them.
-const VIDEO_DEFAULTS = { fps: 24, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" };
+const VIDEO_DEFAULTS = { fps: 30, hardwareAcceleration: "disable", x264Preset: "veryfast", gl: "angle" };
 const SPARE_CORES = 2;
 const HWACCEL = ["disable", "if-possible", "required"];
 const GL = ["default", "angle", "egl", "swiftshader", "swangle", "vulkan", "angle-egl"];
 const X264_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
 const AUDIO_KBPS = 64;
 const SIZE_MARGIN = 0.9; // a hardware encoder can overshoot its target bitrate, and the x264 model is an estimate
-// x264 size model of the graph video, measured on the ship example (13 stops, 1920x1080, veryfast,
-// 24 fps) at 231.5 s: at CRF 23, the video stream has about 0.5 MB plus 54 KB for each second. The
-// camera moves cost most of the bytes: each move changes the whole frame. 7 CRF steps halved it in
-// the measurement; the model uses 8, so it predicts a larger file. The plan example (166 s, 7.9 MB
-// at CRF 23) has a smaller graph, so the model is conservative for it.
+// x264 size model, measured on the old graph video (13 stops, 1920x1080, veryfast, 24 fps): at
+// CRF 23 the video stream had about 0.5 MB plus 54 KB for each second, and 7 CRF steps halved it.
+// The model uses 8 steps, so it predicts a larger file. The scene video moves less: at 30 fps and
+// CRF 23 the plan example (107 s) has 5.7 MB and the ship example (105 s) 5.0 MB, audio included,
+// so the model stays conservative and a concise video keeps CRF 23.
 const X264 = { bestCrf: 23, lowCrf: 30, halvingCrf: 8, fixedBytes: 500_000, bytesPerSecond: 54_000 };
 const MIN_VIDEO_KBPS = 150;
 const MAX_VIDEO_KBPS = 2500;
+// preview.gif: PREVIEW_SECONDS from the middle of each scene. Each attempt has fewer frames or
+// pixels than the one before it, until the file fits PREVIEW_MAX_BYTES.
+const PREVIEW_SECONDS = 1.5;
+const PREVIEW_MAX_BYTES = 4 * BYTES_PER_MB;
+const PREVIEW_ATTEMPTS = [{ fps: 10, width: 720 }, { fps: 8, width: 640 }, { fps: 6, width: 560 }, { fps: 5, width: 480 }];
+const PREVIEW_TIMEOUT_MS = 120_000;
 
 class IoError extends Error {}
 class StepError extends Error {}
@@ -78,7 +93,7 @@ if (isMain()) await main(process.argv.slice(2));
 async function main(argv) {
   const args = parseArgs(argv);
   if (!args) fail(2, USAGE);
-  const { props, graph, stops } = checkInputs(args);
+  const { props, scenes } = checkInputs(args);
   let settings;
   try {
     settings = videoSettings(process.env);
@@ -94,11 +109,13 @@ async function main(argv) {
     const dir = cacheDir(process.env, cacheKey(VIDEO_DIR));
     await prepareCache(dir, deadline);
     markUsed(dir);
-    const { voiceover, engine } = await narrate(dir, stops, args.tts, deadline);
-    const input = compositionProps(props, graph, stops);
-    const seconds = storyboard(input, voiceover, { fps: settings.fps }).durationInFrames / settings.fps;
-    const attempts = renderAttempts(settings, seconds, args.maxMb);
+    const shots = await captureShots(dir, args.props, deadline);
+    const { voiceover, engine } = await narrate(dir, scenes, args.tts, deadline);
+    const input = { mode: props.mode, props, scenes, shots };
+    const board = storyboard(input, voiceover, { fps: settings.fps });
+    const attempts = renderAttempts(settings, board.durationInFrames / settings.fps, args.maxMb);
     const video = await renderVideo(dir, { props: input, voiceover }, attempts, out, args.maxMb, deadline);
+    await writePreview(video, board, out, deadline);
     process.stdout.write(`${video}\ntts: ${engine}\n`);
   } catch (err) {
     stop(err instanceof IoError ? 2 : 3, `render-video.mjs: ${err.message}`);
@@ -141,31 +158,17 @@ function cacheRoot(env) {
   return path.join(path.resolve(base), "visual-explainer");
 }
 
-// Check the props, then the narration against them and their graph. Exit 1 or 2 on a failure.
+// Check the props, then the narration against them. Exit 1 or 2 on a failure.
 function checkInputs(args) {
   try {
     const { props, errors } = checkProps(args.props);
     if (errors.length) fail(1, formatErrors(errors));
-    const graph = buildGraph(props);
-    const checked = checkNarration(args.narration, props, graph);
+    const checked = checkNarration(args.narration, props);
     if (checked.errors.length) fail(1, formatErrors(checked.errors));
-    return { props, graph, stops: checked.stops };
+    return { props, scenes: checked.scenes };
   } catch (err) {
     fail(2, `render-video.mjs: ${err.message}`);
   }
-}
-
-// The input props of the composition: the graph of the page, the resolved stops, and the label and
-// color token of each kind. Only the key facts of each node go on a video card, so the other facts
-// stay out of the render input.
-function compositionProps(props, graph, stops) {
-  return {
-    mode: props.mode,
-    meta: props.meta,
-    kinds: KINDS,
-    graph: { ...graph, nodes: graph.nodes.map((n) => ({ ...n, facts: n.facts.filter((f) => f.key) })) },
-    stops: stops.map(({ id, title, text, nodes, overview }) => ({ id, title, text, nodes, overview })),
-  };
 }
 
 // pruneCaches(current, now) removes the sibling caches of `current` with no use for 7 days, and
@@ -282,15 +285,79 @@ function markUsed(dir) {
   }
 }
 
-// Speak the text of each narrated stop, then put the clips where the bundle serves them (staticFile).
-// Returns { voiceover: { <stop id>: { src, seconds } }, engine }. `engine` is the engine line
+// Render the report page in a temporary directory, take dark screenshots of its sections with the
+// browser of the cache, and put the ones that the scenes show where the bundle serves them.
+// Returns { <shot id>: { src, width, height } }: {} when a step fails, with one stderr line. Only
+// the end of the run deadline stops the run.
+async function captureShots(dir, propsFile, deadline) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "visual-explainer-shots-"));
+  live.temps.add(tmp);
+  try {
+    await runStep("report page", process.execPath, [RENDER_PAGE, "--props", path.resolve(propsFile), "--out", tmp], { cwd: tmp, deadline });
+    const chrome = findChrome(dir);
+    const shotsDir = path.join(tmp, "shots");
+    await runStep("screenshots", process.execPath, [SHOOT, "--page", path.join(tmp, "index.html"), "--out", shotsDir, "--theme", "dark",
+      ...(chrome ? ["--chrome", chrome] : [])], { cwd: tmp, deadline });
+    const served = makeDir(path.join(dir, "bundle", "public", "shots"));
+    const shots = {};
+    for (const id of SHOT_IDS) {
+      const file = path.join(shotsDir, `${id}.png`);
+      if (!fs.existsSync(file)) continue;
+      const bytes = fs.readFileSync(file);
+      const size = pngSize(bytes);
+      if (!size) continue;
+      const name = `${createHash("sha256").update(bytes).digest("hex").slice(0, 16)}.png`;
+      if (!fs.existsSync(path.join(served, name))) fs.writeFileSync(path.join(served, name), bytes);
+      shots[id] = { src: `shots/${name}`, ...size };
+    }
+    log(`screenshots: ${Object.keys(shots).join(", ") || "none of " + SHOT_IDS.join(", ")}`);
+    return shots;
+  } catch (err) {
+    if (err.message.startsWith("timed out")) throw err;
+    log(`screenshots skipped, the scenes draw their native view: ${err.message.split("\n")[0]}`);
+    return {};
+  } finally {
+    removeTemp(tmp);
+  }
+}
+
+// findChrome(dir) -> the chrome-headless-shell binary that Remotion downloaded into the cache, or
+// null (shoot.mjs then finds a browser itself).
+export function findChrome(dir) {
+  const root = path.join(dir, "node_modules", ".remotion", "chrome-headless-shell");
+  const walk = (at, depth) => {
+    for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+      const full = path.join(at, entry.name);
+      if (entry.isFile() && entry.name === "chrome-headless-shell") return full;
+      if (entry.isDirectory() && depth > 0) {
+        const found = walk(full, depth - 1);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  try {
+    return walk(root, 3);
+  } catch {
+    return null;
+  }
+}
+
+// pngSize(bytes) -> { width, height } from the IHDR chunk, or null for a file that is not a PNG.
+export function pngSize(bytes) {
+  if (bytes.length < 24 || bytes.toString("latin1", 1, 4) !== "PNG") return null;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
+// Speak the text of each scene, then put the clips where the bundle serves them (staticFile).
+// Returns { voiceover: { <scene id>: { src, seconds } }, engine }. `engine` is the engine line
 // of the result: "elevenlabs", "say" or "say (fallback: <reason>)". A failure is a StepError (exit 3).
-async function narrate(dir, stops, option, deadline) {
+async function narrate(dir, scenes, option, deadline) {
   const left = deadline.at - Date.now();
   if (left <= 0) throw new StepError(`timed out after ${deadline.label} before the text to speech`);
   let result;
   try {
-    result = await speak(stops.filter((s) => s.text).map(({ id, text }) => ({ id, text })), option, {
+    result = await speak(scenes.map(({ id, text }) => ({ id, text })), option, {
       dir: path.join(cacheRoot(process.env), "tts"), env: process.env, signal: AbortSignal.timeout(left),
       onFallback: (reason) => log(`ElevenLabs failed (${reason}): the video uses the macOS voice`),
     });
@@ -337,6 +404,40 @@ async function renderVideo(dir, inputs, attempts, out, maxMb, deadline) {
   throw new StepError(`the video has ${mb(size)} MB at ${attempts.at(-1).label}, above --max-mb ${maxMb}`);
 }
 
+// Write <out>/preview.gif from the middle of each scene. A failure only warns: the MP4 is the result.
+async function writePreview(video, board, out, deadline) {
+  const target = path.join(out, "preview.gif");
+  const tmp = path.join(out, `.preview-${process.pid}.tmp.gif`);
+  live.temps.add(tmp);
+  const gifDeadline = { at: Math.min(deadline.at, Date.now() + PREVIEW_TIMEOUT_MS), label: "the preview time limit" };
+  try {
+    for (const attempt of PREVIEW_ATTEMPTS) {
+      await runStep("preview.gif", "ffmpeg", previewArgs(video, board, attempt, tmp), { cwd: out, deadline: gifDeadline });
+      const size = fs.statSync(tmp).size;
+      if (size > 0 && size <= PREVIEW_MAX_BYTES) {
+        fs.renameSync(tmp, target);
+        log(`preview: ${target} (${mb(size)} MB, ${attempt.width} px, ${attempt.fps} fps)`);
+        return;
+      }
+    }
+    log(`preview.gif skipped: above ${mb(PREVIEW_MAX_BYTES)} MB at ${PREVIEW_ATTEMPTS.at(-1).width} px`);
+  } catch (err) {
+    log(`preview.gif skipped: ${err.message.split("\n")[0]}`);
+  } finally {
+    removeTemp(tmp);
+  }
+}
+
+// previewArgs(video, board, { fps, width }, out) -> the ffmpeg arguments: one input of
+// PREVIEW_SECONDS for each scene, concatenated, with a palette made for these frames.
+export function previewArgs(video, board, { fps, width }, out) {
+  const starts = board.scenes.map((s) => Math.max(0, (s.from + s.durationInFrames / 2) / board.fps - PREVIEW_SECONDS / 2));
+  const inputs = starts.flatMap((t) => ["-ss", t.toFixed(2), "-t", String(PREVIEW_SECONDS), "-i", video]);
+  const concat = `${starts.map((_, i) => `[${i}:v]`).join("")}concat=n=${starts.length}:v=1:a=0`;
+  const filter = `${concat},fps=${fps},scale=${width}:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4`;
+  return ["-y", "-v", "error", ...inputs, "-filter_complex", filter, "-loop", "0", out];
+}
+
 // Run one child in its own process group, bounded by the deadline. On failure the error carries the
 // last output lines. `echo` passes the child's stderr through (render progress).
 function runStep(label, command, args, { cwd, deadline, echo = false }) {
@@ -345,7 +446,7 @@ function runStep(label, command, args, { cwd, deadline, echo = false }) {
     if (left <= 0) return reject(new StepError(`timed out after ${deadline.label} before ${label}`));
     const tail = [];
     const env = { ...process.env, npm_config_update_notifier: "false" };
-    delete env[SECRET_ENV]; // npm, Remotion and Chrome never need the text to speech key
+    for (const name of SECRET_ENV) delete env[name]; // npm, Remotion, Chrome and ffmpeg never need a key
     const child = spawn(command, args, { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env });
     live.group = child.pid;
     let timedOut = false;

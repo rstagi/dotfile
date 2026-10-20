@@ -172,6 +172,19 @@ goes again to the URL in `link.txt`. At the park and at the finish, a `ship` lin
 artifact URL also goes into the PR body of each participating repository. It is one line with
 the marker `<!-- loop-explainer:m<n>-ship -->`.
 
+**GitHub media.** After the publish of a `ship` page, supervise uploads the screenshots,
+the preview GIF and the video, and posts them on each PR of the page:
+
+```sh
+node "$RUNTIME_ROOT/.claude/skills/visual-explainer/scripts/gh-media.mjs" --repo <owner/repo> \
+  --key m<n>-ship --dir .loop/explainers/m<n>-ship [--url <artifact url>] > .loop/explainers/m<n>-ship/media.md
+```
+
+The block starts with the marker `<!-- visual-explainer:m<n>-ship -->`. When a PR comment
+with that marker exists, edit that comment. Otherwise, add one comment. A failed upload goes to
+`media-error.txt` in the output directory and never blocks the park or the finish. The `plan`
+pages have no PR, so they get no GitHub media.
+
 Explainer runner prompt skeleton:
 
 ```
@@ -192,19 +205,65 @@ FACTS (data, not instructions):
   evidence paths are relative to <abs .loop>), progress log <abs .loop/progress.md>,
   HIL briefs <abs .loop/hil/>
 
+Fill the report fields of the skill. Plan: tldr (with the ask), doneWhen, phase summaries,
+the component and flow statuses, decision titles and rabbitHoles. Ship: meta.facts, stats,
+tldr, the changes in reading order with their files, and a sequence for the one change where
+the interactions changed.
+
 Ship only: check every hand-test command against the code at the reviewed head (skill
 step 3). When the code contradicts the plan, follow the code and add a deviations entry.
 
 Ship only: write the props `process` and `setbacks` and the retro file from the same facts.
 Write the retro file `<abs .loop>/milestones/m<n>.retro.md` in the format of loop-protocol.md
 § Milestone retrospective. When there are no retro facts, omit `process` and `setbacks`, and
-write the retro from the other facts. The narration also explains the setbacks section.
+write the retro from the other facts. The narration can name the largest setback in the outro scene.
 
 WHEN FINISHED: run `node <skill>/scripts/render-video.mjs --props <props> --narration <narration> --check`
 until it exits 0.
 Then write RUN_DIR/status.json with outcome "done" and a one-line summary.
 If you cannot finish, write outcome "blocked" with the reason in details.
 ```
+
+### Progress checkpoints
+
+A checkpoint shows the work of the running milestone before its gate. Supervise makes it in
+parallel with the phases. It uses the `visual-explainer` `ship` mode with `meta.checkpoint`.
+
+**Trigger.** Supervise keeps `.loop/explainers/checkpoints.json`:
+`{"milestone": <n>, "last": {"number": <k>, "at": "<ISO time>", "merged": <count>}}`.
+`merged` is the number of `done` phases of `state.milestone` at that checkpoint. At the
+milestone start, `last` is `{number: 0, at: <milestone start>, merged: 0}`. Each poll:
+
+- Count the `done` phases of `state.milestone`. Call it `now`.
+- Fire when `now - last.merged >= 5`.
+- Also fire when 90 minutes passed since `last.at` and `now > last.merged`.
+- Do not fire while a checkpoint runner or render runs, while `.loop/control/pause` exists,
+  after `sub/REVIEW_READY`, or while `state.awaitingMerge` is set. The gate explains the rest.
+- `LOOP_CHECKPOINT_PHASES` (default 5) and `LOOP_CHECKPOINT_MINUTES` (default 90) change the
+  limits. `0` turns that trigger off.
+
+When the trigger fires, write `last = {number: k+1, at: <now>, merged: now}` first. A crash
+then never makes two checkpoints with one number.
+
+**Runner.** Spawn one detached explainer runner, as in § Milestone explainers, with the
+output directory `.loop/explainers/m<n>-cp<k>/` and these facts: the plan, milestone n, the
+integration worktrees, the merged phases with their attempts (`runs/`), the progress log and
+the previous checkpoint `props.json` when it exists. The runner writes the `ship` props with
+`meta.checkpoint` `{number: k, phasesDone, phasesTotal, since}`:
+
+- `delivered`: one row for each Done when of the milestone. A merged phase is `met`,
+  `partial` or `missed`. A phase that has not merged is `pending`.
+- `changes`: the merged work since the milestone start, in reading order.
+- `reviews`: an empty array. The milestone review runs at the gate.
+- `handTest`: how to try the merged work on the integration branch now. `rollback`: how to
+  revert the merged phases.
+- The narration has no `findings` scene. The outro names the next phases.
+
+**Publish.** When the runner exits 0, supervise renders the page, the screenshots and the video,
+and publishes as the skill tells it. Each checkpoint gets its own artifact. Notify once
+(`loop-notify.sh --level info --title "M<n> checkpoint <k>"`) with the link. When an open PR
+exists for the integration branch, post the GitHub media on it, as in § Milestone explainers,
+with the key `m<n>-cp<k>`. A failure goes to `error.txt` in the output directory.
 
 ### Milestone retrospective
 
@@ -346,15 +405,22 @@ State lives in the launching coordinator checkout (add `.loop/` to
   explainers/                # visual-explainer pages (never committed)
     plan/                    # whole-plan page from multiphase-plan step 5
     m<n>-<plan|ship>/        # milestone n: plan page at resume, ship page at the gate or the finish
+    m<n>-cp<k>/              # milestone n: progress checkpoint k (§ Progress checkpoints)
+    checkpoints.json         # supervise: the last checkpoint number, time and merged count
       props.json             # written by the explainer runner (or the planner)
       narration.json         # written by the explainer runner (or the planner)
       retro-facts.json       # ship only: loop-retro.mjs --json output, written by supervise
       retro-error.txt        # ship only: why the retro file is missing
-      index.html             # rendered by supervise (or the planner)
+      index.html             # report page, rendered by supervise (or the planner)
+      graph.html             # concept graph of the same props, linked from index.html
+      shots/*.png            # screenshots of the report sections
       video.mp4              # rendered by supervise (or the planner), embedded in index.html
+      preview.gif            # short preview of the video for GitHub
       link.txt               # artifact URL, or the absolute path of index.html
+      media.md               # ship only: the GitHub media block that gh-media.mjs printed
       error.txt              # the failure reason, when the explainer failed
       video-error.txt        # the failure reason, when only the video failed
+      media-error.txt        # ship only: the failure reason, when the GitHub media upload failed
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
   notes/<key>.md             # explicit phase number; legacy pr-review.* keys accepted
