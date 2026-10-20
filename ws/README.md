@@ -37,6 +37,37 @@ Agent starts use permission bypass flags.
 The [ws-sessions skill](../.claude/skills/ws-sessions/SKILL.md) describes agent coordination.
 `./install-agent-skills.sh` shares that skill with Claude, Codex and Ratel Local.
 
+## Session places and repos
+
+A session's place and its repos are separate. Both are optional.
+The place supplies its working directory (`cwd`) and optional workspace (`workspace_id`).
+A workspace combines a git worktree and a tmux session.
+A directory place uses an existing directory without creating a git worktree.
+A scratch place uses a new directory under `$WS_HOME/scratch/<ulid8>`.
+
+```sh
+ws new --repo /path/to/repo --branch feat/task --detach
+ws new --cwd /path/to/notes --detach
+ws new --scratch --agent codex --detach
+ws sessions --json
+```
+
+`--cwd` accepts directories inside or outside git repositories.
+`--repo` also accepts a non-git directory when `--branch` is absent.
+Directory and scratch sessions have no workspace. The picker still shows them.
+Use `ws add <dir>` to add an agent and `ws open <dir>` to resume stopped sessions.
+`ws rm <dir>` preserves external files. Scratch removal requires confirmation, including with `--force`.
+Pins apply only to workspaces.
+
+The registry derives `repos` from events without changing the session's `cwd`.
+Workspace launches record the main checkout path and workspace branch through `session.repo_attached`.
+The `workspace.created` event also records `repo` and `branch`.
+Phase spawns record their execution repo and base through `session.repo_attached`.
+`ws phase worktree` records the detached checkout path and reference through `phase.worktree`.
+Its checkout path becomes a `repos` entry, with the reference as `base`.
+Directory launches do not detect repos from their cwd or hooks.
+The `cwd` and `repos` fields appear in JSON. Human and TSV output keep their existing format.
+
 ## Notification adapters
 
 `WS_NOTIFY=0` disables notifications. `WS_NOTIFIER` selects the adapter:

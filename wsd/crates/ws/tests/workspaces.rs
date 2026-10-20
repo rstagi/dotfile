@@ -14,6 +14,45 @@ struct Sandbox {
 }
 
 #[test]
+fn workspace_sessions_record_the_main_checkout_and_branch() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo("api").canonicalize().unwrap();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feat/repos",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(
+        sessions[0]["repos"],
+        serde_json::json!([
+            {"path": repo, "branch": "feat/repos"}
+        ])
+    );
+    assert_ne!(sessions[0]["cwd"], repo.to_str().unwrap());
+    let workspaces = sandbox.json(&["list", "--json"]);
+    assert_eq!(workspaces[0]["body"]["repo"], repo.to_str().unwrap());
+    assert_eq!(workspaces[0]["body"]["branch"], "feat/repos");
+
+    let output = sandbox.output(&["add", "api/feat-repos", "--agent", "codex", "--detach"]);
+    assert!(output.status.success(), "{output:?}");
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    assert_eq!(sessions.as_array().unwrap().len(), 2);
+    for session in sessions.as_array().unwrap() {
+        assert_eq!(
+            session["repos"],
+            serde_json::json!([
+                {"path": repo, "branch": "feat/repos"}
+            ])
+        );
+    }
+}
+
+#[test]
 fn open_directory_restores_stopped_sessions_once_with_the_same_identity() {
     let sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("notes with spaces");
