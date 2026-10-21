@@ -179,12 +179,9 @@ impl Spans {
         {
             return Ok(());
         }
-        // Commit memory only after the telemetry append succeeds. Session-log replay repairs a failed append.
-        let mut state = self
-            .sessions
-            .get(&entry.session_id)
-            .cloned()
-            .unwrap_or_default();
+        // A failed append leaves the caller's rebuild flag set. The rebuild replaces this memory,
+        // so the state moves out of the map instead of a copy for each entry.
+        let mut state = self.sessions.remove(&entry.session_id).unwrap_or_default();
         if let Some(event) = emitted_event
             && let Some(turn) = state.turn.as_mut()
             && turn
