@@ -243,7 +243,9 @@ async fn timer_ticks_and_each_phase_boundary_write_durable_quota_events() {
     let log = ws_core::log::SessionLog::new(sandbox.path(), session.id, session.device_id);
     let store = Arc::new(Mutex::new(sessions));
     let time = Arc::new(AtomicU64::new(1_792_186_317_783));
-    let clock: Clock = Arc::new(move || time.fetch_add(1, Ordering::SeqCst));
+    let start = tokio::time::Instant::now();
+    let clock: Clock =
+        Arc::new(move || time.fetch_add(1, Ordering::SeqCst) + start.elapsed().as_millis() as u64);
     let mut collector = Collector::new(clock);
     collector.register(session.id, Box::new(SampleReader));
     let service = Service::start_with_collector(store.clone(), collector).unwrap();
@@ -270,7 +272,7 @@ async fn timer_ticks_and_each_phase_boundary_write_durable_quota_events() {
             .append(session.id, "phase.finished", json!({"phase":"46"}))
             .unwrap();
     }
-    wait_for_usage(&log, &mut changes, 8).await;
+    wait_for_usage(&log, &mut changes, 6).await;
     store.lock().unwrap().shutdown.send_replace(true);
     service.shutdown().await;
     let events: Vec<_> = log
@@ -280,7 +282,15 @@ async fn timer_ticks_and_each_phase_boundary_write_durable_quota_events() {
         .into_iter()
         .filter(|e| e.event_type == "runner.usage.updated")
         .collect();
-    assert_eq!(events.len(), 8);
+    // Boundaries inside one period write reported readings only. Estimates wait for the next period.
+    assert_eq!(events.len(), 6);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|entry| entry.body[sc::RUNNER_USAGE_SOURCE] == "estimated")
+            .count(),
+        2
+    );
     assert!(
         events
             .iter()
@@ -298,7 +308,7 @@ async fn timer_ticks_and_each_phase_boundary_write_durable_quota_events() {
         .flat_map(|scope| scope["logRecords"].as_array().unwrap())
         .filter(|record| record["eventName"] == sc::RUNNER_USAGE_UPDATED)
         .collect();
-    assert_eq!(records.len(), 8);
+    assert_eq!(records.len(), 6);
     assert_eq!(records[0]["timeUnixNano"], "1792186317783000000");
     assert!(
         records[0]["attributes"]
@@ -318,7 +328,7 @@ async fn timer_ticks_and_each_phase_boundary_write_durable_quota_events() {
             .iter()
             .filter(|e| e.event_type == "runner.usage.updated")
             .count(),
-        8
+        6
     );
 }
 
@@ -1417,4 +1427,29 @@ fn grok_keeps_unverified_or_ambiguous_authentication_unknown() {
         let binding: Value = serde_json::from_slice(&file.contents).unwrap();
         assert!(binding["account_id"].is_null());
     }
+}
+
+#[test]
+fn estimates_of_one_window_take_at_most_one_slot_per_period() {
+    let mut last = std::collections::HashMap::new();
+    let key = (
+        ws_core::ids::Ulid::new(),
+        "claude".to_string(),
+        "account".to_string(),
+        None,
+        "five_hour".to_string(),
+        "token-telemetry".to_string(),
+    );
+    assert!(collector::take_slot(&mut last, &key, 1_000));
+    assert!(!collector::take_slot(&mut last, &key, 60_999));
+    assert!(collector::take_slot(&mut last, &key, 61_000));
+    let other = (
+        key.0,
+        key.1.clone(),
+        key.2.clone(),
+        None,
+        "weekly".to_string(),
+        key.5.clone(),
+    );
+    assert!(collector::take_slot(&mut last, &other, 61_001));
 }

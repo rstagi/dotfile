@@ -18,6 +18,12 @@ use crate::{
 
 type WindowKey = (String, String, Option<String>, String);
 
+/// Usage readings by window. Appends keep it current, and a rebuild clears it.
+#[derive(Debug, Default)]
+pub(crate) struct UsageIndex {
+    windows: BTreeMap<WindowKey, Vec<LogEntry>>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Usage {
     pub windows: Vec<Window>,
@@ -57,29 +63,15 @@ async fn usage(State(store): State<Store>) -> Result<Json<Usage>, ApiError> {
 }
 
 fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage> {
-    let mut latest: BTreeMap<WindowKey, LogEntry> = BTreeMap::new();
-    for entry in sessions.registry.events_of_type("runner.usage.updated")? {
-        let body = &entry.body;
-        let (Some(runner), Some(account), Some(window)) = (
-            body[sc::RUNNER].as_str(),
-            body[sc::RUNNER_ACCOUNT_ID].as_str(),
-            body[sc::RUNNER_USAGE_WINDOW].as_str(),
-        ) else {
-            continue;
-        };
-        let key = (
-            runner.into(),
-            account.into(),
-            body[sc::RUNNER_USAGE_BUCKET].as_str().map(str::to_owned),
-            window.into(),
-        );
-        if latest
-            .get(&key)
-            .is_none_or(|previous| supersedes(&entry, previous, now))
-        {
-            latest.insert(key, entry);
+    // The history grows with each reading. Load it once, then keep only readings that can win.
+    if sessions.usage.is_none() {
+        let mut index = UsageIndex::default();
+        for entry in sessions.registry.events_of_type("runner.usage.updated")? {
+            index.observe(&entry);
         }
+        sessions.usage = Some(index);
     }
+    let latest = sessions.usage.as_mut().unwrap().select(now);
     let mut windows: Vec<_> = latest
         .into_iter()
         .map(|((runner, account, bucket, window), entry)| {
@@ -149,6 +141,60 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
         ))
     });
     Ok(Usage { windows })
+}
+
+impl UsageIndex {
+    pub(crate) fn observe(&mut self, entry: &LogEntry) {
+        if entry.event_type != "runner.usage.updated" {
+            return;
+        }
+        let body = &entry.body;
+        let (Some(runner), Some(account), Some(window)) = (
+            body[sc::RUNNER].as_str(),
+            body[sc::RUNNER_ACCOUNT_ID].as_str(),
+            body[sc::RUNNER_USAGE_WINDOW].as_str(),
+        ) else {
+            return;
+        };
+        let key = (
+            runner.into(),
+            account.into(),
+            body[sc::RUNNER_USAGE_BUCKET].as_str().map(str::to_owned),
+            window.into(),
+        );
+        self.windows.entry(key).or_default().push(entry.clone());
+    }
+
+    /// Selects the reading of each window. Drops readings that can never win again.
+    fn select(&mut self, now: u64) -> BTreeMap<WindowKey, LogEntry> {
+        let mut latest = BTreeMap::new();
+        for (key, entries) in &mut self.windows {
+            let mut best = 0;
+            for (index, entry) in entries.iter().enumerate().skip(1) {
+                if supersedes(entry, &entries[best], now) {
+                    best = index;
+                }
+            }
+            let newest = (0..entries.len())
+                .reduce(|kept, index| {
+                    if order(&entries[index]) > order(&entries[kept]) {
+                        index
+                    } else {
+                        kept
+                    }
+                })
+                .unwrap();
+            latest.insert(key.clone(), entries[best].clone());
+            // A report stops being live at its reset and never becomes live again.
+            let mut index = 0;
+            entries.retain(|entry| {
+                let keep = index == best || index == newest || live_report(entry, now);
+                index += 1;
+                keep
+            });
+        }
+        latest
+    }
 }
 
 /// Returns true when `entry` replaces `previous` as the selected reading of one window.
@@ -231,6 +277,31 @@ mod tests {
             supersedes(&report, &estimate, NOW),
             "An unexpired report must replace an estimate."
         );
+    }
+
+    #[test]
+    fn index_keeps_each_reading_that_can_still_win() {
+        let window = |mut entry: LogEntry| {
+            entry.body[sc::RUNNER] = "claude".into();
+            entry.body[sc::RUNNER_ACCOUNT_ID] = "account-a".into();
+            entry.body[sc::RUNNER_USAGE_WINDOW] = "five_hour".into();
+            entry
+        };
+        let report = window(reported(NOW + 60_000));
+        let estimate = window(estimated());
+        let mut index = UsageIndex::default();
+        index.observe(&report);
+        index.observe(&estimate);
+        let selected = |index: &mut UsageIndex, now| {
+            index
+                .select(now)
+                .into_values()
+                .map(|entry| entry.body[sc::RUNNER_USAGE_SOURCE].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(selected(&mut index, NOW), ["reported"]);
+        // After the reset, the newer estimate must still be available.
+        assert_eq!(selected(&mut index, NOW + 60_000), ["estimated"]);
     }
 
     #[test]

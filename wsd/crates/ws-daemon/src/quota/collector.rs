@@ -23,7 +23,7 @@ use ws_core::ids::SessionId;
 
 const PERIOD: Duration = Duration::from_secs(60);
 type Store = Arc<Mutex<Sessions>>;
-type ReadingKey = (SessionId, String, String, Option<String>, String, String);
+pub(crate) type ReadingKey = (SessionId, String, String, Option<String>, String, String);
 
 #[derive(Clone, Copy, Debug)]
 pub enum Trigger {
@@ -39,6 +39,9 @@ pub struct Requests {
 pub struct Collector {
     readers: HashMap<SessionId, Box<dyn Reader>>,
     last_rollout: HashMap<ReadingKey, serde_json::Value>,
+    /// The time of the last written estimate per window. Each boundary collects all readers,
+    /// so estimates without this limit grow the logs by one event per session every few seconds.
+    last_estimate: HashMap<ReadingKey, u64>,
     clock: Clock,
 }
 
@@ -78,6 +81,7 @@ impl Collector {
         Self {
             readers: HashMap::new(),
             last_rollout: HashMap::new(),
+            last_estimate: HashMap::new(),
             clock,
         }
     }
@@ -170,6 +174,11 @@ impl Collector {
                     reading.window,
                     reading.source_name.clone(),
                 );
+                if matches!(reading.source, super::Source::Estimated)
+                    && !take_slot(&mut self.last_estimate, &key, now)
+                {
+                    continue;
+                }
                 let mut snapshot = body.clone();
                 snapshot.as_object_mut().unwrap().remove("received_at_ms");
                 if matches!(
@@ -196,6 +205,7 @@ impl Collector {
         for id in terminal {
             self.readers.remove(&id);
             self.last_rollout.retain(|key, _| key.0 != id);
+            self.last_estimate.retain(|key, _| key.0 != id);
         }
         Ok(())
     }
@@ -290,4 +300,17 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Reserves the write of one estimate. Each window gets at most one write per period.
+pub(super) fn take_slot(last: &mut HashMap<ReadingKey, u64>, key: &ReadingKey, now: u64) -> bool {
+    let period = PERIOD.as_millis() as u64;
+    if last
+        .get(key)
+        .is_some_and(|at| now.saturating_sub(*at) < period)
+    {
+        return false;
+    }
+    last.insert(key.clone(), now);
+    true
 }

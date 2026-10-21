@@ -35,6 +35,8 @@ pub struct Sessions {
     pub(crate) changes: tokio::sync::watch::Sender<()>,
     pub(crate) shutdown: tokio::sync::watch::Sender<bool>,
     pub(crate) quota_requests: crate::quota::Requests,
+    /// Loaded by the first usage request.
+    pub(crate) usage: Option<crate::quota::usage::UsageIndex>,
     _writer_lock: File,
 }
 
@@ -102,6 +104,7 @@ impl Sessions {
             changes: tokio::sync::watch::channel(()).0,
             shutdown: tokio::sync::watch::channel(false).0,
             quota_requests: crate::quota::Requests::default(),
+            usage: None,
             _writer_lock: writer_lock,
         };
         sessions.recover_spans()?;
@@ -232,6 +235,7 @@ impl Sessions {
             self.registry.rebuild(&self.state)?;
             self.restore_triggers()?;
             self.recover_spans()?;
+            self.usage = None;
             self.needs_rebuild = false;
         }
         if let Some(parent) = parent_session_id {
@@ -267,6 +271,9 @@ impl Sessions {
         self.needs_rebuild = true;
         let entry = writer.append_current(event_type, body)?;
         self.registry.apply(&entry)?;
+        if let Some(usage) = &mut self.usage {
+            usage.observe(&entry);
+        }
         self.spans.lock().unwrap().observe(&entry)?;
         self.needs_rebuild = false;
         self.apply_trigger_entry(&entry);
