@@ -41,6 +41,15 @@ pub struct LogRead {
     head_hash: String,
 }
 
+/// Complete entries after a byte offset. A log shorter than the offset restarts at zero.
+#[derive(Debug, Default, PartialEq)]
+pub struct LogTail {
+    pub entries: Vec<LogEntry>,
+    /// The byte offset after the last complete line.
+    pub offset: u64,
+    pub restarted: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionLog {
     path: PathBuf,
@@ -108,6 +117,39 @@ impl SessionLog {
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(LogRead::default()),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Reads complete entries after `offset` without hash-chain validation.
+    /// Use it for incremental readers. Use `read` when the chain must be verified.
+    pub fn read_after(&self, offset: u64) -> io::Result<LogTail> {
+        let mut file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(LogTail {
+                    restarted: offset > 0,
+                    ..LogTail::default()
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        file.lock_shared()?;
+        let restarted = file.metadata()?.len() < offset;
+        let mut tail = LogTail {
+            offset: if restarted { 0 } else { offset },
+            restarted,
+            ..LogTail::default()
+        };
+        file.seek(SeekFrom::Start(tail.offset))?;
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line)? == 0 || !line.ends_with(b"\n") {
+                return Ok(tail);
+            }
+            tail.offset += line.len() as u64;
+            tail.entries.push(serde_json::from_slice(&line)?);
         }
     }
 }
@@ -321,6 +363,36 @@ mod tests {
         let first = log.append(0, "test.number", body).unwrap();
         let second = log.append(0, "test.number", json!({})).unwrap();
         assert_eq!(log.read().unwrap().entries, [first, second]);
+    }
+
+    #[test]
+    fn reads_only_complete_entries_after_an_offset_and_restarts_on_a_shorter_log() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+        assert_eq!(log.read_after(0).unwrap(), LogTail::default());
+        let first = log.append(0, "a", json!({})).unwrap();
+        let head = log.read_after(0).unwrap();
+        assert_eq!((head.entries, head.restarted), (vec![first], false));
+        let second = log.append(0, "b", json!({})).unwrap();
+        let path = sandbox
+            .path()
+            .join("sessions")
+            .join(second.session_id.to_string())
+            .join("log.jsonl");
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"partial")
+            .unwrap();
+        let tail = log.read_after(head.offset).unwrap();
+        assert_eq!(tail.entries, [second]);
+        assert_eq!(tail.offset, fs::metadata(&path).unwrap().len() - 9);
+        assert!(log.read_after(tail.offset).unwrap().entries.is_empty());
+        fs::write(&path, b"").unwrap();
+        let restarted = log.read_after(tail.offset).unwrap();
+        assert!(restarted.restarted && restarted.entries.is_empty());
+        assert_eq!(restarted.offset, 0);
     }
 
     #[test]

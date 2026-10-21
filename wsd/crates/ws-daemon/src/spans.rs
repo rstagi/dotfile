@@ -1,6 +1,7 @@
 //! Canonical turn, tool and model spans from durable events.
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     io,
     path::{Path, PathBuf},
@@ -19,7 +20,6 @@ pub(crate) type SharedSpans = Arc<Mutex<Spans>>;
 
 pub(crate) struct Spans {
     state: PathBuf,
-    device: DeviceId,
     log: TelemetryLog,
     emitter: crate::semconv_emit::Emitter,
     native_tracing: bool,
@@ -28,8 +28,16 @@ pub(crate) struct Spans {
     cursor: TelemetryCursor,
     pending_models: Vec<PendingModel>,
     native_streams: Vec<NativeStream>,
+    /// Turn links per target session. Each read parses only the log bytes after the last read.
+    turn_links: RefCell<HashMap<SessionId, TurnLinks>>,
     #[cfg(test)]
     scanned: usize,
+}
+
+#[derive(Default)]
+struct TurnLinks {
+    read_bytes: u64,
+    links: Vec<Value>,
 }
 
 /// A model record whose turn or timing was not yet known when it was read.
@@ -90,7 +98,6 @@ impl Spans {
         }
         Ok(Self {
             state: state.into(),
-            device,
             native_tracing: ws_core::config::Config::load(state)?
                 .telemetry
                 .native_tracing,
@@ -101,6 +108,7 @@ impl Spans {
             cursor: TelemetryCursor::default(),
             pending_models: Vec::new(),
             native_streams: Vec::new(),
+            turn_links: RefCell::default(),
             #[cfg(test)]
             scanned: 0,
         })
@@ -453,20 +461,34 @@ impl Spans {
         let mut targets: Vec<_> = state.relations.values().copied().collect();
         targets.sort();
         targets.dedup();
+        let mut cache = self.turn_links.borrow_mut();
         for target in targets {
-            let entries = ws_core::log::SessionLog::new(&self.state, target, self.device)
-                .read()?
-                .entries;
-            for entry in entries {
-                if matches!(entry.event_type.as_str(), "turn.started" | "phase.started")
-                    && entry.body["state_accepted"] != false
-                {
-                    let span = new_span(&entry, semconv::TURN_SPAN);
-                    links.push(json!({"traceId":span["traceId"],"spanId":span["spanId"]}));
-                }
-            }
+            let cached = cache.entry(target).or_default();
+            self.read_turn_links(target, cached)?;
+            links.extend(cached.links.iter().cloned());
         }
         Ok(links)
+    }
+
+    /// Appends the turn links of the log entries after the last read. Logs are append-only.
+    fn read_turn_links(&self, target: SessionId, cached: &mut TurnLinks) -> io::Result<()> {
+        let tail = ws_core::log::SessionLog::new(&self.state, target, DeviceId::nil())
+            .read_after(cached.read_bytes)?;
+        if tail.restarted {
+            cached.links.clear();
+        }
+        cached.read_bytes = tail.offset;
+        for entry in tail.entries {
+            if matches!(entry.event_type.as_str(), "turn.started" | "phase.started")
+                && entry.body["state_accepted"] != false
+            {
+                let span = new_span(&entry, semconv::TURN_SPAN);
+                cached
+                    .links
+                    .push(json!({"traceId":span["traceId"],"spanId":span["spanId"]}));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1185,6 +1207,49 @@ mod tests {
         assert_eq!(attribute(models[0], semconv::TIMING), "estimated");
         assert_eq!(models[0]["startTimeUnixNano"], "1000000");
         assert_eq!(models[0]["endTimeUnixNano"], "9000000");
+    }
+
+    #[test]
+    fn turn_links_include_target_turns_appended_after_an_earlier_link_read() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let parent = sessions.create(CreateSession::default()).unwrap();
+        let child = sessions
+            .create(CreateSession {
+                parent_session_id: Some(parent.id),
+                ..Default::default()
+            })
+            .unwrap();
+        for (id, start) in [
+            (parent.id, 100),
+            (child.id, 200),
+            (parent.id, 300),
+            (child.id, 400),
+        ] {
+            sessions
+                .append(id, "turn.started", json!({"observed_at_us":start}))
+                .unwrap();
+            sessions
+                .append(id, "turn.ended", json!({"observed_at_us":start+50}))
+                .unwrap();
+        }
+        let spans = stored_spans(&TelemetryLog::new(sandbox.path(), child.device_id));
+        let parent_trace = format!("{:032x}", u128::from(parent.id));
+        let child_trace = format!("{:032x}", u128::from(child.id));
+        let parent_links = |span: &Value| {
+            span["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|link| link["traceId"] == parent_trace)
+                .count()
+        };
+        let children: Vec<_> = spans
+            .iter()
+            .filter(|s| s["traceId"] == child_trace)
+            .collect();
+        assert_eq!(children.len(), 2);
+        assert_eq!(parent_links(children[1]), 2);
     }
 
     #[test]

@@ -9,7 +9,10 @@ use std::{
     io::{self, BufRead},
     path::{Path, PathBuf},
 };
-use ws_core::{ids::SessionId, log::SessionLog};
+use ws_core::{
+    ids::SessionId,
+    log::{LogEntry, SessionLog},
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Binding {
@@ -24,6 +27,16 @@ pub struct ClaudeReader {
     stream_event: Option<Value>,
     stream_readings: Vec<Reading>,
     first_receipt: Option<u64>,
+    facts: LogFacts,
+}
+
+/// Log facts that each read extends with the new log tail only.
+#[derive(Default)]
+struct LogFacts {
+    offset: u64,
+    callbacks: Vec<LogEntry>,
+    stdout: Option<String>,
+    previous: Vec<Value>,
 }
 
 struct Inputs {
@@ -43,10 +56,12 @@ impl Reader for ClaudeReader {
             let receipt = clock();
             let first = *self.first_receipt.get_or_insert(receipt);
             let bound_account = account.clone();
-            let inputs =
-                tokio::task::spawn_blocking(move || read_inputs(&bound_account, &state, id))
+            let facts = std::mem::take(&mut self.facts);
+            let (inputs, facts) =
+                tokio::task::spawn_blocking(move || read_inputs(&bound_account, &state, id, facts))
                     .await
                     .map_err(io::Error::other)??;
+            self.facts = facts;
             if inputs.stream != self.stream_event {
                 self.stream_readings = inputs
                     .stream
@@ -101,6 +116,7 @@ impl ClaudeReader {
             stream_event: None,
             stream_readings: Vec::new(),
             first_receipt: None,
+            facts: LogFacts::default(),
         }
     }
 }
@@ -227,15 +243,34 @@ fn parse_windows(windows: &Value, account: &str, received: u64, percentage: bool
     .collect()
 }
 
-fn read_inputs(account: &str, state: &Path, id: SessionId) -> io::Result<Inputs> {
-    let entries = SessionLog::new(state, id, ws_core::ids::Ulid::nil())
-        .read()?
-        .entries;
+fn read_inputs(
+    account: &str,
+    state: &Path,
+    id: SessionId,
+    mut facts: LogFacts,
+) -> io::Result<(Inputs, LogFacts)> {
+    let tail = SessionLog::new(state, id, ws_core::ids::Ulid::nil()).read_after(facts.offset)?;
+    if tail.restarted {
+        facts = LogFacts::default();
+    }
+    facts.offset = tail.offset;
+    for entry in tail.entries {
+        match entry.event_type.as_str() {
+            "hook.received" if entry.body["state"] == "quota" => facts.callbacks.push(entry),
+            "session.created" => {
+                facts.stdout = entry.body["stdout"].as_str().map(str::to_owned);
+            }
+            "runner.usage.updated"
+                if entry.body[ws_core::semconv::RUNNER_USAGE_SOURCE_NAME] == "stream-json"
+                    && entry.body[ws_core::semconv::RUNNER_ACCOUNT_ID] == account =>
+            {
+                facts.previous.push(entry.body);
+            }
+            _ => {}
+        }
+    }
     let mut status: Vec<Reading> = Vec::new();
-    let mut callbacks: Vec<_> = entries
-        .iter()
-        .filter(|entry| entry.event_type == "hook.received" && entry.body["state"] == "quota")
-        .collect();
+    let mut callbacks: Vec<_> = facts.callbacks.iter().collect();
     callbacks.sort_by_key(|entry| {
         entry.body["observed_at_us"]
             .as_u64()
@@ -259,26 +294,16 @@ fn read_inputs(account: &str, state: &Path, id: SessionId) -> io::Result<Inputs>
         }
         status = readings;
     }
-    let stream = entries
-        .iter()
-        .rev()
-        .find(|entry| entry.event_type == "session.created")
-        .and_then(|entry| entry.body["stdout"].as_str())
+    let stream = facts
+        .stdout
+        .as_deref()
         .and_then(|path| read_stream(Path::new(path)).ok().flatten());
-    let previous = entries
-        .into_iter()
-        .filter(|entry| {
-            entry.event_type == "runner.usage.updated"
-                && entry.body[ws_core::semconv::RUNNER_USAGE_SOURCE_NAME] == "stream-json"
-                && entry.body[ws_core::semconv::RUNNER_ACCOUNT_ID] == account
-        })
-        .map(|entry| entry.body)
-        .collect();
-    Ok(Inputs {
+    let inputs = Inputs {
         status,
         stream,
-        previous,
-    })
+        previous: facts.previous.clone(),
+    };
+    Ok((inputs, facts))
 }
 
 fn read_stream(path: &Path) -> io::Result<Option<Value>> {
