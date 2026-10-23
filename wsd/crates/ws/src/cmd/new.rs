@@ -1,7 +1,7 @@
 use crate::{Result, client};
 use hyper::Method;
-use serde_json::json;
-use std::path::Path;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 #[derive(clap::Args)]
 pub struct Options {
@@ -17,8 +17,31 @@ pub struct Options {
     pub scratch: bool,
     #[arg(long, default_value = "claude")]
     pub agent: String,
+    /// Give the session a unique name.
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Send this text to the agent as its first message.
+    #[arg(long)]
+    pub prompt: Option<String>,
     #[arg(long)]
     pub detach: bool,
+}
+
+/// The place where a new interactive session starts.
+pub(crate) enum Place {
+    Repo {
+        repo: PathBuf,
+        branch: Option<String>,
+    },
+    Directory(PathBuf),
+    Scratch,
+}
+
+/// The agent and first-turn options of a new interactive session.
+pub(crate) struct Launch {
+    pub agent: String,
+    pub name: Option<String>,
+    pub prompt: Option<String>,
 }
 
 pub async fn run(socket: &Path, options: Options) -> Result<()> {
@@ -28,80 +51,102 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
         scratch,
         cwd,
         agent,
+        name,
+        prompt,
         detach,
     } = options;
-    if scratch {
-        return start_directory(socket, json!({"scratch": true}), agent, detach).await;
-    }
-    if let Some(cwd) = cwd {
-        let cwd = expand_home(&cwd)?
-            .canonicalize()
-            .map_err(|_| format!("Cannot resolve the directory: {cwd}"))?;
-        return start_directory(socket, json!({"cwd": cwd}), agent, detach).await;
-    }
-    let repo = match repo {
-        Some(repo) => Some(expand_home(&repo)?),
-        None => pick_repo()?,
-    };
-    let Some(repo) = repo else {
-        if branch.is_some() {
-            return Err("Use --branch with a git repository.".into());
-        }
-        return start_directory(socket, json!({"scratch": true}), agent, detach).await;
-    };
-    let repo = repo
-        .canonicalize()
-        .map_err(|_| format!("not a git repo: {}", repo.display()))?;
-    if !std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()?
-        .status
-        .success()
-    {
-        if branch.is_some() {
-            return Err("Use --branch with a git repository.".into());
-        }
-        return start_directory(socket, json!({"cwd": repo}), agent, detach).await;
-    }
-    let branch = match branch {
-        Some(branch) => branch,
-        None => {
-            use std::io::{BufRead, Write};
-            let mut tty = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/tty")?;
-            write!(
-                tty,
-                "branch ({}): ",
-                repo.file_name().unwrap().to_string_lossy()
-            )?;
-            tty.flush()?;
-            let mut branch = String::new();
-            std::io::BufReader::new(tty).read_line(&mut branch)?;
-            branch.trim_end().to_owned()
+    let place = if scratch {
+        Place::Scratch
+    } else if let Some(cwd) = cwd {
+        Place::Directory(expand_home(&cwd)?)
+    } else {
+        let repo = match repo {
+            Some(repo) => Some(expand_home(&repo)?),
+            None => pick_repo()?,
+        };
+        match repo {
+            Some(repo) => Place::Repo { repo, branch },
+            None if branch.is_some() => return Err("Use --branch with a git repository.".into()),
+            None => Place::Scratch,
         }
     };
-    if branch.is_empty() {
-        return Err("new: branch required".into());
-    }
-    let parent_session_id = super::caller(socket).await?;
-    let body = client::request(
-        socket,
-        Method::POST,
-        "/v1/workspaces",
-        serde_json::to_vec(&json!({"repo": repo, "branch": branch, "agent": agent, "parent_session_id": parent_session_id}))?,
-    )
-    .await?;
-    let response: serde_json::Value = serde_json::from_slice(&body)?;
+    let (path, mut body) = request(
+        place,
+        Launch {
+            agent,
+            name,
+            prompt,
+        },
+        ask_branch,
+    )?;
+    body["parent_session_id"] = json!(super::caller(socket).await?);
+    let response = client::request(socket, Method::POST, path, serde_json::to_vec(&body)?).await?;
+    let response: Value = serde_json::from_slice(&response)?;
     focus(
         response["window_id"]
             .as_str()
-            .ok_or("The workspace response has no window id.")?,
+            .ok_or("The daemon response has no window id.")?,
         detach,
     )
+}
+
+/// Resolves a place to a daemon start route and body.
+/// A git repository needs a branch. `missing_branch` supplies it or fails.
+pub(crate) fn request(
+    place: Place,
+    launch: Launch,
+    missing_branch: impl FnOnce(&Path) -> Result<String>,
+) -> Result<(&'static str, Value)> {
+    let Launch {
+        agent,
+        name,
+        prompt,
+    } = launch;
+    let directory = |place: Value| {
+        let mut body = place;
+        body["agent"] = json!(agent);
+        body["name"] = json!(name);
+        body["prompt"] = json!(prompt);
+        ("/v1/sessions/start", body)
+    };
+    match place {
+        Place::Scratch => Ok(directory(json!({"scratch": true}))),
+        Place::Directory(cwd) => {
+            let cwd = cwd
+                .canonicalize()
+                .map_err(|_| format!("Cannot resolve the directory: {}", cwd.display()))?;
+            Ok(directory(json!({"cwd": cwd})))
+        }
+        Place::Repo { repo, branch } => {
+            let repo = repo
+                .canonicalize()
+                .map_err(|_| format!("not a git repo: {}", repo.display()))?;
+            if !std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "--is-inside-work-tree"])
+                .output()?
+                .status
+                .success()
+            {
+                if branch.is_some() {
+                    return Err("Use --branch with a git repository.".into());
+                }
+                return Ok(directory(json!({"cwd": repo})));
+            }
+            let branch = match branch {
+                Some(branch) => branch,
+                None => missing_branch(&repo)?,
+            };
+            if branch.is_empty() {
+                return Err("new: branch required".into());
+            }
+            Ok((
+                "/v1/workspaces",
+                json!({"repo": repo, "branch": branch, "agent": agent, "name": name, "prompt": prompt}),
+            ))
+        }
+    }
 }
 
 pub(super) fn expand_home(path: &str) -> Result<std::path::PathBuf> {
@@ -143,28 +188,21 @@ pub(super) fn focus(window: &str, detach: bool) -> Result<()> {
     Ok(())
 }
 
-async fn start_directory(
-    socket: &Path,
-    mut body: serde_json::Value,
-    agent: String,
-    detach: bool,
-) -> Result<()> {
-    body["agent"] = json!(agent);
-    body["parent_session_id"] = json!(super::caller(socket).await?);
-    let response = client::request(
-        socket,
-        Method::POST,
-        "/v1/sessions/start",
-        serde_json::to_vec(&body)?,
-    )
-    .await?;
-    let response: serde_json::Value = serde_json::from_slice(&response)?;
-    focus(
-        response["window_id"]
-            .as_str()
-            .ok_or("The session response has no window id.")?,
-        detach,
-    )
+fn ask_branch(repo: &Path) -> Result<String> {
+    use std::io::{BufRead, Write};
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")?;
+    write!(
+        tty,
+        "branch ({}): ",
+        repo.file_name().unwrap().to_string_lossy()
+    )?;
+    tty.flush()?;
+    let mut branch = String::new();
+    std::io::BufReader::new(tty).read_line(&mut branch)?;
+    Ok(branch.trim_end().to_owned())
 }
 
 fn pick_repo() -> Result<Option<std::path::PathBuf>> {

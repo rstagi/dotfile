@@ -58,8 +58,14 @@ assert_eq "$(cat "$HOME/action")" $'_pick_focus\n'"$window" 'Enter focuses the R
 assert_contains "$(cat "$HOME/arguments")" '_summary' 'the picker loads its summary through ws'
 PICKER_KEY=ctrl-t run_picker pick
 assert_eq "$(cat "$HOME/action")" $'add\n/tmp/a workspace\n--agent\ncodex' 'Ctrl-T adds Codex to the selected workspace'
+PICKER_KEY=ctrl-n run_picker pick
+assert_eq "$(cat "$HOME/action")" $'new\n--scratch' 'Ctrl-N starts a Claude scratch session'
 PICKER_KEY=ctrl-r run_picker pick
-assert_eq "$(cat "$HOME/action")" $'new\n--agent\ngrok' 'Ctrl-R creates a Grok workspace'
+assert_eq "$(cat "$HOME/action")" $'new\n--scratch\n--agent\ngrok' 'Ctrl-R starts a Grok scratch session'
+PICKER_KEY=alt-n run_picker pick
+assert_eq "$(cat "$HOME/action")" 'new' 'Alt-N creates a Claude workspace'
+PICKER_KEY=alt-o run_picker pick
+assert_eq "$(cat "$HOME/action")" $'new\n--agent\ncodex' 'Alt-O creates a Codex workspace'
 PICKER_CANCEL=1 run_picker pick
 assert_exit "$?" 0 'cancel closes the picker without an error'
 

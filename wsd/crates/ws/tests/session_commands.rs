@@ -69,6 +69,74 @@ fn session_json_shows_the_place_and_repos_without_a_workspace() {
 }
 
 #[test]
+fn sessions_nest_children_under_their_parents_and_show_names() {
+    let home = common::SandboxRoot::new();
+    let socket = home.path().join("wsd.sock");
+    let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    let create = |body: Value| -> Value {
+        let response = common::request(&socket, "POST", "/v1/sessions", &body.to_string());
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    let root = create(json!({"name":"root"}));
+    let first = create(json!({"name":"first-child", "parent_session_id":root["id"]}));
+    let other = create(json!({}));
+    create(json!({"parent_session_id":root["id"]}));
+    create(json!({"name":"grandchild", "parent_session_id":first["id"]}));
+    let output = common::ws(home.path(), &socket)
+        .arg("sessions")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let labels: Vec<Vec<String>> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| line.split('\t').take(2).map(str::to_owned).collect())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            ["root", "#1"],
+            ["└ first-child", "#2"],
+            ["  └ grandchild", "#5"],
+            ["└ #4", "#4"],
+            ["#3", "#3"],
+        ]
+    );
+    let output = common::ws(home.path(), &socket)
+        .args(["sessions", "--json"])
+        .output()
+        .unwrap();
+    let listed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed[1]["parent_session_id"], root["id"]);
+    assert_eq!(listed[2]["id"], other["id"]);
+    assert!(listed[2]["parent_session_id"].is_null());
+    let child = first["id"].as_str().unwrap();
+    for args in [
+        &["show", child, "--json"][..],
+        &["sessions", child, "--json"],
+    ] {
+        let output = common::ws(home.path(), &socket)
+            .args(args)
+            .output()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let session = if args[0] == "sessions" {
+            &value[0]
+        } else {
+            &value
+        };
+        assert_eq!(session["parent_session_id"], root["id"], "{args:?}");
+    }
+    let output = common::ws(home.path(), &socket)
+        .args(["whoami", "--json"])
+        .env("WS_SESSION_ID", child)
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["parent_session_id"], root["id"]);
+}
+
+#[test]
 fn sessions_matches_the_zsh_golden_output_and_resolves_names() {
     let sandbox = Sandbox::new();
     sandbox.assert_golden(&["sessions"], include_str!("golden/sessions.txt"));
@@ -86,14 +154,14 @@ fn sessions_matches_the_zsh_golden_output_and_resolves_names() {
     let working = sandbox.run(&["sessions", "#1"]);
     assert_eq!(
         String::from_utf8_lossy(&working.stdout),
-        "#1\t\tapi/seed\tclaude\tworking\tactive\n"
+        "#1\t#1\tapi/seed\tclaude\tworking\tactive\n"
     );
     tmux.set_window_option(&sandbox.window, "@ws_session", "unrelated")
         .unwrap();
     let stopped = sandbox.run(&["sessions", "#1"]);
     assert_eq!(
         String::from_utf8_lossy(&stopped.stdout),
-        "#1\t\tapi/seed\tclaude\tstopped\tactive\n"
+        "#1\t#1\tapi/seed\tclaude\tstopped\tactive\n"
     );
 }
 
@@ -108,7 +176,7 @@ fn sessions_keep_legacy_window_activity() {
             tmux.set_state(&sandbox.window, state).unwrap();
             sandbox.assert_golden(
                 &["sessions", "#1"],
-                &format!("#1\t\tapi/seed\tclaude\t{state}\tactive\n"),
+                &format!("#1\t#1\tapi/seed\tclaude\t{state}\tactive\n"),
             );
         }
     }

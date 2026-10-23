@@ -10,7 +10,7 @@ const OUTSIDE: &str = "whoami: not inside a ws session";
 pub async fn run(socket: &Path, json: bool) -> Result<()> {
     let session = current(socket).await?;
     if json {
-        println!("{}", serde_json::to_string(&session)?);
+        println!("{}", super::session_json(&session)?);
     } else {
         println!("#{}", session.alias);
     }

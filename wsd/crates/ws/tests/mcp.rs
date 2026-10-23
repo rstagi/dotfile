@@ -40,6 +40,7 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
             "session_depends_on",
             "session_get",
             "session_list",
+            "session_rename",
             "session_send",
             "session_stop",
             "session_tail",
@@ -122,6 +123,80 @@ async fn session_create_and_get_match_the_json_cli() {
     server.finish().await;
 }
 
+#[tokio::test]
+async fn session_rename_renames_only_the_caller_and_reports_clear_errors() {
+    let server = TestServer::start().await;
+    let other = server
+        .call("session_create", json!({"name":"taken-name"}))
+        .await;
+    let renamed = server
+        .call("session_rename", json!({"name":"fix-login-bug"}))
+        .await;
+    assert_eq!(renamed["id"], server.parent);
+    assert_eq!(renamed["name"], "fix-login-bug");
+    assert_eq!(
+        server.cli(&["session", "get", &server.parent, "--json"])["name"],
+        "fix-login-bug"
+    );
+    for (name, code) in [
+        ("1-bad name", "invalid_request"),
+        ("taken-name", "name_taken"),
+    ] {
+        let error = server.error("session_rename", json!({"name":name})).await;
+        assert_eq!(error["error"]["code"], code, "{error}");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("name")),
+            "{error}"
+        );
+    }
+    let rejected = server
+        .error("session_rename", json!({"name":"x", "target":other["id"]}))
+        .await;
+    assert!(
+        rejected["error"]["message"].as_str().is_some(),
+        "{rejected}"
+    );
+    assert_eq!(
+        server.cli(&["session", "get", other["id"].as_str().unwrap(), "--json"])["name"],
+        "taken-name"
+    );
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn session_rename_requires_a_caller_identity() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = home.path().join("ws.sock");
+    let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    let mut command = tokio::process::Command::from(common::ws(home.path(), &socket));
+    command.arg("mcp");
+    let client = tokio::time::timeout(
+        Duration::from_secs(30),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("session_rename")
+                .with_arguments(json!({"name":"orphan"}).as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    let error = result.structured_content.unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("WS_SESSION_ID")),
+        "{error}"
+    );
+    client.cancel().await.unwrap();
+}
+
 struct TestServer {
     client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
     _daemon: common::Daemon,
@@ -182,6 +257,19 @@ impl TestServer {
             serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
         assert_eq!(result.structured_content.as_ref(), Some(&value));
         value
+    }
+
+    async fn error(&self, name: &str, arguments: Value) -> Value {
+        let result = self
+            .client
+            .call_tool(
+                CallToolRequestParams::new(name.to_owned())
+                    .with_arguments(arguments.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        result.structured_content.unwrap()
     }
 
     fn cli(&self, arguments: &[&str]) -> Value {

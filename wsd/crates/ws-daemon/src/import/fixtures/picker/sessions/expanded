@@ -1,5 +1,5 @@
 📌 [1mapi           [0m   orphan                   [2m·[0m [2mstopped[0m	@HOME@/worktrees/api/orphan	
    [1mapi           [0m [1;36m•[0m alpha                    [31m●[0m [2m3 sessions[0m	@HOME@/worktrees/api/alpha	@2
-                   └ [32m○[0m claude                 [2midle[0m	@HOME@/worktrees/api/alpha	@0
-                   └ [33m◐[0m codex#2                [2mworking[0m	@HOME@/worktrees/api/alpha	@1
-                 [1;36m•[0m └ [31m●[0m grok#3                 [2mwaiting[0m	@HOME@/worktrees/api/alpha	@2
+                   └ [32m○[0m claude #2              [2midle[0m	@HOME@/worktrees/api/alpha	@0
+                   └ [33m◐[0m codex#2 #3             [2mworking[0m	@HOME@/worktrees/api/alpha	@1
+                 [1;36m•[0m └ [31m●[0m grok#3 #4              [2mwaiting[0m	@HOME@/worktrees/api/alpha	@2

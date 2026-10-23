@@ -12,6 +12,8 @@ pub async fn run(socket: &Path) -> Result<ExitCode> {
                 scratch: false,
                 cwd: None,
                 agent: "claude".into(),
+                name: None,
+                prompt: None,
                 detach: false,
             },
         )

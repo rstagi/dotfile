@@ -1,3 +1,4 @@
 [31m●[0m 2 waiting · [33m◐[0m 2 working · [32m○[0m 2 idle · [2m·[0m 1 stopped · [36m•[0m 2 unread
 [2m↵ open · ^s sessions · ^p pin · ^u unread · ^x rm[0m
-[2m^n/^o/^r new claude/codex/grok · ^a/^t/^v add claude/codex/grok tab[0m
+[2m^n/^o/^r scratch claude/codex/grok · alt-n/o/r new claude/codex/grok[0m
+[2m^a/^t/^v add claude/codex/grok tab[0m
