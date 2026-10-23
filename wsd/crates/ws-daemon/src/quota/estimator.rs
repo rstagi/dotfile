@@ -189,14 +189,15 @@ fn model_records(state: &Path) -> io::Result<Vec<ModelRecord>> {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let (cursor, records) = cache.entry(state.to_path_buf()).or_default();
-    let tail = TelemetryLog::new(state, device.device_id).read_after(*cursor)?;
-    if tail.restarted {
+    // Stream the records. The first scan reads the whole log.
+    let mut fresh = ModelRecords::default();
+    let scan = TelemetryLog::new(state, device.device_id)
+        .scan_after(*cursor, |record| add_model_records(&mut fresh, &record))?;
+    if scan.restarted {
         records.clear();
     }
-    for record in &tail.records {
-        add_model_records(records, record);
-    }
-    *cursor = tail.cursor;
+    records.extend(fresh);
+    *cursor = scan.cursor;
     Ok(records.values().cloned().collect())
 }
 

@@ -179,26 +179,32 @@ impl TelemetryLog {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
             Err(error) => return Err(error),
         };
-        let bytes = read_bytes(&mut file)?;
         // Parse only the timestamps. Full payloads make this scan hold the append lock for seconds.
-        let mut kept = Vec::new();
-        let mut removed = 0;
-        for line in complete_lines(&bytes) {
+        // Stream the lines. Memory holds one line, not the file.
+        let expired = |line: &[u8]| -> io::Result<bool> {
             let stamp: ReceivedAt = serde_json::from_slice(line)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            if stamp.received_at_ms < cutoff_ms {
-                removed += 1;
-            } else {
-                kept.push(line);
-            }
-        }
+            Ok(stamp.received_at_ms < cutoff_ms)
+        };
+        let mut removed = 0;
+        for_each_complete_line(&mut file, |line| {
+            removed += usize::from(expired(line)?);
+            Ok(())
+        })?;
         if removed == 0 {
             return Ok(0);
         }
+        file.seek(SeekFrom::Start(0))?;
         let mut replacement = tempfile::NamedTempFile::new_in(&self.directory)?;
-        for line in kept {
-            replacement.write_all(line)?;
-            replacement.write_all(b"\n")?;
+        {
+            let mut writer = io::BufWriter::new(replacement.as_file_mut());
+            for_each_complete_line(&mut file, |line| {
+                if !expired(line)? {
+                    writer.write_all(line)?;
+                }
+                Ok(())
+            })?;
+            writer.flush()?;
         }
         replacement.as_file().sync_all()?;
         replacement.persist(path).map_err(|error| error.error)?;
@@ -276,24 +282,22 @@ fn repair_tail(file: &mut File) -> io::Result<()> {
     file.set_len(0)
 }
 
-fn read_bytes(file: &mut File) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-/// Non-empty lines before the last newline. Ignores an incomplete crash tail.
-fn complete_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    bytes[..valid_length(bytes)]
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-}
-
-fn valid_length(bytes: &[u8]) -> usize {
-    bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index + 1)
+/// Calls `visit` with each non-empty line that ends in a newline, newline included. Ignores an incomplete crash tail.
+fn for_each_complete_line(
+    file: &mut File,
+    mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 || !line.ends_with(b"\n") {
+            return Ok(());
+        }
+        if line.len() > 1 {
+            visit(&line)?;
+        }
+    }
 }
 
 #[cfg(test)]
