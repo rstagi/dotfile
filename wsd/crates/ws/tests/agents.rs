@@ -524,6 +524,42 @@ fn an_agent_exit_preserves_a_user_tab_without_a_workspace() {
     );
 }
 
+#[test]
+fn a_failed_agent_exit_fails_the_session_and_a_message_reopens_it() {
+    let (sandbox, id, _window, pane) = session_window_sandbox();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/agents/exit",
+        &json!({"id":id, "pane":pane, "code":1, "user_tab":false}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let shown = sandbox.json(&["show", &id, "--json"]);
+    assert_eq!(shown["state"], "failed", "{shown}");
+    assert_eq!(shown["exit_code"], 1, "{shown}");
+    let waited = sandbox.output(&["wait", &id, "--for", "state=failed", "--timeout", "5"]);
+    assert!(waited.status.success(), "{waited:?}");
+    let sent = sandbox.output(&["send", &id, "Try again."]);
+    assert_eq!(sent.status.code(), Some(75), "{sent:?}");
+    assert_eq!(sandbox.json(&["show", &id, "--json"])["state"], "running");
+    let (agent, _running) = sandbox.capture();
+    assert_eq!(agent["id"], id);
+}
+
+#[test]
+fn a_late_agent_exit_keeps_a_finished_session_finished() {
+    let (sandbox, id, _window, pane) = session_window_sandbox();
+    assert!(sandbox.output(&["session", "stop", &id]).status.success());
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/agents/exit",
+        &json!({"id":id, "pane":pane, "code":1, "user_tab":false}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(sandbox.json(&["show", &id, "--json"])["state"], "finished");
+}
+
 fn session_window_sandbox() -> (Sandbox, String, String, String) {
     let id = ws_core::ids::Ulid::new().to_string();
     let mut window = String::new();
@@ -1544,7 +1580,7 @@ fn named_agent_commands_run_in_the_current_tab_and_preserve_failed_slots() {
             if exit_code == 0 {
                 "finished"
             } else {
-                "running"
+                "failed"
             }
         );
         sandbox.tmux(&["display-message", "-p", "-t", &window, "#{pane_id}"]);
