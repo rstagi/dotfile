@@ -27,7 +27,6 @@ macOS dotfile repo w/ automated dev environment setup. Installs shell config, CL
 shellcheck install.sh
 
 # Syntax-check zsh scripts
-zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
 zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh
 
 # Loop shell tests and picker smoke test, including zsh syntax checks
@@ -70,9 +69,6 @@ python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
 ```
 install.sh              Main installer - 25 packages, dependency resolution
 install-agent-skills.sh Shares Loop, ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
-ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
-ralph-source-github.sh  GitHub source adapter for Ralph
-ralph-source-linear.sh  Linear source adapter for Ralph
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
 loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
@@ -101,7 +97,7 @@ wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 .claude/skills/ws-orchestrate/ Repo-less orchestrator: one child session per repo, ws-message coordination, PR URL summary, no repo edits
 .claude/skills/visual-explainer/ Props JSON → concept graph (graph.mjs: nodes, edges, fixed layout) → one self-contained surfable HTML page (plan|ship), zero-dep render.mjs + schemas. Narration JSON (tour stops) → page tour + narrated MP4 whose camera moves over the same graph (render-video.mjs, Remotion video/ project, rendered in ~/.cache)
 .zshrc                  Main shell config, sources extensions
-.zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)
+.zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, claude, ws)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
 ```
 
@@ -130,7 +126,7 @@ Cargo tests cover the CLI and daemon. `zsh ws/tests/run.sh` tests the embedded p
 
 **Idempotent install:** a second run of an install step changes no file. Links use `link_file` (keeps a different file and prints a warning) or `replace_with_link` (moves a different file to a new backup first). Each backup gets a unique `<path>.bak.<timestamp>` name. `tests/install-packages.test.sh` runs each package two times and compares the sandbox HOME.
 
-**Dependency resolution:** Some packages auto-install deps (ralph→node, kubectl→gcloud, docker→gcloud, python→pyenv+pipx, ws→tmux+fzf+neovim).
+**Dependency resolution:** Some packages auto-install deps (kubectl→gcloud, docker→gcloud, python→pyenv+pipx, ws→tmux+fzf+neovim).
 
 **Loop engineering:** `.claude/skills/loop-execute` orchestrates a plan end-to-end across repositories: one repository per phase and one integration branch/worktree/PR per repository. Explicit PR-review phases use Adversarial Review (AR): a read-only reviewer R reviews a frozen artifact, then a critic C from another provider audits that review. Disagreements require code evidence; each response and critic call is a fresh runner with the prior exchange inlined. Only the fixer edits code, between outer rounds. Tiers are `[review: standard|max]` (default standard): standard uses Sol / Opus / Grok; max uses Astra / Fable / Grok. `[rounds: N]` is a maximum (default 2) and `[inner: N]` defaults to 2. Both accept 1..5. Provider roles rotate GPT→Claude, Claude→Grok, Grok→GPT across outer rounds. A round in which R and C agree that no blocking finding is open goes straight to final. New reviews have no third-provider confirm. Legacy ledgers with `confirm` rows still replay. Reaching the inner cap without agreement writes `.disputed.md`; disputed items must be checked against code and never count as clean. R gives each finding one class: blocking (`security`, `unprotected-breakage` or `failing-check`, with evidence) or deferred. R ends with `NEEDS_CHANGES` only when a blocking finding stays. Deferred findings never cause a fix, a dispute or `REQUEST_CHANGES`. Before the last outer round, Opus fixes run iff the reviewer ends with `NEEDS_CHANGES` or the round is disputed. The next round checks only the fix diff and the open blocking items. An Opus final reviewer alone posts the GitHub review: `REQUEST_CHANGES` for an open blocking finding, otherwise `APPROVE`. On a PR that the authenticated user opened, it posts `COMMENT` with a `Verdict:` line.
 
@@ -163,14 +159,3 @@ GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.js
 | `gsq` | squash to parent branch |
 | `gremreb` | fetch + rebase on parent |
 | `gbparent` | detect parent branch |
-
-## Secrets Management
-
-1Password is the source of API keys. The login Keychain caches them. `secret` is defined in `.zshrc_claude_ext`:
-
-```bash
-secret NAME                # print the key; on a cache miss, read 1Password once (Touch ID) and cache it
-secret --refresh [NAME...] # read 1Password again (all names when none given)
-```
-
-Add a new key to `_SECRET_REFS` (name → `op://` path). Set the key only for the command that needs it, for example `KEY=$(secret KEY) command tool`. Do not export keys to the shell. No 1Password service account token is used.

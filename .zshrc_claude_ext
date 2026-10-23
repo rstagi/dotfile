@@ -1,44 +1,5 @@
 # General Claude Code tools
 
-# Logging helpers (stderr so they don't pollute command output)
-_claude_log() { printf '[%s] [claude-ext] %s\n' "$(date '+%H:%M:%S')" "$1" >&2; }
-_claude_log_error() { printf '[%s] [claude-ext] ERROR: %s\n' "$(date '+%H:%M:%S')" "$1" >&2; }
-
-# Secrets: 1Password is the source, the login Keychain is a local cache.
-# `secret NAME` prints the cached value. On a miss it reads 1Password once (Touch ID) and caches it.
-# `secret --refresh [NAME...]` reads 1Password again (all names when none given).
-# Set a key only for the command that needs it. Do not export it to the shell.
-typeset -gA _SECRET_REFS=(
-  BROWSER_USE_API_KEY "op://Remote Agents/Browser-use API Key/credential"
-  LINEAR_API_KEY      "op://Remote Agents/Linear API Key/credential"
-  ZAI_API_KEY         "op://Remote Agents/Z.AI API Key/credential"
-)
-
-secret() {
-  if [[ $1 == --refresh ]]; then
-    shift
-    local -a names=("$@")
-    (( $#names )) || names=(${(k)_SECRET_REFS})
-    local name
-    for name in $names; do _secret_fetch "$name" >/dev/null || return 1; done
-    return 0
-  fi
-  [[ -n $1 ]] || { _claude_log_error "usage: secret [--refresh] NAME"; return 2; }
-  security find-generic-password -a "$USER" -s "dotfile.$1" -w 2>/dev/null || _secret_fetch "$1"
-}
-
-# Reads NAME from 1Password, caches it in the Keychain and prints it.
-_secret_fetch() {
-  local name=$1 ref=${_SECRET_REFS[$1]} value
-  [[ -n $ref ]] || { _claude_log_error "secret: unknown name $name"; return 1; }
-  value=$(op read "$ref") || { _claude_log_error "secret: op read failed for $name"; return 1; }
-  [[ -n $value ]] || { _claude_log_error "secret: $name is empty in 1Password"; return 1; }
-  # security -i reads the command from stdin, so the value never appears in an argv.
-  printf 'add-generic-password -U -a "%s" -s "dotfile.%s" -w "%s"\n' "$USER" "$name" "$value" \
-    | security -i >/dev/null || { _claude_log_error "secret: Keychain write failed for $name"; return 1; }
-  printf '%s\n' "$value"
-}
-
 # Non-interactive claude with real-time streaming output
 # Usage: claude_stream [extra-flags...] "prompt"
 # Alias: ccs
@@ -49,22 +10,5 @@ claude_stream() {
 }
 alias ccs="claude_stream"
 
-# Claude Code with GLM-4.6 via Z.AI
-claudeg() {
-  local token
-  token=$(secret ZAI_API_KEY) || return 1
-  ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
-  ANTHROPIC_AUTH_TOKEN="$token" \
-  ANTHROPIC_MODEL="glm-4.6" \
-  command claude "$@"
-}
-
 # Kill all Claude watcher notifications
 alias claude-shh="source ~/dotfile/scripts/claude-hooks-lib.sh && kill_all_watchers"
-
-# Browser-use wrapper with lazy API key loading
-browser-use() {
-  local key
-  key=$(secret BROWSER_USE_API_KEY) || return 1
-  BROWSER_USE_API_KEY="$key" command browser-use "$@"
-}

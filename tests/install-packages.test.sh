@@ -232,7 +232,7 @@ assert_eq "${#new_backups}" 1 "neovim makes one new backup"
 assert_eq "$(cat $new_backups < /dev/null)" "-- user nvim config" "neovim moves the user folder to the new backup"
 
 echo "install: each configure step is idempotent"
-for package in tmux python node terraform gcloud kubectl docker ws loop-web claude-config ralph gh fzf zsh; do
+for package in tmux python node terraform gcloud kubectl docker ws loop-web claude-config gh fzf zsh; do
   reset_home
   assert_idempotent "$package" run_step "install_package $package"
 done
@@ -260,7 +260,7 @@ printf 'export EDITOR=nvim' > "$TMP/home/.zshrc_ext"
 run_installer false 'install_package terraform'
 assert_eq "$(<"$TMP/home/.zshrc_ext")" "export EDITOR=nvim"$'\n'"source $TMP/home/dotfile/.zshrc_terraform_ext" "terraform adds its line after a last line with no newline"
 # Only the exact line counts. A line in a comment does not stop the installer.
-for package ext in ws ws loop-web loop_web ralph ralph; do
+for package ext in ws ws loop-web loop_web claude-config claude; do
   reset_home
   print -r -- "# source $TMP/home/dotfile/.zshrc_${ext}_ext" > "$TMP/home/.zshrc_ext"
   run_installer false "install_package $package"

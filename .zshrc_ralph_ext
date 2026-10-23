@@ -1,8 +1,0 @@
-# Ralph-specific tools
-source "$HOME/dotfile/.zshrc_claude_ext"
-
-# Ralph agent (GitHub + Linear)
-# Usage: ralph [--github <issue>|--linear <id>] [max-iterations] [model]
-ralph() {
-  "$HOME/dotfile/ralph-agent.sh" "$@"
-}

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "rust" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "ralph" "claude-config" "loop-web" "ws" "grok")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "rust" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "claude-config" "loop-web" "ws" "grok")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -15,7 +15,6 @@ get_dependencies() {
     "docker") echo "gcloud" ;;
     "zsh") echo "" ;;
     "python") echo "pyenv pipx" ;;
-    "ralph") echo "node" ;;
     "loop-web") echo "node" ;;
     "ws") echo "tmux fzf neovim rust" ;;
     "claude-config") echo "claude-code" ;;
@@ -278,7 +277,6 @@ install_package() {
     "ripgrep") install_pkg_if_needed "ripgrep" ;;
     "tailscale") install_tailscale ;;
     "claude-code") install_claude_code ;;
-    "ralph") install_claude_tools ;;
     "loop-web") install_loop_web ;;
     "ws") install_ws ;;
     "grok") install_grok ;;
@@ -766,25 +764,6 @@ install_claude_code() {
   fi
 }
 
-install_claude_tools() {
-  if ! command -v ralph &> /dev/null; then
-    if [ "$INTERACTIVE_MODE" = true ]; then
-      if read_yes "ralph is not installed. Do you want to install it?"; then
-        npm install -g @anthropic-ai/ralph
-      fi
-    else
-      echo "Installing ralph..."
-      npm install -g @anthropic-ai/ralph
-    fi
-  else
-    echo "ralph is already installed"
-  fi
-
-  # Ensure Claude tools are sourced in .zshrc_ext
-  append_line "source $HOME/dotfile/.zshrc_claude_ext" "$HOME/.zshrc_ext"
-  append_line "source $HOME/dotfile/.zshrc_ralph_ext" "$HOME/.zshrc_ext"
-}
-
 # Parallel web search MCP (https://search.parallel.ai/mcp) for Claude Code, Codex and Ratel Local.
 # Key: 1Password "Parallel API Key" (or $PARALLEL_API_KEY), written as a literal header since
 # agents don't inherit shell secrets. Idempotent per agent.
@@ -812,6 +791,7 @@ install_claude_config() {
     mkdir -p ~/.claude
     replace_with_link "$HOME/dotfile/.claude/agents" "$HOME/.claude/agents" || return 1
     replace_with_link "$HOME/dotfile/.claude/skills" "$HOME/.claude/skills" || return 1
+    append_line "source $HOME/dotfile/.zshrc_claude_ext" "$HOME/.zshrc_ext"
 
     # Symlink global instruction files from dotfile repo
     replace_with_link "$HOME/dotfile/CLAUDE_GLOBAL.md" "$HOME/.claude/CLAUDE.md" || return 1
@@ -913,7 +893,6 @@ main() {
     install_pkg_if_needed "ripgrep"
     install_tailscale
     install_claude_code
-    install_claude_tools
   else
     # Selective installation mode
     if [ "$DRY_RUN" = true ]; then

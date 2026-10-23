@@ -439,7 +439,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
     PHASES_DONE              # legacy no-kind plan only: synthetic review ready
 ```
 
-Worktrees live outside the repo (ralph convention):
+Worktrees live outside the repo:
 
 - Lane: `~/.loop/worktrees/<runId>/<owner--repo>/<lane-branch-slug>` on the phase's
   Suggested branch, cut from that repository's current integration tip. A lane repository
