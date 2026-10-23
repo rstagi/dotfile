@@ -22,7 +22,16 @@
 //! Apply entries in sequence within each session. Independent logs can arrive in any order.
 //! Unknown event types advance the projection cursor without changing the query tables.
 
-use std::{collections::HashSet, fmt, fs, io, path::Path, time::Duration};
+use std::{
+    collections::HashSet,
+    fmt, fs, io,
+    path::Path,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -252,12 +261,17 @@ impl Registry {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_batch("DELETE FROM aliases; DELETE FROM sessions; DELETE FROM workspaces; DELETE FROM edges; DELETE FROM messages; DELETE FROM applied_events;")?;
         let mut report = RebuildReport::default();
-        // Read one log at a time. Memory holds the largest log, not every log.
-        for session in session_directories(state)? {
-            for entry in read_log(state, session, &mut report)? {
-                apply_entry(&tx, &entry)?;
-            }
-        }
+        for_each_log(
+            state,
+            &session_directories(state)?,
+            &mut report,
+            |_, entries| {
+                for entry in &entries {
+                    apply_entry(&tx, entry)?;
+                }
+                Ok(())
+            },
+        )?;
         tx.commit()?;
         Ok(report)
     }
@@ -283,8 +297,11 @@ impl Registry {
             return Ok(None);
         }
         let mut report = RebuildReport::default();
-        for session in sessions {
-            let entries = read_log(state, session, &mut report)?;
+        let mut diverged = false;
+        for_each_log(state, &sessions, &mut report, |session, entries| {
+            if diverged {
+                return Ok(());
+            }
             let last: Option<(i64, String)> = tx
                 .query_row(
                     "SELECT seq, entry FROM applied_events WHERE session_id = ?1 ORDER BY seq DESC LIMIT 1",
@@ -299,7 +316,10 @@ impl Registry {
                     let seq = usize::try_from(seq).unwrap_or(usize::MAX);
                     match seq.checked_sub(1).and_then(|index| entries.get(index)) {
                         Some(entry) if serde_json::to_string(entry)? == indexed => seq,
-                        _ => return Ok(None),
+                        _ => {
+                            diverged = true;
+                            return Ok(());
+                        }
                     }
                 }
             };
@@ -309,6 +329,10 @@ impl Registry {
             if !entries.is_empty() {
                 visit(&entries)?;
             }
+            Ok(())
+        })?;
+        if diverged {
+            return Ok(None);
         }
         tx.commit()?;
         Ok(Some(report))
@@ -536,9 +560,15 @@ impl Registry {
 fn read_logs(state: &Path) -> Result<(Vec<LogEntry>, RebuildReport)> {
     let mut entries = Vec::new();
     let mut report = RebuildReport::default();
-    for session in session_directories(state)? {
-        entries.extend(read_log(state, session, &mut report)?);
-    }
+    for_each_log(
+        state,
+        &session_directories(state)?,
+        &mut report,
+        |_, read| {
+            entries.extend(read);
+            Ok(())
+        },
+    )?;
     Ok((entries, report))
 }
 
@@ -570,14 +600,46 @@ fn session_directories(state: &Path) -> Result<Vec<SessionId>> {
     Ok(sessions)
 }
 
-/// Reads one verified log. Counts its entries and records an incomplete final line in `report`.
-fn read_log(state: &Path, session: SessionId, report: &mut RebuildReport) -> Result<Vec<LogEntry>> {
-    let read = SessionLog::new(state, session, DeviceId::from(0_u128)).read()?;
-    if let Some(line) = read.truncated_line {
-        report.truncated_logs.push((session, line));
-    }
-    report.events += read.entries.len();
-    Ok(read.entries)
+/// Reads verified logs on parallel threads and passes each log to `each` as its read completes.
+/// Independent logs apply in any order. Memory holds one log per thread and the log in `each`.
+/// Counts entries and records incomplete final lines in `report`.
+fn for_each_log(
+    state: &Path,
+    sessions: &[SessionId],
+    report: &mut RebuildReport,
+    mut each: impl FnMut(SessionId, Vec<LogEntry>) -> Result<()>,
+) -> Result<()> {
+    let width = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(sessions.len())
+        .max(1);
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let (sender, receiver) = mpsc::sync_channel(0);
+        for _ in 0..width {
+            let (sender, next) = (sender.clone(), &next);
+            scope.spawn(move || {
+                while let Some(session) = sessions.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let read = SessionLog::new(state, *session, DeviceId::from(0_u128)).read();
+                    // A failed consumer drops the receiver. The readers then stop.
+                    if sender.send((*session, read)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for (session, read) in receiver {
+            let read = read?;
+            if let Some(line) = read.truncated_line {
+                report.truncated_logs.push((session, line));
+            }
+            report.events += read.entries.len();
+            each(session, read.entries)?;
+        }
+        report.truncated_logs.sort();
+        Ok(())
+    })
 }
 
 fn select_session(
