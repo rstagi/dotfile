@@ -1085,3 +1085,107 @@ fn event_queries_survive_upgrade_reopen_and_rebuild() {
         2
     );
 }
+
+fn views(registry: &Registry) -> (Vec<Session>, Vec<Workspace>, Vec<Edge>, Vec<Message>) {
+    (
+        registry.sessions().unwrap(),
+        registry.workspaces().unwrap(),
+        registry.edges().unwrap(),
+        registry.messages().unwrap(),
+    )
+}
+
+#[test]
+fn catch_up_applies_only_unindexed_entries_and_visits_each_log_once() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let (first_id, second_id) = (Ulid::new(), Ulid::new());
+    let first = SessionLog::new(sandbox.path(), first_id, Ulid::new());
+    let second = SessionLog::new(sandbox.path(), second_id, Ulid::new());
+    registry
+        .apply(
+            &first
+                .append(0, "session.created", json!({"alias": 1, "name": "first"}))
+                .unwrap(),
+        )
+        .unwrap();
+    // A crash after the log append leaves these entries out of the index.
+    first
+        .append(0, "session.renamed", json!({"name": "renamed"}))
+        .unwrap();
+    second
+        .append(0, "session.created", json!({"alias": 2, "name": "second"}))
+        .unwrap();
+    second.append(0, "session.running", json!({})).unwrap();
+    let mut visited = Vec::new();
+    let report = registry
+        .catch_up(sandbox.path(), |entries| {
+            visited.push((entries[0].session_id, entries.len()));
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.events, 4);
+    visited.sort();
+    let mut expected_visits = vec![(first_id, 2), (second_id, 2)];
+    expected_visits.sort();
+    assert_eq!(visited, expected_visits);
+    let caught_up = views(&registry);
+    registry.rebuild(sandbox.path()).unwrap();
+    assert_eq!(caught_up, views(&registry));
+    assert_eq!(caught_up.0.len(), 2);
+}
+
+#[test]
+fn catch_up_declines_an_index_that_is_not_a_prefix_of_the_logs() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let orphan = SessionLog::new(&sandbox.path().join("elsewhere"), Ulid::new(), Ulid::new());
+    registry
+        .apply(
+            &orphan
+                .append(0, "session.created", json!({"alias": 1}))
+                .unwrap(),
+        )
+        .unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    log.append(0, "session.created", json!({"alias": 2}))
+        .unwrap();
+    let before = views(&registry);
+    let mut visits = 0;
+    let outcome = registry
+        .catch_up(sandbox.path(), |_| {
+            visits += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        outcome.is_none(),
+        "an index row without a log needs a rebuild"
+    );
+    assert_eq!(views(&registry), before);
+    assert_eq!(visits, 0);
+
+    // A rewritten log differs from the indexed entry at the same sequence number.
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let id = Ulid::new();
+    let log = SessionLog::new(sandbox.path(), id, Ulid::new());
+    registry
+        .apply(
+            &log.append(0, "session.created", json!({"alias": 1}))
+                .unwrap(),
+        )
+        .unwrap();
+    std::fs::remove_dir_all(sandbox.path().join("sessions").join(id.to_string())).unwrap();
+    log.append(0, "session.created", json!({"alias": 1, "name": "other"}))
+        .unwrap();
+    let before = views(&registry);
+    assert!(
+        registry
+            .catch_up(sandbox.path(), |_| Ok(()))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(views(&registry), before);
+}

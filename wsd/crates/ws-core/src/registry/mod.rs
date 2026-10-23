@@ -22,7 +22,7 @@
 //! Apply entries in sequence within each session. Independent logs can arrive in any order.
 //! Unknown event types advance the projection cursor without changing the query tables.
 
-use std::{fmt, fs, io, path::Path, time::Duration};
+use std::{collections::HashSet, fmt, fs, io, path::Path, time::Duration};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -247,17 +247,71 @@ impl Registry {
     /// Replaces the index from verified logs in `state/sessions`. Leaves logs unchanged.
     /// A failed rebuild preserves the previous index. Reports incomplete final log lines.
     pub fn rebuild(&mut self, state: &Path) -> Result<RebuildReport> {
-        let (entries, mut report) = read_logs(state)?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_batch("DELETE FROM aliases; DELETE FROM sessions; DELETE FROM workspaces; DELETE FROM edges; DELETE FROM messages; DELETE FROM applied_events;")?;
-        for entry in &entries {
-            apply_entry(&tx, entry)?;
+        let mut report = RebuildReport::default();
+        // Read one log at a time. Memory holds the largest log, not every log.
+        for session in session_directories(state)? {
+            for entry in read_log(state, session, &mut report)? {
+                apply_entry(&tx, &entry)?;
+            }
         }
-        report.events = entries.len();
         tx.commit()?;
         Ok(report)
+    }
+
+    /// Applies only the verified log entries that the index lacks. Passes each non-empty log to `visit` once.
+    /// Returns `None` and leaves the index unchanged when the index is not a prefix of the logs.
+    /// The caller then discards what `visit` received and calls [`Self::rebuild`].
+    pub fn catch_up(
+        &mut self,
+        state: &Path,
+        mut visit: impl FnMut(&[LogEntry]) -> Result<()>,
+    ) -> Result<Option<RebuildReport>> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sessions = session_directories(state)?;
+        let logged: HashSet<String> = sessions.iter().map(ToString::to_string).collect();
+        let indexed = tx
+            .prepare("SELECT DISTINCT session_id FROM applied_events")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        if !indexed.is_subset(&logged) {
+            return Ok(None);
+        }
+        let mut report = RebuildReport::default();
+        for session in sessions {
+            let entries = read_log(state, session, &mut report)?;
+            let last: Option<(i64, String)> = tx
+                .query_row(
+                    "SELECT seq, entry FROM applied_events WHERE session_id = ?1 ORDER BY seq DESC LIMIT 1",
+                    [session.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            // Hash links fix every earlier entry. An equal last entry proves an equal prefix.
+            let applied = match last {
+                None => 0,
+                Some((seq, indexed)) => {
+                    let seq = usize::try_from(seq).unwrap_or(usize::MAX);
+                    match seq.checked_sub(1).and_then(|index| entries.get(index)) {
+                        Some(entry) if serde_json::to_string(entry)? == indexed => seq,
+                        _ => return Ok(None),
+                    }
+                }
+            };
+            for entry in &entries[applied..] {
+                apply_entry(&tx, entry)?;
+            }
+            if !entries.is_empty() {
+                visit(&entries)?;
+            }
+        }
+        tx.commit()?;
+        Ok(Some(report))
     }
 
     /// Returns the next alias. Persist it in `session.created.body.alias` before apply.
@@ -480,14 +534,23 @@ impl Registry {
 }
 
 fn read_logs(state: &Path) -> Result<(Vec<LogEntry>, RebuildReport)> {
+    let mut entries = Vec::new();
+    let mut report = RebuildReport::default();
+    for session in session_directories(state)? {
+        entries.extend(read_log(state, session, &mut report)?);
+    }
+    Ok((entries, report))
+}
+
+/// Session ids of the log directories in `state/sessions`, in name order.
+fn session_directories(state: &Path) -> Result<Vec<SessionId>> {
     let mut logs = match fs::read_dir(state.join("sessions")) {
         Ok(entries) => entries.collect::<std::result::Result<Vec<_>, _>>()?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error.into()),
     };
     logs.sort_by_key(|directory| directory.file_name());
-    let mut entries = Vec::new();
-    let mut report = RebuildReport::default();
+    let mut sessions = Vec::new();
     for directory in logs {
         if !directory.file_type()?.is_dir() {
             continue;
@@ -502,13 +565,19 @@ fn read_logs(state: &Path) -> Result<(Vec<LogEntry>, RebuildReport)> {
                 "The session directory name is not canonical: {name}."
             )));
         }
-        let read = SessionLog::new(state, session, DeviceId::from(0_u128)).read()?;
-        if let Some(line) = read.truncated_line {
-            report.truncated_logs.push((session, line));
-        }
-        entries.extend(read.entries);
+        sessions.push(session);
     }
-    Ok((entries, report))
+    Ok(sessions)
+}
+
+/// Reads one verified log. Counts its entries and records an incomplete final line in `report`.
+fn read_log(state: &Path, session: SessionId, report: &mut RebuildReport) -> Result<Vec<LogEntry>> {
+    let read = SessionLog::new(state, session, DeviceId::from(0_u128)).read()?;
+    if let Some(line) = read.truncated_line {
+        report.truncated_logs.push((session, line));
+    }
+    report.events += read.entries.len();
+    Ok(read.entries)
 }
 
 fn select_session(
