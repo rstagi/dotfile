@@ -4,6 +4,7 @@ description: >-
   Coordinate agents in ws sessions. Discover session IDs, send messages, publish
   completion output, and register continuations or child sessions after other sessions finish.
   Use for requests such as "wait for #123 then do ABC" or "spawn after #123".
+  Also use it to name your session after the first user request.
   Requires the ws CLI. These operations need no Loop plan.
 ---
 
@@ -19,7 +20,7 @@ Rust stores its logs and registry in `$WS_STATE`, which defaults to `~/.ws/state
 The daemon socket uses `$WS_SOCK`, which defaults to `~/.ws/wsd.sock`.
 
 New tracked agents receive their session ULID in `WS_SESSION_ID` only.
-Launch preparation removes inherited `WS_SESSION` values.
+Before an agent starts, ws removes inherited `WS_SESSION` values.
 The CLI still reads `WS_SESSION` for agents that started before the cutover.
 `ws whoami` checks `WS_SESSION_ID`, then `WS_SESSION`, then the tmux window identity.
 Do not invent an ID or set these variables to another session.
@@ -47,6 +48,18 @@ Human status maps `finished` to `done` and `failed` to `closed`.
 The TSV activity column describes tmux activity, such as `idle`, `working`, `waiting` or `stopped`.
 An idle or stopped agent did not necessarily complete its task.
 `ws show` prints the output path. Read that file to obtain the result.
+
+## Name your session
+
+After the first user request, give your session a name.
+Use 2 to 4 words in kebab case that tell the work, for example `fix-installer-race`.
+Use the MCP tool `session_rename` with `{name}`, or run `ws name <name>`.
+Give a new name when the focus of your work changes.
+If a different session has the name, add a short suffix, for example `fix-installer-race-2`.
+
+```sh
+ws name fix-installer-race
+```
 
 ## Session places and repos
 
