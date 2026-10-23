@@ -13,6 +13,7 @@ SHARED_SKILLS=(
   pr-review
   pr-review-fix-all
   ws-sessions
+  ws-orchestrate
   asd-ste100
   visual-explainer
 )

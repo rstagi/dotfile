@@ -39,6 +39,7 @@ The tmux bindings include `prefix+w` for the picker and `prefix+M` for merge.
 Picker rows show session names, or `#N` without a name. A place shows under the place of the session that created it.
 Agent starts use permission bypass flags.
 The [ws-sessions skill](../.claude/skills/ws-sessions/SKILL.md) describes agent coordination.
+The [ws-orchestrate skill](../.claude/skills/ws-orchestrate/SKILL.md) runs work in one or more repos from a session without a repo.
 `./install-agent-skills.sh` shares that skill with Claude, Codex and Ratel Local.
 
 ## Session places and repos

@@ -69,7 +69,7 @@ python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-install-agent-skills.sh Shares Loop, ws, asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
+install-agent-skills.sh Shares Loop, ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
 ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
 ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
@@ -99,6 +99,7 @@ wsd/                    Default ws implementation: ws-core durable data, ws-daem
 docs/ws-v6/             WS v6 architecture, semantic conventions and spike reports (S1 scripts stay)
 wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
+.claude/skills/ws-orchestrate/ Repo-less orchestrator: one child session per repo, ws-message coordination, PR URL summary, no repo edits
 .claude/skills/visual-explainer/ Props JSON → concept graph (graph.mjs: nodes, edges, fixed layout) → one self-contained surfable HTML page (plan|ship), zero-dep render.mjs + schemas. Narration JSON (tour stops) → page tour + narrated MP4 whose camera moves over the same graph (render-video.mjs, Remotion video/ project, rendered in ~/.cache)
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, ralph, ws)

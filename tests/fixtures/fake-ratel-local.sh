@@ -11,7 +11,8 @@ case "${1:-} ${2:-} ${3:-}" in
     jq -cn --arg root "$FAKE_SKILL_SOURCE" '
       {candidates: [
         "checkpoint-30", "multiphase-plan", "loop-execute", "loop-pickup", "loop-handoff",
-        "pr-review", "pr-review-fix-all", "ws-sessions", "asd-ste100", "visual-explainer"
+        "pr-review", "pr-review-fix-all", "ws-sessions", "ws-orchestrate", "asd-ste100",
+        "visual-explainer"
       ] | map({
         candidateId: ("cand-" + .), id: ., source: "claude",
         canonicalPath: ($root + "/" + .)
