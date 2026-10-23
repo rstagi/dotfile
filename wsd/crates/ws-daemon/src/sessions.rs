@@ -297,9 +297,10 @@ impl Sessions {
                 .read()?
                 .entries
             {
-                spans.observe(&entry)?;
+                spans.replay(&entry)?;
             }
         }
+        spans.synthesize_models()?;
         *shared = spans;
         Ok(())
     }
