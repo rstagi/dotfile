@@ -35,7 +35,8 @@ with tempfile.TemporaryDirectory(prefix="ws-install-", dir="/tmp") as directory:
     commands.mkdir()
     for name in ("cargo", "launchctl", "grok"):
         path = commands / name
-        path.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/' + name + '.calls"\n')
+        # `launchctl print` fails: launchd has unloaded the job, so the installer does not wait.
+        path.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/' + name + '.calls"\n[ "$1" != print ]\n')
         path.chmod(0o755)
     environment.update(PATH=str(commands) + ":" + os.environ["PATH"],
                        WS_HOME=str(home / "custom & ws"), WS_STATE=str(home / "state"),
