@@ -115,13 +115,6 @@ fi
 REPO_NAME=$(basename "$REPO")
 WORKTREE_BASE="$HOME/.ralph-worktrees"
 
-# --- Ralph tools ---
-
-setup_ralph_tools() {
-  setup_claude_tools
-  load_secret ZAI_API_KEY "op://Remote Agents/Z.AI API Key/credential"
-}
-
 # --- Model command wrapper ---
 
 claude_model() {
@@ -182,8 +175,6 @@ Manual intervention required."
 # --- Main execution ---
 
 main() {
-  setup_ralph_tools
-
   # Initialize source (prompts for ID if needed)
   source_init
 

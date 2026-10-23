@@ -70,7 +70,9 @@ linear_set_issue_state() {
 }
 
 source_init() {
-  load_secret LINEAR_API_KEY "op://Remote Agents/Linear API Key/credential"
+  if [ -z "$LINEAR_API_KEY" ]; then
+    LINEAR_API_KEY=$(secret LINEAR_API_KEY) || { echo "Error: no Linear API key"; exit 1; }
+  fi
 
   if [ -z "$LINEAR_ID" ]; then
     read -r "LINEAR_ID?Project or issue ID: "

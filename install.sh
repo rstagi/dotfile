@@ -787,7 +787,7 @@ install_claude_tools() {
 
 # Parallel web search MCP (https://search.parallel.ai/mcp) for Claude Code, Codex and Ratel Local.
 # Key: 1Password "Parallel API Key" (or $PARALLEL_API_KEY), written as a literal header since
-# agents don't inherit load_secret vars. Idempotent per agent.
+# agents don't inherit shell secrets. Idempotent per agent.
 configure_parallel_search() {
   local url="https://search.parallel.ai/mcp" key
   key="${PARALLEL_API_KEY:-$(op read "op://Remote Agents/Parallel API Key/credential" 2>/dev/null)}"
@@ -844,9 +844,6 @@ install_claude_config() {
       claude mcp add --scope user context7 -- npx -y @upstash/context7-mcp
     grep -q linear <<< "$mcp_list" || \
       claude mcp add --scope user --transport sse linear https://mcp.linear.app/sse
-    grep -q scrapegraph <<< "$mcp_list" || \
-      claude mcp add --scope user scrapegraph-mcp -- \
-        npx mcp-remote https://mcp.scrapegraphai.com/mcp --header "X-API-Key:\${SCRAPEGRAPH_API_KEY}"
 
     configure_parallel_search
 

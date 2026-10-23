@@ -43,7 +43,7 @@ else
     -e 'end run' "$BODY" "$TITLE" 2>/dev/null
 fi
 
-# Telegram (opt-in: both vars must be set; deliberately not wired to load_secret here)
+# Telegram (opt-in: both vars must be set; deliberately not wired to `secret` here)
 if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${CLAUDE_TELEGRAM_TARGET:-}" ]]; then
   curl -sf -m 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     -d chat_id="$CLAUDE_TELEGRAM_TARGET" \

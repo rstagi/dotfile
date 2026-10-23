@@ -24,7 +24,7 @@ macOS dotfile repo w/ automated dev environment setup. Installs shell config, CL
 ./install.sh --dry-run <packages>
 
 # Lint shell scripts
-shellcheck install.sh afk-ralph.sh
+shellcheck install.sh
 
 # Syntax-check zsh scripts
 zsh -n ralph-agent.sh ralph-source-github.sh ralph-source-linear.sh
@@ -73,7 +73,6 @@ install-agent-skills.sh Shares Loop, ws (sessions + orchestrate), asd-ste100 + v
 ralph-agent.sh          Autonomous Claude iterations (GitHub + Linear)
 ralph-source-github.sh  GitHub source adapter for Ralph
 ralph-source-linear.sh  Linear source adapter for Ralph
-afk-ralph.sh            Legacy Docker sandbox mode
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
 loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
@@ -167,10 +166,11 @@ GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.js
 
 ## Secrets Management
 
-Store API keys in 1Password, retrieve lazily via `load_secret` (defined in `.zshrc_claude_ext`):
+1Password is the source of API keys. The login Keychain caches them. `secret` is defined in `.zshrc_claude_ext`:
 
 ```bash
-load_secret VAR_NAME "op://Remote Agents/Item Name/credential"
+secret NAME                # print the key; on a cache miss, read 1Password once (Touch ID) and cache it
+secret --refresh [NAME...] # read 1Password again (all names when none given)
 ```
 
-Skips if var already set. Set `DISABLE_SECRETS=1` to skip all 1Password calls.
+Add a new key to `_SECRET_REFS` (name → `op://` path). Set the key only for the command that needs it, for example `KEY=$(secret KEY) command tool`. Do not export keys to the shell. No 1Password service account token is used.
