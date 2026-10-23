@@ -2,7 +2,7 @@
 
 use std::{
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
@@ -37,6 +37,13 @@ pub struct TelemetryRecord {
 pub struct TelemetryCursor {
     inode: Option<u64>,
     offset: u64,
+}
+
+/// The position after a scan. `restarted` is true when retention replaced the file and the scan began again at its start.
+#[derive(Debug)]
+pub struct TelemetryScan {
+    pub cursor: TelemetryCursor,
+    pub restarted: bool,
 }
 
 /// Records after a cursor. `restarted` is true when retention replaced the file and reading began again at its start.
@@ -99,25 +106,32 @@ impl TelemetryLog {
 
     /// Returns complete records in ingestion order. Ignores an incomplete crash tail.
     pub fn read(&self) -> io::Result<Vec<TelemetryRecord>> {
-        let bytes = {
-            let _lock = self.lock()?;
-            match File::open(self.directory.join("log.jsonl")) {
-                Ok(mut file) => read_bytes(&mut file)?,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-                Err(error) => return Err(error),
-            }
-        };
-        Ok(parse_records(&bytes)?.0)
+        Ok(self.read_after(TelemetryCursor::default())?.records)
     }
 
     /// Returns complete records after the cursor in ingestion order. Ignores an incomplete crash tail.
     pub fn read_after(&self, cursor: TelemetryCursor) -> io::Result<TelemetryTail> {
+        let mut records = Vec::new();
+        let scan = self.scan_after(cursor, |record| records.push(record))?;
+        Ok(TelemetryTail {
+            records,
+            cursor: scan.cursor,
+            restarted: scan.restarted,
+        })
+    }
+
+    /// Visits complete records after the cursor in ingestion order. Holds one record in memory at a time.
+    /// Reads the length that the append lock saw. Appends after it wait for the next scan.
+    pub fn scan_after(
+        &self,
+        cursor: TelemetryCursor,
+        mut visit: impl FnMut(TelemetryRecord),
+    ) -> io::Result<TelemetryScan> {
         let lock = self.lock()?;
-        let mut file = match File::open(self.directory.join("log.jsonl")) {
+        let file = match File::open(self.directory.join("log.jsonl")) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(TelemetryTail {
-                    records: Vec::new(),
+                return Ok(TelemetryScan {
                     restarted: cursor != TelemetryCursor::default(),
                     cursor: TelemetryCursor::default(),
                 });
@@ -125,18 +139,32 @@ impl TelemetryLog {
             Err(error) => return Err(error),
         };
         let metadata = file.metadata()?;
+        drop(lock);
+        // Appends only add bytes and retention replaces the file. The open file keeps this snapshot.
         let same = cursor.inode.is_none_or(|inode| inode == metadata.ino())
             && cursor.offset <= metadata.len();
-        let offset = if same { cursor.offset } else { 0 };
-        file.seek(SeekFrom::Start(offset))?;
-        let bytes = read_bytes(&mut file)?;
-        drop(lock);
-        let (records, valid_bytes) = parse_records(&bytes)?;
-        Ok(TelemetryTail {
-            records,
+        let mut offset = if same { cursor.offset } else { 0 };
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut reader = reader.take(metadata.len() - offset);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line)? == 0 || !line.ends_with(b"\n") {
+                break;
+            }
+            offset += line.len() as u64;
+            if line.len() > 1 {
+                visit(
+                    serde_json::from_slice(&line)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+                );
+            }
+        }
+        Ok(TelemetryScan {
             cursor: TelemetryCursor {
                 inode: Some(metadata.ino()),
-                offset: offset + valid_bytes,
+                offset,
             },
             restarted: !same,
         })
@@ -254,17 +282,6 @@ fn read_bytes(file: &mut File) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn parse_records(bytes: &[u8]) -> io::Result<(Vec<TelemetryRecord>, u64)> {
-    let mut records = Vec::new();
-    for line in complete_lines(bytes) {
-        records.push(
-            serde_json::from_slice(line)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-        );
-    }
-    Ok((records, valid_length(bytes) as u64))
-}
-
 /// Non-empty lines before the last newline. Ignores an incomplete crash tail.
 fn complete_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     bytes[..valid_length(bytes)]
@@ -366,6 +383,52 @@ mod tests {
         let third = log.read_after(second.cursor).unwrap();
         assert!(third.restarted);
         assert_eq!(third.records.len(), 1);
+    }
+
+    #[test]
+    fn a_scan_visits_the_records_and_cursor_of_a_cursor_read() {
+        use std::fs::OpenOptions;
+        let sandbox = tempfile::tempdir().unwrap();
+        let log = TelemetryLog::new(sandbox.path(), Ulid::new());
+        let mut visited = Vec::new();
+        let empty = log
+            .scan_after(TelemetryCursor::default(), |record| visited.push(record))
+            .unwrap();
+        assert_eq!(
+            (empty.cursor, empty.restarted),
+            (TelemetryCursor::default(), false)
+        );
+        let payload = json!({"resourceLogs": [{}]});
+        log.append(Signal::Logs, vec![payload.clone(); 3], 1)
+            .unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(sandbox.path().join("telemetry/log.jsonl"))
+            .unwrap()
+            .write_all(b"{\"partial\":")
+            .unwrap();
+        let expected = log.read_after(TelemetryCursor::default()).unwrap();
+        let scan = log
+            .scan_after(TelemetryCursor::default(), |record| visited.push(record))
+            .unwrap();
+        assert_eq!(visited, expected.records);
+        assert_eq!((scan.cursor, scan.restarted), (expected.cursor, false));
+        log.append(Signal::Logs, vec![payload], 2).unwrap();
+        visited.clear();
+        let next = log
+            .scan_after(scan.cursor, |record| visited.push(record))
+            .unwrap();
+        assert_eq!(visited.len(), 1);
+        assert_eq!(visited[0].received_at_ms, 2);
+        assert_eq!(next.cursor, log.read_after(scan.cursor).unwrap().cursor);
+        log.prune_before(2).unwrap();
+        visited.clear();
+        assert!(
+            log.scan_after(next.cursor, |record| visited.push(record))
+                .unwrap()
+                .restarted
+        );
+        assert_eq!(visited.len(), 1);
     }
 
     #[test]

@@ -107,7 +107,7 @@ impl Sessions {
             usage: None,
             _writer_lock: writer_lock,
         };
-        sessions.recover_spans()?;
+        sessions.replay_spans()?;
         sessions.restore_triggers()?;
         sessions.recover_phase_worktrees()?;
         Ok(sessions)
@@ -290,8 +290,14 @@ impl Sessions {
     }
 
     fn recover_spans(&mut self) -> Result<()> {
-        let mut shared = self.spans.lock().unwrap();
-        let mut spans = crate::spans::Spans::open(&self.state, self.device_id)?;
+        let spans = crate::spans::Spans::open(&self.state, self.device_id)?;
+        *self.spans.lock().unwrap() = spans;
+        self.replay_spans()
+    }
+
+    /// Replays every session log into spans that have observed no entry yet.
+    fn replay_spans(&mut self) -> Result<()> {
+        let mut spans = self.spans.lock().unwrap();
         for session in self.registry.sessions()? {
             for entry in SessionLog::new(&self.state, session.id, session.device_id)
                 .read()?
@@ -301,7 +307,6 @@ impl Sessions {
             }
         }
         spans.synthesize_models()?;
-        *shared = spans;
         Ok(())
     }
 

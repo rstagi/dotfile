@@ -83,32 +83,16 @@ struct Turn {
 }
 
 impl Spans {
+    /// Opens spans with one streaming pass over the telemetry log.
     pub(crate) fn open(state: &Path, device: DeviceId) -> io::Result<Self> {
-        let log = TelemetryLog::new(state, device);
-        let mut written = HashSet::new();
-        for record in log.read()? {
-            if record.signal != Signal::Traces {
-                continue;
-            }
-            let span = &record.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
-            if matches!(
-                span["name"].as_str(),
-                Some(semconv::TURN_SPAN | semconv::TOOL_SPAN | semconv::MODEL_CALL_SPAN)
-            ) {
-                written.insert((
-                    span["traceId"].as_str().unwrap_or("").into(),
-                    span["spanId"].as_str().unwrap_or("").into(),
-                ));
-            }
-        }
-        Ok(Self {
+        let mut spans = Self {
             state: state.into(),
             native_tracing: ws_core::config::Config::load(state)?
                 .telemetry
                 .native_tracing,
-            log,
-            emitter: crate::semconv_emit::Emitter::open(state, device)?,
-            written,
+            log: TelemetryLog::new(state, device),
+            emitter: crate::semconv_emit::Emitter::open(state)?,
+            written: HashSet::new(),
             sessions: HashMap::new(),
             cursor: TelemetryCursor::default(),
             pending_models: HashMap::new(),
@@ -119,7 +103,9 @@ impl Spans {
             scanned: 0,
             #[cfg(test)]
             joins: 0,
-        })
+        };
+        spans.read_new_records()?;
+        Ok(spans)
     }
 
     /// Consumes each durable entry once. Replay uses the same source-derived span ids.
@@ -366,36 +352,7 @@ impl Spans {
 
     /// Joins durable agent records to observed turn intervals. Reads only records after the cursor and retains unjoined models.
     pub(crate) fn synthesize_models(&mut self) -> io::Result<()> {
-        let tail = self.log.read_after(self.cursor)?;
-        #[cfg(test)]
-        {
-            self.scanned += tail.records.len();
-        }
-        if tail.restarted {
-            self.pending_models.clear();
-            self.native_streams.clear();
-        }
-        self.cursor = tail.cursor;
-        for record in &tail.records {
-            match record.signal {
-                Signal::Logs => {
-                    for model in model_candidates(record) {
-                        self.dirty.insert(model.session);
-                        self.pending_models
-                            .entry(model.session)
-                            .or_default()
-                            .push(model);
-                    }
-                }
-                Signal::Traces => {
-                    for stream in native_streams(record) {
-                        self.dirty.insert(stream.session);
-                        self.native_streams.push(stream);
-                    }
-                }
-                Signal::Metrics => {}
-            }
-        }
+        self.read_new_records()?;
         // Only a changed session can join a model that an earlier pass retained.
         let dirty: Vec<_> = self.dirty.drain().collect();
         for (index, session) in dirty.iter().enumerate() {
@@ -420,6 +377,61 @@ impl Spans {
             if !retained.is_empty() {
                 self.pending_models.insert(*session, retained);
             }
+        }
+        Ok(())
+    }
+
+    /// Reads the records after the cursor one at a time. Keeps only span ids, event ids and model inputs.
+    fn read_new_records(&mut self) -> io::Result<()> {
+        let (mut models, mut streams) = (Vec::new(), Vec::new());
+        let (written, emitter) = (&mut self.written, &mut self.emitter);
+        #[cfg(test)]
+        let mut scanned = 0;
+        let scan = self.log.scan_after(self.cursor, |record| {
+            #[cfg(test)]
+            {
+                scanned += 1;
+            }
+            match record.signal {
+                Signal::Logs => {
+                    emitter.note_written(&record);
+                    models.extend(model_candidates(&record));
+                }
+                Signal::Traces => {
+                    let span = &record.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+                    if matches!(
+                        span["name"].as_str(),
+                        Some(semconv::TURN_SPAN | semconv::TOOL_SPAN | semconv::MODEL_CALL_SPAN)
+                    ) {
+                        written.insert((
+                            span["traceId"].as_str().unwrap_or("").into(),
+                            span["spanId"].as_str().unwrap_or("").into(),
+                        ));
+                    }
+                    streams.extend(native_streams(&record));
+                }
+                Signal::Metrics => {}
+            }
+        })?;
+        #[cfg(test)]
+        {
+            self.scanned += scanned;
+        }
+        if scan.restarted {
+            self.pending_models.clear();
+            self.native_streams.clear();
+        }
+        self.cursor = scan.cursor;
+        for model in models {
+            self.dirty.insert(model.session);
+            self.pending_models
+                .entry(model.session)
+                .or_default()
+                .push(model);
+        }
+        for stream in streams {
+            self.dirty.insert(stream.session);
+            self.native_streams.push(stream);
         }
         Ok(())
     }
