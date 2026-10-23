@@ -396,6 +396,7 @@ impl Sessions {
                 "@ws_slot",
                 "@ws_agent",
                 "@ws_state",
+                "@ws_main",
                 "@ws_session",
                 "@ws_pane",
                 "automatic-rename",

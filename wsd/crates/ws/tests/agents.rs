@@ -1303,6 +1303,42 @@ fn a_dropped_stop_client_receives_one_idle_paste_without_a_second_stop() {
 }
 
 #[test]
+fn a_message_waits_until_claude_reports_session_start() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feature",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let (capture, mut agent) = sandbox.capture();
+    let id = capture["id"].as_str().unwrap();
+    let pane = capture["pane"].as_str().unwrap();
+    agent.write_all(b"t").unwrap();
+    let mut line = String::new();
+    let mut reader = std::io::BufReader::new(agent.try_clone().unwrap());
+    std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+    assert_eq!(line, "dialog\n");
+    sandbox.wait_for(|| {
+        sandbox.tmux(&["display-message", "-p", "-t", pane, "#{bracket_paste_flag}"]) == "1"
+    });
+    let sent = sandbox.output(&["send", id, "wait for the trust dialog"]);
+    assert_eq!(sent.status.code(), Some(75), "{sent:?}");
+    // The delivery worker retries every 250 ms. A paste into the dialog would start by now.
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(sandbox.events(id, "paste.started").is_empty());
+    agent.write_all(b"r").unwrap();
+    line.clear();
+    std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+    assert!(line.contains("wait for the trust dialog"), "{line}");
+    sandbox.wait_for(|| !sandbox.events(id, "paste.submitted").is_empty());
+}
+
+#[test]
 fn a_message_reopens_a_finished_agent_before_delivery() {
     for agent in ["claude", "codex"] {
         let sandbox = Sandbox::new();
@@ -1577,11 +1613,7 @@ fn named_agent_commands_run_in_the_current_tab_and_preserve_failed_slots() {
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert_eq!(
             session["state"],
-            if exit_code == 0 {
-                "finished"
-            } else {
-                "failed"
-            }
+            if exit_code == 0 { "finished" } else { "failed" }
         );
         sandbox.tmux(&["display-message", "-p", "-t", &window, "#{pane_id}"]);
     }
@@ -2044,9 +2076,15 @@ s = socket.socket(socket.AF_UNIX)
 s.connect({:?})
 s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE'), otel=dict(resource=os.getenv('OTEL_RESOURCE_ATTRIBUTES'), endpoint=os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT'), protocol=os.getenv('OTEL_EXPORTER_OTLP_PROTOCOL'), enabled=os.getenv('CLAUDE_CODE_ENABLE_TELEMETRY'), traceparent=os.getenv('TRACEPARENT'), beta=os.getenv('CLAUDE_CODE_ENHANCED_TELEMETRY_BETA'), prompt=os.getenv('OTEL_LOG_USER_PROMPTS'), detail=os.getenv('OTEL_LOG_TOOL_DETAILS'), content=os.getenv('OTEL_LOG_TOOL_CONTENT'))))+'\n').encode())
 control = s.recv(1)
-if control == b'd':
+if control in (b'd', b't'):
     tty.setraw(0)
     os.write(1, b'\x1b[?2004h')
+    if control == b't':
+        # Claude shows its trust dialog before SessionStart. The dialog also accepts pastes.
+        s.sendall(b'dialog\n')
+        s.recv(1)
+    if {agent:?} == 'claude':
+        subprocess.run([os.environ['WS_BIN'], 'hook', 'ready'], input=json.dumps(dict(hook_event_name='SessionStart', source='startup')).encode(), check=True)
     data = b''
     while not data.endswith(b'\r'):
         data += os.read(0, 4096)

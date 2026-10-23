@@ -215,6 +215,8 @@ The TSV state column reports the live tmux state or `stopped` when no tagged win
 Omitted output produces an empty file. `-` and `--output -` read stdin. Repeated calls replace the output.
 Unread messages refuse completion. Completion marks the session `finished`. Process exit remains a separate event.
 The supervisor and interactive launch wrapper record `exit`. `ws hook exit` also records exit callbacks.
+When the interactive launch wrapper reports the agent exit, a session that is not finished or failed becomes `finished` for code 0 or `failed` for another code.
+A failed exit keeps its slot row, so a later message resumes the conversation.
 Claude receives a generated `SessionEnd` hook. A `SessionEnd` payload selects the exit event. An `exit_code` field supplies its code.
 An exit callback still records the event when tmux cannot read the pane. A spooled callback succeeds at the next replay.
 
@@ -335,12 +337,15 @@ If the client does not confirm a block and no receipt exists in the spool, recov
 The idle paste worker then submits the pending inbox. Recovery checks ownership and the sequence before it changes the window, so it preserves newer turns.
 
 For an idle agent window, the daemon pastes a durable batch into the recorded agent pane with bracketed paste and a separate Enter.
+A new Claude window gets no paste until its first hook. Claude receives a generated `SessionStart` hook (`ws hook ready`), and Claude runs hooks only after its "trust this folder" dialog.
+A paste into that dialog selects its default answer, "No, exit". The message stays queued until the human accepts the dialog. Claude also trusts a folder when it trusts a parent folder.
+Other agents wait for their first hook or for the pane to enable bracketed paste.
 A newer `UserPromptSubmit` confirms the batch and writes `message.delivered`. Tool hooks and older prompts do not confirm it.
 One daemon worker retries queued messages and requeues unconfirmed batches after `WS_PASTE_ACK_TIMEOUT` seconds (default 10).
 Pending batches survive daemon restart. The worker replaces the detached zsh retry and paste timeout processes for the Rust backend.
 `ws send` still returns exit 75 after it durably queues a message.
 
-A message to a finished local agent session appends `session.reopened`.
+A message to a finished or failed local agent session appends `session.reopened`.
 If its agent still runs in its owned pane, delivery uses that process.
 Otherwise, the daemon starts a new tmux window before delivery.
 Claude uses `--resume <id>`. Codex uses `resume <id>`.

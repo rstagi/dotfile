@@ -67,6 +67,18 @@ fn preparation_matches_zsh_launch_flags_and_hook_files_for_every_agent() {
                     .unwrap()
                     .ends_with(" hook exit")
             );
+            // SessionStart fires after the trust dialog. Message delivery waits for it.
+            let start = generated["hooks"]
+                .as_object_mut()
+                .unwrap()
+                .remove("SessionStart")
+                .expect("Claude must report its session start.");
+            assert!(
+                start[0]["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(" hook ready")
+            );
             let failure = generated["hooks"]
                 .as_object_mut()
                 .unwrap()

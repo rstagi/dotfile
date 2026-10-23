@@ -654,6 +654,15 @@ fn reduce(callback: &Callback, window: Option<&HookState>, decision: &StopDecisi
         result.event_type = None;
         return result;
     }
+    if event == "ready" {
+        // SessionStart also fires after /clear and compaction. Only the first one changes state.
+        if window.main.is_empty() {
+            result
+                .changes
+                .push(("@ws_main".into(), Some("idle".into())));
+        }
+        return result;
+    }
     let agent = callback.payload["agent_id"].as_str().unwrap_or("");
     let agent: String = agent
         .chars()
@@ -806,6 +815,7 @@ fn validate(callback: &Callback) -> crate::sessions::Result<()> {
         "subagent-stop",
         "quota",
         "exit",
+        "ready",
     ]
     .contains(&callback.state.as_str())
     {
