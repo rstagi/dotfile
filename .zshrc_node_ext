@@ -1,7 +1,29 @@
 # Lazy-load nvm (deferred ~265ms init to first use)
 export NVM_DIR="$HOME/.nvm"
 
-# Each wrapper unsets all stubs first (prevents recursion), then sources nvm
+# Put the nvm default node on PATH without loading nvm (~1ms vs ~1s for `nvm use`).
+# Change the version with `nvm alias default <version>`.
+_nvm_default_bin() {
+  local want
+  want=$(<"$NVM_DIR/alias/default") 2>/dev/null || return 1
+  want=${want#v}
+  local -a dirs=("$NVM_DIR/versions/node/v$want"(N/) "$NVM_DIR"/versions/node/v$want.*(N/nOn))
+  (( $#dirs )) || return 1
+  path=("${dirs[1]}/bin" $path)
+}
+if _nvm_default_bin; then
+  unfunction _nvm_default_bin
+  # node/npm/npx resolve through PATH. Only `nvm` itself loads nvm.
+  nvm() {
+    unfunction nvm 2>/dev/null
+    [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh" --no-use
+    [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && . "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
+    nvm "$@"
+  }
+else
+unfunction _nvm_default_bin
+
+# Fallback: no resolvable default. Each wrapper unsets all stubs first (prevents recursion), then sources nvm
 nvm() {
   unfunction nvm node npm npx 2>/dev/null
   [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
@@ -23,6 +45,7 @@ npx() {
   [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"
   npx "$@"
 }
+fi
 
 # Npm
 alias ni="npm i"
