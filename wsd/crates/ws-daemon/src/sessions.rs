@@ -1,7 +1,7 @@
 //! Durable session lifecycle operations.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     fs::{File, TryLockError},
     io,
@@ -85,7 +85,25 @@ impl Sessions {
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
         let mut registry = Registry::open(&state.join("registry.sqlite"), alias_floor)?;
-        registry.rebuild(state)?;
+        // One pass over each log restores the index tail, the spans and the triggers.
+        let mut spans = crate::spans::Spans::open(state, device.device_id)?;
+        let mut triggers: HashMap<SessionId, BTreeMap<Ulid, crate::triggers::Trigger>> =
+            HashMap::new();
+        let caught_up = registry
+            .catch_up(state, |entries| {
+                let owned = triggers.entry(entries[0].session_id).or_default();
+                for entry in entries {
+                    spans.replay(entry)?;
+                    crate::triggers::apply_trigger_entry(owned, entry);
+                }
+                Ok(())
+            })?
+            .is_some();
+        if caught_up {
+            spans.synthesize_models()?;
+        } else {
+            registry.rebuild(state)?;
+        }
         let mut sessions = Self {
             legacy_home: None,
             config,
@@ -95,10 +113,7 @@ impl Sessions {
             device_id: device.device_id,
             registry,
             needs_rebuild: false,
-            spans: Arc::new(Mutex::new(crate::spans::Spans::open(
-                state,
-                device.device_id,
-            )?)),
+            spans: Arc::new(Mutex::new(spans)),
             writers: HashMap::new(),
             headless_hooks: HashMap::new(),
             changes: tokio::sync::watch::channel(()).0,
@@ -107,8 +122,19 @@ impl Sessions {
             usage: None,
             _writer_lock: writer_lock,
         };
-        sessions.recover_spans()?;
-        sessions.restore_triggers()?;
+        if caught_up {
+            for session in sessions.registry.sessions()? {
+                if session.device_id == sessions.device_id
+                    && let Some(owned) = triggers.remove(&session.id)
+                {
+                    sessions.triggers.extend(owned);
+                }
+            }
+        } else {
+            // A diverged index replaces the partial pass.
+            sessions.recover_spans()?;
+            sessions.restore_triggers()?;
+        }
         sessions.recover_phase_worktrees()?;
         Ok(sessions)
     }
@@ -297,9 +323,10 @@ impl Sessions {
                 .read()?
                 .entries
             {
-                spans.observe(&entry)?;
+                spans.replay(&entry)?;
             }
         }
+        spans.synthesize_models()?;
         *shared = spans;
         Ok(())
     }

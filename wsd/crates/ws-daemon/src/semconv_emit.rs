@@ -8,10 +8,10 @@ use std::{
 
 use serde_json::{Value, json};
 use ws_core::{
-    ids::{DeviceId, EventId, SessionId},
+    ids::{EventId, SessionId},
     log::LogEntry,
     semconv,
-    telemetry_log::{Signal, TelemetryLog},
+    telemetry_log::{Signal, TelemetryLog, TelemetryRecord},
 };
 
 pub(crate) struct Emitter {
@@ -23,41 +23,45 @@ pub(crate) struct Emitter {
 }
 
 impl Emitter {
-    pub(crate) fn open(state: &Path, device: DeviceId) -> io::Result<Self> {
-        let log = TelemetryLog::new(state, device);
-        let mut written = HashSet::new();
-        for record in log.read()?.into_iter().filter(|r| r.signal == Signal::Logs) {
-            for resource in record.payload["resourceLogs"]
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
-                for scope in resource["scopeLogs"].as_array().into_iter().flatten() {
-                    if scope["scope"]["name"] != semconv::SESSION_DOMAIN {
-                        continue;
-                    }
-                    for record in scope["logRecords"].as_array().into_iter().flatten() {
-                        if let Some(id) = record["attributes"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .find(|a| a["key"] == semconv::EVENT_ID)
-                            .and_then(|a| a["value"]["stringValue"].as_str())
-                            .and_then(|id| id.parse().ok())
-                        {
-                            written.insert(id);
-                        }
+    /// Opens an emitter without a record of written events. The owner passes each stored record to [`Self::note_written`].
+    pub(crate) fn open(state: &Path) -> io::Result<Self> {
+        Ok(Self {
+            state: state.into(),
+            content: ws_core::config::Config::load(state)?.telemetry.content,
+            written: HashSet::new(),
+            resources: HashMap::new(),
+            phases: HashMap::new(),
+        })
+    }
+
+    /// Records the session events that a stored telemetry record holds. Replay skips them.
+    pub(crate) fn note_written(&mut self, record: &TelemetryRecord) {
+        if record.signal != Signal::Logs {
+            return;
+        }
+        for resource in record.payload["resourceLogs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            for scope in resource["scopeLogs"].as_array().into_iter().flatten() {
+                if scope["scope"]["name"] != semconv::SESSION_DOMAIN {
+                    continue;
+                }
+                for record in scope["logRecords"].as_array().into_iter().flatten() {
+                    if let Some(id) = record["attributes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|a| a["key"] == semconv::EVENT_ID)
+                        .and_then(|a| a["value"]["stringValue"].as_str())
+                        .and_then(|id| id.parse().ok())
+                    {
+                        self.written.insert(id);
                     }
                 }
             }
         }
-        Ok(Self {
-            state: state.into(),
-            content: ws_core::config::Config::load(state)?.telemetry.content,
-            written,
-            resources: HashMap::new(),
-            phases: HashMap::new(),
-        })
     }
 
     pub(crate) fn observe(&mut self, entry: &LogEntry) -> io::Result<Option<Value>> {

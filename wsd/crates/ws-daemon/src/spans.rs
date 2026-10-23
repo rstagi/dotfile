@@ -26,12 +26,17 @@ pub(crate) struct Spans {
     written: HashSet<(String, String)>,
     sessions: HashMap<SessionId, SessionSpans>,
     cursor: TelemetryCursor,
-    pending_models: Vec<PendingModel>,
+    /// Unjoined models per session. A join depends only on its session's spans and native streams.
+    pending_models: HashMap<SessionId, Vec<PendingModel>>,
     native_streams: Vec<NativeStream>,
+    /// Sessions whose spans or native streams changed since the last synthesis.
+    dirty: HashSet<SessionId>,
     /// Turn links per target session. Each read parses only the log bytes after the last read.
     turn_links: RefCell<HashMap<SessionId, TurnLinks>>,
     #[cfg(test)]
     scanned: usize,
+    #[cfg(test)]
+    joins: usize,
 }
 
 #[derive(Default)]
@@ -78,44 +83,42 @@ struct Turn {
 }
 
 impl Spans {
+    /// Opens spans with one streaming pass over the telemetry log.
     pub(crate) fn open(state: &Path, device: DeviceId) -> io::Result<Self> {
-        let log = TelemetryLog::new(state, device);
-        let mut written = HashSet::new();
-        for record in log.read()? {
-            if record.signal != Signal::Traces {
-                continue;
-            }
-            let span = &record.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
-            if matches!(
-                span["name"].as_str(),
-                Some(semconv::TURN_SPAN | semconv::TOOL_SPAN | semconv::MODEL_CALL_SPAN)
-            ) {
-                written.insert((
-                    span["traceId"].as_str().unwrap_or("").into(),
-                    span["spanId"].as_str().unwrap_or("").into(),
-                ));
-            }
-        }
-        Ok(Self {
+        let mut spans = Self {
             state: state.into(),
             native_tracing: ws_core::config::Config::load(state)?
                 .telemetry
                 .native_tracing,
-            log,
-            emitter: crate::semconv_emit::Emitter::open(state, device)?,
-            written,
+            log: TelemetryLog::new(state, device),
+            emitter: crate::semconv_emit::Emitter::open(state)?,
+            written: HashSet::new(),
             sessions: HashMap::new(),
             cursor: TelemetryCursor::default(),
-            pending_models: Vec::new(),
+            pending_models: HashMap::new(),
             native_streams: Vec::new(),
+            dirty: HashSet::new(),
             turn_links: RefCell::default(),
             #[cfg(test)]
             scanned: 0,
-        })
+            #[cfg(test)]
+            joins: 0,
+        };
+        spans.read_new_records()?;
+        Ok(spans)
     }
 
     /// Consumes each durable entry once. Replay uses the same source-derived span ids.
     pub(crate) fn observe(&mut self, entry: &LogEntry) -> io::Result<()> {
+        if self.replay(entry)? {
+            self.synthesize_models()?;
+        }
+        Ok(())
+    }
+
+    /// Consumes one entry without model synthesis. Recovery replays every entry, then synthesizes once.
+    /// Returns true when the entry changed the session's spans.
+    pub(crate) fn replay(&mut self, entry: &LogEntry) -> io::Result<bool> {
         let emitted_event = self.emitter.observe(entry)?;
         let event = entry.event_type.as_str();
         if event == "hook.received" {
@@ -135,7 +138,7 @@ impl Spans {
                     .tool_results
                     .insert(callback.into(), tool_status(&entry.body["payload"]));
             }
-            return Ok(());
+            return Ok(false);
         }
         if emitted_event.is_none()
             && !matches!(
@@ -161,7 +164,7 @@ impl Spans {
                     | "done"
             )
         {
-            return Ok(());
+            return Ok(false);
         }
         if entry.body["state_accepted"] == false
             && matches!(
@@ -177,7 +180,7 @@ impl Spans {
                     | "subagent.stopped"
             )
         {
-            return Ok(());
+            return Ok(false);
         }
         // A failed append leaves the caller's rebuild flag set. The rebuild replaces this memory,
         // so the state moves out of the map instead of a copy for each entry.
@@ -343,48 +346,102 @@ impl Spans {
             self.written.extend(pending.iter().map(identity));
         }
         self.sessions.insert(entry.session_id, state);
-        self.synthesize_models()
+        self.dirty.insert(entry.session_id);
+        Ok(true)
     }
 
     /// Joins durable agent records to observed turn intervals. Reads only records after the cursor and retains unjoined models.
     pub(crate) fn synthesize_models(&mut self) -> io::Result<()> {
-        let tail = self.log.read_after(self.cursor)?;
+        self.read_new_records()?;
+        // Only a changed session can join a model that an earlier pass retained.
+        let dirty: Vec<_> = self.dirty.drain().collect();
+        for (index, session) in dirty.iter().enumerate() {
+            let Some(models) = self.pending_models.remove(session) else {
+                continue;
+            };
+            let mut pending = models.into_iter();
+            let mut retained = Vec::new();
+            while let Some(model) = pending.next() {
+                match self.join_model(&model) {
+                    Ok(true) => {}
+                    Ok(false) => retained.push(model),
+                    Err(error) => {
+                        retained.push(model);
+                        retained.extend(pending);
+                        self.pending_models.insert(*session, retained);
+                        self.dirty.extend(&dirty[index..]);
+                        return Err(error);
+                    }
+                }
+            }
+            if !retained.is_empty() {
+                self.pending_models.insert(*session, retained);
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads the records after the cursor one at a time. Keeps only span ids, event ids and model inputs.
+    fn read_new_records(&mut self) -> io::Result<()> {
+        let (mut models, mut streams) = (Vec::new(), Vec::new());
+        let (written, emitter) = (&mut self.written, &mut self.emitter);
+        #[cfg(test)]
+        let mut scanned = 0;
+        let scan = self.log.scan_after(self.cursor, |record| {
+            #[cfg(test)]
+            {
+                scanned += 1;
+            }
+            match record.signal {
+                Signal::Logs => {
+                    emitter.note_written(&record);
+                    models.extend(model_candidates(&record));
+                }
+                Signal::Traces => {
+                    let span = &record.payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+                    if matches!(
+                        span["name"].as_str(),
+                        Some(semconv::TURN_SPAN | semconv::TOOL_SPAN | semconv::MODEL_CALL_SPAN)
+                    ) {
+                        written.insert((
+                            span["traceId"].as_str().unwrap_or("").into(),
+                            span["spanId"].as_str().unwrap_or("").into(),
+                        ));
+                    }
+                    streams.extend(native_streams(&record));
+                }
+                Signal::Metrics => {}
+            }
+        })?;
         #[cfg(test)]
         {
-            self.scanned += tail.records.len();
+            self.scanned += scanned;
         }
-        if tail.restarted {
+        if scan.restarted {
             self.pending_models.clear();
             self.native_streams.clear();
         }
-        self.cursor = tail.cursor;
-        for record in &tail.records {
-            match record.signal {
-                Signal::Logs => self.pending_models.extend(model_candidates(record)),
-                Signal::Traces => self.native_streams.extend(native_streams(record)),
-                Signal::Metrics => {}
-            }
+        self.cursor = scan.cursor;
+        for model in models {
+            self.dirty.insert(model.session);
+            self.pending_models
+                .entry(model.session)
+                .or_default()
+                .push(model);
         }
-        let mut pending = std::mem::take(&mut self.pending_models).into_iter();
-        let mut retained = Vec::new();
-        while let Some(model) = pending.next() {
-            match self.join_model(&model) {
-                Ok(true) => {}
-                Ok(false) => retained.push(model),
-                Err(error) => {
-                    retained.push(model);
-                    retained.extend(pending);
-                    self.pending_models = retained;
-                    return Err(error);
-                }
-            }
+        for stream in streams {
+            self.dirty.insert(stream.session);
+            self.native_streams.push(stream);
         }
-        self.pending_models = retained;
         Ok(())
     }
 
     /// Returns false while the model's turn or timing is not yet known. Replay retains each span identity.
     fn join_model(&mut self, model: &PendingModel) -> io::Result<bool> {
+        #[cfg(test)]
+        {
+            self.joins += 1;
+        }
         let Some(state) = self.sessions.get(&model.session) else {
             return Ok(false);
         };
@@ -567,7 +624,11 @@ fn close_turn(state: &mut SessionSpans, entry: &LogEntry, error: bool, finished:
         closure_name(entry),
     );
     turn.boundaries.push(timestamp(entry));
-    finished.push(turn.span.clone());
+    // A closed turn serves only joins and links. Keep its identity and start, not its events.
+    let identity = json!({"traceId": turn.span["traceId"], "spanId": turn.span["spanId"],
+        "startTimeUnixNano": turn.span["startTimeUnixNano"]});
+    finished.push(std::mem::replace(&mut turn.span, identity));
+    turn.seen_tools = HashSet::new();
     state.closed_turns.push(turn);
 }
 
@@ -1167,6 +1228,178 @@ mod tests {
             .unwrap();
         assert_eq!(model["startTimeUnixNano"], "1000000");
         assert_eq!(model["endTimeUnixNano"], "9000000");
+    }
+
+    #[test]
+    fn recovery_joins_each_pending_model_a_bounded_number_of_times() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let session = sessions.create(CreateSession::default()).unwrap();
+        let log = TelemetryLog::new(sandbox.path(), session.device_id);
+        // Completions before the first turn never join and stay pending.
+        let models = 200;
+        log.append(
+            Signal::Logs,
+            (0..models)
+                .map(|_| codex_completion(session.id, 1))
+                .collect(),
+            0,
+        )
+        .unwrap();
+        let entries = 1_000;
+        for i in 0..entries {
+            sessions
+                .append(
+                    session.id,
+                    "runner.usage.updated",
+                    json!({"observed_at_us": 1000 + i}),
+                )
+                .unwrap();
+        }
+        drop(sessions);
+        let sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let joins = sessions.spans.lock().unwrap().joins;
+        assert!(
+            joins <= 2 * models,
+            "recovery made {joins} join attempts for {models} models"
+        );
+    }
+
+    #[test]
+    fn an_entry_retries_only_the_pending_models_of_its_own_session() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 0).unwrap();
+        let idle = sessions.create(CreateSession::default()).unwrap();
+        let busy = sessions.create(CreateSession::default()).unwrap();
+        let log = TelemetryLog::new(sandbox.path(), idle.device_id);
+        log.append(
+            Signal::Logs,
+            (0..100).map(|_| codex_completion(idle.id, 1)).collect(),
+            0,
+        )
+        .unwrap();
+        sessions
+            .append(idle.id, "turn.started", json!({"observed_at_us":1000}))
+            .unwrap();
+        let before = sessions.spans.lock().unwrap().joins;
+        for i in 0..100 {
+            sessions
+                .append(
+                    busy.id,
+                    "runner.usage.updated",
+                    json!({"observed_at_us": 2000 + i}),
+                )
+                .unwrap();
+        }
+        let joins = sessions.spans.lock().unwrap().joins - before;
+        assert_eq!(
+            joins, 0,
+            "entries of another session retried {joins} models"
+        );
+    }
+
+    #[test]
+    fn recovered_spans_equal_the_incremental_spans() {
+        let live = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(live.path(), 0).unwrap();
+        let first = sessions.create(CreateSession::default()).unwrap();
+        let second = sessions.create(CreateSession::default()).unwrap();
+        let log = TelemetryLog::new(live.path(), first.device_id);
+        // Early models join after their turns close. Late models join on the next entry.
+        log.append(
+            Signal::Logs,
+            vec![
+                codex_completion(first.id, 1),
+                codex_completion(first.id, 5_000_000),
+                codex_completion(second.id, 15_000_000),
+            ],
+            0,
+        )
+        .unwrap();
+        for (session, start) in [(first.id, 1000), (second.id, 12_000), (first.id, 20_000)] {
+            sessions
+                .append(session, "turn.started", json!({"observed_at_us": start}))
+                .unwrap();
+            sessions
+                .append(
+                    session,
+                    "tool.pre",
+                    json!({"observed_at_us": start + 2000, "tool_use_id": format!("t{start}")}),
+                )
+                .unwrap();
+            sessions
+                .append(
+                    session,
+                    "runner.usage.updated",
+                    json!({"observed_at_us": start + 3000}),
+                )
+                .unwrap();
+            sessions
+                .append(
+                    session,
+                    "tool.post",
+                    json!({"observed_at_us": start + 4000, "tool_use_id": format!("t{start}")}),
+                )
+                .unwrap();
+            sessions
+                .append(
+                    session,
+                    "turn.ended",
+                    json!({"observed_at_us": start + 8000}),
+                )
+                .unwrap();
+        }
+        log.append(
+            Signal::Logs,
+            vec![codex_completion(first.id, 25_000_000)],
+            0,
+        )
+        .unwrap();
+        sessions
+            .append(first.id, "exit", json!({"observed_at_us":30_000,"code":0}))
+            .unwrap();
+        drop(sessions);
+        let expected = sorted_spans(&log);
+        assert_eq!(
+            expected
+                .iter()
+                .filter(|s| s["name"] == semconv::MODEL_CALL_SPAN)
+                .count(),
+            3
+        );
+
+        let recovered = tempfile::tempdir().unwrap();
+        copy_dir(live.path(), recovered.path());
+        let path = recovered.path().join("telemetry/log.jsonl");
+        let kept: String = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.contains("\"signal\":\"traces\""))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, kept).unwrap();
+        drop(Sessions::open(recovered.path(), 0).unwrap());
+        let log = TelemetryLog::new(recovered.path(), first.device_id);
+        assert_eq!(sorted_spans(&log), expected);
+    }
+
+    fn sorted_spans(log: &TelemetryLog) -> Vec<Value> {
+        let mut spans = stored_spans(log);
+        spans.sort_by_key(|s| (s["traceId"].to_string(), s["spanId"].to_string()));
+        spans
+    }
+
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
     }
 
     fn codex_completion(session: Ulid, time: u64) -> Value {

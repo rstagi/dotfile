@@ -271,31 +271,7 @@ impl Sessions {
     }
 
     pub(crate) fn apply_trigger_entry(&mut self, entry: &LogEntry) {
-        match entry.event_type.as_str() {
-            "edge.action_registered" => match serde_json::from_value::<Trigger>(entry.body.clone())
-            {
-                Ok(trigger) if trigger.owner == entry.session_id => {
-                    self.triggers.insert(trigger.id, trigger);
-                }
-                _ => eprintln!(
-                    "Cannot read the trigger definition in event {}.",
-                    entry.event_id
-                ),
-            },
-            "edge.action_removed" | "edge.action_fired" | "edge.action_failed" | "message.sent" => {
-                if let Some(id) = entry.body["trigger_id"]
-                    .as_str()
-                    .and_then(|s| s.parse().ok())
-                    && self
-                        .triggers
-                        .get(&id)
-                        .is_some_and(|trigger| trigger.owner == entry.session_id)
-                {
-                    self.triggers.remove(&id);
-                }
-            }
-            _ => {}
-        }
+        apply_trigger_entry(&mut self.triggers, entry);
     }
 
     pub(crate) fn evaluate_triggers(&mut self) -> Result<()> {
@@ -489,6 +465,33 @@ fn expand(template: &str, ids: &str, output: &str) -> String {
     expanded
 }
 
+/// Applies one entry to the triggers of its session. Each log changes only the triggers it owns.
+pub(crate) fn apply_trigger_entry(triggers: &mut BTreeMap<Ulid, Trigger>, entry: &LogEntry) {
+    match entry.event_type.as_str() {
+        "edge.action_registered" => match serde_json::from_value::<Trigger>(entry.body.clone()) {
+            Ok(trigger) if trigger.owner == entry.session_id => {
+                triggers.insert(trigger.id, trigger);
+            }
+            _ => eprintln!(
+                "Cannot read the trigger definition in event {}.",
+                entry.event_id
+            ),
+        },
+        "edge.action_removed" | "edge.action_fired" | "edge.action_failed" | "message.sent" => {
+            if let Some(id) = entry.body["trigger_id"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                && triggers
+                    .get(&id)
+                    .is_some_and(|trigger| trigger.owner == entry.session_id)
+            {
+                triggers.remove(&id);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::sessions::Sessions;
@@ -548,6 +551,62 @@ mod tests {
         assert_eq!(triggers.as_array().unwrap().len(), 1);
         assert_eq!(triggers[0]["id"], id.to_string());
         assert_eq!(triggers[0]["cwd"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_restart_restores_unindexed_entries_and_rebuilds_a_diverged_index() {
+        use ws_core::{log::SessionLog, registry::Registry};
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let owner = sessions.create(Default::default()).unwrap();
+        let source = sessions.create(Default::default()).unwrap();
+        drop(sessions);
+        // A crash after the log append leaves the trigger and the rename out of the index.
+        let log = SessionLog::new(sandbox.path(), owner.id, owner.device_id);
+        let epoch = log.read().unwrap().entries.last().unwrap().epoch;
+        let id = ws_core::ids::Ulid::new();
+        log.append(
+            epoch,
+            "edge.action_registered",
+            json!({
+                "id":id, "owner":owner.id, "sources":[source.id], "event":"done",
+                "action":"send", "target":owner.id, "template":"Continue {id}",
+                "agent":null, "workspace":null, "spawned_session":null,
+                "event_offsets":{}, "edges":[]
+            }),
+        )
+        .unwrap();
+        log.append(epoch, "session.renamed", json!({"name":"late"}))
+            .unwrap();
+        let restored = |sessions: &Sessions| {
+            (
+                sessions.registry.sessions().unwrap(),
+                sessions.triggers.keys().copied().collect::<Vec<_>>(),
+            )
+        };
+        let caught_up = restored(&Sessions::open(sandbox.path(), 1).unwrap());
+        assert!(
+            caught_up
+                .0
+                .iter()
+                .any(|s| s.name.as_deref() == Some("late"))
+        );
+        assert_eq!(caught_up.1, vec![id]);
+        // An index row without a log forces the complete rebuild.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let orphan = SessionLog::new(elsewhere.path(), ws_core::ids::Ulid::new(), owner.device_id);
+        Registry::open(&sandbox.path().join("registry.sqlite"), 1)
+            .unwrap()
+            .apply(
+                &orphan
+                    .append(0, "session.created", json!({"alias": 99}))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            restored(&Sessions::open(sandbox.path(), 1).unwrap()),
+            caught_up
+        );
     }
 
     #[tokio::test]

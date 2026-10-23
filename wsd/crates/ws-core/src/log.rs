@@ -276,7 +276,14 @@ fn read_file(file: &mut File, session_id: SessionId) -> io::Result<LogRead> {
             result.truncated_line = Some(number);
             break;
         }
-        let entry: LogEntry = serde_json::from_slice(&line).map_err(|error| {
+        // Parse once. The hash uses the stored JSON. Typed ULIDs normalize their spelling.
+        let value: Value = serde_json::from_slice(&line).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid log entry {number}: {error}"),
+            )
+        })?;
+        let entry = LogEntry::deserialize(&value).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Invalid log entry {number}: {error}"),
@@ -299,8 +306,6 @@ fn read_file(file: &mut File, session_id: SessionId) -> io::Result<LogRead> {
                 format!("Invalid log entry {number} ({}): {reason}.", entry.event_id),
             ));
         }
-        // Hash the stored JSON. Typed ULIDs normalize their spelling during serialization.
-        let value: Value = serde_json::from_slice(&line)?;
         result.head_hash = entry_hash(&value).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
