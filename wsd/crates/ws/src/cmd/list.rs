@@ -1,9 +1,18 @@
 use crate::{Result, client};
 use hyper::Method;
 use std::path::Path;
-use ws_core::registry::{Session, Workspace};
+use ws_core::{
+    ids::SessionId,
+    registry::{Session, Workspace},
+};
 
 pub(super) struct Row {
+    /// The session in this window. Stopped workspaces have none.
+    pub session: Option<SessionId>,
+    /// The session that created this row's session.
+    pub parent: Option<SessionId>,
+    /// The session name, or its `#N` alias.
+    pub label: String,
     pub state: String,
     pub name: String,
     pub path: String,
@@ -84,6 +93,9 @@ fn workspace_rows(workspaces: Vec<Workspace>, sessions: &[Session], live: &str) 
                 continue;
             };
             found = true;
+            let session = sessions.iter().find(|session| {
+                Some(session.id.to_string().as_str()) == window["session_id"].as_str()
+            });
             let slot = window["slot"].as_u64().unwrap_or(1);
             let name = if slot > 1 {
                 format!("{}#{slot}", workspace.id)
@@ -91,6 +103,9 @@ fn workspace_rows(workspaces: Vec<Workspace>, sessions: &[Session], live: &str) 
                 workspace.id.clone()
             };
             rows.push(Row {
+                session: session.map(|session| session.id),
+                parent: session.and_then(super::parent),
+                label: session.map(super::label).unwrap_or_default(),
                 state: fields[2].into(),
                 name,
                 path: path.into(),
@@ -104,6 +119,9 @@ fn workspace_rows(workspaces: Vec<Workspace>, sessions: &[Session], live: &str) 
         }
         if !found {
             rows.push(Row {
+                session: None,
+                parent: None,
+                label: String::new(),
                 state: "stopped".into(),
                 name: workspace.id,
                 path: path.into(),
@@ -140,6 +158,9 @@ fn directory_rows(sessions: &[Session], live: &str) -> Vec<Row> {
                     (fields[2], fields[0], fields[3] == "1", fields[4] == "1")
                 });
             Some(Row {
+                session: Some(session.id),
+                parent: super::parent(session),
+                label: super::label(session),
                 state: state.into(),
                 name: format!("#{}", session.alias),
                 path: path.clone(),

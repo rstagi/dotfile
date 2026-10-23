@@ -16,7 +16,9 @@ use crate::{Result, client};
 
 mod params;
 
-use params::{Create, Dependency, Empty, Loop, Send, Spawn, Stream, Tail, Target, Wait};
+use params::{
+    Agent, Create, Dependency, Empty, Loop, Rename, Send, Spawn, Stream, Tail, Target, Wait,
+};
 use rmcp::schemars::{self, JsonSchema};
 
 #[derive(Clone)]
@@ -62,6 +64,18 @@ impl Control {
                 let request: Target = serde_json::from_value(arguments)?;
                 self.request(Method::GET, &self.session_path(&request.target)?, None)
                     .await
+            }
+            "session_rename" => {
+                let request: Rename = serde_json::from_value(arguments)?;
+                let caller = self
+                    .caller
+                    .ok_or("Set WS_SESSION_ID to rename your session.")?;
+                self.request(
+                    Method::POST,
+                    &format!("{}/name", self.session_path(&caller.to_string())?),
+                    Some(json!({"name":request.name})),
+                )
+                .await
             }
             "session_depends_on" | "session_block_on" => {
                 let request: Dependency = serde_json::from_value(arguments)?;
@@ -128,62 +142,81 @@ impl Control {
             }
             "session_create" => {
                 let request: Create = serde_json::from_value(arguments)?;
-                let body = if request.headless {
-                    if request.name.is_some() || request.workspace_id.is_some() {
-                        return Err(
-                            "Headless creation does not accept name or workspace_id.".into()
-                        );
+                if request.headless {
+                    return self.create_headless(request).await;
+                }
+                if !request.command.is_empty()
+                    || !request.env.is_empty()
+                    || request.stdin.is_some()
+                    || request.stdout.is_some()
+                    || request.stderr.is_some()
+                {
+                    return Err("Set headless to true to create a process.".into());
+                }
+                let Some(place) = start_place(&request)? else {
+                    if request.agent.is_some() || request.prompt.is_some() {
+                        return Err("Set cwd, scratch or repo to start an agent.".into());
                     }
-                    let directory = std::env::current_dir()?;
-                    serde_json::to_value(ws_daemon::supervisor::CreateHeadless {
-                        headless: true,
-                        command: request.command,
-                        cwd: directory.join(request.cwd.unwrap_or_else(|| directory.clone())),
-                        parent_session_id: self.caller,
-                        env: request.env,
-                        stdin: request.stdin.map(|path| directory.join(path)),
-                        stdout: request.stdout.map(|path| directory.join(path)),
-                        stderr: request.stderr.map(|path| directory.join(path)),
-                    })?
-                } else {
-                    if !request.command.is_empty()
-                        || !request.env.is_empty()
-                        || request.stdin.is_some()
-                        || request.stdout.is_some()
-                        || request.stderr.is_some()
-                    {
-                        return Err("Set headless to true to create a process.".into());
-                    }
-                    if let Some(cwd) = request.cwd {
-                        if request.workspace_id.is_some() {
-                            return Err(
-                                "Use either cwd or workspace_id for an interactive session.".into(),
-                            );
-                        }
-                        let launched = self
-                            .request(
-                                Method::POST,
-                                "/v1/sessions/start",
-                                Some(json!({
-                                    "cwd":std::env::current_dir()?.join(cwd),
-                                    "name":request.name,
-                                    "agent":"claude"
-                                })),
-                            )
-                            .await?;
-                        let id = launched["session_id"]
-                            .as_str()
-                            .ok_or("The daemon did not return a session id.")?;
-                        return self
-                            .request(Method::GET, &self.session_path(id)?, None)
-                            .await;
-                    }
-                    json!({"name":request.name,"workspace_id":request.workspace_id})
+                    return self
+                        .request(
+                            Method::POST,
+                            "/v1/sessions",
+                            Some(json!({"name":request.name,"workspace_id":request.workspace_id})),
+                        )
+                        .await;
                 };
-                self.request(Method::POST, "/v1/sessions", Some(body)).await
+                let agent = match request.agent.unwrap_or_default() {
+                    Agent::Claude => "claude",
+                    Agent::Codex => "codex",
+                    Agent::Grok => "grok",
+                };
+                let (path, body) = crate::cmd::new::request(
+                    place,
+                    crate::cmd::new::Launch {
+                        agent: agent.into(),
+                        name: request.name,
+                        prompt: request.prompt,
+                    },
+                    |_| {
+                        Err("Set branch to create a worktree from a git repository. Use cwd to work in the checkout.".into())
+                    },
+                )?;
+                let launched = self.request(Method::POST, path, Some(body)).await?;
+                let id = launched["session_id"]
+                    .as_str()
+                    .ok_or("The daemon did not return a session id.")?;
+                self.request(Method::GET, &self.session_path(id)?, None)
+                    .await
             }
             _ => Err(format!("Unknown tool: {name}.").into()),
         }
+    }
+
+    async fn create_headless(&self, request: Create) -> Result<Value> {
+        if request.name.is_some()
+            || request.workspace_id.is_some()
+            || request.scratch
+            || request.repo.is_some()
+            || request.branch.is_some()
+            || request.agent.is_some()
+            || request.prompt.is_some()
+        {
+            return Err(
+                "Headless creation does not accept name, workspace_id, scratch, repo, branch, agent or prompt.".into(),
+            );
+        }
+        let directory = std::env::current_dir()?;
+        let body = serde_json::to_value(ws_daemon::supervisor::CreateHeadless {
+            headless: true,
+            command: request.command,
+            cwd: directory.join(request.cwd.unwrap_or_else(|| directory.clone())),
+            parent_session_id: self.caller,
+            env: request.env,
+            stdin: request.stdin.map(|path| directory.join(path)),
+            stdout: request.stdout.map(|path| directory.join(path)),
+            stderr: request.stderr.map(|path| directory.join(path)),
+        })?;
+        self.request(Method::POST, "/v1/sessions", Some(body)).await
     }
 
     async fn request(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -282,7 +315,11 @@ fn tools() -> Vec<Tool> {
         ),
         tool::<Create>(
             "session_create",
-            "Create a registered session or a headless process. Set cwd to start an interactive Claude session in a directory.",
+            "Create a registered session or a headless process. Set cwd, scratch or repo to start an interactive agent. Set repo and branch to create a git worktree and a tmux workspace. Your session becomes the parent. The result is the new session record.",
+        ),
+        tool::<Rename>(
+            "session_rename",
+            "Rename your own session. Use 2 to 4 words in kebab case that tell what you work on. Names are unique.",
         ),
         tool::<Send>("session_send", "Queue a message for a session."),
         tool::<Wait>("wait", "Wait for a session state or event."),
@@ -312,4 +349,32 @@ fn tool<T: JsonSchema>(name: &'static str, description: &'static str) -> Tool {
             .expect("Tool parameters must have an object schema.")
             .clone(),
     )
+}
+
+/// Returns the interactive start place, or None for a record without an agent.
+fn start_place(request: &Create) -> Result<Option<crate::cmd::new::Place>> {
+    use crate::cmd::new::Place;
+    let places = [
+        request.cwd.is_some(),
+        request.scratch,
+        request.repo.is_some(),
+        request.workspace_id.is_some(),
+    ];
+    if places.into_iter().filter(|set| *set).count() > 1 {
+        return Err("Use only one of cwd, scratch, repo or workspace_id.".into());
+    }
+    if request.branch.is_some() && request.repo.is_none() {
+        return Err("Set repo to use branch.".into());
+    }
+    let directory = std::env::current_dir()?;
+    Ok(if let Some(cwd) = &request.cwd {
+        Some(Place::Directory(directory.join(cwd)))
+    } else if request.scratch {
+        Some(Place::Scratch)
+    } else {
+        request.repo.as_ref().map(|repo| Place::Repo {
+            repo: directory.join(repo),
+            branch: request.branch.clone(),
+        })
+    })
 }

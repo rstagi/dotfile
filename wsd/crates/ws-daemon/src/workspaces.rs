@@ -44,6 +44,8 @@ pub struct CreateWorkspace {
     pub repo: String,
     pub branch: String,
     pub agent: String,
+    pub name: Option<String>,
+    pub prompt: Option<String>,
     pub parent_session_id: Option<SessionId>,
 }
 
@@ -225,8 +227,16 @@ async fn create_workspace(
     request: CreateWorkspace,
 ) -> std::result::Result<Value, ApiError> {
     let parent = request.parent_session_id;
-    api::call(store.clone(), move |sessions| {
-        sessions.record_call(parent, "workspace.create", None)
+    let start = crate::places::StartOptions {
+        id: SessionId::new(),
+        name: request.name.clone(),
+        prompt: request.prompt.clone(),
+    };
+    // Check the name before git creates a worktree.
+    let start = api::call(store.clone(), move |sessions| {
+        sessions.record_call(parent, "workspace.create", None)?;
+        start.validate(sessions)?;
+        Ok(start)
     })
     .await?;
     let agent = request.agent.clone();
@@ -246,7 +256,7 @@ async fn create_workspace(
         Ok(plan)
     })
     .await?;
-    let started = start_agent(
+    let started = start_agent_with_options(
         store.clone(),
         Place::Workspace {
             name: plan.name.clone(),
@@ -254,6 +264,7 @@ async fn create_workspace(
         },
         agent,
         parent,
+        Some(start),
     )
     .await;
     api::call(store, move |sessions| {

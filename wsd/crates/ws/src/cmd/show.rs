@@ -24,7 +24,7 @@ pub async fn run(socket: &Path, targets: &[String], json: bool) -> Result<()> {
         String::new()
     };
     if json {
-        let mut value = serde_json::to_value(&session)?;
+        let mut value = super::session_json(&session)?;
         value["output"] = output.into();
         println!("{}", value);
     } else {

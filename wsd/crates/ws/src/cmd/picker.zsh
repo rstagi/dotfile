@@ -10,7 +10,7 @@ cmd_pick() {
     --header-first --bind "load:transform-header($ws_command _summary)" \
     --bind "start:transform-header($ws_command _summary)+pos($(current_row "$rows"))" \
     --preview "$ws_command _preview {2} {3}" --preview-window 'right,50%,follow' \
-    --expect ctrl-n,ctrl-o,ctrl-r,ctrl-a,ctrl-t,ctrl-v \
+    --expect ctrl-n,ctrl-o,ctrl-r,alt-n,alt-o,alt-r,ctrl-a,ctrl-t,ctrl-v \
     --bind "ctrl-p:execute-silent($ws_command pin {2})+reload($ws_command _rows)" \
     --bind "ctrl-s:execute-silent($ws_command _toggle_sessions)+reload($ws_command _rows)" \
     --bind "ctrl-u:execute-silent($ws_command _unread {3})+reload($ws_command _rows)" \
@@ -21,9 +21,12 @@ cmd_pick() {
   wt="$(print -r -- "$row" | cut -f2)"
   win="$(print -r -- "$row" | cut -f3)"
   case "$key" in
-  ctrl-n) "$WS_BIN" new ;;
-  ctrl-o) "$WS_BIN" new --agent codex ;;
-  ctrl-r) "$WS_BIN" new --agent grok ;;
+  ctrl-n) "$WS_BIN" new --scratch ;;
+  ctrl-o) "$WS_BIN" new --scratch --agent codex ;;
+  ctrl-r) "$WS_BIN" new --scratch --agent grok ;;
+  alt-n) "$WS_BIN" new ;;
+  alt-o) "$WS_BIN" new --agent codex ;;
+  alt-r) "$WS_BIN" new --agent grok ;;
   ctrl-a) [[ -n "$wt" ]] && "$WS_BIN" add "$wt" ;;
   ctrl-t) [[ -n "$wt" ]] && "$WS_BIN" add "$wt" --agent codex ;;
   ctrl-v) [[ -n "$wt" ]] && "$WS_BIN" add "$wt" --agent grok ;;

@@ -1,3 +1,3 @@
-#1		api/seed	claude	idle	active
-#2	finisher	api/seed	codex	stopped	done
-#3	old	api/seed	grok	stopped	closed
+#1	#1	api/seed	claude	idle	active
+finisher	#2	api/seed	codex	stopped	done
+old	#3	api/seed	grok	stopped	closed

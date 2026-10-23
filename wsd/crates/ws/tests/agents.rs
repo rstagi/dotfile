@@ -238,6 +238,152 @@ async fn mcp_session_create_starts_an_interactive_agent_in_a_directory() {
 }
 
 #[test]
+fn new_passes_name_and_prompt_to_workspace_and_directory_starts() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let parent: Value = serde_json::from_str(
+        common::request(&sandbox.socket, "POST", "/v1/sessions", "{}")
+            .split_once("\r\n\r\n")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    let parent = parent["id"].as_str().unwrap();
+    let starts: [(&[&str], &str, &str); 3] = [
+        (
+            &["--repo", repo.to_str().unwrap(), "--branch", "feature"],
+            "claude",
+            "api-feature",
+        ),
+        (&["--scratch", "--agent", "codex"], "codex", "scratch-notes"),
+        (
+            &["--cwd", repo.to_str().unwrap(), "--agent", "grok"],
+            "grok",
+            "repo-notes",
+        ),
+    ];
+    for (place, agent, name) in starts {
+        let prompt = format!("Start {name} now.");
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", parent)
+            .arg("new")
+            .args(place)
+            .args(["--name", name, "--prompt", &prompt, "--detach"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let (capture, _running) = sandbox.capture();
+        assert_eq!(capture["agent"], agent);
+        let argv: Vec<String> = serde_json::from_value(capture["argv"].clone()).unwrap();
+        assert!(argv.contains(&prompt), "{argv:?}");
+        let session = sandbox.json(&["show", name, "--json"]);
+        assert_eq!(session["id"], capture["id"]);
+        assert_eq!(session["body"]["parent_session_id"], parent);
+        assert_eq!(session["workspace_id"].is_null(), agent != "claude");
+    }
+    let rejected = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "other",
+        "--name",
+        "api-feature",
+        "--detach",
+    ]);
+    assert!(!rejected.status.success(), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("name already in use"),
+        "{rejected:?}"
+    );
+    assert!(!sandbox.home.path().join("worktrees/api/other").exists());
+}
+
+#[tokio::test]
+async fn mcp_session_create_starts_workspace_and_scratch_agents_with_prompts() {
+    use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+
+    let sandbox = Sandbox::new();
+    sandbox.repo();
+    let response = common::request(&sandbox.socket, "POST", "/v1/sessions", "{}");
+    let parent: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let mut command = tokio::process::Command::from(sandbox.command());
+    command
+        .arg("mcp")
+        .env("WS_SESSION_ID", parent["id"].as_str().unwrap())
+        .current_dir(sandbox.home.path());
+    let client = tokio::time::timeout(
+        Duration::from_secs(30),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let call = async |arguments: Value| {
+        client
+            .call_tool(
+                CallToolRequestParams::new("session_create")
+                    .with_arguments(arguments.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap()
+    };
+    let created = call(json!({"repo":"api", "branch":"feature", "agent":"codex", "name":"api-work", "prompt":"Fix the login bug."})).await;
+    assert_ne!(created.is_error, Some(true), "{created:?}");
+    let session = created.structured_content.unwrap();
+    let (capture, _workspace) = sandbox.capture();
+    assert_eq!(capture["id"], session["id"]);
+    assert_eq!(capture["agent"], "codex");
+    assert!(
+        capture["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Fix the login bug."))
+    );
+    assert_eq!(session["name"], "api-work");
+    assert_eq!(session["workspace_id"], "api/feature");
+    assert_eq!(session["cwd"], sandbox.worktree().to_str().unwrap());
+    assert_eq!(session["parent_session_id"], parent["id"]);
+    assert!(session["alias"].is_i64());
+    let workspaces = sandbox.json(&["list", "--json"]);
+    assert_eq!(workspaces[0]["id"], "api/feature");
+    let scratch = call(json!({"scratch":true, "prompt":"Take notes."})).await;
+    assert_ne!(scratch.is_error, Some(true), "{scratch:?}");
+    let scratch = scratch.structured_content.unwrap();
+    let (capture, _scratch) = sandbox.capture();
+    assert_eq!(capture["agent"], "claude");
+    assert_eq!(capture["argv"][0], "Take notes.");
+    assert!(scratch["workspace_id"].is_null());
+    assert!(scratch["cwd"].as_str().unwrap().contains("/.ws/scratch/"));
+    assert_eq!(scratch["parent_session_id"], parent["id"]);
+    for arguments in [
+        json!({"cwd":".", "scratch":true}),
+        json!({"repo":"api", "cwd":"."}),
+        json!({"repo":"api", "workspace_id":"api/feature"}),
+        json!({"branch":"feature"}),
+        json!({"repo":"api"}),
+        json!({"prompt":"No place."}),
+        json!({"agent":"codex"}),
+        json!({"agent":"unknown", "scratch":true}),
+        json!({"headless":true, "command":["/usr/bin/true"], "prompt":"x"}),
+        json!({"headless":true, "command":["/usr/bin/true"], "scratch":true}),
+    ] {
+        let rejected = call(arguments.clone()).await;
+        assert_eq!(rejected.is_error, Some(true), "{arguments}: {rejected:?}");
+    }
+    assert_eq!(
+        sandbox
+            .json(&["sessions", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    client.cancel().await.unwrap();
+}
+
+#[test]
 fn session_create_starts_an_interactive_agent_in_a_directory() {
     let sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("create notes");

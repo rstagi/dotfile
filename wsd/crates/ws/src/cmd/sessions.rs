@@ -14,23 +14,37 @@ pub async fn run(socket: &Path, targets: &[String], json: bool) -> Result<()> {
         None => client::sessions(socket).await?,
     };
     if json {
+        let sessions = sessions
+            .iter()
+            .map(super::session_json)
+            .collect::<serde_json::Result<Vec<_>>>()?;
         println!("{}", serde_json::to_string(&sessions)?);
         return Ok(());
     }
     let windows = Tmux::from_env().session_states().unwrap_or_default();
-    for session in sessions {
+    let parents: Vec<_> = sessions
+        .iter()
+        .map(|session| {
+            let parent = super::parent(session)?;
+            sessions.iter().position(|other| other.id == parent)
+        })
+        .collect();
+    let created: Vec<_> = sessions.iter().map(|session| session.alias).collect();
+    for (index, depth) in super::nest(&parents, &created) {
+        let session = &sessions[index];
+        let label = super::tree_prefix(depth) + &super::label(session);
         let alias = format!("#{}", session.alias);
         let state = windows
             .iter()
-            .find(|(identity, _)| matches_identity(&session, identity))
+            .find(|(identity, _)| matches_identity(session, identity))
             .map_or("stopped", |(_, state)| state.as_str());
         let fields = [
+            label.as_str(),
             alias.as_str(),
-            session.name.as_deref().unwrap_or(""),
             session.workspace_id.as_deref().unwrap_or(""),
-            super::agent(&session),
+            super::agent(session),
             state,
-            super::status(&session),
+            super::status(session),
         ];
         // Match jq's @tsv escaping for embedded control characters.
         println!(

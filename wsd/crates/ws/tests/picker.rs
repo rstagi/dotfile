@@ -49,7 +49,7 @@ fn pick_preserves_fzf_controls_and_uses_registry_rows() {
             "--no-sort",
             "--layout\nreverse",
             "--sync",
-            "ctrl-n,ctrl-o,ctrl-r,ctrl-a,ctrl-t,ctrl-v",
+            "ctrl-n,ctrl-o,ctrl-r,alt-n,alt-o,alt-r,ctrl-a,ctrl-t,ctrl-v",
             "_summary",
             "_preview {2} {3}",
             "pin {2}",
@@ -384,6 +384,74 @@ fn directory_sessions_follow_workspaces_and_group_by_cwd() {
     let workspaces: serde_json::Value =
         serde_json::from_slice(&sandbox.run(&["list", "--json"])).unwrap();
     assert_eq!(workspaces.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn child_places_nest_under_their_parent_session_and_show_names() {
+    let sandbox = Sandbox::new();
+    let parent = sandbox.start_place(json!({"name":"orchestrator"}), "a-orch");
+    let child = sandbox.start_place(
+        json!({"name":"child-notes", "parent_session_id":parent["session_id"]}),
+        "b-child",
+    );
+    let repo = sandbox.home.path().join("api");
+    std::fs::create_dir(&repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    ] {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/workspaces",
+        &json!({"repo":repo, "branch":"feature", "agent":"claude", "parent_session_id":parent["session_id"]}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let gone = sandbox.start_place(json!({}), "c-gone");
+    let orphan = sandbox.start_place(json!({"parent_session_id":gone["session_id"]}), "d-orphan");
+    let done = sandbox
+        .command()
+        .env("WS_SESSION_ID", gone["session_id"].as_str().unwrap())
+        .arg("done")
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "{done:?}");
+    let rows = String::from_utf8(sandbox.run(&["_rows"])).unwrap();
+    let rows: Vec<_> = rows
+        .lines()
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .collect();
+    assert_eq!(rows.len(), 5, "{rows:?}");
+    assert!(rows.iter().all(|fields| fields.len() == 3), "{rows:?}");
+    assert!(rows[0][0].contains("scratch"), "{rows:?}");
+    assert!(rows[1][0].contains("orchestrator") && !rows[1][0].contains('└'));
+    assert_eq!(rows[1][2], parent["window_id"].as_str().unwrap());
+    assert!(rows[2][0].contains("└ ") && rows[2][0].contains("child-notes"));
+    assert_eq!(rows[2][1], child["cwd"].as_str().unwrap());
+    assert!(rows[3][0].contains("└ ") && rows[3][0].contains("feature"));
+    assert!(rows[3][1].ends_with("worktrees/api/feature"), "{rows:?}");
+    let alias =
+        sandbox.json(&["show", orphan["session_id"].as_str().unwrap(), "--json"])["alias"].clone();
+    assert!(!rows[4][0].contains('└') && rows[4][0].contains(&format!("#{alias}")));
+    assert_eq!(rows[4][1], orphan["cwd"].as_str().unwrap());
 }
 
 #[test]
@@ -970,6 +1038,29 @@ fn registry_membership_excludes_unregistered_tabs_and_previews() {
 impl Sandbox {
     fn new() -> Self {
         Self::seeded(&[])
+    }
+
+    fn start_place(&self, mut body: serde_json::Value, directory: &str) -> serde_json::Value {
+        let cwd = self.home.path().join(directory);
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        body["cwd"] = json!(cwd);
+        body["agent"] = json!("claude");
+        let response = common::request(
+            &self.socket,
+            "POST",
+            "/v1/sessions/start",
+            &body.to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        let mut result: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        result["cwd"] = json!(cwd);
+        result
+    }
+
+    fn json(&self, args: &[&str]) -> serde_json::Value {
+        serde_json::from_slice(&self.run(args)).unwrap()
     }
 
     fn start_directory(&self, name: &str, agent: &str) -> serde_json::Value {

@@ -9,7 +9,7 @@ pub async fn run(socket: &Path, labels: &[String], json: bool) -> Result<()> {
     let current = super::whoami::current(socket).await?;
     let named = client::rename(socket, &current.id.to_string(), label).await?;
     if json {
-        println!("{}", serde_json::to_string(&named)?);
+        println!("{}", super::session_json(&named)?);
     }
     Ok(())
 }

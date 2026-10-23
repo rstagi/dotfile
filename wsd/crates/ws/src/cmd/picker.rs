@@ -8,97 +8,134 @@ use super::list::{self, Row};
 use crate::Result;
 
 pub async fn rows(socket: &Path) -> Result<()> {
-    let mut workspaces: BTreeMap<(bool, String), Vec<Row>> = BTreeMap::new();
+    let mut places: BTreeMap<(bool, String), Vec<Row>> = BTreeMap::new();
     for row in list::rows(socket).await? {
-        workspaces
+        places
             .entry((row.scratch, row.path.clone()))
             .or_default()
             .push(row);
     }
-    let mut groups: Vec<_> = workspaces.values().collect();
+    let mut groups: Vec<_> = places.into_values().collect();
+    // Pinned workspaces come first, then workspaces, then directory places.
     groups.sort_by_key(|rows| {
         let first = &rows[0];
         (
             first.scratch,
+            !first.pinned,
             if first.scratch {
-                first.path.as_str()
+                first.path.clone()
             } else {
-                first.name.split('#').next().unwrap()
+                first.name.split('#').next().unwrap().to_owned()
             },
         )
     });
+    // A place nests under the place of the session that created its first session.
+    let anchors: Vec<_> = groups
+        .iter()
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row.session.is_some())
+                .min_by_key(|row| row.session)
+        })
+        .collect();
+    let parents: Vec<_> = anchors
+        .iter()
+        .map(|anchor| {
+            let parent = anchor.and_then(|row| row.parent)?;
+            groups
+                .iter()
+                .position(|rows| rows.iter().any(|row| row.session == Some(parent)))
+        })
+        .collect();
+    let created: Vec<_> = anchors
+        .iter()
+        .map(|anchor| anchor.and_then(|row| row.session))
+        .collect();
     let expanded = sessions_marker()?.exists();
     let mut previous = String::new();
-    for (scratch, pinned) in [(false, true), (false, false), (true, false)] {
-        let mut heading = false;
-        for sessions in groups
-            .iter()
-            .filter(|rows| rows[0].scratch == scratch && rows[0].pinned == pinned)
-        {
-            if scratch && !heading {
-                println!("\x1b[1mscratch\x1b[0m\t\t");
-                heading = true;
+    let mut heading = false;
+    for (index, depth) in super::nest(&parents, &created) {
+        let sessions = &groups[index];
+        let first = &sessions[0];
+        let (scratch, pinned) = (first.scratch, first.pinned);
+        if scratch && depth == 0 && !heading {
+            println!("\x1b[1mscratch\x1b[0m\t\t");
+            heading = true;
+        }
+        let name = first.name.split('#').next().unwrap();
+        let (repo, branch) = if scratch {
+            (first.label.as_str(), first.path.as_str())
+        } else {
+            name.split_once('/').unwrap_or((name, name))
+        };
+        let style = if pinned || repo != previous {
+            "\x1b[1m"
+        } else {
+            "\x1b[2m"
+        };
+        let mark = if pinned { "📌" } else { "  " };
+        let tree = super::tree_prefix(depth);
+        let mut state = first.state.as_str();
+        let mut target = first.window.as_str();
+        let mut unread = first.unread;
+        let mut active = first.active;
+        for session in &sessions[1..] {
+            if rank(&session.state) > rank(state) {
+                state = &session.state;
             }
-            let first = &sessions[0];
-            let name = first.name.split('#').next().unwrap();
-            let (repo, branch) = if scratch {
-                ("", first.path.as_str())
-            } else {
-                name.split_once('/').unwrap_or((name, name))
-            };
-            let style = if pinned || repo != previous {
-                "\x1b[1m"
-            } else {
-                "\x1b[2m"
-            };
-            let mark = if pinned { "📌" } else { "  " };
-            let mut state = first.state.as_str();
-            let mut target = first.window.as_str();
-            let mut unread = first.unread;
-            let mut active = first.active;
-            for session in &sessions[1..] {
-                if rank(&session.state) > rank(state) {
-                    state = &session.state;
+            if !unread && (session.unread || (session.active && !active)) {
+                target = &session.window;
+            }
+            active |= session.active;
+            unread |= session.unread;
+        }
+        let detail = if sessions.len() > 1 {
+            format!("{} sessions", sessions.len())
+        } else if first.agent == "-" {
+            state.into()
+        } else {
+            first.agent.clone()
+        };
+        println!(
+            "{mark} {tree}{style}{repo:<14}\x1b[0m {} {branch:<24} {} \x1b[2m{detail}\x1b[0m\t{}\t{target}",
+            unread_mark(unread),
+            state_icon(state),
+            first.path
+        );
+        if expanded && sessions.len() > 1 {
+            let parents: Vec<_> = sessions
+                .iter()
+                .map(|session| {
+                    let parent = session.parent?;
+                    sessions.iter().position(|row| row.session == Some(parent))
+                })
+                .collect();
+            let created: Vec<_> = sessions.iter().map(|session| session.session).collect();
+            for (index, nested) in super::nest(&parents, &created) {
+                let session = &sessions[index];
+                let mut tab = session.agent.clone();
+                if let Some((_, slot)) = session.name.rsplit_once('#').filter(|_| !scratch) {
+                    tab.push('#');
+                    tab.push_str(slot);
                 }
-                if !unread && (session.unread || (session.active && !active)) {
-                    target = &session.window;
+                if !session.label.is_empty() {
+                    tab.push(' ');
+                    tab.push_str(&session.label);
                 }
-                active |= session.active;
-                unread |= session.unread;
+                println!(
+                    "                 {} {}{}└ {} {tab:<22} \x1b[2m{}\x1b[0m\t{}\t{}",
+                    unread_mark(session.unread),
+                    "  ".repeat(depth),
+                    "  ".repeat(nested),
+                    state_icon(&session.state),
+                    session.state,
+                    session.path,
+                    session.window
+                );
             }
-            let detail = if sessions.len() > 1 {
-                format!("{} sessions", sessions.len())
-            } else if first.agent == "-" {
-                state.into()
-            } else {
-                first.agent.clone()
-            };
-            println!(
-                "{mark} {style}{repo:<14}\x1b[0m {} {branch:<24} {} \x1b[2m{detail}\x1b[0m\t{}\t{target}",
-                unread_mark(unread),
-                state_icon(state),
-                first.path
-            );
-            if expanded && sessions.len() > 1 {
-                for session in *sessions {
-                    let mut tab = session.agent.clone();
-                    if let Some((_, slot)) = session.name.rsplit_once('#') {
-                        tab.push('#');
-                        tab.push_str(slot);
-                    }
-                    println!(
-                        "                 {} └ {} {tab:<22} \x1b[2m{}\x1b[0m\t{}\t{}",
-                        unread_mark(session.unread),
-                        state_icon(&session.state),
-                        session.state,
-                        session.path,
-                        session.window
-                    );
-                }
-            }
-            if !pinned {
-                previous = repo.into();
-            }
+        }
+        if !pinned {
+            previous = repo.into();
         }
     }
     Ok(())
@@ -126,7 +163,8 @@ pub async fn summary(socket: &Path) -> Result<()> {
         }
     );
     println!("\x1b[2m↵ open · ^s sessions · ^p pin · ^u unread · ^x rm\x1b[0m");
-    println!("\x1b[2m^n/^o/^r new claude/codex/grok · ^a/^t/^v add claude/codex/grok tab\x1b[0m");
+    println!("\x1b[2m^n/^o/^r scratch claude/codex/grok · alt-n/o/r new claude/codex/grok\x1b[0m");
+    println!("\x1b[2m^a/^t/^v add claude/codex/grok tab\x1b[0m");
     Ok(())
 }
 
