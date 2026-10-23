@@ -624,7 +624,11 @@ fn close_turn(state: &mut SessionSpans, entry: &LogEntry, error: bool, finished:
         closure_name(entry),
     );
     turn.boundaries.push(timestamp(entry));
-    finished.push(turn.span.clone());
+    // A closed turn serves only joins and links. Keep its identity and start, not its events.
+    let identity = json!({"traceId": turn.span["traceId"], "spanId": turn.span["spanId"],
+        "startTimeUnixNano": turn.span["startTimeUnixNano"]});
+    finished.push(std::mem::replace(&mut turn.span, identity));
+    turn.seen_tools = HashSet::new();
     state.closed_turns.push(turn);
 }
 
