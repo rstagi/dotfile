@@ -21,12 +21,12 @@ cmd_pick() {
   wt="$(print -r -- "$row" | cut -f2)"
   win="$(print -r -- "$row" | cut -f3)"
   case "$key" in
-  ctrl-n) "$WS_BIN" new --scratch ;;
-  ctrl-o) "$WS_BIN" new --scratch --agent codex ;;
-  ctrl-r) "$WS_BIN" new --scratch --agent grok ;;
-  alt-n) "$WS_BIN" new ;;
-  alt-o) "$WS_BIN" new --agent codex ;;
-  alt-r) "$WS_BIN" new --agent grok ;;
+  ctrl-n) "$WS_BIN" new --no-parent --scratch ;;
+  ctrl-o) "$WS_BIN" new --no-parent --scratch --agent codex ;;
+  ctrl-r) "$WS_BIN" new --no-parent --scratch --agent grok ;;
+  alt-n) "$WS_BIN" new --no-parent ;;
+  alt-o) "$WS_BIN" new --no-parent --agent codex ;;
+  alt-r) "$WS_BIN" new --no-parent --agent grok ;;
   ctrl-a) [[ -n "$wt" ]] && "$WS_BIN" add "$wt" ;;
   ctrl-t) [[ -n "$wt" ]] && "$WS_BIN" add "$wt" --agent codex ;;
   ctrl-v) [[ -n "$wt" ]] && "$WS_BIN" add "$wt" --agent grok ;;

@@ -8,7 +8,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws new [--repo <path>] [--branch <branch>] [--agent claude|codex|grok] [--detach]` creates a workspace.
 - `ws new --scratch [--agent claude|codex|grok] [--detach]` starts a session in `$WS_HOME/scratch/<ulid8>`.
 - `ws new --cwd <dir> [--agent claude|codex|grok] [--detach]` starts a session in an existing directory.
-- `ws new` also accepts `--name <name>` and `--prompt <text>`. The prompt is the first message to the agent.
+- `ws new` also accepts `--name <name>` and `--prompt <text>`. The prompt is the first message to the agent. `--no-parent` starts a top-level session: the calling session does not become its parent. The picker keys use it.
 - `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
 - `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace, directory place or session.
 - If every session of a directory ended, `ws open <dir>` resumes its most recent session.

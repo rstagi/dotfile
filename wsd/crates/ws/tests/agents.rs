@@ -282,6 +282,23 @@ fn new_passes_name_and_prompt_to_workspace_and_directory_starts() {
         assert_eq!(session["body"]["parent_session_id"], parent);
         assert_eq!(session["workspace_id"].is_null(), agent != "claude");
     }
+    let output = sandbox
+        .command()
+        .env("WS_SESSION_ID", parent)
+        .args([
+            "new",
+            "--scratch",
+            "--no-parent",
+            "--name",
+            "top-level",
+            "--detach",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let _running = sandbox.capture();
+    let session = sandbox.json(&["show", "top-level", "--json"]);
+    assert!(session["body"]["parent_session_id"].is_null(), "{session}");
     let rejected = sandbox.output(&[
         "new",
         "--repo",
