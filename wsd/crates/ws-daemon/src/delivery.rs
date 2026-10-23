@@ -200,11 +200,11 @@ async fn paste_idle(
             "-p",
             "-t",
             window,
-            "#{@ws_session}|#{@ws_state}|#{@ws_main}|#{@ws_pane}|#{socket_path}",
+            "#{@ws_session}|#{@ws_state}|#{@ws_main}|#{@ws_pane}|#{socket_path}|#{@ws_agent}",
         ])
         .await?;
     let fields: Vec<_> = snapshot.split('|').collect();
-    if fields.len() != 5
+    if fields.len() != 6
         || fields[0] != id.to_string()
         || fields[1] != "idle"
         || (!fields[2].is_empty() && fields[2] != "idle")
@@ -223,6 +223,11 @@ async fn paste_idle(
         fields[3]
     };
     if !valid_target(pane, '%') || !panes.lines().any(|p| p == pane) {
+        return Ok(());
+    }
+    // Claude can start at its trust dialog, whose default answer exits. Its first hook,
+    // SessionStart, runs only after that dialog. Until a hook sets @ws_main, keep the message queued.
+    if fields[2].is_empty() && fields[5] == "claude" {
         return Ok(());
     }
     // A new agent window can still contain its launch shell. Wait for TUI input readiness.

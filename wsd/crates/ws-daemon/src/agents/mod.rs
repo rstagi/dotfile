@@ -283,6 +283,8 @@ fn hooks(agent: &str, command: &str) -> Value {
     let hooks = settings["hooks"].as_object_mut().unwrap();
     if agent == "claude" {
         hooks.insert("SessionEnd".into(), run("exit"));
+        // Claude runs hooks only after its trust dialog. SessionStart marks input readiness.
+        hooks.insert("SessionStart".into(), run("ready"));
         hooks.insert("PostToolUseFailure".into(), run("working"));
         hooks.insert("SubagentStart".into(), run("subagent-start"));
         hooks.insert("SubagentStop".into(), run("subagent-stop"));

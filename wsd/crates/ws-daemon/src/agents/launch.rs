@@ -378,9 +378,16 @@ impl Sessions {
         }
         if request.code == 0 {
             slots::remove(&self.state, &self.agent_directory(&session)?, &request.id)?;
-            if !["finished", "failed"].contains(&session.state.as_str()) {
-                self.transition(&request.id, ws_core::state::SessionState::Finished, None)?;
-            }
+        }
+        // The agent process ended, so the session cannot stay running. A message reopens it.
+        // A failed exit keeps its slot row, so the reopened agent resumes the conversation.
+        if !["finished", "failed"].contains(&session.state.as_str()) {
+            let state = if request.code == 0 {
+                ws_core::state::SessionState::Finished
+            } else {
+                ws_core::state::SessionState::Failed
+            };
+            self.transition(&request.id, state, None)?;
         }
         if request.user_tab || request.code == 0 {
             let tmux = Tmux::from_env();
@@ -389,6 +396,7 @@ impl Sessions {
                 "@ws_slot",
                 "@ws_agent",
                 "@ws_state",
+                "@ws_main",
                 "@ws_session",
                 "@ws_pane",
                 "automatic-rename",

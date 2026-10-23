@@ -471,7 +471,8 @@ install_loop_web() {
 </plist>
 PLIST
     launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-    launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
+    launchd_wait_unloaded "gui/$uid/$label"
+    launchd_bootstrap "gui/$uid" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
     launchctl enable "gui/$uid/$label" 2>/dev/null || true
     launchctl kickstart -k "gui/$uid/$label" 2>/dev/null || true
     echo "loop-web: central daemon LaunchAgent installed → http://localhost:7717 ($plist)"
@@ -545,10 +546,53 @@ install_ws_daemon() {
   mkdir -p "$HOME/Library/LaunchAgents" "$ws_home" || return 1
   printf '%s\n' "$content" > "$plist" || return 1
   launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+  launchd_wait_unloaded "gui/$uid/$label"
+  stop_stray_ws_daemon "${WS_SOCK:-$HOME/.ws/wsd.sock}.lock"
   launchctl enable "gui/$uid/$label" || return 1
-  launchctl bootstrap "gui/$uid" "$plist" || return 1
+  launchd_bootstrap "gui/$uid" "$plist" || return 1
   launchctl kickstart "gui/$uid/$label" || return 1
   echo "ws: installed $plist"
+}
+
+# launchctl bootout returns before launchd unloads the job. Wait at most 10 s for the unload.
+launchd_wait_unloaded() {
+  local target="$1" tries=50
+  while launchctl print "$target" >/dev/null 2>&1; do
+    tries=$((tries - 1))
+    if [ "$tries" -le 0 ]; then
+      echo "launchd: $target is still loaded after 10 s" >&2
+      return 0
+    fi
+    sleep 0.2
+  done
+}
+
+# Bootstrap can fail with "5: Input/output error" while launchd completes an unload. Retry it.
+launchd_bootstrap() {
+  local domain="$1" plist="$2" attempt=1
+  until launchctl bootstrap "$domain" "$plist"; do
+    [ "$attempt" -lt 5 ] || return 1
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+}
+
+# While the LaunchAgent is unloaded, a ws client can start its own daemon. That daemon holds
+# the socket lock, so the LaunchAgent daemon exits. Call this after the unload: then every
+# lock holder is outside launchd. Stop only the lock holders whose executable is ws-rs.
+stop_stray_ws_daemon() {
+  local lock="$1" pid name tries
+  for pid in $(lsof -t "$lock" 2>/dev/null); do
+    name="$(ps -o comm= -p "$pid" 2>/dev/null)" || continue
+    [ "${name##*/}" = "ws-rs" ] || continue
+    echo "ws: stopping the daemon $pid that runs outside launchd"
+    kill -TERM "$pid" 2>/dev/null || continue
+    tries=50
+    while kill -0 "$pid" 2>/dev/null && [ "$tries" -gt 0 ]; do
+      tries=$((tries - 1))
+      sleep 0.1
+    done
+  done
 }
 
 install_grok() {
@@ -911,8 +955,9 @@ preview_package() {
       echo "  Copy $HOME/dotfile/wsd/target/release/ws to $ws_home/bin/ws-rs"
       echo "  Link $ws_home/bin/ws to $HOME/dotfile/ws/ws.sh"
       echo "  Render $HOME/Library/LaunchAgents/com.rstagi.wsd.plist (KeepAlive, $ws_home/bin/ws-rs daemon)"
-      echo "  launchctl bootout gui/$(id -u)/com.rstagi.wsd (if loaded)"
-      echo "  launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/com.rstagi.wsd.plist"
+      echo "  launchctl bootout gui/$(id -u)/com.rstagi.wsd (if loaded), then wait for the unload"
+      echo "  stop a ws-rs daemon that holds the socket lock outside launchd"
+      echo "  launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/com.rstagi.wsd.plist (retry up to 5 times)"
       echo "  launchctl enable gui/$(id -u)/com.rstagi.wsd"
       echo "  launchctl kickstart gui/$(id -u)/com.rstagi.wsd"
       ;;

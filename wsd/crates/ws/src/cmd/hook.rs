@@ -90,6 +90,7 @@ async fn deliver(
         "subagent-stop",
         "quota",
         "exit",
+        "ready",
     ]
     .contains(&state)
     {

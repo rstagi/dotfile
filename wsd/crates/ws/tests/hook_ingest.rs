@@ -1345,3 +1345,25 @@ impl Drop for HookProcess {
         let _ = self.0.wait();
     }
 }
+
+#[test]
+fn session_start_marks_a_new_window_ready_without_changing_a_running_turn() {
+    let sandbox = HookSandbox::new();
+    assert_eq!(sandbox.options(), "idle|||||");
+    sandbox.hook(
+        "ready",
+        json!({"hook_event_name":"SessionStart", "source":"startup"}),
+    );
+    assert_eq!(sandbox.options(), "idle|idle||||");
+    sandbox.hook(
+        "working",
+        json!({"hook_event_name":"UserPromptSubmit", "turn_id":"t1"}),
+    );
+    assert_eq!(sandbox.options(), "working|working|t1|||");
+    // Compaction starts a new Claude session in the middle of a turn.
+    sandbox.hook(
+        "ready",
+        json!({"hook_event_name":"SessionStart", "source":"compact"}),
+    );
+    assert_eq!(sandbox.options(), "working|working|t1|||");
+}
