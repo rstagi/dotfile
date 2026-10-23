@@ -806,6 +806,9 @@ install_claude_config() {
 
     configure_parallel_search
 
+    # Built-in "You should know" observer plugin (off by default)
+    grep -q '"cc-plugin-you-should-know@builtin": true' "$HOME/.claude/settings.json" 2>/dev/null || \
+      claude plugin enable cc-plugin-you-should-know@builtin --scope user
 
     echo "Agent config installed (Claude Code, Codex, Ratel Local, MCP servers)"
   }
