@@ -40,7 +40,8 @@ ws show reviewer --json
 ws open reviewer --detach
 ```
 
-Human output uses `#N` aliases. JSON includes the ULID `id`, numeric `alias`, and lifecycle `state`.
+Human output starts with the name, or `#N` without a name, then the `#N` alias. Child sessions show under their parent with `└ `.
+JSON includes the ULID `id`, numeric `alias`, `parent_session_id`, and lifecycle `state`.
 Lifecycle states include `created`, `running`, `blocked`, `finished`, `failed` and `reopened`.
 Human status maps `finished` to `done` and `failed` to `closed`.
 The TSV activity column describes tmux activity, such as `idle`, `working`, `waiting` or `stopped`.
@@ -60,12 +61,14 @@ Directory and scratch sessions have no workspace. The picker shows both.
 ws new --repo /path/to/repo --branch feat/task --detach
 ws new --cwd /path/to/notes --detach
 ws new --scratch --agent codex --detach
+ws new --scratch --name notes-review --prompt 'Review the notes.' --detach
 ws add /path/to/notes --agent codex --detach
 ws open /path/to/notes --detach
 ws sessions --json
 ```
 
 `--cwd` accepts directories inside or outside git repositories.
+`--name` sets a unique session name. `--prompt` sends the first message to the agent.
 `--repo` accepts a non-git directory when `--branch` is absent.
 `ws add <dir>` starts another agent in that directory.
 `ws open <dir>` resumes stopped sessions with their existing IDs.
@@ -180,6 +183,11 @@ Its caller identity comes from `WS_SESSION_ID`. Tool arguments cannot replace th
 Claude and Codex receive this server through their start arguments.
 These arguments do not change their configuration files.
 Use CLI commands for explicit acknowledgements and completion.
+MCP `session_rename` takes `name` and renames your own session only.
+MCP `session_create` starts an interactive agent with one of `cwd`, `scratch: true` or `repo`.
+Add `branch` to `repo` to create a git worktree and a tmux workspace. A git `repo` requires `branch`.
+It also accepts `agent` (`claude`, `codex` or `grok`, default `claude`), `name` and `prompt`.
+Your session becomes the parent. The result is the session record with `id`, `alias`, `name`, `cwd` and `workspace_id`.
 
 ```sh
 ws session create --headless --cwd /path/to/worktree -- /path/to/command

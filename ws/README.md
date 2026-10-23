@@ -8,6 +8,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws new [--repo <path>] [--branch <branch>] [--agent claude|codex|grok] [--detach]` creates a workspace.
 - `ws new --scratch [--agent claude|codex|grok] [--detach]` starts a session in `$WS_HOME/scratch/<ulid8>`.
 - `ws new --cwd <dir> [--agent claude|codex|grok] [--detach]` starts a session in an existing directory.
+- `ws new` also accepts `--name <name>` and `--prompt <text>`. The prompt is the first message to the agent.
 - `ws add [<workspace>|<path>] [--agent claude|codex|grok] [--detach]` adds an agent window.
 - `ws open <workspace|path|session> [--detach]` focuses or resumes a workspace, directory place or session.
 - If every session of a directory ended, `ws open <dir>` resumes its most recent session.
@@ -18,6 +19,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws merge` merges the workspace PR through `gh`, then offers to remove the worktree and branch.
 - `ws claude|codex|grok [args]` starts a tracked agent in the current workspace window.
 - `ws sessions [<id>|<name>] [--json]`, `ws whoami [--json]`, `ws name <label>` and `ws show <target> [--json]` manage session identity.
+- `ws sessions` shows the name, or `#N` without a name, in the first column. Child sessions show under their parent with `└ `.
 - Session IDs are ULIDs. Targets accept names, unique ULID prefixes and quoted aliases such as `'#123'`.
 - New agents receive the ULID in `WS_SESSION_ID` only. IDs survive resume.
 - `ws send <target> <message|->` queues a durable message. Exit 75 means queued. Do not send the message again.
@@ -30,9 +32,11 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws mcp` serves local stdio MCP tools. Agent launches configure this server without changing Claude or Codex configuration files.
 - `ws backend rust` imports any remaining legacy records. Rust is the only backend.
 
-The picker uses fzf. Enter opens a workspace or directory place. Ctrl-N creates a Claude workspace, Ctrl-O uses Codex, and Ctrl-R uses Grok.
+The picker uses fzf. Enter opens a workspace or directory place. Ctrl-N starts a Claude scratch session, Ctrl-O uses Codex, and Ctrl-R uses Grok.
+Alt-N creates a Claude workspace from the repository picker, Alt-O uses Codex, and Alt-R uses Grok.
 Ctrl-A adds Claude, Ctrl-T adds Codex, and Ctrl-V adds Grok. Ctrl-S shows sessions, Ctrl-P changes pins, and Ctrl-X removes workspaces.
 The tmux bindings include `prefix+w` for the picker and `prefix+M` for merge.
+Picker rows show session names, or `#N` without a name. A place shows under the place of the session that created it.
 Agent starts use permission bypass flags.
 The [ws-sessions skill](../.claude/skills/ws-sessions/SKILL.md) describes agent coordination.
 `./install-agent-skills.sh` shares that skill with Claude, Codex and Ratel Local.
@@ -370,6 +374,7 @@ The tools return the daemon JSON in both text and structured content.
 |---|---|
 | `session_create` | `ws session create [--name <name>] --json`<br>`ws session create --headless --json … -- <cmd>` |
 | `session_list` | `ws session list --json` |
+| `session_rename` | `ws name <name> --json` |
 | `session_get` | `ws session get <target> --json` |
 | `session_send` | `ws send <target> <message> --json` |
 | `session_tail` | `ws session tail <target> --json [--stream stdout|stderr] [--max-bytes <n>]` |
@@ -385,7 +390,11 @@ The record form accepts a name and a workspace ID. The headless form rejects bot
 `ws session create --cwd <dir> [--name <name>] --json` starts an interactive Claude session in that directory.
 MCP `session_create` accepts the same `cwd` and `name` fields. Relative directories use the caller's current directory.
 This form calls `POST /v1/sessions/start`. It returns the session record and creates no workspace.
-Use either `cwd` or `workspace_id` for an interactive session.
+MCP `session_create` also accepts `scratch: true`, or `repo` with optional `branch`, like `ws new --scratch` and `ws new --repo <repo> --branch <branch> --detach`.
+`repo` with `branch` calls `POST /v1/workspaces`. A git `repo` requires `branch`. A non-git `repo` starts a directory session.
+`agent` (`claude`, `codex` or `grok`, default `claude`) and `prompt` (first message) apply to interactive starts.
+Use only one of `cwd`, `scratch`, `repo` or `workspace_id`. The caller becomes the parent. The result is the session record.
+MCP `session_rename` takes `{"name":"<name>"}` and renames the caller session only.
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.
