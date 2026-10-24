@@ -439,6 +439,20 @@ The codes are `max_children_exceeded` and `max_depth_exceeded`.
 The CLI exits with code 1 and writes this JSON error to standard error.
 MCP returns the same error as structured content with `isError: true`.
 
+The same file sets the CPU priority of agent processes on macOS:
+
+```toml
+[agent]
+priority = "utility"   # utility | background | normal
+```
+
+The daemon starts each interactive and headless agent with `taskpolicy -c <priority>`.
+All child processes of the agent, such as test runners and compilers, inherit this clamp.
+`utility` is the default. The agents use all cores when the Mac is idle, and your own apps get the CPU first.
+`background` uses only the efficiency cores and throttles disk I/O. `normal` applies no clamp.
+Processes outside an agent's process tree keep their priority. Examples are a shell in your own terminal, a plain tmux pane and Docker containers.
+New sessions use the new value after a daemon restart.
+
 The daemon also accepts OTLP/HTTP exports at `/v1/logs`, `/v1/metrics` and `/v1/traces`.
 It accepts `application/json` and `application/x-protobuf` on IPv4 localhost only.
 Configure it in the same file:

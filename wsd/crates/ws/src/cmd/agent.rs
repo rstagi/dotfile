@@ -126,7 +126,7 @@ pub async fn execute(socket: &Path, id: &str, user_tab: bool) -> Result<ExitCode
     .await?;
     let launch: Launch = serde_json::from_slice(&response)?;
     let shell = env::var("WS_AGENT_SHELL").unwrap_or_else(|_| "zsh -ic".into());
-    let shell = shell_words::split(&shell)?;
+    let shell = [launch.priority.prefix(), shell_words::split(&shell)?].concat();
     let shell_program = shell
         .first()
         .ok_or("WS_AGENT_SHELL must contain a shell command.")?

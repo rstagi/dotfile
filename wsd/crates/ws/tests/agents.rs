@@ -446,6 +446,27 @@ fn session_create_starts_an_interactive_agent_in_a_directory() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn agent_priority_clamps_interactive_agents() {
+    // macOS reports a background clamp as scheduling priority 4.
+    for (config, clamped) in [
+        ("[agent]\npriority = \"background\"\n", true),
+        ("[agent]\npriority = \"normal\"\n", false),
+    ] {
+        let sandbox = Sandbox::with_config(config);
+        let result = sandbox
+            .command()
+            .current_dir(sandbox.home.path())
+            .args(["session", "create", "--cwd", ".", "--json"])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        let (agent, _running) = sandbox.capture();
+        assert_eq!(agent["pri"] == "4", clamped, "{config}: {agent}");
+    }
+}
+
+#[test]
 fn start_api_runs_an_agent_in_a_directory_without_registering_a_workspace() {
     let sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("notes and plans");
@@ -2255,7 +2276,7 @@ if sys.argv[1:] == ['--version']:
     sys.exit(0)
 s = socket.socket(socket.AF_UNIX)
 s.connect({:?})
-s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pane=os.getenv('TMUX_PANE'), otel=dict(resource=os.getenv('OTEL_RESOURCE_ATTRIBUTES'), endpoint=os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT'), protocol=os.getenv('OTEL_EXPORTER_OTLP_PROTOCOL'), enabled=os.getenv('CLAUDE_CODE_ENABLE_TELEMETRY'), traceparent=os.getenv('TRACEPARENT'), beta=os.getenv('CLAUDE_CODE_ENHANCED_TELEMETRY_BETA'), prompt=os.getenv('OTEL_LOG_USER_PROMPTS'), detail=os.getenv('OTEL_LOG_TOOL_DETAILS'), content=os.getenv('OTEL_LOG_TOOL_CONTENT'))))+'\n').encode())
+s.sendall((json.dumps(dict(agent={agent:?}, argv=sys.argv[1:], id=os.getenv('WS_SESSION_ID'), legacy_id=os.getenv('WS_SESSION'), cwd=os.getcwd(), workspace=os.getenv('WS_WORKSPACE'), shell=os.getenv('WS_TEST_AGENT_SHELL'), pri=subprocess.run(['ps', '-o', 'pri=', '-p', str(os.getpid())], capture_output=True, text=True).stdout.strip(), pane=os.getenv('TMUX_PANE'), otel=dict(resource=os.getenv('OTEL_RESOURCE_ATTRIBUTES'), endpoint=os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT'), protocol=os.getenv('OTEL_EXPORTER_OTLP_PROTOCOL'), enabled=os.getenv('CLAUDE_CODE_ENABLE_TELEMETRY'), traceparent=os.getenv('TRACEPARENT'), beta=os.getenv('CLAUDE_CODE_ENHANCED_TELEMETRY_BETA'), prompt=os.getenv('OTEL_LOG_USER_PROMPTS'), detail=os.getenv('OTEL_LOG_TOOL_DETAILS'), content=os.getenv('OTEL_LOG_TOOL_CONTENT'))))+'\n').encode())
 control = s.recv(1)
 if control in (b'd', b't'):
     tty.setraw(0)

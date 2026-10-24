@@ -37,3 +37,44 @@ fn invalid_limits_return_an_error_and_preserve_the_configuration() {
         assert_eq!(fs::read_to_string(&path).unwrap(), contents);
     }
 }
+
+#[test]
+fn agent_priority_defaults_to_utility_and_rejects_unknown_values() {
+    use ws_core::config::AgentPriority;
+    let sandbox = tempfile::tempdir().unwrap();
+    assert_eq!(
+        Config::load(sandbox.path()).unwrap().agent.priority,
+        AgentPriority::Utility
+    );
+    for (contents, priority) in [
+        ("[agent]\npriority = \"background\"\n", AgentPriority::Background),
+        ("[agent]\npriority = \"normal\"\n", AgentPriority::Normal),
+        ("[agent]\npriority = \"utility\"\n", AgentPriority::Utility),
+    ] {
+        fs::write(sandbox.path().join("config.toml"), contents).unwrap();
+        assert_eq!(Config::load(sandbox.path()).unwrap().agent.priority, priority);
+    }
+    fs::write(sandbox.path().join("config.toml"), "[agent]\npriority = \"fast\"\n").unwrap();
+    assert_eq!(
+        Config::load(sandbox.path()).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn only_a_clamped_priority_adds_a_taskpolicy_prefix() {
+    use ws_core::config::AgentPriority;
+    assert!(AgentPriority::Normal.prefix().is_empty());
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            AgentPriority::Utility.prefix(),
+            ["/usr/sbin/taskpolicy", "-c", "utility"]
+        );
+        assert_eq!(
+            AgentPriority::Background.prefix(),
+            ["/usr/sbin/taskpolicy", "-c", "background"]
+        );
+    } else {
+        assert!(AgentPriority::Utility.prefix().is_empty());
+    }
+}
