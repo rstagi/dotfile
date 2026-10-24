@@ -67,6 +67,23 @@ pub async fn rename(socket: &Path, id: &str, name: &str) -> Result<ws_core::regi
     Ok(serde_json::from_slice(&body)?)
 }
 
+pub async fn reparent(
+    socket: &Path,
+    id: &str,
+    parent: Option<&str>,
+    caller: Option<ws_core::ids::SessionId>,
+) -> Result<ws_core::registry::Session> {
+    let path = format!("/v1/sessions/{}/parent", encode(id));
+    let body = request(
+        socket,
+        Method::POST,
+        &path,
+        serde_json::to_vec(&serde_json::json!({"parent": parent, "parent_session_id": caller}))?,
+    )
+    .await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
 pub(crate) fn error_json(
     error: &(dyn std::error::Error + Send + Sync + 'static),
 ) -> serde_json::Value {

@@ -42,6 +42,13 @@ pub(crate) struct CallContext {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ReparentSession {
+    parent: Option<String>,
+    parent_session_id: Option<SessionId>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RenameSession {
     name: String,
     parent_session_id: Option<SessionId>,
@@ -77,6 +84,7 @@ pub(crate) fn router_with_store(store: Store) -> Router {
         .route("/v1/sessions/{id}", get(fetch))
         .route("/v1/sessions/{id}/stop", axum::routing::post(stop))
         .route("/v1/sessions/{id}/name", axum::routing::post(rename))
+        .route("/v1/sessions/{id}/parent", axum::routing::post(reparent))
         .with_state(store)
 }
 
@@ -126,6 +134,20 @@ async fn rename(
     Ok(Json(
         call(store, move |sessions| {
             sessions.rename(&id, &request.name, request.parent_session_id)
+        })
+        .await?
+        .into(),
+    ))
+}
+
+async fn reparent(
+    State(store): State<Store>,
+    Path(id): Path<String>,
+    Json(request): Json<ReparentSession>,
+) -> Result<Json<SessionResponse>, ApiError> {
+    Ok(Json(
+        call(store, move |sessions| {
+            sessions.reparent(&id, request.parent.as_deref(), request.parent_session_id)
         })
         .await?
         .into(),

@@ -217,6 +217,39 @@ impl Sessions {
         self.get_record(&session.id.to_string())
     }
 
+    /// Moves a session under `parent`, or to the top level when `parent` is `None`.
+    pub fn reparent(
+        &mut self,
+        input: &str,
+        parent: Option<&str>,
+        parent_session_id: Option<SessionId>,
+    ) -> Result<Session> {
+        self.record_call(parent_session_id, "session.reparent", Some(input))?;
+        let session = self.get_record(input)?;
+        let parent = parent
+            .map(|parent| self.get_record(parent))
+            .transpose()?
+            .map(|parent| parent.id);
+        let mut ancestor = parent;
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = ancestor.filter(|id| seen.insert(*id)) {
+            if id == session.id {
+                return Err(Error::InvalidRequest(
+                    "parent: the new parent cannot be the session or one of its children",
+                ));
+            }
+            ancestor = parent_of(&self.get_record(&id.to_string())?);
+        }
+        if parent_of(&session) != parent {
+            self.append(
+                session.id,
+                "session.reparented",
+                json!({"parent": parent, "parent_session_id": parent_session_id}),
+            )?;
+        }
+        self.get_record(&session.id.to_string())
+    }
+
     /// Commits a legal transition before updating the query projection.
     pub fn transition(
         &mut self,
@@ -407,6 +440,12 @@ impl From<registry::Error> for Error {
     fn from(error: registry::Error) -> Self {
         Self::Registry(error)
     }
+}
+
+fn parent_of(session: &Session) -> Option<SessionId> {
+    session.body["parent_session_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
 }
 
 #[cfg(test)]

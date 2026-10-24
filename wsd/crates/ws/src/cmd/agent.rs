@@ -102,7 +102,7 @@ pub async fn run(socket: &Path, agent: &str, arguments: Vec<String>) -> Result<E
         .ok_or_else(|| format!("{agent}: run it inside a workspace's tmux tab"))?;
     let target =
         super::add::current_workspace().map_err(|_| format!("{agent}: not inside a workspace"))?;
-    let parent_session_id = super::caller(socket).await?;
+    let parent_session_id = super::spawner(socket).await?;
     let response = client::request(socket, Method::POST, "/v1/agents/run", serde_json::to_vec(&json!({"target": target, "pane": pane, "agent": agent, "arguments": arguments, "parent_session_id": parent_session_id}))?).await?;
     let response: serde_json::Value = serde_json::from_slice(&response)?;
     execute(

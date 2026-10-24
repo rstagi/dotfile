@@ -723,6 +723,24 @@ fn a_late_agent_exit_keeps_a_finished_session_finished() {
     assert_eq!(sandbox.json(&["show", &id, "--json"])["state"], "finished");
 }
 
+#[test]
+fn new_from_a_session_pane_without_an_agent_identity_starts_a_top_level_session() {
+    let (sandbox, id, _window, pane) = session_window_sandbox();
+    let output = sandbox
+        .command()
+        .env("TMUX_PANE", &pane)
+        .args(["new", "--scratch", "--name", "from-pane", "--detach"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let _running = sandbox.capture();
+    let session = sandbox.json(&["show", "from-pane", "--json"]);
+    assert!(
+        session["body"]["parent_session_id"].is_null(),
+        "The pane session {id} must not become the parent: {session}"
+    );
+}
+
 fn session_window_sandbox() -> (Sandbox, String, String, String) {
     let id = ws_core::ids::Ulid::new().to_string();
     let mut window = String::new();

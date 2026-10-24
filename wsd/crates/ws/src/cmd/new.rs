@@ -84,7 +84,7 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
         ask_branch,
     )?;
     if !no_parent {
-        body["parent_session_id"] = json!(super::caller(socket).await?);
+        body["parent_session_id"] = json!(super::spawner(socket).await?);
     }
     let response = client::request(socket, Method::POST, path, serde_json::to_vec(&body)?).await?;
     let response: Value = serde_json::from_slice(&response)?;

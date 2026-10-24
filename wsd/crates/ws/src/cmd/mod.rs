@@ -121,6 +121,16 @@ async fn caller(socket: &std::path::Path) -> crate::Result<Option<ws_core::ids::
     }
 }
 
+/// Returns the parent for a new session: the calling agent's session only.
+/// A command that a person types in a session pane starts a top-level session.
+async fn spawner(socket: &std::path::Path) -> crate::Result<Option<ws_core::ids::SessionId>> {
+    if whoami::agent_identity().is_some() {
+        caller(socket).await
+    } else {
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{nest, tree_prefix};

@@ -1189,3 +1189,25 @@ fn catch_up_declines_an_index_that_is_not_a_prefix_of_the_logs() {
     );
     assert_eq!(views(&registry), before);
 }
+
+#[test]
+fn reparented_sessions_change_or_clear_their_parent() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let (parent, other) = (Ulid::new(), Ulid::new());
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    let created = log
+        .append(0, "session.created", json!({"alias": 1, "parent_session_id": parent}))
+        .unwrap();
+    registry.apply(&created).unwrap();
+    let parent_of = |registry: &Registry| registry.sessions().unwrap()[0].body["parent_session_id"].clone();
+    for (body, expected) in [
+        (json!({"parent": null}), json!(null)),
+        (json!({"parent": other}), json!(other)),
+    ] {
+        let event = log.append(0, "session.reparented", body).unwrap();
+        registry.apply(&event).unwrap();
+        registry.apply(&event).unwrap();
+        assert_eq!(parent_of(&registry), expected);
+    }
+}
