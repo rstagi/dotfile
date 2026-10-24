@@ -15,6 +15,7 @@ pub async fn run(socket: &Path) -> Result<ExitCode> {
                 name: None,
                 prompt: None,
                 detach: false,
+                no_parent: true,
             },
         )
         .await?;

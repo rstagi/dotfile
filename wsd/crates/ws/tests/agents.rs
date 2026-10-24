@@ -282,6 +282,23 @@ fn new_passes_name_and_prompt_to_workspace_and_directory_starts() {
         assert_eq!(session["body"]["parent_session_id"], parent);
         assert_eq!(session["workspace_id"].is_null(), agent != "claude");
     }
+    let output = sandbox
+        .command()
+        .env("WS_SESSION_ID", parent)
+        .args([
+            "new",
+            "--scratch",
+            "--no-parent",
+            "--name",
+            "top-level",
+            "--detach",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let _running = sandbox.capture();
+    let session = sandbox.json(&["show", "top-level", "--json"]);
+    assert!(session["body"]["parent_session_id"].is_null(), "{session}");
     let rejected = sandbox.output(&[
         "new",
         "--repo",
@@ -704,6 +721,24 @@ fn a_late_agent_exit_keeps_a_finished_session_finished() {
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert_eq!(sandbox.json(&["show", &id, "--json"])["state"], "finished");
+}
+
+#[test]
+fn new_from_a_session_pane_without_an_agent_identity_starts_a_top_level_session() {
+    let (sandbox, id, _window, pane) = session_window_sandbox();
+    let output = sandbox
+        .command()
+        .env("TMUX_PANE", &pane)
+        .args(["new", "--scratch", "--name", "from-pane", "--detach"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let _running = sandbox.capture();
+    let session = sandbox.json(&["show", "from-pane", "--json"]);
+    assert!(
+        session["body"]["parent_session_id"].is_null(),
+        "The pane session {id} must not become the parent: {session}"
+    );
 }
 
 fn session_window_sandbox() -> (Sandbox, String, String, String) {

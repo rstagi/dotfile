@@ -52,6 +52,7 @@ pub async fn rows(socket: &Path) -> Result<()> {
         .map(|anchor| anchor.and_then(|row| row.session))
         .collect();
     let expanded = sessions_marker()?.exists();
+    let home = std::env::var("HOME").ok();
     let mut previous = String::new();
     let mut heading = false;
     for (index, depth) in super::nest(&parents, &created) {
@@ -63,8 +64,18 @@ pub async fn rows(socket: &Path) -> Result<()> {
             heading = true;
         }
         let name = first.name.split('#').next().unwrap();
+        let title;
         let (repo, branch) = if scratch {
-            (first.label.as_str(), first.path.as_str())
+            let scratch_dir = ws_daemon::workspaces::is_scratch_directory(Path::new(&first.path))
+                .unwrap_or(false);
+            title = place_title(
+                &first.label,
+                &first.name,
+                &first.path,
+                scratch_dir,
+                home.as_deref(),
+            );
+            (first.name.as_str(), title.as_str())
         } else {
             name.split_once('/').unwrap_or((name, name))
         };
@@ -139,6 +150,28 @@ pub async fn rows(socket: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Returns the title of a directory place: the session name, `scratch` for an
+/// unnamed session in a scratch directory, or the path with `~` for the home directory.
+fn place_title(
+    label: &str,
+    alias: &str,
+    path: &str,
+    scratch_dir: bool,
+    home: Option<&str>,
+) -> String {
+    if label != alias {
+        return label.into();
+    }
+    if scratch_dir {
+        return "scratch".into();
+    }
+    match home.and_then(|home| path.strip_prefix(home)) {
+        Some("") => "~".into(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.into(),
+    }
 }
 
 pub async fn summary(socket: &Path) -> Result<()> {
@@ -303,4 +336,35 @@ fn rank(state: &str) -> u8 {
 
 fn exit_code(status: std::process::ExitStatus) -> ExitCode {
     ExitCode::from(status.code().unwrap_or(1) as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::place_title;
+
+    #[test]
+    fn place_title_prefers_the_session_name() {
+        let title = place_title("fix-login", "#208", "/u/.ws/scratch/AB12", true, Some("/u"));
+        assert_eq!(title, "fix-login");
+    }
+
+    #[test]
+    fn place_title_names_an_unnamed_scratch_session_scratch() {
+        let title = place_title("#208", "#208", "/u/.ws/scratch/AB12", true, Some("/u"));
+        assert_eq!(title, "scratch");
+    }
+
+    #[test]
+    fn place_title_shortens_a_directory_under_home() {
+        assert_eq!(
+            place_title("#9", "#9", "/u/Dev/app", false, Some("/u")),
+            "~/Dev/app"
+        );
+        assert_eq!(place_title("#9", "#9", "/u", false, Some("/u")), "~");
+        assert_eq!(
+            place_title("#9", "#9", "/user2/x", false, Some("/u")),
+            "/user2/x"
+        );
+        assert_eq!(place_title("#9", "#9", "/srv/x", false, None), "/srv/x");
+    }
 }

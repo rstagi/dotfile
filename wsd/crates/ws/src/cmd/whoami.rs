@@ -33,13 +33,17 @@ pub async fn current(socket: &Path) -> Result<Session> {
     })
 }
 
+/// Returns the identity that ws gives an agent process. A shell in a session pane has none.
+pub(super) fn agent_identity() -> Option<String> {
+    ["WS_SESSION_ID", "WS_SESSION"]
+        .into_iter()
+        .filter_map(|key| env::var(key).ok())
+        .find(|value| !value.is_empty())
+}
+
 pub(super) fn identity() -> Option<String> {
-    for key in ["WS_SESSION_ID", "WS_SESSION"] {
-        if let Ok(value) = env::var(key)
-            && !value.is_empty()
-        {
-            return Some(value);
-        }
+    if let Some(identity) = agent_identity() {
+        return Some(identity);
     }
     let target = env::var("TMUX_PANE")
         .ok()

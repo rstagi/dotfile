@@ -18,7 +18,7 @@ pub async fn run(socket: &Path, target: Option<String>, agent: String, detach: b
         }
         None => current_place()?,
     };
-    let parent_session_id = super::caller(socket).await?;
+    let parent_session_id = super::spawner(socket).await?;
     let body = client::request(
         socket,
         Method::POST,

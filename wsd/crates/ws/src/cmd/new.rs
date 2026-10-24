@@ -25,6 +25,9 @@ pub struct Options {
     pub prompt: Option<String>,
     #[arg(long)]
     pub detach: bool,
+    /// Start a top-level session. Do not make the calling session its parent.
+    #[arg(long)]
+    pub no_parent: bool,
 }
 
 /// The place where a new interactive session starts.
@@ -54,6 +57,7 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
         name,
         prompt,
         detach,
+        no_parent,
     } = options;
     let place = if scratch {
         Place::Scratch
@@ -79,7 +83,9 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
         },
         ask_branch,
     )?;
-    body["parent_session_id"] = json!(super::caller(socket).await?);
+    if !no_parent {
+        body["parent_session_id"] = json!(super::spawner(socket).await?);
+    }
     let response = client::request(socket, Method::POST, path, serde_json::to_vec(&body)?).await?;
     let response: Value = serde_json::from_slice(&response)?;
     focus(

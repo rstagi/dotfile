@@ -41,6 +41,13 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Move sessions under a parent, or to the top level without --parent.
+    Reparent {
+        #[arg(required = true)]
+        targets: Vec<String>,
+        #[arg(long)]
+        parent: Option<String>,
+    },
     /// Read a registered session.
     Get {
         target: String,
@@ -144,6 +151,12 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
         }
         Command::Stop { target, .. } => {
             super::mcp::print(socket, "session_stop", serde_json::json!({"target":target})).await?;
+        }
+        Command::Reparent { targets, parent } => {
+            let caller = super::caller(socket).await?;
+            for target in targets {
+                client::reparent(socket, &target, parent.as_deref(), caller).await?;
+            }
         }
         Command::Get { target, .. } => {
             super::mcp::print(socket, "session_get", serde_json::json!({"target":target})).await?;

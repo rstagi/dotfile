@@ -106,6 +106,19 @@ fn project_session(connection: &Connection, entry: &LogEntry) -> Result<()> {
             )?;
             require_session(changed, entry)?;
         }
+        "session.reparented" => {
+            let parent = entry.body.get("parent").cloned().unwrap_or(Value::Null);
+            if !(parent.is_null() || parent.is_string()) {
+                return Err(Error::InvalidEvent(
+                    "The session.reparented event requires a string or null parent.".into(),
+                ));
+            }
+            let changed = connection.execute(
+                "UPDATE sessions SET body = json_set(body, '$.parent_session_id', json(?1)), updated_at_ms = ?2 WHERE id = ?3",
+                params![parent.to_string(), sql_number(entry.ts_ms)?, entry.session_id.to_string()],
+            )?;
+            require_session(changed, entry)?;
+        }
         "session.running" | "session.blocked" | "session.finished" | "session.failed"
         | "session.reopened" => {
             let state = entry.event_type.strip_prefix("session.").unwrap();

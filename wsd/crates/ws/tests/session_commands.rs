@@ -137,6 +137,57 @@ fn sessions_nest_children_under_their_parents_and_show_names() {
 }
 
 #[test]
+fn reparent_moves_sessions_and_survives_a_registry_rebuild() {
+    let home = common::SandboxRoot::new();
+    let socket = home.path().join("wsd.sock");
+    let mut daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    let create = |body: Value| -> Value {
+        let response = common::request(&socket, "POST", "/v1/sessions", &body.to_string());
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    let root = create(json!({"name":"root"}));
+    create(json!({"name":"a", "parent_session_id":root["id"]}));
+    create(json!({"name":"b", "parent_session_id":root["id"]}));
+    let ws = |args: &[&str]| -> Output {
+        common::ws(home.path(), &socket)
+            .args(args)
+            .env_remove("WS_SESSION_ID")
+            .env_remove("WS_SESSION")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .output()
+            .unwrap()
+    };
+    let parent = |name: &str| -> Value {
+        let output = ws(&["show", name, "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["parent_session_id"].clone()
+    };
+    let output = ws(&["session", "reparent", "a", "b"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(parent("a").is_null());
+    assert!(parent("b").is_null());
+    let a = ws(&["show", "a", "--json"]);
+    let a: Value = serde_json::from_slice(&a.stdout).unwrap();
+    let output = ws(&["session", "reparent", "b", "--parent", "a"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(parent("b"), a["id"]);
+    for (target, new_parent) in [("a", "b"), ("a", "a")] {
+        let output = ws(&["session", "reparent", target, "--parent", new_parent]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("parent"), "{output:?}");
+    }
+    assert!(parent("a").is_null());
+    daemon.child.kill().unwrap();
+    daemon.child.wait().unwrap();
+    fs::remove_file(home.path().join("state/registry.sqlite")).unwrap();
+    daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    assert!(parent("a").is_null());
+    assert_eq!(parent("b"), a["id"]);
+    drop(daemon);
+}
+
+#[test]
 fn sessions_matches_the_zsh_golden_output_and_resolves_names() {
     let sandbox = Sandbox::new();
     sandbox.assert_golden(&["sessions"], include_str!("golden/sessions.txt"));
