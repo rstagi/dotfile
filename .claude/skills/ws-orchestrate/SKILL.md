@@ -37,8 +37,9 @@ Do not use this skill in these conditions:
 
 ## Name your session
 
-Name your session before you start children. Use the topic of the work, for example `auth-rollout`.
-Use the MCP tool `session_rename` or `ws name <name>`.
+ws names your session automatically from the first user prompt.
+Before you start children, make sure that the name tells the topic of the work, for example `auth-rollout`.
+If it does not, use the MCP tool `session_rename` or `ws name <name>`.
 
 ## Start one child for each repo
 

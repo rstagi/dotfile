@@ -8,6 +8,7 @@ use std::{fs, io, path::Path};
 pub struct Config {
     pub agent: AgentConfig,
     pub limits: SpawnLimits,
+    pub naming: NamingConfig,
     pub telemetry: TelemetryConfig,
 }
 
@@ -47,6 +48,15 @@ pub struct TelemetryConfig {
     pub sinks: Vec<String>,
     pub native_tracing: bool,
     pub content: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NamingConfig {
+    /// The model that improves the first automatic name. `off` keeps the slug of the prompt.
+    pub model: String,
+    /// The Claude Code executable. A bare name resolves through PATH.
+    pub program: String,
 }
 
 impl Config {
@@ -100,6 +110,15 @@ impl Default for TelemetryConfig {
             sinks: Vec::new(),
             native_tracing: false,
             content: false,
+        }
+    }
+}
+
+impl Default for NamingConfig {
+    fn default() -> Self {
+        Self {
+            model: "haiku".into(),
+            program: "claude".into(),
         }
     }
 }

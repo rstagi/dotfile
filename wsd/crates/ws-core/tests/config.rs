@@ -78,3 +78,13 @@ fn only_a_clamped_priority_adds_a_taskpolicy_prefix() {
         assert!(AgentPriority::Utility.prefix().is_empty());
     }
 }
+
+#[test]
+fn naming_defaults_to_haiku_through_claude() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let naming = Config::load(sandbox.path()).unwrap().naming;
+    assert_eq!((naming.model.as_str(), naming.program.as_str()), ("haiku", "claude"));
+    fs::write(sandbox.path().join("config.toml"), "[naming]\nmodel = \"off\"\n").unwrap();
+    let naming = Config::load(sandbox.path()).unwrap().naming;
+    assert_eq!((naming.model.as_str(), naming.program.as_str()), ("off", "claude"));
+}

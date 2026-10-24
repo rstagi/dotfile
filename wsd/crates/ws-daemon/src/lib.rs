@@ -29,6 +29,7 @@ pub mod forwarder;
 pub mod hooks;
 pub mod import;
 pub mod limits;
+pub mod naming;
 pub mod loops;
 pub mod notify;
 pub mod otlp;

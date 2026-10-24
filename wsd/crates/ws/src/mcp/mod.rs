@@ -319,7 +319,7 @@ fn tools() -> Vec<Tool> {
         ),
         tool::<Rename>(
             "session_rename",
-            "Rename your own session. Use 2 to 4 words in kebab case that tell what you work on. Names are unique.",
+            "Rename your own session. ws names each session from its first prompt. Use this tool only when that name is wrong. Use 2 to 4 words in kebab case. Names are unique.",
         ),
         tool::<Send>("session_send", "Queue a message for a session."),
         tool::<Wait>("wait", "Wait for a session state or event."),

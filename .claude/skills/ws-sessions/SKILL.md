@@ -4,7 +4,7 @@ description: >-
   Coordinate agents in ws sessions. Discover session IDs, send messages, publish
   completion output, and register continuations or child sessions after other sessions finish.
   Use for requests such as "wait for #123 then do ABC" or "spawn after #123".
-  Also use it to name your session after the first user request.
+  Also use it to rename your session when the automatic name is wrong.
   Requires the ws CLI. These operations need no Loop plan.
 ---
 
@@ -51,10 +51,12 @@ An idle or stopped agent did not necessarily complete its task.
 
 ## Name your session
 
-After the first user request, give your session a name.
+ws names your session automatically from the first user prompt.
+A small model then sets a better name in the background.
+Do not name your session at the start of the work.
+Rename your session only when the name is wrong or when the focus of your work changes.
 Use 2 to 4 words in kebab case that tell the work, for example `fix-installer-race`.
 Use the MCP tool `session_rename` with `{name}`, or run `ws name <name>`.
-Give a new name when the focus of your work changes.
 If a different session has the name, add a short suffix, for example `fix-installer-race-2`.
 
 ```sh
