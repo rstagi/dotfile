@@ -453,6 +453,21 @@ All child processes of the agent, such as test runners and compilers, inherit th
 Processes outside an agent's process tree keep their priority. Examples are a shell in your own terminal, a plain tmux pane and Docker containers.
 New sessions use the new value after a daemon restart.
 
+The daemon names an unnamed session from its first prompt:
+
+```toml
+[naming]
+model = "haiku"     # "off" keeps the first name
+program = "claude"  # a bare name resolves through PATH
+```
+
+The first prompt of the main agent sets a kebab-case name at once, for example `fix-picker-scratch-path`.
+The name has at most 5 words and 40 characters. A `-2` to `-9` suffix keeps names unique.
+Headless sessions, subagent prompts and slash commands do not set a name.
+Then `claude -p --model <model>` proposes a better name in the background, with a 20 s deadline.
+The daemon applies that name only if the session still has the first name.
+The model process gets no user hooks, plugins or MCP servers. It receives at most 2000 characters of the prompt.
+
 The daemon also accepts OTLP/HTTP exports at `/v1/logs`, `/v1/metrics` and `/v1/traces`.
 It accepts `application/json` and `application/x-protobuf` on IPv4 localhost only.
 Configure it in the same file:
