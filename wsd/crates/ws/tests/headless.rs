@@ -52,6 +52,25 @@ fn inherited_environment_reaches_the_child_without_entering_durable_state() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn agent_priority_clamps_headless_commands() {
+    // macOS reports a background clamp as scheduling priority 4.
+    for (config, clamped) in [
+        ("[agent]\npriority = \"background\"\n", true),
+        ("[agent]\npriority = \"normal\"\n", false),
+    ] {
+        let sandbox = Sandbox::with_config(config);
+        let id = sandbox.create(&["--", "/bin/sh", "-c", "ps -o pri= -p \"$$\""]);
+        assert_eq!(sandbox.wait(&id)["exit_code"], 0);
+        let stdout = fs::read_to_string(
+            sandbox.home.path().join("state/sessions").join(&id).join("stdout.log"),
+        )
+        .unwrap();
+        assert_eq!(stdout.trim() == "4", clamped, "{config}: {stdout}");
+    }
+}
+
+#[test]
 fn headless_command_has_a_process_group_separate_logs_and_a_durable_successful_exit() {
     let mut sandbox = Sandbox::new();
     let id = sandbox.create(&[
@@ -371,7 +390,13 @@ fn assert_directory_has_no_marker(directory: &std::path::Path, marker: &[u8]) {
 
 impl Sandbox {
     fn new() -> Self {
+        Self::with_config("")
+    }
+
+    fn with_config(config: &str) -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
+        fs::create_dir(home.path().join("state")).unwrap();
+        fs::write(home.path().join("state/config.toml"), config).unwrap();
         let socket = home.path().join("wsd.sock");
         let mut command = common::ws(home.path(), &socket);
         command.current_dir(home.path()).env("WS_STATE", "state");

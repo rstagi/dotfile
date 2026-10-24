@@ -1,13 +1,33 @@
 //! Local daemon configuration from the state directory.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{fs, io, path::Path};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub agent: AgentConfig,
     pub limits: SpawnLimits,
     pub telemetry: TelemetryConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentConfig {
+    pub priority: AgentPriority,
+}
+
+/// The macOS QoS clamp for agent processes. Child processes inherit the clamp.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentPriority {
+    /// Uses all cores when they are free. Interactive processes get the CPU first.
+    #[default]
+    Utility,
+    /// Uses only the efficiency cores and throttles disk I/O.
+    Background,
+    /// Applies no clamp.
+    Normal,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +63,23 @@ impl Config {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error),
         }
+    }
+}
+
+impl AgentPriority {
+    /// Returns the argv prefix that starts a program with this clamp. Normal priority and
+    /// systems without taskpolicy return an empty prefix.
+    pub fn prefix(self) -> Vec<String> {
+        const TASKPOLICY: &str = "/usr/sbin/taskpolicy";
+        let clamp = match self {
+            Self::Utility => "utility",
+            Self::Background => "background",
+            Self::Normal => return Vec::new(),
+        };
+        if !cfg!(target_os = "macos") || !Path::new(TASKPOLICY).exists() {
+            return Vec::new();
+        }
+        [TASKPOLICY, "-c", clamp].map(String::from).to_vec()
     }
 }
 

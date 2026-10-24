@@ -1,6 +1,18 @@
 #!/bin/zsh
 set -u -o pipefail
 
+# Run the whole attempt (engine, verify, tests) under a macOS QoS clamp. Children inherit it.
+# LOOP_PRIORITY: utility (default) | background | normal (no clamp).
+case "${LOOP_PRIORITY:=utility}" in
+  utility|background)
+    if [[ -z "${LOOP_PRIORITY_APPLIED:-}" && -x /usr/sbin/taskpolicy ]]; then
+      export LOOP_PRIORITY_APPLIED=1
+      exec /usr/sbin/taskpolicy -c "$LOOP_PRIORITY" zsh "$0" "$@"
+    fi ;;
+  normal) ;;
+  *) echo "loop-runner: LOOP_PRIORITY must be utility, background or normal" >&2; exit 1 ;;
+esac
+
 # Loop Engineering — run ONE phase attempt headlessly with a model-fallback chain.
 # Mechanism only: spawn engine, watchdog, classify API failures, validate the
 # runner's status.json, run the verify command. The orchestrator switches on the

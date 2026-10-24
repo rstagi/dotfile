@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::process::Command;
 use ws_core::{
+    config::AgentPriority,
     ids::{SessionId, Ulid},
     log::SessionLog,
     registry::Session,
@@ -529,7 +530,8 @@ impl Sessions {
             .recursive(true)
             .mode(0o700)
             .create(&directory)?;
-        let mut command = headless_command(&request, id, &self.state)?;
+        let mut command =
+            headless_command(&request, id, &self.state, self.config.agent.priority)?;
         let stdout = request
             .stdout
             .unwrap_or_else(|| directory.join("stdout.log"));
@@ -613,8 +615,21 @@ impl Sessions {
     }
 }
 
-fn headless_command(request: &CreateHeadless, id: SessionId, state: &Path) -> io::Result<Command> {
-    let mut command = Command::new(&request.command[0]);
+fn headless_command(
+    request: &CreateHeadless,
+    id: SessionId,
+    state: &Path,
+    priority: AgentPriority,
+) -> io::Result<Command> {
+    // taskpolicy execs the program, so the pid and the process group stay the same.
+    let mut command = match priority.prefix().split_first() {
+        Some((taskpolicy, clamp)) => {
+            let mut command = Command::new(taskpolicy);
+            command.args(clamp).arg(&request.command[0]);
+            command
+        }
+        None => Command::new(&request.command[0]),
+    };
     command.envs(&request.env);
     let agent = Path::new(&request.command[0])
         .file_name()

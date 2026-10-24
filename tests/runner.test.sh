@@ -587,6 +587,24 @@ for limit_rc in 0 1; do
   assert_eq "$(grep -c '^claude ' "$TMP/limit-$limit_rc.log")" "1" "does not retry the limited leg (claude rc=$limit_rc)"
 done
 
+# --- LOOP_PRIORITY: the runner and its engine run under the macOS QoS clamp ---
+if [[ -x /usr/sbin/taskpolicy ]]; then
+  echo "runner: LOOP_PRIORITY clamps the engine"
+  for priority expected in background 4 normal unclamped; do
+    rm -f "$TMP/pri.log"
+    rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+    FAKE_PRI_LOG="$TMP/pri.log" LOOP_PRIORITY=$priority zsh "$ROOT/loop-runner.sh" \
+      --worktree "$ROOT" --run-dir "$RUN_DIR" --prompt-file "$TMP/prompt.md" \
+      --chain task --timeout 5 > "$TMP/runner-pri.out" 2>&1
+    PRI="$(tail -1 "$TMP/pri.log" 2>/dev/null)"
+    [[ $PRI == 4 ]] && actual=4 || actual=unclamped
+    assert_eq "$actual" "$expected" "LOOP_PRIORITY=$priority gives a $expected engine (pri=$PRI)"
+  done
+  LOOP_PRIORITY=fast zsh "$ROOT/loop-runner.sh" --worktree "$ROOT" --run-dir "$RUN_DIR" \
+    --prompt-file "$TMP/prompt.md" > "$TMP/runner-pri.out" 2>&1
+  assert_exit "$?" "1" "an unknown LOOP_PRIORITY is a usage error"
+fi
+
 # --- suite environment isolation: caller settings never reach suite fixtures ---
 echo "suite: ignores inherited loop and color settings"
 mkdir -p "$TMP/suite/tests"

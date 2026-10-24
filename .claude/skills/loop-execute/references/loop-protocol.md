@@ -855,6 +855,11 @@ LOOP_MAX_PARALLEL=3
 LOOP_ORCH_CTX_WINDOW=1000000
 ```
 
+`LOOP_PRIORITY` sets the macOS QoS clamp of the runner: `utility` (default), `background`
+or `normal` (no clamp). The runner starts again once under `taskpolicy -c <priority>`. The
+engine, the verify command and all their child processes inherit the clamp. An unknown value
+is a usage error (exit 1).
+
 For `--chain task` with run/phase correlation, the runner records one bounded `route`
 decision before engine launch. It caches the decision by phase beside attempt directories
 and materializes `route-decision.json` plus proposed/actual profile fields in each attempt's

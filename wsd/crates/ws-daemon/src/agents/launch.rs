@@ -58,6 +58,8 @@ pub struct ExitRequest {
 pub struct Launch {
     pub prepared: Prepared,
     pub directory: PathBuf,
+    #[serde(default)]
+    pub priority: ws_core::config::AgentPriority,
 }
 
 pub(crate) fn router() -> Router<Store> {
@@ -333,6 +335,7 @@ impl Sessions {
         Ok(Launch {
             prepared,
             directory,
+            priority: self.config.agent.priority,
         })
     }
 
