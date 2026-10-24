@@ -84,6 +84,25 @@ pub async fn reparent(
     Ok(serde_json::from_slice(&body)?)
 }
 
+pub async fn set_priority(
+    socket: &Path,
+    id: &str,
+    priority: &str,
+    caller: Option<ws_core::ids::SessionId>,
+) -> Result<ws_core::registry::Session> {
+    let path = format!("/v1/sessions/{}/priority", encode(id));
+    let body = request(
+        socket,
+        Method::POST,
+        &path,
+        serde_json::to_vec(
+            &serde_json::json!({"priority": priority, "parent_session_id": caller}),
+        )?,
+    )
+    .await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
 pub(crate) fn error_json(
     error: &(dyn std::error::Error + Send + Sync + 'static),
 ) -> serde_json::Value {

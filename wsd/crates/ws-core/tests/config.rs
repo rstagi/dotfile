@@ -39,26 +39,44 @@ fn invalid_limits_return_an_error_and_preserve_the_configuration() {
 }
 
 #[test]
-fn agent_priority_defaults_to_utility_and_rejects_unknown_values() {
+fn agent_priority_defaults_to_background_and_rejects_unknown_values() {
     use ws_core::config::AgentPriority;
     let sandbox = tempfile::tempdir().unwrap();
     assert_eq!(
         Config::load(sandbox.path()).unwrap().agent.priority,
-        AgentPriority::Utility
+        AgentPriority::Background
     );
     for (contents, priority) in [
-        ("[agent]\npriority = \"background\"\n", AgentPriority::Background),
+        (
+            "[agent]\npriority = \"background\"\n",
+            AgentPriority::Background,
+        ),
         ("[agent]\npriority = \"normal\"\n", AgentPriority::Normal),
         ("[agent]\npriority = \"utility\"\n", AgentPriority::Utility),
     ] {
         fs::write(sandbox.path().join("config.toml"), contents).unwrap();
-        assert_eq!(Config::load(sandbox.path()).unwrap().agent.priority, priority);
+        assert_eq!(
+            Config::load(sandbox.path()).unwrap().agent.priority,
+            priority
+        );
     }
-    fs::write(sandbox.path().join("config.toml"), "[agent]\npriority = \"fast\"\n").unwrap();
+    fs::write(
+        sandbox.path().join("config.toml"),
+        "[agent]\npriority = \"fast\"\n",
+    )
+    .unwrap();
     assert_eq!(
         Config::load(sandbox.path()).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
+}
+
+#[test]
+fn priorities_cycle_from_background_through_utility_and_normal() {
+    use ws_core::config::AgentPriority;
+    assert_eq!(AgentPriority::Background.next(), AgentPriority::Utility);
+    assert_eq!(AgentPriority::Utility.next(), AgentPriority::Normal);
+    assert_eq!(AgentPriority::Normal.next(), AgentPriority::Background);
 }
 
 #[test]
@@ -83,8 +101,18 @@ fn only_a_clamped_priority_adds_a_taskpolicy_prefix() {
 fn naming_defaults_to_haiku_through_claude() {
     let sandbox = tempfile::tempdir().unwrap();
     let naming = Config::load(sandbox.path()).unwrap().naming;
-    assert_eq!((naming.model.as_str(), naming.program.as_str()), ("haiku", "claude"));
-    fs::write(sandbox.path().join("config.toml"), "[naming]\nmodel = \"off\"\n").unwrap();
+    assert_eq!(
+        (naming.model.as_str(), naming.program.as_str()),
+        ("haiku", "claude")
+    );
+    fs::write(
+        sandbox.path().join("config.toml"),
+        "[naming]\nmodel = \"off\"\n",
+    )
+    .unwrap();
     let naming = Config::load(sandbox.path()).unwrap().naming;
-    assert_eq!((naming.model.as_str(), naming.program.as_str()), ("off", "claude"));
+    assert_eq!(
+        (naming.model.as_str(), naming.program.as_str()),
+        ("off", "claude")
+    );
 }

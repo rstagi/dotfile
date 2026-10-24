@@ -467,6 +467,63 @@ fn agent_priority_clamps_interactive_agents() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversation() {
+    let sandbox = Sandbox::with_config("[agent]\npriority = \"normal\"\n");
+    let result = sandbox
+        .command()
+        .current_dir(sandbox.home.path())
+        .args(["session", "create", "--cwd", ".", "--json"])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let (first, _first) = sandbox.capture();
+    let id = first["id"].as_str().unwrap().to_owned();
+    assert_ne!(first["pri"], "4", "{first}");
+    let window = sandbox.window(&id);
+    let pane = sandbox.tmux(&["display-message", "-p", "-t", &window, "#{pane_id}"]);
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/hooks/ingest",
+        &json!({
+            "session_id": id, "callback_id": ws_core::ids::Ulid::new(),
+            "observed_at_us": ws_daemon::hooks::receipt_time_us().unwrap(),
+            "state": "stop", "pane": pane, "tmux_socket": sandbox.server,
+            "payload": {"hook_event_name":"Stop", "session_id":"resume-claude"}
+        })
+        .to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+
+    let changed = sandbox.json(&["session", "priority", &id, "next", "--json"]);
+    assert_eq!(changed["body"]["priority"], "background");
+    let (second, _second) = sandbox.capture();
+    assert_eq!(second["id"], id.as_str());
+    assert_eq!(second["pri"], "4", "{second}");
+    assert_eq!(second["pane"], pane.as_str());
+    assert!(
+        second["argv"]
+            .as_array()
+            .unwrap()
+            .windows(2)
+            .any(|args| args == [json!("--resume"), json!("resume-claude")]),
+        "{second}"
+    );
+    assert_eq!(sandbox.window(&id), window);
+    let session = sandbox.json(&["show", &id, "--json"]);
+    assert_eq!(session["state"], "running");
+    assert_eq!(session["body"]["priority"], "background");
+    assert!(sandbox.events(&id, "exit").is_empty());
+
+    let changed = sandbox.json(&["session", "priority", &id, "normal", "--json"]);
+    assert_eq!(changed["body"]["priority"], "normal");
+    let (third, _third) = sandbox.capture();
+    assert_ne!(third["pri"], "4", "{third}");
+    assert_eq!(sandbox.events(&id, "session.priority").len(), 2);
+}
+
+#[test]
 fn start_api_runs_an_agent_in_a_directory_without_registering_a_workspace() {
     let sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("notes and plans");

@@ -8,7 +8,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode},
 };
-use ws_daemon::agents::{self, AgentSession, Mode, launch::Launch};
+use ws_daemon::agents::{
+    self, AgentSession, Mode,
+    launch::{ExitResponse, Launch},
+};
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -117,6 +120,40 @@ pub async fn run(socket: &Path, agent: &str, arguments: Vec<String>) -> Result<E
 
 pub async fn execute(socket: &Path, id: &str, user_tab: bool) -> Result<ExitCode> {
     let pane = env::var("TMUX_PANE").map_err(|_| "Run the agent inside a tmux pane.")?;
+    loop {
+        let (code, result) = run_once(socket, id, &pane).await?;
+        let response = client::request(
+            socket,
+            Method::POST,
+            "/v1/agents/exit",
+            serde_json::to_vec(
+                &json!({"id": id, "pane": pane, "code": code, "user_tab": user_tab}),
+            )?,
+        )
+        .await?;
+        // A priority change stops the agent. The next launch resumes its conversation.
+        if serde_json::from_slice::<ExitResponse>(&response).is_ok_and(|exit| exit.restart) {
+            continue;
+        }
+        result?;
+        if !user_tab && code != 0 {
+            eprintln!("agent exited ({code}) — enter to close");
+            tokio::task::spawn_blocking(|| {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)
+            })
+            .await??;
+        }
+        return Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)));
+    }
+}
+
+/// Starts the agent once and waits for it. Returns the exit code and the spawn result.
+async fn run_once(
+    socket: &Path,
+    id: &str,
+    pane: &str,
+) -> Result<(i32, std::io::Result<std::process::ExitStatus>)> {
     let response = client::request(
         socket,
         Method::POST,
@@ -166,23 +203,7 @@ pub async fn execute(socket: &Path, id: &str, user_tab: bool) -> Result<ExitCode
             .code()
             .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
     });
-    client::request(
-        socket,
-        Method::POST,
-        "/v1/agents/exit",
-        serde_json::to_vec(&json!({"id": id, "pane": pane, "code": code, "user_tab": user_tab}))?,
-    )
-    .await?;
-    result?;
-    if !user_tab && code != 0 {
-        eprintln!("agent exited ({code}) — enter to close");
-        tokio::task::spawn_blocking(|| {
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line)
-        })
-        .await??;
-    }
-    Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+    Ok((code, result))
 }
 
 /// Runs the agent command of a zsh launch wrapper started before the Rust cutover.

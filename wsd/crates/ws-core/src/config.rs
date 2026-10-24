@@ -22,11 +22,11 @@ pub struct AgentConfig {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentPriority {
-    /// Uses all cores when they are free. Interactive processes get the CPU first.
-    #[default]
-    Utility,
     /// Uses only the efficiency cores and throttles disk I/O.
+    #[default]
     Background,
+    /// Uses all cores when they are free. Interactive processes get the CPU first.
+    Utility,
     /// Applies no clamp.
     Normal,
 }
@@ -90,6 +90,15 @@ impl AgentPriority {
             return Vec::new();
         }
         [TASKPOLICY, "-c", clamp].map(String::from).to_vec()
+    }
+
+    /// Returns the next priority in the cycle background, utility, normal.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Background => Self::Utility,
+            Self::Utility => Self::Normal,
+            Self::Normal => Self::Background,
+        }
     }
 }
 

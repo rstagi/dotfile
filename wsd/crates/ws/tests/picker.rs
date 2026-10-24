@@ -89,6 +89,7 @@ fn pick_installs_rust_tmux_bindings_and_preserves_user_hooks() {
         ("a", "add"),
         ("A", "codex"),
         ("G", "grok"),
+        ("B", "priority"),
     ] {
         let binding = sandbox
             .server
