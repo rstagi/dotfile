@@ -530,8 +530,7 @@ impl Sessions {
             .recursive(true)
             .mode(0o700)
             .create(&directory)?;
-        let mut command =
-            headless_command(&request, id, &self.state, self.config.agent.priority)?;
+        let mut command = headless_command(&request, id, &self.state, self.config.agent.priority)?;
         let stdout = request
             .stdout
             .unwrap_or_else(|| directory.join("stdout.log"));

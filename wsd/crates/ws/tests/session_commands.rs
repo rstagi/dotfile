@@ -175,7 +175,10 @@ fn reparent_moves_sessions_and_survives_a_registry_rebuild() {
     for (target, new_parent) in [("a", "b"), ("a", "a")] {
         let output = ws(&["session", "reparent", target, "--parent", new_parent]);
         assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("parent"), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("parent"),
+            "{output:?}"
+        );
     }
     assert!(parent("a").is_null());
     daemon.child.kill().unwrap();

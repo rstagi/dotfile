@@ -49,6 +49,13 @@ struct ReparentSession {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SessionPriority {
+    priority: crate::agents::launch::PriorityChange,
+    parent_session_id: Option<SessionId>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RenameSession {
     name: String,
     parent_session_id: Option<SessionId>,
@@ -85,6 +92,10 @@ pub(crate) fn router_with_store(store: Store) -> Router {
         .route("/v1/sessions/{id}/stop", axum::routing::post(stop))
         .route("/v1/sessions/{id}/name", axum::routing::post(rename))
         .route("/v1/sessions/{id}/parent", axum::routing::post(reparent))
+        .route(
+            "/v1/sessions/{id}/priority",
+            axum::routing::post(set_priority),
+        )
         .with_state(store)
 }
 
@@ -148,6 +159,20 @@ async fn reparent(
     Ok(Json(
         call(store, move |sessions| {
             sessions.reparent(&id, request.parent.as_deref(), request.parent_session_id)
+        })
+        .await?
+        .into(),
+    ))
+}
+
+async fn set_priority(
+    State(store): State<Store>,
+    Path(id): Path<String>,
+    Json(request): Json<SessionPriority>,
+) -> Result<Json<SessionResponse>, ApiError> {
+    Ok(Json(
+        call(store, move |sessions| {
+            sessions.set_priority(&id, request.priority, request.parent_session_id)
         })
         .await?
         .into(),

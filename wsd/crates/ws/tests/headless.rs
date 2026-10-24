@@ -63,7 +63,12 @@ fn agent_priority_clamps_headless_commands() {
         let id = sandbox.create(&["--", "/bin/sh", "-c", "ps -o pri= -p \"$$\""]);
         assert_eq!(sandbox.wait(&id)["exit_code"], 0);
         let stdout = fs::read_to_string(
-            sandbox.home.path().join("state/sessions").join(&id).join("stdout.log"),
+            sandbox
+                .home
+                .path()
+                .join("state/sessions")
+                .join(&id)
+                .join("stdout.log"),
         )
         .unwrap();
         assert_eq!(stdout.trim() == "4", clamped, "{config}: {stdout}");

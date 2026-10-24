@@ -36,7 +36,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 The picker uses fzf. Enter opens a workspace or directory place. Ctrl-N starts a Claude scratch session, Ctrl-O uses Codex, and Ctrl-R uses Grok.
 Alt-N creates a Claude workspace from the repository picker, Alt-O uses Codex, and Alt-R uses Grok.
 Ctrl-A adds Claude, Ctrl-T adds Codex, and Ctrl-V adds Grok. Ctrl-S shows sessions, Ctrl-P changes pins, and Ctrl-X removes workspaces.
-The tmux bindings include `prefix+w` for the picker and `prefix+M` for merge.
+The tmux bindings include `prefix+w` for the picker, `prefix+M` for merge and `prefix+B` for the agent priority of the current tab.
 Picker rows show session names, or `#N` without a name. A place shows under the place of the session that created it.
 Agent starts use permission bypass flags.
 The [ws-sessions skill](../.claude/skills/ws-sessions/SKILL.md) describes agent coordination.
@@ -443,15 +443,21 @@ The same file sets the CPU priority of agent processes on macOS:
 
 ```toml
 [agent]
-priority = "utility"   # utility | background | normal
+priority = "background"   # background | utility | normal
 ```
 
 The daemon starts each interactive and headless agent with `taskpolicy -c <priority>`.
 All child processes of the agent, such as test runners and compilers, inherit this clamp.
-`utility` is the default. The agents use all cores when the Mac is idle, and your own apps get the CPU first.
-`background` uses only the efficiency cores and throttles disk I/O. `normal` applies no clamp.
+`background` is the default. It uses only the efficiency cores and throttles disk I/O, so your own apps keep the performance cores.
+`utility` uses all cores when the Mac is idle, and your own apps get the CPU first. `normal` applies no clamp.
 Processes outside an agent's process tree keep their priority. Examples are a shell in your own terminal, a plain tmux pane and Docker containers.
 New sessions use the new value after a daemon restart.
+
+`ws session priority <session> background|utility|normal|next` sets the priority of one interactive agent session.
+`next` cycles background, utility, normal. `prefix+B` runs `next` for the session of the current tab and shows the result.
+A running agent gets SIGHUP, as if its terminal closed. The agent starts again in the same pane and resumes its conversation.
+Work in progress in that agent, such as a running test, stops. The priority is a log event, so it survives a registry rebuild.
+Headless sessions keep the configured priority.
 
 The daemon names an unnamed session from its first prompt:
 

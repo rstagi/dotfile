@@ -153,7 +153,11 @@ async fn ingest_callback(
     };
     if let Some(prompt) = crate::naming::first_prompt(&callback) {
         let id = callback.session_id;
-        match api::call(store.clone(), move |sessions| sessions.auto_name(id, &prompt)).await {
+        match api::call(store.clone(), move |sessions| {
+            sessions.auto_name(id, &prompt)
+        })
+        .await
+        {
             Ok(Some(name)) => crate::naming::improve(store.clone(), name),
             Ok(None) => {}
             Err(error) => eprintln!("Cannot name the session automatically: {}", error.0),

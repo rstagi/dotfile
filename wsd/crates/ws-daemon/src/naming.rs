@@ -18,16 +18,23 @@ const MODEL_DEADLINE: Duration = Duration::from_secs(20);
 // The model reads only the start of a long prompt.
 const MODEL_INPUT_LIMIT: usize = 2000;
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "for", "from", "i",
-    "if", "in", "into", "is", "it", "me", "my", "of", "on", "or", "please", "so", "that", "the",
-    "then", "this", "to", "we", "with", "you",
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "for", "from", "i", "if",
+    "in", "into", "is", "it", "me", "my", "of", "on", "or", "please", "so", "that", "the", "then",
+    "this", "to", "we", "with", "you",
 ];
 const MODEL_PROMPT: &str = "Write a name for a work session. \
 Use 2 to 5 English words in lowercase kebab case. Write only the name.\n\n\
 The first request of the session:\n";
 // The model process gets only these variables. Claude Code needs them to find its login.
 const MODEL_ENV: &[&str] = &[
-    "HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY",
+    "HOME",
+    "PATH",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "LANG",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
 ];
 
 /// The automatic name of a session and the model step that can improve it.
@@ -86,7 +93,9 @@ pub(crate) fn first_prompt(callback: &Callback) -> Option<String> {
         .or_else(|| payload["hookEventName"].as_str())?;
     if !matches!(event, "UserPromptSubmit" | "user_prompt_submit")
         || callback.state != "working"
-        || payload["agent_id"].as_str().is_some_and(|id| !id.is_empty())
+        || payload["agent_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
     {
         return None;
     }
@@ -178,7 +187,11 @@ async fn propose(name: &AutoName) -> std::io::Result<Option<String>> {
         .args(["--tools", "", "--no-session-persistence"])
         .current_dir(std::env::temp_dir())
         .env_clear()
-        .envs(MODEL_ENV.iter().filter_map(|key| Some((key, std::env::var_os(key)?))))
+        .envs(
+            MODEL_ENV
+                .iter()
+                .filter_map(|key| Some((key, std::env::var_os(key)?))),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -232,7 +245,10 @@ mod tests {
             Some("fix-picker-scratch-sessions-show")
         );
         assert_eq!(slug("  Résumé  café bug ").as_deref(), Some("rsum-caf-bug"));
-        assert_eq!(slug("42 tests fail in ws").as_deref(), Some("tests-fail-ws"));
+        assert_eq!(
+            slug("42 tests fail in ws").as_deref(),
+            Some("tests-fail-ws")
+        );
         assert_eq!(slug("the and of").as_deref(), Some("the-and-of"));
         assert_eq!(slug("日本語 🎉 ..."), None);
         assert_eq!(slug("/clear"), None);
@@ -260,7 +276,10 @@ mod tests {
                 .contains(&named["name"].as_str().unwrap()),
             "{named}"
         );
-        assert_eq!(wait_name(&app, id, "better-picker-name").await, "better-picker-name");
+        assert_eq!(
+            wait_name(&app, id, "better-picker-name").await,
+            "better-picker-name"
+        );
         let args = fs::read_to_string(sandbox.path().join("model.args")).unwrap();
         assert!(args.contains("--model haiku"), "{args}");
         assert!(
@@ -310,7 +329,10 @@ mod tests {
         let app = app(sandbox.path(), "off", &fake);
         let (_, first) = request(&app, "POST", "/v1/sessions", json!({})).await;
         let (_, second) = request(&app, "POST", "/v1/sessions", json!({})).await;
-        let (first, second) = (first["id"].as_str().unwrap(), second["id"].as_str().unwrap());
+        let (first, second) = (
+            first["id"].as_str().unwrap(),
+            second["id"].as_str().unwrap(),
+        );
         prompt(&app, first, "Fix login bug", None).await;
         prompt(&app, second, "fix LOGIN bug", None).await;
         assert_eq!(get(&app, first).await["name"], "fix-login-bug");
@@ -405,7 +427,11 @@ mod tests {
     async fn wait_for_file(path: &Path) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !path.exists() {
-            assert!(Instant::now() < deadline, "{} did not appear", path.display());
+            assert!(
+                Instant::now() < deadline,
+                "{} did not appear",
+                path.display()
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }

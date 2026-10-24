@@ -48,6 +48,14 @@ pub enum Command {
         #[arg(long)]
         parent: Option<String>,
     },
+    /// Set the CPU priority of an agent session. A running agent restarts and resumes.
+    Priority {
+        target: String,
+        #[arg(value_parser = ["background", "utility", "normal", "next"])]
+        priority: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read a registered session.
     Get {
         target: String,
@@ -156,6 +164,23 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
             let caller = super::caller(socket).await?;
             for target in targets {
                 client::reparent(socket, &target, parent.as_deref(), caller).await?;
+            }
+        }
+        Command::Priority {
+            target,
+            priority,
+            json,
+        } => {
+            let caller = super::caller(socket).await?;
+            let session = client::set_priority(socket, &target, &priority, caller).await?;
+            if json {
+                println!("{}", serde_json::to_string(&session)?);
+            } else {
+                println!(
+                    "#{} {}",
+                    session.body["alias"],
+                    session.body["priority"].as_str().unwrap_or_default()
+                );
             }
         }
         Command::Get { target, .. } => {

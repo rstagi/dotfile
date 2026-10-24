@@ -1197,10 +1197,15 @@ fn reparented_sessions_change_or_clear_their_parent() {
     let (parent, other) = (Ulid::new(), Ulid::new());
     let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
     let created = log
-        .append(0, "session.created", json!({"alias": 1, "parent_session_id": parent}))
+        .append(
+            0,
+            "session.created",
+            json!({"alias": 1, "parent_session_id": parent}),
+        )
         .unwrap();
     registry.apply(&created).unwrap();
-    let parent_of = |registry: &Registry| registry.sessions().unwrap()[0].body["parent_session_id"].clone();
+    let parent_of =
+        |registry: &Registry| registry.sessions().unwrap()[0].body["parent_session_id"].clone();
     for (body, expected) in [
         (json!({"parent": null}), json!(null)),
         (json!({"parent": other}), json!(other)),
@@ -1209,5 +1214,31 @@ fn reparented_sessions_change_or_clear_their_parent() {
         registry.apply(&event).unwrap();
         registry.apply(&event).unwrap();
         assert_eq!(parent_of(&registry), expected);
+    }
+}
+
+#[test]
+fn priority_events_set_the_session_priority_and_reject_other_values() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(&sandbox.path().join("registry.sqlite"), 1).unwrap();
+    let log = SessionLog::new(sandbox.path(), Ulid::new(), Ulid::new());
+    let created = log
+        .append(0, "session.created", json!({"alias": 1}))
+        .unwrap();
+    registry.apply(&created).unwrap();
+    for priority in ["utility", "background", "normal"] {
+        let event = log
+            .append(0, "session.priority", json!({"priority": priority}))
+            .unwrap();
+        registry.apply(&event).unwrap();
+        assert_eq!(registry.sessions().unwrap()[0].body["priority"], priority);
+    }
+    for body in [
+        json!({"priority": "fast"}),
+        json!({"priority": null}),
+        json!({}),
+    ] {
+        let event = log.append(0, "session.priority", body).unwrap();
+        assert!(registry.apply(&event).is_err());
     }
 }

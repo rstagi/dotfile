@@ -10,18 +10,20 @@ use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
     time::Duration,
 };
 use tokio::sync::watch;
-use ws_core::{ids::SessionId, log::SessionLog, registry::Session};
+use ws_core::{config::AgentPriority, ids::SessionId, log::SessionLog, registry::Session};
 
 // Removing a sender releases every request that waits for this launch to commit.
 static PENDING: LazyLock<Mutex<HashMap<SessionId, watch::Sender<()>>>> =
     LazyLock::new(Default::default);
+// Sessions whose agent the daemon stopped to apply a new priority. Their exit restarts the agent.
+static RESTARTS: LazyLock<Mutex<HashSet<SessionId>>> = LazyLock::new(Default::default);
 // The completion signal controls readiness. This deadline only bounds a stalled commit.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -59,7 +61,28 @@ pub struct Launch {
     pub prepared: Prepared,
     pub directory: PathBuf,
     #[serde(default)]
-    pub priority: ws_core::config::AgentPriority,
+    pub priority: AgentPriority,
+}
+
+/// A new priority, or `next` for the next priority in the cycle.
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum PriorityChange {
+    Set(AgentPriority),
+    Next(Next),
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Next {
+    Next,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ExitResponse {
+    /// True when the daemon stopped the agent to apply a new priority. The client starts it again.
+    #[serde(default)]
+    pub restart: bool,
 }
 
 pub(crate) fn router() -> Router<Store> {
@@ -114,9 +137,9 @@ async fn launch(
 async fn exited(
     State(store): State<Store>,
     Json(request): Json<ExitRequest>,
-) -> std::result::Result<Json<Value>, ApiError> {
-    api::call(store, move |sessions| sessions.agent_exited(request)).await?;
-    Ok(Json(json!({})))
+) -> std::result::Result<Json<ExitResponse>, ApiError> {
+    let restart = api::call(store, move |sessions| sessions.agent_exited(request)).await?;
+    Ok(Json(ExitResponse { restart }))
 }
 
 impl PendingLaunch {
@@ -335,8 +358,85 @@ impl Sessions {
         Ok(Launch {
             prepared,
             directory,
-            priority: self.config.agent.priority,
+            priority: self.agent_priority(&session),
         })
+    }
+
+    /// Stores the priority of an interactive agent session. A running agent stops and its
+    /// client starts it again in the same pane with the new clamp. The conversation resumes.
+    pub(crate) fn set_priority(
+        &mut self,
+        input: &str,
+        change: PriorityChange,
+        caller: Option<SessionId>,
+    ) -> Result<Session> {
+        self.record_call(caller, "session.priority", Some(input))?;
+        let session = self.get_record(input)?;
+        if !session.body["agent"].is_string() || session.body["kind"] == "headless" {
+            return Err(Error::InvalidRequest(
+                "priority: only interactive agent sessions have a priority",
+            ));
+        }
+        let current = self.agent_priority(&session);
+        let priority = match change {
+            PriorityChange::Set(priority) => priority,
+            PriorityChange::Next(_) => current.next(),
+        };
+        if priority != current || session.body["priority"].is_null() {
+            self.append(
+                session.id,
+                "session.priority",
+                json!({"priority": priority, "parent_session_id": caller}),
+            )?;
+        }
+        if priority != current {
+            self.restart_agent(&session)?;
+        }
+        self.get_record(input)
+    }
+
+    /// The priority of the session, else the configured default.
+    fn agent_priority(&self, session: &Session) -> AgentPriority {
+        serde_json::from_value(session.body["priority"].clone())
+            .unwrap_or(self.config.agent.priority)
+    }
+
+    /// Sends SIGHUP to the agent under the client in the pane, as a closed terminal does.
+    fn restart_agent(&mut self, session: &Session) -> Result<()> {
+        if self.process_exited(session.id)? {
+            return Ok(());
+        }
+        let tmux = Tmux::from_env();
+        for window in self.session_windows(session)? {
+            let Some(pane) = tmux.window_option(&window, "@ws_pane").ok().flatten() else {
+                continue;
+            };
+            if !self.owns_agent_window(session, &pane)?
+                || tmux.pane_status(&pane)? != PaneStatus::Running
+            {
+                continue;
+            }
+            let client = tmux.execute(&["display-message", "-p", "-t", &pane, "#{pane_pid}"])?;
+            let output = std::process::Command::new("pgrep")
+                .args(["-P", client.trim()])
+                .output()?;
+            let children: Vec<libc::pid_t> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|pid| pid.trim().parse().ok())
+                .collect();
+            if children.is_empty() {
+                continue;
+            }
+            RESTARTS
+                .lock()
+                .map_err(|_| Error::InvalidRequest("Cannot lock the pending agent restarts."))?
+                .insert(session.id);
+            for child in children {
+                // SAFETY: kill only sends a signal to a child process of the agent client.
+                unsafe { libc::kill(child, libc::SIGHUP) };
+            }
+        }
+        Ok(())
     }
 
     fn agent_resume_id(&self, directory: &Path, session: &Session) -> Result<Option<String>> {
@@ -367,10 +467,18 @@ impl Sessions {
         )
     }
 
-    fn agent_exited(&mut self, request: ExitRequest) -> Result<()> {
+    fn agent_exited(&mut self, request: ExitRequest) -> Result<bool> {
         let session = self.get(&request.id, None)?;
         if !self.owns_agent_window(&session, &request.pane)? {
-            return Ok(());
+            return Ok(false);
+        }
+        if RESTARTS
+            .lock()
+            .map_err(|_| Error::InvalidRequest("Cannot lock the pending agent restarts."))?
+            .remove(&session.id)
+        {
+            // The session stays running. The client starts the agent again in this pane.
+            return Ok(true);
         }
         if !self.process_exited(session.id)? {
             self.append(
@@ -407,7 +515,7 @@ impl Sessions {
                 tmux.unset_window_option(&window, key)?;
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     pub(crate) fn agent_directory(&self, session: &Session) -> Result<PathBuf> {

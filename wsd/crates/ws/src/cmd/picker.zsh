@@ -75,6 +75,9 @@ configure_bindings() {
   tmux_ bind-key A if-shell -F "$in_ws" "run-shell ${(q)add_cmd}"
   add_cmd="$ws_command add #{q:@ws_path} --agent grok"
   tmux_ bind-key G if-shell -F "$in_ws" "run-shell ${(q)add_cmd}"
+  # prefix+B cycles the agent priority of this tab: background, utility, normal.
+  local priority_cmd="msg=\$($ws_command session priority #{q:@ws_session} next 2>&1); tmux display-message -l \"ws priority: \$msg\""
+  tmux_ bind-key B if-shell -F "#{!=:#{@ws_session},}" "run-shell -b ${(q)priority_cmd}"
   # Array indices 77 and 78 preserve user hooks at index 0.
   local dismiss_cmd="$ws_command _dismiss '#{window_id}'"
   local run_cmd="run-shell -b ${(q)dismiss_cmd}"

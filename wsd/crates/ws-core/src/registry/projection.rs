@@ -119,6 +119,19 @@ fn project_session(connection: &Connection, entry: &LogEntry) -> Result<()> {
             )?;
             require_session(changed, entry)?;
         }
+        "session.priority" => {
+            let priority = entry.body.get("priority").cloned().unwrap_or(Value::Null);
+            if serde_json::from_value::<crate::config::AgentPriority>(priority.clone()).is_err() {
+                return Err(Error::InvalidEvent(
+                    "The session.priority event requires background, utility or normal.".into(),
+                ));
+            }
+            let changed = connection.execute(
+                "UPDATE sessions SET body = json_set(body, '$.priority', ?1), updated_at_ms = ?2 WHERE id = ?3",
+                params![priority.as_str(), sql_number(entry.ts_ms)?, entry.session_id.to_string()],
+            )?;
+            require_session(changed, entry)?;
+        }
         "session.running" | "session.blocked" | "session.finished" | "session.failed"
         | "session.reopened" => {
             let state = entry.event_type.strip_prefix("session.").unwrap();
