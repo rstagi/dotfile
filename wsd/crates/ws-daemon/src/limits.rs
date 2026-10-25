@@ -68,6 +68,7 @@ impl Sessions {
 
     pub(crate) fn spawn_scope(&self, mut parent: Option<SessionId>) -> Result<Option<String>> {
         let mut visited = HashSet::new();
+        let mut legacy_scope = None;
         while let Some(id) = parent {
             if !visited.insert(id) {
                 return Err(Error::InvalidRequest(
@@ -78,8 +79,8 @@ impl Sessions {
             if session.body["kind"] == "loop" {
                 return Ok(Some(format!("session:{id}")));
             }
-            if let Some(scope) = legacy_loop_scope(&session.body) {
-                return Ok(Some(scope));
+            if legacy_scope.is_none() {
+                legacy_scope = legacy_loop_scope(&session.body);
             }
             parent = session.body["parent_session_id"]
                 .as_str()
@@ -89,7 +90,7 @@ impl Sessions {
                     Error::InvalidRequest("The session ancestry contains an invalid id.")
                 })?;
         }
-        Ok(None)
+        Ok(legacy_scope)
     }
 
     fn check_loop_spawn_cap(&self, parent: SessionId, scope: &str) -> Result<()> {
@@ -102,24 +103,24 @@ impl Sessions {
         for entry in &creations {
             let recorded = entry.body["loop_spawn_scope"].as_str().map(str::to_owned);
             let inferred = || {
-                legacy_loop_scope(&entry.body).or_else(|| {
-                    let mut ancestor = entry.body["parent_session_id"]
-                        .as_str()?
-                        .parse::<SessionId>()
-                        .ok();
-                    let mut seen = HashSet::new();
-                    while let Some(id) = ancestor.filter(|id| seen.insert(*id)) {
-                        let body = bodies.get(&id)?;
-                        if body["kind"] == "loop" {
-                            return Some(format!("session:{id}"));
-                        }
-                        if let Some(scope) = legacy_loop_scope(body) {
-                            return Some(scope);
-                        }
-                        ancestor = body["parent_session_id"].as_str()?.parse().ok();
+                let mut legacy_scope = legacy_loop_scope(&entry.body);
+                let mut ancestor = entry.body["parent_session_id"]
+                    .as_str()
+                    .and_then(|id| id.parse::<SessionId>().ok());
+                let mut seen = HashSet::new();
+                while let Some(id) = ancestor.filter(|id| seen.insert(*id)) {
+                    let Some(body) = bodies.get(&id) else { break };
+                    if body["kind"] == "loop" {
+                        return Some(format!("session:{id}"));
                     }
-                    None
-                })
+                    if legacy_scope.is_none() {
+                        legacy_scope = legacy_loop_scope(body);
+                    }
+                    ancestor = body["parent_session_id"]
+                        .as_str()
+                        .and_then(|id| id.parse().ok());
+                }
+                legacy_scope
             };
             if recorded.or_else(inferred).as_deref() == Some(scope) {
                 count += 1;
@@ -154,7 +155,10 @@ impl Sessions {
             .map(str::parse::<SessionId>)
             .transpose()
             .map_err(|_| Error::InvalidRequest("The parent session id is invalid."))?;
-        if let Some(scope) = legacy_loop_scope(body).or(self.spawn_scope(parent)?) {
+        if let Some(scope) = self
+            .spawn_scope(parent)?
+            .or_else(|| legacy_loop_scope(body))
+        {
             self.check_loop_spawn_cap(parent.unwrap_or(id), &scope)?;
             body["loop_spawn_scope"] = serde_json::json!(scope);
         }
@@ -562,6 +566,38 @@ mod tests {
         let (status, error) = post(&app, "/v1/sessions", json!({"parent_session_id":root})).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{error}");
         assert_eq!(error["error"]["code"], "max_children_exceeded");
+    }
+
+    #[tokio::test]
+    async fn a_legacy_command_cannot_change_the_scope_of_an_existing_loop() {
+        let sandbox = tempfile::tempdir().unwrap();
+        std::fs::write(
+            sandbox.path().join("config.toml"),
+            "[loop]\nmax_spawns = 2\n",
+        )
+        .unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let root = loop_session(&mut sessions);
+        let child = SessionId::new();
+        let alias = sessions.next_alias().unwrap();
+        sessions
+            .append(
+                child,
+                "session.created",
+                json!({"alias":alias,"kind":"headless","parent_session_id":root,
+            "command":["zsh","/runtime/loop-orchestrator.sh","--run-id","nested-run"]}),
+            )
+            .unwrap();
+        let app = api::router(sessions);
+        assert_eq!(
+            post(&app, "/v1/sessions", json!({"parent_session_id":child}))
+                .await
+                .0,
+            StatusCode::CREATED
+        );
+        let (status, error) = post(&app, "/v1/sessions", json!({"parent_session_id":root})).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{error}");
+        assert_eq!(error["error"]["code"], "max_spawns_exceeded");
     }
 
     #[tokio::test]
