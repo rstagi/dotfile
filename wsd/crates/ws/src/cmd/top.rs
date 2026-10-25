@@ -45,6 +45,9 @@ pub async fn run(socket: &Path, once: bool, worktrees: bool, graph: bool) -> Res
 
 async fn resolve(socket: &Path, current: &Session) -> Result<(PathBuf, Option<String>)> {
     let sessions = client::sessions(socket).await?;
+    if let Some(found) = wsd_loop(&sessions, current)? {
+        return Ok(found);
+    }
     let body = client::request(
         socket,
         Method::GET,
@@ -114,6 +117,33 @@ async fn resolve(socket: &Path, current: &Session) -> Result<(PathBuf, Option<St
             .transpose()?;
     }
     Ok((directory, None))
+}
+
+/// Finds the loop session in the ancestry of the current session. wsd knows it without a scan.
+fn wsd_loop(sessions: &[Session], current: &Session) -> Result<Option<(PathBuf, Option<String>)>> {
+    let mut ancestor = Some(current.id);
+    let mut visited = HashSet::new();
+    while let Some(id) = ancestor {
+        if !visited.insert(id) {
+            return Err("The session ancestry contains a cycle.".into());
+        }
+        let Some(session) = sessions.iter().find(|session| session.id == id) else {
+            break;
+        };
+        if session.body["kind"] == "loop"
+            && let Some(loop_dir) = session.body["loop_dir"].as_str().map(Path::new)
+        {
+            let directory = loop_dir
+                .parent()
+                .ok_or("The loop directory has no parent.")?;
+            return Ok(Some((directory.into(), Some(id.to_string()))));
+        }
+        ancestor = session.body["parent_session_id"]
+            .as_str()
+            .map(str::parse::<SessionId>)
+            .transpose()?;
+    }
+    Ok(None)
 }
 
 fn session_directory(session: &Session, workspaces: &[Workspace]) -> Option<PathBuf> {

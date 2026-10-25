@@ -84,7 +84,7 @@ loop-review.sh          Loop engineering: ledger-driven PR review — next/recor
 loop-plan-review.sh     Loop engineering: one rotating AR reviewer ↔ critic round on a frozen draft plan
 loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)
 loop-models.conf        Loop engineering: model chains, budgets, timeouts
-loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model controls)
+loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model/tier controls). Reads a wsd loop with `ws loop get --json` and steers it with `ws loop …`. Reads every other loop from the loop-web daemon
 loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
 loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
 ws/ws.sh                Rust CLI launcher (see ws/README.md)

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { fitRows, gateText, inferLoop, milestoneTitles, phaseRows, pickerRows, pipelineSummary, renderDetails, tierChoices } from "../loop-top.mjs";
+import { fitRows, gateText, inferLoop, loopControl, milestoneTitles, phaseRows, pickerRows, pipelineSummary, renderDetails, tierChoices, wsControlArgs, wsdSnapshot } from "../loop-top.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "loop-top.mjs");
 
@@ -890,4 +890,177 @@ setInterval(() => {}, 60_000);
   assert.doesNotMatch(out.stdout, /Quota/);
   const pid = Number(fs.readFileSync(path.join(fx.root, "quota-started"), "utf8"));
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+});
+
+// ---- wsd source: `ws loop list|get --json` ----
+
+const WSD_ID = "01JWSDLOOP0000000000000000";
+const wsdState = (fx, over = {}) => ({
+  id: WSD_ID, alias: "#7", loop_dir: path.join(fx.root, "wsdcoord", ".loop"), status: "active",
+  plan: { sha: "x", text: [
+    "## Milestone 1 — First", "### Phase 1 — Wsd first `[lane: A]`",
+    "## Milestone 2 — Second", "### Phase 3 — Wsd review `[kind: pr-review]` `[review: max]` `[rounds: 3]`",
+  ].join("\n") },
+  phases: {
+    1: { n: 1, title: "Wsd first", kind: "work", output: "pr", milestone: 1, gate: null, repo: "acme/api", branch: "feat/w1", depends_on: [], status: "merged", attempt: 1 },
+    2: { n: 2, title: "Wsd second", kind: "work", output: "pr", milestone: 1, gate: null, repo: "acme/api", branch: "feat/w2", depends_on: [1], status: "running", attempt: 2 },
+    3: { n: 3, title: "Wsd review", kind: "review", output: "pr", milestone: 2, gate: "merge", repo: null, branch: null, depends_on: [2], status: "todo" },
+  },
+  milestone: 1, merge_gates: {}, attempts: [], merges: [], gates: [], reviews: [],
+  notes: [{ phase: 2, text: "Use the new contract." }], decisions: [], controls: [], pauses: {}, guards: [], violations: [], finish: null,
+  ...over,
+});
+
+/** A fake `ws`: logs every call, answers `loop list|get` from files in HOME, accepts loop controls. */
+function fakeWs(fx, { state = wsdState(fx), get = true, list = true } = {}) {
+  fs.mkdirSync(path.join(fx.root, "wsdcoord", ".loop"), { recursive: true });
+  fs.writeFileSync(path.join(fx.root, "wsd-list.json"), JSON.stringify([state]));
+  fs.writeFileSync(path.join(fx.root, "wsd-get.json"), JSON.stringify(state));
+  fs.writeFileSync(path.join(fx.root, "bin", "ws"), `#!/bin/sh
+echo "$@" >> "$HOME/ws-calls.log"
+case "$1 $2" in
+  "loop list") ${list ? 'exec /bin/cat "$HOME/wsd-list.json"' : "exit 2"} ;;
+  "loop get") ${get ? 'exec /bin/cat "$HOME/wsd-get.json"' : "echo 'unknown subcommand: get' >&2; exit 2"} ;;
+  "loop fail") echo 'The loop is paused.' >&2; exit 1 ;;
+  "loop pause"|"loop resume"|"loop note"|"loop model"|"loop tier") echo '{}' ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+}
+const wsCalls = (fx) => fs.readFileSync(path.join(fx.root, "ws-calls.log"), "utf8").split("\n").filter((l) => l && !l.startsWith("usage"));
+
+test("loop-top --once: a wsd loop renders from `ws loop get` with the loop-web daemon down", async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  fakeWs(fx);
+  const env = { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store };
+
+  const out = await runCli(["--once", WSD_ID], { cwd: fx.root, env });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout.split("\n")[0], new RegExp(`^${WSD_ID} · active`));
+  assert.match(out.stdout, /✓ 1 +Wsd first/);
+  assert.match(out.stdout, /◐ 2 +📝 Wsd second +.*attempt 2/);
+  assert.match(out.stdout, /· 3 +Wsd review +pr +max review ×3 +← 2 +waiting on 2/);
+  assert.match(out.stdout, /M1 — First/);
+  assert.match(out.stdout, /live · wsd$/m);
+  assert.deepEqual(wsCalls(fx).filter((c) => c.startsWith("loop get")), [`loop get ${WSD_ID} --json`]);
+});
+
+test("loop-top --once: the cwd finds a wsd loop; loop-web loops still come from the loop-web daemon", async (t) => {
+  const fx = fixture();
+  const server = await fakeDaemon(fx.liveSnapshot);
+  t.after(() => { server.close(); fs.rmSync(fx.root, { recursive: true, force: true }); });
+  fakeWs(fx);
+  const env = { LOOP_DAEMON_URL: `http://127.0.0.1:${server.address().port}`, LOOP_STORE_DIR: fx.store };
+
+  const wsd = await runCli(["--once"], { cwd: path.join(fx.root, "wsdcoord"), env });
+  assert.equal(wsd.code, 0, wsd.stderr);
+  assert.match(wsd.stdout, /Wsd second/);
+  assert.match(wsd.stdout, /live · wsd$/m);
+
+  const web = await runCli(["--once"], { cwd: fx.coord, env });
+  assert.equal(web.code, 0, web.stderr);
+  assert.match(web.stdout, /Live title/);
+  assert.doesNotMatch(web.stdout, /Wsd|wsd/);
+  assert.equal(wsCalls(fx).some((c) => c.startsWith(`loop get loop-demo`)), false, "loop-web ids never go to wsd");
+
+  const picker = await runCli(["--picker-rows"], { cwd: fx.root, env });
+  assert.match(picker.stdout, new RegExp(`^active +${WSD_ID}`, "m"));
+  assert.match(picker.stdout, /^active +loop-demo/m);
+});
+
+test("loop-top --once: a ws that rejects `loop get` falls back to the loop-web daemon", async (t) => {
+  const fx = fixture();
+  const server = await fakeDaemon(fx.liveSnapshot);
+  t.after(() => { server.close(); fs.rmSync(fx.root, { recursive: true, force: true }); });
+  fakeWs(fx, { get: false });
+  const env = { LOOP_DAEMON_URL: `http://127.0.0.1:${server.address().port}`, LOOP_STORE_DIR: fx.store };
+
+  const web = await runCli(["--once", "loop-demo"], { cwd: fx.coord, env });
+  assert.equal(web.code, 0, web.stderr);
+  assert.match(web.stdout, /Live title/);
+  const wsd = await runCli(["--once", WSD_ID], { cwd: fx.root, env });
+  assert.equal(wsd.code, 1);
+  assert.match(wsd.stderr, /no such loop/);
+});
+
+test("loop-top --once: a ws without any loop command leaves the loop-web source unchanged", async (t) => {
+  const fx = fixture();
+  const server = await fakeDaemon(fx.liveSnapshot);
+  t.after(() => { server.close(); fs.rmSync(fx.root, { recursive: true, force: true }); });
+  fakeWs(fx, { get: false, list: false });
+  const env = { LOOP_DAEMON_URL: `http://127.0.0.1:${server.address().port}`, LOOP_STORE_DIR: fx.store };
+
+  const out = await runCli(["--once"], { cwd: fx.coord, env });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /Live title/);
+  assert.match(out.stdout, /· live$/m);
+});
+
+test("wsdSnapshot: phase status, dependencies, pauses, notes, tier and milestone headings", () => {
+  const fx = { root: "/r" };
+  const state = wsdState(fx, {
+    pauses: { 2: true }, models: undefined,
+    controls: [{ action: "model", phase: 3, model: "codex:@sol" }],
+    attempts: [{ n: 2, attempt: 1, session: "s", state: "result", outcome: "blocked", verify: "none" }],
+  });
+  const snapshot = wsdSnapshot(state);
+  const rows = phaseRows(snapshot, null);
+  assert.deepEqual(rows.map((r) => [r.label, r.icon, r.milestone, r.deps]), [
+    ["1", "✓", 1, []], ["2", "‖", 1, ["1"]], ["3", "·", 2, ["2"]],
+  ]);
+  assert.equal(rows[1].paused, true);
+  assert.equal(rows[1].noted, true);
+  assert.equal(rows[1].branch, "feat/w2");
+  assert.deepEqual(rows[2].review, { tier: "max", rounds: 3 });
+  assert.equal(rows[2].modelOverride, "codex:@sol");
+  assert.equal(snapshot.paused, false);
+  assert.equal(wsdSnapshot(wsdState(fx, { pauses: { all: true } })).paused, true);
+  assert.deepEqual([...milestoneTitles(snapshot)], [[1, "First"], [2, "Second"]]);
+});
+
+test("wsdSnapshot: an open merge gate parks its phase with the gate PRs; a blocked attempt is a problem", () => {
+  const fx = { root: "/r" };
+  const state = wsdState(fx, {
+    phases: { ...wsdState(fx).phases, 3: { ...wsdState(fx).phases[3], status: "done" }, 2: { ...wsdState(fx).phases[2], status: "merged" } },
+    gates: [{ kind: "merge", state: "open", milestone: 2, prs: { "acme/api": "https://github.com/acme/api/pull/12" } }],
+    merge_gates: { 2: "open" }, status: "awaiting-merge",
+  });
+  const rows = phaseRows(wsdSnapshot(state), null);
+  assert.equal(rows[2].state, "awaiting merge");
+  assert.deepEqual(rows[2].gate, { prs: [{ slug: "acme/api", number: "#12" }] });
+
+  const blocked = wsdState(fx, { attempts: [{ n: 2, attempt: 2, session: "s", state: "result", outcome: "blocked", verify: "none" }] });
+  const row = phaseRows(wsdSnapshot(blocked), null)[1];
+  assert.deepEqual([row.icon, row.state], ["✗", "blocked"]);
+});
+
+test("wsControlArgs: each loop control maps to the Phase 88 command", () => {
+  const ref = { source: "wsd", wsId: WSD_ID };
+  assert.deepEqual(wsControlArgs(ref, "note", { phase: "2", markdown: "Hi" }), ["loop", "note", WSD_ID, "2", "--", "Hi"]);
+  assert.deepEqual(wsControlArgs(ref, "pause", { phase: "2" }), ["loop", "pause", WSD_ID, "2"]);
+  assert.deepEqual(wsControlArgs(ref, "resume", {}), ["loop", "resume", WSD_ID]);
+  assert.deepEqual(wsControlArgs(ref, "model", { phase: "2", leg: "codex:@sol" }), ["loop", "model", WSD_ID, "2", "codex:@sol"]);
+  assert.deepEqual(wsControlArgs(ref, "tier", { phase: "3", tier: "max" }), ["loop", "tier", WSD_ID, "3", "max"]);
+  assert.throws(() => wsControlArgs(ref, "model", { phase: "2", leg: null }), /default chain/);
+  assert.throws(() => wsControlArgs(ref, "note", { phase: "2", clear: true }), /cannot be cleared/);
+  assert.throws(() => wsControlArgs(ref, "pause", { phase: "2a" }), /phase number/);
+});
+
+test("loopControl: a wsd loop runs `ws loop …` and reports the ws error; no loop-web request is made", async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  fakeWs(fx);
+  const saved = { PATH: process.env.PATH, HOME: process.env.HOME };
+  process.env.PATH = `${path.join(fx.root, "bin")}:${saved.PATH}`;
+  process.env.HOME = fx.root;
+  t.after(() => Object.assign(process.env, saved));
+  const loops = [{ runId: "r-wsd", wsId: WSD_ID, source: "wsd" }];
+
+  assert.deepEqual(await loopControl(loops, "r-wsd", "pause", { phase: "2" }), { ok: true, error: null });
+  assert.deepEqual(await loopControl(loops, "r-wsd", "tier", { phase: "3", tier: "standard" }), { ok: true, error: null });
+  assert.deepEqual(wsCalls(fx), [`loop pause ${WSD_ID} 2`, `loop tier ${WSD_ID} 3 standard`]);
+  const bad = await loopControl(loops, "r-wsd", "model", { phase: "2", leg: null });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /default chain/);
 });
