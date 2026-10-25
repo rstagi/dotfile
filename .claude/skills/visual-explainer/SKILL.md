@@ -11,7 +11,10 @@ description: >-
   uses snapcn components on Remotion and a voiceover. A concept graph of the same props is a
   second page. Use it in multiphase-plan step 5 and in pr-review Step 4. Also use it at Loop
   progress checkpoints, at a Loop milestone merge gate and at a Loop milestone resume. A failed video
-  never blocks the page.
+  never blocks the page. Explore mode draws any free-form graph that you write as JSON (an
+  architecture, a flow, a data model, dependencies) as one interactive page. The reader hovers a node
+  to see what it touches, clicks it for details, drags nodes, turns the layout and steps through a
+  walkthrough. Use it when a picture explains better than prose and there is no plan or ship report.
 argument-hint: "plan|ship <output-dir>"
 ---
 
@@ -33,6 +36,10 @@ components. A fourth script puts the screenshots and the video on GitHub for a P
 |------|---------|
 | `template/report.html` | The report page: color tokens, dark mode, styles |
 | `template/page.html` | The concept graph page |
+| `template/explore.html` | The explore page: ELK layout in the browser, hover, details, drag, minimap, walkthrough |
+| `scripts/explore.mjs`, `scripts/explore-spec.mjs` | Explore mode: the graph check and the page writer |
+| `vendor/elk.bundled.js` | elkjs 0.11.0, inlined into the explore page (EPL-2.0, see `vendor/NOTICE`) |
+| `examples/explore-login.graph.json` | One valid example of an explore graph |
 | `scripts/render.mjs` | Checks the props, then writes `index.html` and `graph.html` (Node 20.11 or later) |
 | `scripts/report.mjs`, `scripts/diagrams.mjs` | The report sections, the before/after diagram and the sequence diagram |
 | `scripts/graph.mjs`, `scripts/page.mjs` | The concept graph: nodes, edges, layout and page data |
@@ -350,6 +357,92 @@ the `render-video.mjs` stdout starts with `tts: say`, write `video: embedded (ma
 Add the GitHub media result when step 9 ran. When a step fails, report the failure and the
 last stderr lines. A failed explainer never blocks the work of the caller. A failed video never
 blocks the page.
+
+## Explore mode
+
+Use explore mode to draw one graph that is not a plan or a ship report. Examples: how parts of a
+system talk, a request flow, a data model, dependencies, what a change touched. You write one JSON
+file. `explore.mjs` checks it and writes one self-contained page, `explore.html`. Do not write HTML,
+CSS or JS. Do not write coordinates. The page lays the graph out with ELK.
+
+```bash
+node <skill>/scripts/explore.mjs --graph <output-dir>/graph.json --check
+node <skill>/scripts/explore.mjs --graph <output-dir>/graph.json --out <output-dir>
+```
+
+- Exit 0: the graph is valid. Each stderr line `warning: ...` names one item that the page does not draw.
+  Read the warnings and fix the JSON.
+- Exit 1: the graph cannot be drawn. The stderr line says why.
+- Exit 2: a usage error or an I/O error.
+- `--out` prints the absolute path of `explore.html`. Publish it as an Artifact with the `files`
+  map, or give the path to the person.
+
+### The format
+
+```json
+{
+  "title": "How login works",
+  "summary": "One short line under the title",
+  "direction": "right",
+  "nodes": [
+    { "id": "web", "type": "client", "label": "Web app", "sublabel": "React" },
+    { "id": "backend", "type": "group", "label": "Backend" },
+    { "id": "api", "type": "service", "label": "Auth API", "group": "backend", "status": "done",
+      "details": "Markdown for the details panel", "links": [{ "label": "server.ts", "href": "src/server.ts" }] },
+    { "id": "db", "type": "database", "label": "users", "group": "backend",
+      "fields": [{ "name": "id", "type": "uuid", "key": "pk" }] }
+  ],
+  "edges": [
+    { "from": "web", "to": "api", "label": "POST /login", "kind": "call" },
+    { "from": "api", "to": "db", "kind": "data" }
+  ],
+  "steps": [
+    { "title": "The app asks", "text": "One or two sentences.", "focus": ["web", "api"] }
+  ]
+}
+```
+
+| Field | Rule |
+|-------|------|
+| `direction` | `right` (default), `down`, `left` or `up`. The page turns the graph when the other way reads bigger in the window. |
+| `nodes` | 1 to 150. Each has an `id` (letters, digits and `. : / - _`) and a `label` of 80 characters at most. |
+| `type` | `client`, `service`, `database`, `queue`, `storage`, `external`, `actor`, `person`, `function`, `file`, `decision`, `note`, `task`, `milestone`, `metric` or `group`. The page maps a near miss such as `db` or `api` to the closest type. Any other word becomes `service`. |
+| `sublabel`, `tag` | A line under the label (120 characters), a small badge (24 characters). |
+| `status` | `todo`, `active`, `review`, `done`, `blocked`, `failed` or `idle`. The node shows a colored dot. |
+| `group` | The id of a `group` node. The group draws a box around its nodes. |
+| `details` | Markdown for the details panel (4000 characters): paragraphs, `- ` lists, `code` and `**bold**`. The page shows raw HTML as text. |
+| `links` | Up to 8 `{label, href}`. The page keeps an `http`, `https` or path `href` and drops other schemes. |
+| `fields` | The columns of a `database` node: `{name, type?, key?: "pk" or "fk", note?}`. |
+| `value` | The number of a `metric` node, for example `"87%"`. |
+| `emphasis` | `true` puts an accent ring on the node or the line. Use it on one or two items. |
+| `edges` | Up to 300. `from` and `to` are node ids. `label` is 60 characters at most. |
+| edge `kind` | `flow` (default), `call`, `data` (a dot moves along it), `async` (dashed and moving), `depends` (dotted) or `blocks` (red). |
+| `steps` | Up to 30 walkthrough stops. `focus` lists node ids and line ids. A line without an `id` is `<from>-><to>`. |
+
+### How to write a good graph
+
+- Draw one idea in each graph. Two small graphs are better than one crowded graph.
+- Use 4 to 25 nodes. Use a label of 2 to 4 words. Put the rest in `sublabel` or `details`.
+- Use real names from the code. Use a `group` for each boundary, for example a service or a layer.
+- Write an edge `label` that says what moves, for example `POST /login`. Pick the `kind` that fits.
+- Write 3 to 7 steps when the graph tells a story. Write a title without a number. The page
+  numbers the stops. A step lights up the nodes and the lines in `focus`, and the lines between
+  them.
+- Do not repeat the `details` in the chat. Keep the text around the graph short.
+
+### What the reader can do
+
+- Point at a node: it and everything it touches light up. The rest fades.
+- Click a node: the details panel opens with the notes, the fields, the links and the
+  connections. A click on a connection goes to that node.
+- Drag a node: its lines follow and its group resizes. Drag the background to pan. Scroll with two
+  fingers to pan. Pinch or press Ctrl and scroll to zoom. The buttons zoom and fit.
+- Press `Walk me through it`: the page frames each step. Use the arrow keys to move and Esc to leave.
+- Press the layout button to turn the graph. Use the minimap to jump.
+- Without JavaScript, the page shows a list of the nodes and where each one leads.
+
+The page follows the Artifact page contract of the report (see `## The page`). It has one
+exception: it inlines elkjs (about 1.6 MB) as its only script.
 
 ## The page
 
