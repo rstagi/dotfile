@@ -92,10 +92,9 @@ WT="$(new_repo wspass)"
 WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" merge "$WT" 'test "$(cat result.txt)" = lane'
 assert_exit "$RC" "0" "a passed Verify exits 0 with WS_LOOP_ID"
 assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" "1" "one ws call is made"
-call=("${(@ps:\t:)$(head -1 "$FAKE_WS_LOG")}")
-assert_eq "$call[1] $call[2]" "event loop.merge" "the call appends loop.merge"
-assert_contains "$(head -1 "$FAKE_WS_LOG")" $'--source\ttool\t--target\tLOOP1' "the event has source tool and the loop target"
-body="$(sed -n 's/.*--body\t\([^\t]*\)\t.*/\1/p' "$FAKE_WS_LOG")"
+call="$(head -1 "$FAKE_WS_LOG")"
+assert_eq "$(print -r -- "$call" | jq -c '[.[0], .[1], .[2], .[4], .[5], .[6], .[7]]')" '["event","loop.merge","--body","--source","tool","--target","LOOP1"]' "the call appends loop.merge with source tool and the loop target"
+body="$(print -r -- "$call" | jq -r '.[3]')"
 assert_eq "$(print -r -- "$body" | jq -c '{n,repo,verify}')" '{"n":7,"repo":"acme/api","verify":"pass"}' "the body names phase, repository and verify pass"
 assert_eq "$(print -r -- "$body" | jq -r .head)" "$(git -C "$WT" rev-parse HEAD)" "the body head is the merged tree commit"
 assert_eq "$(emitted phase.merged | jq -r .phase)" "7" "the old-engine event stays"
@@ -105,7 +104,7 @@ export FAKE_WS_LOG="$TMP/ws-fail.log"; : > "$FAKE_WS_LOG"
 WT="$(new_repo wsfail)"
 WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" merge "$WT" false
 assert_exit "$RC" "4" "a failed Verify keeps exit 4"
-body="$(sed -n 's/.*--body\t\([^\t]*\)\t.*/\1/p' "$FAKE_WS_LOG")"
+body="$(jq -r '.[3]' "$FAKE_WS_LOG")"
 assert_eq "$(print -r -- "$body" | jq -c '{n,repo,verify}')" '{"n":7,"repo":"acme/api","verify":"fail"}' "the body has verify fail"
 
 echo "loop-merge: loop.merge waits for the push"
