@@ -37,9 +37,11 @@ These rules apply to new work. Existing code moves to this layout only in its ow
 
 ## Observability
 
-- Add spans, structured logs and key metrics at the entry point of the feature and at the adapter boundaries. Do not add them in the domain core.
+- Required for production paths only: code that real users or real data reach. Prototypes, spikes, scripts and one-off tools do not need telemetry.
+- On a production path, add spans, structured logs and key metrics at the entry point of the feature and at the adapter boundaries. Do not add them in the domain core.
 - Start each telemetry name with `feature.<name>.`. Then you can find the telemetry of a feature and remove it with the feature.
 - Never log secrets or raw sensitive data.
+- A missing telemetry item is a deferred issue. It never blocks.
 
 ## Delete test
 

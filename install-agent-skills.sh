@@ -6,8 +6,10 @@ SOURCE_ROOT="$SCRIPT_DIR/.claude/skills"
 USE_RATEL=true
 SHARED_SKILLS=(
   checkpoint-30
+  assess
   multiphase-plan
   loop-execute
+  converge
   loop-pickup
   loop-handoff
   pr-review

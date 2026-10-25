@@ -10,7 +10,7 @@ trap 'rm -rf "$TMP"' EXIT
 SOURCE="$TMP/source"
 TEST_HOME="$TMP/home"
 FAKE_BIN="$TMP/bin"
-SKILLS=(checkpoint-30 multiphase-plan loop-execute loop-pickup loop-handoff pr-review pr-review-fix-all ws-sessions ws-orchestrate asd-ste100 visual-explainer)
+SKILLS=(checkpoint-30 assess multiphase-plan loop-execute converge loop-pickup loop-handoff pr-review pr-review-fix-all ws-sessions ws-orchestrate asd-ste100 visual-explainer)
 mkdir -p "$SOURCE" "$TEST_HOME/.agents/skills/unrelated" "$FAKE_BIN"
 SOURCE="$(cd "$SOURCE" && pwd -P)"
 print -r -- keep > "$TEST_HOME/.agents/skills/unrelated/marker"

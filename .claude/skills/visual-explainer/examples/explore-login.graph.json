@@ -1,0 +1,30 @@
+{
+  "title": "How login works",
+  "summary": "A web login: the app asks, the API checks, the session is stored.",
+  "direction": "right",
+  "nodes": [
+    { "id": "user", "type": "actor", "label": "User" },
+    { "id": "web", "type": "client", "label": "Web app", "sublabel": "React", "tag": "src/web", "details": "Sends the **form** to `POST /login`.\n\n- Keeps the token in memory\n- Retries once on 401" },
+    { "id": "backend", "type": "group", "label": "Backend" },
+    { "id": "api", "type": "service", "label": "Auth API", "sublabel": "Express", "group": "backend", "status": "done", "emphasis": true,
+      "details": "Checks the password hash and issues a session.", "links": [{ "label": "docs", "href": "https://example.com/docs" }] },
+    { "id": "db", "type": "database", "label": "users", "group": "backend",
+      "fields": [{ "name": "id", "type": "uuid", "key": "pk" }, { "name": "email", "type": "text" }, { "name": "hash", "type": "text", "note": "argon2id" }] },
+    { "id": "sessions", "type": "storage", "label": "Sessions", "sublabel": "Redis", "group": "backend", "status": "active" },
+    { "id": "mail", "type": "external", "label": "Mail provider", "sublabel": "new device alert" },
+    { "id": "queue", "type": "queue", "label": "alerts", "group": "backend" }
+  ],
+  "edges": [
+    { "from": "user", "to": "web", "label": "types password" },
+    { "from": "web", "to": "api", "label": "POST /login", "kind": "call" },
+    { "from": "api", "to": "db", "label": "lookup", "kind": "data" },
+    { "from": "api", "to": "sessions", "label": "store session", "kind": "data" },
+    { "from": "api", "to": "queue", "label": "new device", "kind": "async" },
+    { "from": "queue", "to": "mail", "kind": "async" }
+  ],
+  "steps": [
+    { "title": "The app asks", "text": "The web app posts the password to the API.", "focus": ["user", "web", "api"] },
+    { "title": "The API checks", "text": "It reads the user row and compares the hash.", "focus": ["api", "db"] },
+    { "title": "The session is kept", "text": "A session goes to Redis. A new device raises an alert.", "focus": ["api", "sessions", "queue", "mail"] }
+  ]
+}

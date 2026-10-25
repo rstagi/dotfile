@@ -5,6 +5,9 @@ description: Review a pull request or a branch in one round. First, check it out
 
 # PR review
 
+> Source of truth for these rules: [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md). When this skill and that file differ, the file wins. Update the file first.
+
+
 A review judges a PR on two tests. The PR does not break existing behavior. The PR is easy to remove. A diff alone does not show if the code works or if the tests exercise it. Thus this skill always runs the code first. Then it puts each finding into one of two sections: Blocking or Deferred.
 
 Do not skip the worktree step when the change looks trivial. A confident but wrong review often starts with a change that looks trivial.

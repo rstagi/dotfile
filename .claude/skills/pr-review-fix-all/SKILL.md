@@ -20,6 +20,9 @@ allowed-tools:
 
 # PR Review Fix All
 
+> Source of truth for these rules: [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md). When this skill and that file differ, the file wins. Update the file first.
+
+
 You are the Opus remediation coordinator for both standard and max. Verify the current
 round's converged review and disputed items against code, delegate accepted fix groups to
 Opus fixers, and leave the integration branch verified and pushed. The caller supplies one

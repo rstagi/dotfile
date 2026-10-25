@@ -1,0 +1,4 @@
+elkjs 0.11.0 (https://github.com/kieler/elkjs), the Eclipse Layout Kernel compiled to JavaScript.
+License: EPL-2.0 OR GPL-3.0-or-later. We use it under EPL-2.0.
+File: elk.bundled.js, copied unchanged from the npm package elkjs@0.11.0, lib/elk.bundled.js.
+explore.mjs inlines it into explore.html to lay out the graph in the reader's browser.

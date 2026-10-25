@@ -38,6 +38,9 @@ zsh tests/review-stages.test.sh
 # AR plan review rounds only
 zsh tests/plan-review.test.sh
 
+# converge + assess skill contracts and their Loop wiring
+zsh tests/converge-assess-skills.test.sh
+
 # loop-top only
 node --test tests/loop-top.test.mjs
 
@@ -68,7 +71,7 @@ python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-install-agent-skills.sh Shares Loop, ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
+install-agent-skills.sh Shares Loop (incl. assess + converge), ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
 loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
@@ -95,6 +98,8 @@ docs/ws-v6/             WS v6 architecture, semantic conventions and spike repor
 wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .claude/skills/ws-orchestrate/ Repo-less orchestrator: one child session per repo, ws-message coordination, PR URL summary, no repo edits
+.claude/skills/assess/ Idea gate before multiphase-plan: evidence → go|clarify|kill → .loop/assessments/<slug>.md with a Handoff goal
+.claude/skills/converge/ Read-only Done-when check vs built code (met|partial|missing) → .loop/converge/p<N>.md. loop-execute §8 runs it once per review phase and inserts one gap phase per missing criterion
 .claude/skills/visual-explainer/ Props JSON → concept graph (graph.mjs: nodes, edges, fixed layout) → one self-contained surfable HTML page (plan|ship), zero-dep render.mjs + schemas. Narration JSON (tour stops) → page tour + narrated MP4 whose camera moves over the same graph (render-video.mjs, Remotion video/ project, rendered in ~/.cache)
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, claude, ws)

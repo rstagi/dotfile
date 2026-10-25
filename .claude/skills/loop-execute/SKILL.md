@@ -45,7 +45,7 @@ its safe ceiling. So `loop-execute` runs in one of three shapes (contract:
   **THIN**. It does preflight / init / lock / the confirm gate, spawns ONE detached
   `loop-orchestrator.sh`, then only: polls **compact local** state for a 2-3 line progress read,
   answers HIL from on-disk briefs, and handles `sub/REVIEW_READY` barriers. It spawns **only** the
-  orchestrator, ledger-driven AR review/remediation runners (§8) and explainer
+  orchestrator, one converge runner per review phase (§8), ledger-driven AR review/remediation runners (§8) and explainer
   runners for milestones and progress checkpoints (§3b, §8, §9) — the heavy scheduling/merge/escalation runs in
   disposable **`sub`** instances that self-recycle, so this chat never fills up.
 - **headless `sub`** — a disposable orchestrator instance (`claude -p`, `CHAIN_ORCHESTRATE`)
@@ -384,8 +384,28 @@ In supervise mode the `sub` stops at the next ready explicit review phase with
 the supervise main runs this step. The `sub` never runs pr-review.
 
 Re-fetch and reconcile the plan before spawning reviewers. If new work was inserted before
-this pending review, clear `REVIEW_READY` and resume scheduling. Otherwise mark every
-repository PR ready on the first review round; later rounds reuse those PRs. Each PR body
+this pending review, clear `REVIEW_READY` and resume scheduling.
+
+**Converge (once per review phase).** Before the first review round, run the `converge`
+skill one time for this review phase (protocol § Converge). Read `state.converge[<reviewPhase>]`
+first. When it has a `status`, do not spawn again. Otherwise spawn one detached converge
+runner and wait for its `meta.json`. Then read the last line of `.loop/converge/p<N>.md`:
+
+- `Verdict: converged`: persist `{status:"converged", report}` and continue to the reviewers.
+- `Verdict: gaps`: insert one gap phase per `missing` criterion, immediately before this
+  review phase (plan-format insertion rules). Each gap phase takes the outcome as its title,
+  the criterion as its *Done when*, and the repository and lane of the source phase. Add each
+  gap phase to the `Depends on` of this review phase. Persist `{status:"gaps", report,
+  insertedPhases}`, `loop-plan.sh push`, clear `REVIEW_READY` and resume scheduling. When the
+  gap phases are `merged`, the review phase is ready again. Go to the reviewers then,
+  never a second converge pass.
+- Any other result: persist `{status:"failed", report}` and continue to the reviewers. A
+  failed converge never blocks the review.
+
+Add the path of the converge report to the review notes of every repository. The `Partial`
+and `Unplanned work` lines are information for the reviewers, not findings.
+
+Otherwise mark every repository PR ready on the first review round; later rounds reuse those PRs. Each PR body
 contains the Goal and only
 that repository's phases (with milestones: that milestone's phases in that repository) plus a progress digest. Then record completion: flip plan
 **Status: integrating** + `loop-plan.sh push`, append `.loop/progress.md` — the daemon learns
@@ -762,7 +782,7 @@ derives NOTE visibility from both file presence and unfinished lifecycle.
   `loop-orchestrator.sh` — a SUB never spawns its own successor (that would overlap two
   orchestrators on one run id, which the reentrant lock does not prevent). Recycle only at a
   persisted checkpoint; never hard-kill a live phase runner to hit the token ceiling.
-- Supervise stays THIN: spawn only the orchestrator + staged review/remediation runners +
-  milestone and checkpoint explainer runners, and read only compact local state. A runner writes explainer
+- Supervise stays THIN: spawn only the orchestrator + converge runners + staged
+  review/remediation runners + milestone and checkpoint explainer runners, and read only compact local state. A runner writes explainer
   props. Supervise only renders, publishes and links the page. Skimming diffs / resolving conflicts / pulling the daemon snapshot in
   the main chat defeats the two-tier design — that work is the `sub`'s.

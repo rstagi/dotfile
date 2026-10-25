@@ -13,6 +13,9 @@ argument-hint: "[light] <goal> (optional)"
 
 # Multi-Phase Plan
 
+> Source of truth for these rules: [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md). When this skill and that file differ, the file wins. Update the file first.
+
+
 Produce a correct phased plan, and register it on the local **Loop daemon**
 (http://localhost:7717) as the shared source of truth so any coding agent — **Claude
 Code or Codex**, in any worktree — can pick it up and continue. *Where the work genuinely allows it*, mark phases into **lanes** that
@@ -59,6 +62,13 @@ user only for a blocking review finding that needs their decision (step 3).
 
 The argument (or the conversation) is the goal. Build enough understanding to phase the
 work well — **do not plan blind**:
+
+- **Assessment.** When the argument is an `assess` decision file
+  (`.loop/assessments/<slug>.md`), read its `## Handoff` as the goal and its `## Smallest
+  version` as the scope. A `kill` or `clarify` decision stops the plan: show the decision
+  and its open questions, then stop. Offer `assess` when the goal is an idea and not a
+  defined effort, for example when it has no clear problem, user or success measure. Do
+  not offer it for a defined task.
 
 - Explore the codebase for the areas the work touches (dispatch an `Explore`/general
   agent or read the relevant files). Note the modules, seams, and shared files that
