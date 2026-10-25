@@ -39,12 +39,12 @@ fn invalid_limits_return_an_error_and_preserve_the_configuration() {
 }
 
 #[test]
-fn agent_priority_defaults_to_background_and_rejects_unknown_values() {
+fn agent_priority_defaults_to_utility_and_rejects_unknown_values() {
     use ws_core::config::AgentPriority;
     let sandbox = tempfile::tempdir().unwrap();
     assert_eq!(
         Config::load(sandbox.path()).unwrap().agent.priority,
-        AgentPriority::Background
+        AgentPriority::Utility
     );
     for (contents, priority) in [
         (

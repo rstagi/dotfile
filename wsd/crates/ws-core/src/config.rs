@@ -23,9 +23,9 @@ pub struct AgentConfig {
 #[serde(rename_all = "lowercase")]
 pub enum AgentPriority {
     /// Uses only the efficiency cores and throttles disk I/O.
-    #[default]
     Background,
     /// Uses all cores when they are free. Interactive processes get the CPU first.
+    #[default]
     Utility,
     /// Applies no clamp.
     Normal,
