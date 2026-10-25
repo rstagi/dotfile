@@ -17,8 +17,8 @@ use crate::{Result, client};
 mod params;
 
 use params::{
-    Agent, Create, Dependency, Empty, Event, Log, Loop, Rename, Send, Spawn, Stream, Tail, Target,
-    Wait,
+    Agent, Create, Dependency, Empty, Event, Log, Loop, LoopId, Rename, Send, Spawn, Stream, Tail,
+    Target, Wait,
 };
 use rmcp::schemars::{self, JsonSchema};
 
@@ -46,6 +46,19 @@ impl Control {
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {
         match name {
+            "loop_list" => {
+                let _: Empty = serde_json::from_value(arguments)?;
+                self.request(Method::GET, "/v1/loops", None).await
+            }
+            "loop_get" => {
+                let request: LoopId = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::GET,
+                    &format!("/v1/loops/{}", client::encode(&request.id)),
+                    None,
+                )
+                .await
+            }
             "loop_create" | "loop_start" | "loop_stop" => {
                 let mut request: Loop = serde_json::from_value(arguments)?;
                 request.loop_dir = std::env::current_dir()?.join(request.loop_dir);
@@ -350,6 +363,14 @@ impl ServerHandler for Control {
 
 fn tools() -> Vec<Tool> {
     vec![
+        tool::<LoopId>(
+            "loop_get",
+            "Read the state of one loop from its session events.",
+        ),
+        tool::<Empty>(
+            "loop_list",
+            "List the loop states from their session events.",
+        ),
         tool::<Loop>(
             "loop_create",
             "Create the loop session of a loop directory. The session has no process. A second call for the same directory returns the same session.",

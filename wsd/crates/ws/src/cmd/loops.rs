@@ -7,6 +7,17 @@ use crate::{Result, mcp::Control};
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Read the state of one loop from its session events.
+    Get {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the loop states from their session events.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// Create the loop session of a loop directory. The session has no process.
     Create {
         #[arg(long)]
@@ -29,16 +40,18 @@ pub enum Command {
 }
 
 pub async fn run(socket: &Path, command: Command) -> Result<()> {
-    let (tool, directory, json_output) = match command {
-        Command::Create { dir, json } => ("loop_create", dir, json),
-        Command::Start { loop_dir, json } => ("loop_start", loop_dir, json),
-        Command::Stop { loop_dir, json } => ("loop_stop", loop_dir, json),
+    let (tool, arguments, json_output) = match command {
+        Command::Get { id, json } => ("loop_get", json!({"id":id}), json),
+        Command::List { json } => ("loop_list", json!({}), json),
+        Command::Create { dir, json } => ("loop_create", json!({"loop_dir":dir}), json),
+        Command::Start { loop_dir, json } => ("loop_start", json!({"loop_dir":loop_dir}), json),
+        Command::Stop { loop_dir, json } => ("loop_stop", json!({"loop_dir":loop_dir}), json),
     };
-    let response = Control::from_env(socket)?
-        .call(tool, json!({"loop_dir":directory}))
-        .await?;
+    let response = Control::from_env(socket)?.call(tool, arguments).await?;
     if json_output {
         println!("{response}");
+    } else if matches!(tool, "loop_get" | "loop_list") {
+        println!("{response:#}");
     } else if tool != "loop_stop" {
         println!(
             "{}",

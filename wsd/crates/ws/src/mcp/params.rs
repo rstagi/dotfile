@@ -145,6 +145,13 @@ pub struct Spawn {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct LoopId {
+    /// ULID, alias, or name of the loop session.
+    pub id: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Loop {
     /// Directory that contains the Loop state.json file.
     pub loop_dir: PathBuf,
