@@ -448,6 +448,7 @@ fn session_create_starts_an_interactive_agent_in_a_directory() {
 #[test]
 #[cfg(target_os = "macos")]
 fn agent_priority_clamps_interactive_agents() {
+    let inherited_clamp = test_process_has_background_clamp();
     // macOS reports a background clamp as scheduling priority 4.
     for (config, clamped) in [
         ("[agent]\npriority = \"background\"\n", true),
@@ -462,13 +463,16 @@ fn agent_priority_clamps_interactive_agents() {
             .unwrap();
         assert!(result.status.success(), "{result:?}");
         let (agent, _running) = sandbox.capture();
-        assert_eq!(agent["pri"] == "4", clamped, "{config}: {agent}");
+        if clamped || !inherited_clamp {
+            assert_eq!(agent["pri"] == "4", clamped, "{config}: {agent}");
+        }
     }
 }
 
 #[test]
 #[cfg(target_os = "macos")]
 fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversation() {
+    let inherited_clamp = test_process_has_background_clamp();
     let sandbox = Sandbox::with_config("[agent]\npriority = \"normal\"\n");
     let result = sandbox
         .command()
@@ -479,7 +483,9 @@ fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversatio
     assert!(result.status.success(), "{result:?}");
     let (first, _first) = sandbox.capture();
     let id = first["id"].as_str().unwrap().to_owned();
-    assert_ne!(first["pri"], "4", "{first}");
+    if !inherited_clamp {
+        assert_ne!(first["pri"], "4", "{first}");
+    }
     let window = sandbox.window(&id);
     let pane = sandbox.tmux(&["display-message", "-p", "-t", &window, "#{pane_id}"]);
     let response = common::request(
@@ -519,7 +525,9 @@ fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversatio
     let changed = sandbox.json(&["session", "priority", &id, "normal", "--json"]);
     assert_eq!(changed["body"]["priority"], "normal");
     let (third, _third) = sandbox.capture();
-    assert_ne!(third["pri"], "4", "{third}");
+    if !inherited_clamp {
+        assert_ne!(third["pri"], "4", "{third}");
+    }
     assert_eq!(sandbox.events(&id, "session.priority").len(), 2);
 }
 
@@ -2517,6 +2525,22 @@ sys.exit(int(control or b'0'))
             .unwrap()
     }
 }
+#[cfg(target_os = "macos")]
+fn test_process_has_background_clamp() -> bool {
+    let output = Command::new("ps")
+        .args(["-o", "pri=", "-p", &std::process::id().to_string()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let clamped = String::from_utf8(output.stdout).unwrap().trim() == "4";
+    if clamped {
+        eprintln!(
+            "Skip normal-priority assertions because the test process inherits a macOS background clamp."
+        );
+    }
+    clamped
+}
+
 fn git(path: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
