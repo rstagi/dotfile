@@ -788,6 +788,18 @@ test("shoot: a discovered browser that fails gives way to the next one; an expli
   assert.match(explicit.stderr, /exited \(code 1\) before it opened the DevTools port/);
 });
 
+test("shoot: Chrome uses a mock keychain, so a sandbox HOME shows no keychain dialog", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ve-keychain-"));
+  const argv = path.join(dir, "argv.txt");
+  const fake = path.join(dir, "chrome");
+  fs.writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argv}'\nexit 1\n`, { mode: 0o755 });
+  const res = spawnSync(process.execPath, [SHOOT, "--page", CLI, "--out", path.join(dir, "s"), "--chrome", fake], { encoding: "utf8" });
+  assert.equal(res.status, 3, res.stderr);
+  const args = fs.readFileSync(argv, "utf8").split("\n");
+  assert.ok(args.includes("--use-mock-keychain"), args.join(" "));
+  assert.ok(args.includes("--password-store=basic"), args.join(" "));
+});
+
 test("shoot: usage errors exit 2, a missing browser exits 3", () => {
   assert.equal(spawnSync(process.execPath, [SHOOT], { encoding: "utf8" }).status, 2);
   assert.equal(spawnSync(process.execPath, [SHOOT, "--page", CLI, "--out", TMP, "--theme", "sepia"], { encoding: "utf8" }).status, 2);
