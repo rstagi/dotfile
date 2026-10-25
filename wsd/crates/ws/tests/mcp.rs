@@ -33,6 +33,8 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
         names,
         [
             "loop_create",
+            "loop_get",
+            "loop_list",
             "loop_start",
             "loop_stop",
             "phase_spawn",
@@ -984,5 +986,50 @@ async fn multiwait_matches_the_cli_and_filters_each_target_by_sequence() {
         )
         .await;
     assert_eq!(all["matches"].as_array().unwrap().len(), 2);
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn loop_reads_match_http_and_json_cli_and_reject_a_forged_caller() {
+    let server = TestServer::start().await;
+    let directory = server.home.path().join("loop");
+    std::fs::create_dir(&directory).unwrap();
+    let created = server
+        .call("loop_create", json!({"loop_dir":directory}))
+        .await;
+    let id = created["id"].as_str().unwrap();
+    server
+        .call(
+            "session_event",
+            json!({"target":id,"type":"loop.phase",
+        "body":{"n":109,"status":"done","attempt":1,"session":null}}),
+        )
+        .await;
+    let fetched = server.call("loop_get", json!({"id":id})).await;
+    assert_eq!(fetched["phases"]["109"]["status"], "done");
+    assert_eq!(fetched, server.cli(&["loop", "get", id, "--json"]));
+    let listed = server.call("loop_list", json!({})).await;
+    assert_eq!(listed, json!([fetched]));
+    assert_eq!(listed, server.cli(&["loop", "list", "--json"]));
+    for (path, expected) in [
+        (format!("/v1/loops/{id}"), &fetched),
+        ("/v1/loops".into(), &listed),
+    ] {
+        let response = common::request(&server.socket, "GET", &path, "");
+        let http: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(&http, expected);
+    }
+    for (tool, args) in [
+        ("loop_get", json!({"id":id,"parent_session_id":id})),
+        ("loop_list", json!({"parent_session_id":id})),
+    ] {
+        assert!(server.error(tool, args).await["error"].is_object());
+    }
+    assert_eq!(
+        server.error("loop_get", json!({"id":server.parent})).await["error"]["code"],
+        "invalid_request"
+    );
+    server.assert_audit("loop.get");
+    server.assert_audit("loop.list");
     server.finish().await;
 }

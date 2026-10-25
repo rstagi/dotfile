@@ -400,6 +400,8 @@ The tools return the daemon JSON in both text and structured content.
 | `session_depends_on` | `ws session depends-on <target> <dependency> --json` |
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
 | `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
+| `loop_get` | `ws loop get <id> --json` |
+| `loop_list` | `ws loop list --json` |
 | `loop_create` | `ws loop create --dir <loop_dir> --json` |
 | `loop_start` | `ws loop start <loop_dir> --json` |
 | `loop_stop` | `ws loop stop <loop_dir> --json` |
@@ -431,6 +433,13 @@ Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox
 `ws top` opens `loop-top.mjs` for the current session. It checks the live loop state's
 `wsSession` against the session and its parents. It uses the session's worktree when no link matches.
 `--once`, `--worktrees`, and `--graph` pass to the dashboard.
+
+`GET /v1/loops` returns the loop states. `GET /v1/loops/{id}` returns one loop state.
+Both routes rebuild the state from the loop session's `loop.*` events and accept `parent_session_id` for caller audit.
+The state contains the plan, phases, milestone, and records for attempts, merges, gates, reviews, notes, decisions, controls, guards and violations.
+Phase status only increases: `todo < claimed < running < done < merged`. A stale phase event cannot lower the status.
+MCP `loop_get` takes `{"id":"<loop session>"}`. MCP `loop_list` takes `{}`.
+The CLI read commands print formatted JSON by default. `--json` prints compact JSON.
 
 `POST /v1/loops/start` and `POST /v1/loops/stop` accept `loop_dir` and optional `parent_session_id`.
 The API requires an absolute directory with a `state.json` file and a nonempty `runId`.
