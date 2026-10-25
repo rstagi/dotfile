@@ -81,6 +81,20 @@ emit_verify_fail() {
       detail:(if $tail == "" then $head else $head + "\n" + ($tail | fit($max - ($head|utf8bytelength) - 1)) end),
       ts:$ts}' | loop_emit "$RUN_ID" event
 }
+# $1 = pass|fail|none. Appends loop.merge to the loop session when WS_LOOP_ID is set. A failed
+# append prints one warning and never changes the exit code. Verify none means --no-verify.
+ws_loop_merge_event() {
+  [[ -n "${WS_LOOP_ID:-}" ]] || return 0
+  local ws_bin body
+  ws_bin="$(whence -p ws)"
+  body="$(jq -cn --arg phase "$PHASE" --arg repo "$REPOSITORY" --arg head "$(git rev-parse HEAD 2>/dev/null)" \
+    --arg verify "$1" '{n:($phase|tonumber), repo:$repo, head:$head, verify:$verify}' 2>/dev/null)"
+  if [[ -z "$ws_bin" || -z "$body" ]] ||
+      ! "$ws_bin" event loop.merge --body "$body" --source tool --target "$WS_LOOP_ID" > /dev/null 2>&1; then
+    echo "loop-merge: warning: cannot append loop.merge to loop session $WS_LOOP_ID" >&2
+  fi
+  return 0
+}
 trap 'loop_merge_finish $?' EXIT
 
 [[ -d "$WT" ]] || { echo "loop-merge: worktree '$WT' not found" >&2; exit 1; }
@@ -101,12 +115,15 @@ verify_and_push() {
     rc=$?
     if (( rc != 0 )); then
       emit_verify_fail "$rc" "${VERIFY_LOG:-/dev/null}"
+      ws_loop_merge_event fail
       return 4
     fi
   fi
   if [[ "$PUSH" -eq 1 ]]; then
     git push origin HEAD || return 1
   fi
+  # After the push: a lost push must not leave a loop.merge that says merged.
+  ws_loop_merge_event "$([[ -n "$VERIFY" ]] && print pass || print none)"
   return 0
 }
 

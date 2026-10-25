@@ -101,6 +101,35 @@ loop_runner_finish() {
       outcome:$outcome, exitCode:$exitCode, engine:$engine, model:$model, ts:$ts}' |
     loop_emit "$RUN_ID" event
 }
+# ws_loop_event <type> <jq-filter> [jq args]: append a tool event to the loop session when WS_LOOP_ID
+# is set. The filter builds the body. A failed append prints one warning and never changes the exit code.
+ws_loop_event() {
+  [[ -n "${WS_LOOP_ID:-}" ]] || return 0
+  local type="$1" filter="$2" ws_bin body
+  shift 2
+  ws_bin="$(whence -p ws)"
+  body="$(jq -cn --arg phase "${WS_LOOP_PHASE:-}" --arg attempt "${WS_LOOP_ATTEMPT:-}" \
+    --arg session "${WS_SESSION_ID:-}" "$@" "$filter" 2>/dev/null)"
+  if [[ -z "$ws_bin" || -z "$body" ]] ||
+      ! "$ws_bin" event "$type" --body "$body" --source tool --target "$WS_LOOP_ID" > /dev/null 2>&1; then
+    echo "loop-runner: warning: cannot append $type to loop session $WS_LOOP_ID" >&2
+  fi
+  return 0
+}
+ws_loop_attempt_event() { # $1 = outcome, $2 = pass|fail|none. A checkpoint is not a result.
+  jq -e '.checkpoint == true' "$STATUS" >/dev/null 2>&1 && return 0
+  ws_loop_event loop.attempt '{n:($phase|tonumber), attempt:($attempt|tonumber), session:$session,
+    state:"result", outcome:$outcome, verify:$verify}' --arg outcome "$1" --arg verify "$2"
+}
+ws_loop_review_event() { # a final review is published: record its verdict
+  local verdict
+  verdict="$(zsh "$SCRIPT_DIR/loop-ar.sh" verdict "$PUBLISH_OUTPUT" reviewer 2>/dev/null)" ||
+    verdict="$(jq -r '.event // "invalid"' "$STATUS" 2>/dev/null)"
+  ws_loop_event loop.review '{phase:($phase|tonumber), repo:(if $repo == "" then "none" else $repo end),
+    key:("p" + $phase + "-a" + $attempt), role:"final", round:1, state:"finished", session:$session,
+    provider:$provider, verdict:$verdict}' --arg repo "$REPOSITORY" --arg provider "${CUR_ENGINE:-}" \
+    --arg verdict "$verdict"
+}
 trap 'loop_runner_finish $?' EXIT
 
 [[ -d "$WT" && -n "$RUN_DIR" && -f "$PROMPT_FILE" ]] || {
@@ -857,6 +886,7 @@ write_meta 0
 # --- validate the runner's status.json (the actual contract) ---
 
 outcome="$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null)"
+verify_result=none
 case "$outcome" in
 question) result_rc=10 ;;
 blocked) result_rc=20 ;;
@@ -864,8 +894,10 @@ done)
   if [[ -n "$VERIFY" ]]; then
     if ! ( cd "$WT" && eval "$VERIFY" ) > "$RUN_DIR/verify.log" 2>&1; then
       echo "loop-runner: claimed done but verify failed (see verify.log)" >&2
+      ws_loop_attempt_event "$outcome" fail
       exit 12
     fi
+    verify_result=pass
   fi
   result_rc=0
   ;;
@@ -874,6 +906,7 @@ done)
   exit 50
   ;;
 esac
+ws_loop_attempt_event "$outcome" "$verify_result"
 
 # The Loop owns this opt-in flag. Remove it only after all callers adopt session output.
 if [[ -n "$PUBLISH_OUTPUT" && "$rc" == 0 && "$TIMED_OUT" == 0 ]] &&
@@ -887,5 +920,6 @@ if [[ -n "$PUBLISH_OUTPUT" && "$rc" == 0 && "$TIMED_OUT" == 0 ]] &&
     echo "loop-runner: cannot publish session output" >&2
     exit 50
   }
+  ws_loop_review_event
 fi
 exit "$result_rc"

@@ -113,6 +113,69 @@ for fixture expected in checkpoint 10 crash 50 verify-failed 12 no-flag 0; do
 done
 unset FAKE_REVIEW_STATUS
 
+echo "runner: WS_LOOP_ID appends loop.attempt after Verify"
+make_fake_ws "$TMP/fakews"
+loop_attempt() { # <name> [runner args] — a direct-engine attempt with a fake ws and the loop environment
+  local name="$1"; shift
+  export FAKE_WS_LOG="$TMP/$name.ws.log"; : > "$FAKE_WS_LOG"
+  LOOP_WS_SESSIONS=0 WS_LOOP_ID=LOOP1 WS_LOOP_PHASE=7 WS_LOOP_ATTEMPT=2 WS_SESSION_ID=RUNNER1 \
+    PATH="$TMP/fakews:$PATH" run_attempt "$name" "$@"
+}
+attempt_body() { jq -c 'select(.[1] == "loop.attempt") | .[3] | fromjson' "$FAKE_WS_LOG"; }
+loop_attempt ev-pass --verify-cmd true
+assert_exit "$RC" 0 "a verified attempt exits 0"
+assert_eq "$(jq -c '[.[0], .[1], .[2], .[4], .[5], .[6], .[7]]' "$FAKE_WS_LOG")" '["event","loop.attempt","--body","--source","tool","--target","LOOP1"]' "the call appends loop.attempt as a tool to the loop session"
+assert_eq "$(attempt_body)" '{"n":7,"attempt":2,"session":"RUNNER1","state":"result","outcome":"done","verify":"pass"}' "the body has the result and verify pass"
+loop_attempt ev-none
+assert_exit "$RC" 0 "an attempt without Verify exits 0"
+assert_eq "$(attempt_body | jq -r .verify)" none "no Verify records verify none"
+loop_attempt ev-fail --verify-cmd false
+assert_exit "$RC" 12 "a failed Verify keeps exit 12"
+assert_eq "$(attempt_body | jq -c '[.outcome, .verify]')" '["done","fail"]' "a failed Verify records verify fail"
+for outcome expected in question 10 blocked 20; do
+  FAKE_STATUS_OUTCOME="$outcome" loop_attempt "ev-$outcome" --verify-cmd false
+  assert_exit "$RC" "$expected" "$outcome keeps its exit code"
+  assert_eq "$(attempt_body | jq -c '[.outcome, .verify]')" "[\"$outcome\",\"none\"]" "$outcome records verify none"
+done
+FAKE_STATUS_OUTCOME=invalid loop_attempt ev-crash
+assert_exit "$RC" 50 "a crash keeps exit 50"
+assert_eq "$(cat "$FAKE_WS_LOG")" "" "a crash appends no loop.attempt"
+
+echo "runner: a failed loop.attempt append warns once and keeps the exit code"
+for verify expected in true 0 false 12; do
+  FAKE_WS_EXIT=1 loop_attempt "ev-warn-$verify" --verify-cmd "$verify"
+  assert_exit "$RC" "$expected" "verify $verify keeps its exit code when the append fails"
+  assert_eq "$(grep -c 'warning: cannot append loop.attempt' "$FAKE_RUN_DIR/runner.log")" 1 "verify $verify prints one warning"
+done
+
+echo "runner: a checkpoint appends no loop.attempt"
+FAKE_REVIEW_STATUS='{"outcome":"question","checkpoint":true}' PATH="$TMP/reviewer-bin:$PATH" loop_attempt ev-checkpoint --chain review-gpt
+assert_exit "$RC" 10 "a checkpoint exits 10"
+assert_eq "$(cat "$FAKE_WS_LOG")" "" "a checkpoint is not a result"
+
+echo "runner: without WS_LOOP_ID no loop event is appended"
+export FAKE_WS_LOG="$TMP/ev-unset.ws.log"; : > "$FAKE_WS_LOG"
+LOOP_WS_SESSIONS=0 WS_LOOP_PHASE=7 WS_LOOP_ATTEMPT=2 PATH="$TMP/fakews:$PATH" run_attempt ev-unset --verify-cmd true
+assert_exit "$RC" 0 "the attempt exits 0"
+assert_eq "$(cat "$FAKE_WS_LOG")" "" "no ws call is made"
+assert_eq "$(grep -c warning "$FAKE_RUN_DIR/runner.log")" 0 "no warning is printed"
+
+echo "runner: loop.attempt and loop.review reach a sandbox daemon"
+mkdir -p "$TMP/loop-events"
+LOOP_SID="$(ws loop create --dir "$TMP/loop-events" --json | jq -r .id)"
+export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
+WS_LOOP_ID="$LOOP_SID" WS_LOOP_PHASE=4 WS_LOOP_ATTEMPT=1 WS_SESSION_ID="$PARENT_SID" PATH="$TMP/reviewer-bin:$PATH" \
+  run_attempt ev-daemon --chain review-gpt --repository acme/api --publish-output "$TMP/ev-daemon/report.md" --verify-cmd true
+assert_exit "$RC" 0 "a published review exits 0"
+assert_eq "$(grep -c warning "$FAKE_RUN_DIR/runner.log")" 0 "the daemon accepts both bodies"
+ws log "$LOOP_SID" > "$TMP/loop-events.log.json"
+assert_eq "$(jq -c '[.entries[] | select(.type == "loop.attempt") | .body | {n, attempt, session, state, outcome, verify}]' "$TMP/loop-events.log.json")" \
+  "[{\"n\":4,\"attempt\":1,\"session\":\"$PARENT_SID\",\"state\":\"result\",\"outcome\":\"done\",\"verify\":\"pass\"}]" "the daemon records the attempt result"
+assert_eq "$(jq -c '[.entries[] | select(.type == "loop.review") | .body | {phase, state, verdict}]' "$TMP/loop-events.log.json")" \
+  '[{"phase":4,"state":"finished","verdict":"APPROVE"}]' "the daemon records the review verdict"
+assert_eq "$(jq -c '[.entries[] | select(.type | startswith("loop.attempt", "loop.review")) | .body.source] | unique' "$TMP/loop-events.log.json")" '["tool"]' "both events have source tool"
+unset FAKE_REVIEW_STATUS
+
 echo "runner: Rust daemon owns the runner session"
 run_attempt codex
 assert_exit "$RC" 0 "runner completes through ws"
