@@ -44,6 +44,14 @@ struct ControlRequest {
     parent_session_id: Option<SessionId>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AckRequest {
+    id: String,
+    reason: String,
+    parent_session_id: Option<SessionId>,
+}
+
 /// Names the loop that owns a new session, and the phase attempt or review step it runs.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -81,9 +89,19 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/loops/{id}/check", get(check))
         .route("/v1/loops/create", post(create))
         .route("/v1/loops/guard", post(guard::run))
+        .route("/v1/loops/ack", post(ack))
         .route("/v1/loops/start", post(start))
         .route("/v1/loops/stop", post(stop))
         .route("/v1/loops/{id}/{action}", post(control))
+}
+
+async fn ack(
+    State(store): State<Store>,
+    Json(request): Json<AckRequest>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| sessions.ack_loop_violation(request)).await?,
+    ))
 }
 
 async fn control(
@@ -191,6 +209,79 @@ async fn create(
 }
 
 impl Sessions {
+    fn ack_loop_violation(&mut self, request: AckRequest) -> Result<Value> {
+        self.record_call(request.parent_session_id, "loop.ack", Some(&request.id))?;
+        if request.reason.trim().is_empty() {
+            return Err(Error::InvalidRequest("Specify the acknowledgment reason."));
+        }
+        for session in self.registry.sessions()? {
+            if session.body["kind"] != "loop" {
+                continue;
+            }
+            let state = self.loop_state(&session)?;
+            let Some(violation) = state["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["id"] == request.id && v["source"] == "daemon")
+            else {
+                continue;
+            };
+            if violation["severity"] == "hard" && request.parent_session_id.is_some() {
+                return Err(Error::LoopControlConflict(
+                    "Only the human can acknowledge a hard violation.",
+                ));
+            }
+            let entry = self.append_daemon_loop_event(
+                &session.id.to_string(),
+                "loop.control",
+                json!({"action":"ack","violation":request.id,"reason":request.reason,
+                    "acknowledged_by":request.parent_session_id})
+                .as_object()
+                .unwrap()
+                .clone(),
+            )?;
+            return serde_json::to_value(entry).map_err(Error::Json);
+        }
+        Err(Error::InvalidRequest("The loop violation does not exist."))
+    }
+
+    /// Records each new rule result once. The caller holds the session store lock.
+    pub(crate) fn enforce_loop_rules(&mut self, id: SessionId) -> Result<()> {
+        let session = self.get_record(&id.to_string())?;
+        if session.body["kind"] != "loop" {
+            return Ok(());
+        }
+        let entries = ws_core::log::SessionLog::new(&self.state, id, self.device_id)
+            .read()?
+            .entries;
+        let report = crate::loop_check::check_entries(&entries);
+        for result in report["violations"].as_array().unwrap() {
+            if entries.iter().any(|entry| {
+                entry.event_type == "loop.violation"
+                    && entry.body["source"] == "daemon"
+                    && entry.body["rule"] == result["rule"]
+                    && entry.body["severity"] == result["severity"]
+                    && entry.body["phase"] == result["phase"]
+                    && entry.body["evidence"] == result["seqs"]
+            }) {
+                continue;
+            }
+            let body = json!({"id":ws_core::ids::Ulid::new(),"rule":result["rule"],
+                "severity":result["severity"],"phase":result["phase"],
+                "evidence":result["seqs"],"message":result["message"]});
+            self.append_daemon_loop_event(
+                &id.to_string(),
+                "loop.violation",
+                body.as_object().unwrap().clone(),
+            )?;
+            if result["severity"] == "hard" {
+                crate::notify::loop_violation(id, &body);
+            }
+        }
+        Ok(())
+    }
+
     fn control_loop(&mut self, id: &str, action: &str, request: ControlRequest) -> Result<Value> {
         self.record_call(
             request.parent_session_id,
@@ -473,6 +564,7 @@ impl Sessions {
             for entry in entries {
                 self.derive_phase_status(session.id, &entry)?;
             }
+            self.enforce_loop_rules(session.id)?;
         }
         Ok(())
     }
@@ -493,9 +585,30 @@ impl Sessions {
         Ok(())
     }
 
-    /// Refuses every phase execution while its loop or its phase is paused.
-    pub(crate) fn check_loop_pause(&self, id: SessionId, phase: u64) -> Result<()> {
+    /// Refuses phase execution for a pause or a hard violation without an acknowledgment.
+    pub(crate) fn check_loop_pause(&mut self, id: SessionId, phase: u64) -> Result<()> {
+        // Recover a failed durable append before reading the spawn guards.
+        self.record_call(None, "loop.spawn", None)?;
         let state = self.loop_state(&self.get_record(&id.to_string())?)?;
+        if state["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|violation| {
+                violation["source"] == "daemon"
+                    && violation["severity"] == "hard"
+                    && !state["controls"].as_array().unwrap().iter().any(|control| {
+                        control["source"] == "daemon"
+                            && control["action"] == "ack"
+                            && control["violation"] == violation["id"]
+                            && control["acknowledged_by"].is_null()
+                    })
+            })
+        {
+            return Err(Error::LoopControlConflict(
+                "The loop has a hard violation without a human acknowledgment.",
+            ));
+        }
         if state["pauses"]["all"] == true || state["pauses"][phase.to_string()] == true {
             return Err(Error::LoopControlConflict(
                 "The loop or the phase is paused.",
@@ -960,6 +1073,184 @@ mod tests {
     use crate::sessions::Sessions;
 
     #[tokio::test]
+    async fn enforcement_blocks_hard_violations_until_the_human_acknowledges() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        assert_eq!(
+            post(
+                &app,
+                &id,
+                "loop.phase",
+                json!({"n":1,"status":"merged","session":null})
+            )
+            .await,
+            StatusCode::CREATED
+        );
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        let violations = state["violations"].as_array().unwrap();
+        let hard = violations.iter().find(|v| v["severity"] == "hard").unwrap();
+        assert_eq!(hard["source"], "daemon");
+        assert_eq!(hard["rule"], "merged-needs-verify");
+        let violation = hard["id"].clone();
+        post(&app, &id, "loop.note", json!({"text":"Check again."})).await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(
+            state["violations"].as_array().unwrap().len(),
+            violations.len()
+        );
+        let spawn = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),
+            "key":"blocked","loop":{"loop":id,"phase":2,"attempt":1}});
+        let (status, _) = request(&app, "POST", "/v1/sessions", spawn.clone()).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let continuation = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),
+            "parent_session_id":id});
+        let (_, agent) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let phase_spawn = json!({"parent_session_id":agent["id"],"phase":{"command":["/bin/true"]},
+            "repo":sandbox.path(),"base":"main","caps_required":[],"max_runtime":30,
+            "loop":{"loop":id,"phase":2,"attempt":1}});
+        assert_eq!(
+            request(&app, "POST", "/v1/phases/spawn", phase_spawn)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let ack = json!({"id":violation,"reason":"I checked the merge."});
+        let mut agent_ack = ack.clone();
+        agent_ack["parent_session_id"] = agent["id"].clone();
+        assert_eq!(
+            request(&app, "POST", "/v1/loops/ack", agent_ack).await.0,
+            StatusCode::CONFLICT
+        );
+        // An event append cannot bypass the human-only route.
+        assert_eq!(
+            post(
+                &app,
+                &id,
+                "loop.control",
+                json!({"action":"ack","id":violation,
+            "reason":"Bypass"})
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, entry) = request(&app, "POST", "/v1/loops/ack", ack).await;
+        assert_eq!(status, StatusCode::OK, "{entry}");
+        assert_eq!(entry["type"], "loop.control");
+        assert_eq!(entry["body"]["action"], "ack");
+        assert_eq!(entry["body"]["violation"], violation);
+        assert_eq!(entry["body"]["reason"], "I checked the merge.");
+        // The acknowledgment and the duplicate suppression survive a restart.
+        drop(app);
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        post(&app, &id, "loop.note", json!({"text":"After restart."})).await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(
+            state["violations"].as_array().unwrap().len(),
+            violations.len()
+        );
+        // A new hard result blocks work again, but the orchestrator can continue.
+        post(
+            &app,
+            &id,
+            "loop.phase",
+            json!({"n":3,"status":"merged","session":null}),
+        )
+        .await;
+        assert_eq!(
+            request(&app, "POST", "/v1/sessions", continuation).await.0,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            request(&app, "POST", "/v1/sessions", spawn.clone()).await.0,
+            StatusCode::CONFLICT
+        );
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        let new_id = state["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["severity"] == "hard" && v["phase"] == 3)
+            .unwrap()["id"]
+            .clone();
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/v1/loops/ack",
+                json!({"id":new_id,"reason":"I checked the second merge."})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(&app, "POST", "/v1/sessions", spawn).await.0,
+            StatusCode::CREATED
+        );
+        let next = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),
+            "key":"after-ack","loop":{"loop":id,"phase":2,"attempt":2}});
+        assert_eq!(
+            request(&app, "POST", "/v1/sessions", next).await.0,
+            StatusCode::CREATED
+        );
+    }
+
+    #[tokio::test]
+    async fn enforcement_recovers_a_missing_violation_before_a_spawn() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let (_, owner) = sessions.create_loop_session(sandbox.path(), None).unwrap();
+        // Model a durable fact whose derived violation append failed.
+        ws_core::log::SessionLog::new(sandbox.path(), owner.id, owner.device_id)
+            .append(
+                0,
+                "loop.phase",
+                json!({"n":1,"status":"merged","session":null,"source":"tool"}),
+            )
+            .unwrap();
+        sessions.needs_rebuild = true;
+        let app = crate::api::router(sessions);
+        let spawn = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),
+            "key":"after-failure","loop":{"loop":owner.id,"phase":2,"attempt":1}});
+        let (status, body) = request(&app, "POST", "/v1/sessions", spawn).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let (_, state) =
+            request(&app, "GET", &format!("/v1/loops/{}", owner.id), Value::Null).await;
+        assert_eq!(state["violations"].as_array().unwrap().len(), 1);
+        assert_eq!(state["violations"][0]["rule"], "merged-needs-verify");
+    }
+
+    #[tokio::test]
+    async fn enforcement_soft_violations_never_block_phase_or_keyed_spawns() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        post(
+            &app,
+            &id,
+            "loop.guard",
+            json!({"session":"child","rule":"write","command":"git push"}),
+        )
+        .await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["violations"].as_array().unwrap().len(), 1);
+        assert_eq!(state["violations"][0]["severity"], "soft");
+        let (_, agent) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let phase_spawn = json!({"parent_session_id":agent["id"],"phase":{"command":["/bin/true"]},
+            "repo":sandbox.path(),"base":"main","caps_required":[],"max_runtime":30,
+            "loop":{"loop":id,"phase":1,"attempt":1}});
+        let (code, body) = request(&app, "POST", "/v1/phases/spawn", phase_spawn).await;
+        assert_eq!(code, StatusCode::CREATED, "{body}");
+        let spawn = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),
+            "key":"soft","loop":{"loop":id,"phase":2,"attempt":1}});
+        assert_eq!(
+            request(&app, "POST", "/v1/sessions", spawn).await.0,
+            StatusCode::CREATED
+        );
+    }
+
+    #[tokio::test]
     async fn a_pause_after_finish_preserves_terminal_status_and_blocks_spawns() {
         let sandbox = tempfile::tempdir().unwrap();
         let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
@@ -1326,7 +1617,11 @@ mod tests {
         for (_, field, mut body) in cases {
             body["source"] = json!("agent");
             body["caller"] = Value::Null;
-            assert_eq!(state[field], json!([body]), "{field}");
+            if field == "violations" {
+                assert!(state[field].as_array().unwrap().contains(&body));
+            } else {
+                assert_eq!(state[field], json!([body]), "{field}");
+            }
         }
         assert_eq!(state["status"], "finished");
         assert_eq!(state["finish"]["summary"], "Complete");

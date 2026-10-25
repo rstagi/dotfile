@@ -141,6 +141,7 @@ impl Sessions {
             sessions.restore_triggers()?;
         }
         sessions.recover_loop_executions()?;
+        sessions.recover_phase_statuses()?;
         sessions.recover_phase_worktrees()?;
         Ok(sessions)
     }
@@ -360,6 +361,13 @@ impl Sessions {
         // The child fact and its Loop event share the serialized store operation.
         // Keep recovery enabled if the second durable append fails.
         if let Err(error) = self.record_loop_execution(&entry) {
+            self.needs_rebuild = true;
+            return Err(error);
+        }
+        if event_type.starts_with("loop.")
+            && event_type != "loop.violation"
+            && let Err(error) = self.enforce_loop_rules(id)
+        {
             self.needs_rebuild = true;
             return Err(error);
         }
