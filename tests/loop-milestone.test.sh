@@ -190,11 +190,7 @@ out3="$($ROOT/loop-milestone.sh check --state "$COORD/state.json")"; rc=$?
 assert_exit "$rc" "0" "check: all gate PRs merged"
 assert_eq "$out3" "acme/api	$API_PR	merged
 acme/web	$WEB_PR	merged" "check rows unchanged by the archive"
-next_web="$(node --input-type=module -e '
-  import fs from "node:fs";
-  const { parsePlan } = await import(process.argv[1]);
-  process.stdout.write(parsePlan(fs.readFileSync(process.argv[2], "utf8")).milestones[1].integrationBranches["acme/web"]);
-' "$ROOT/loop-web/src/model/parse-plan.ts" "$COORD/plan.md")"
+next_web="$(node "$ROOT/loop-plan-parse.mjs" --plan "$COORD/plan.md" | jq -r '.milestones[1].integrationBranches["acme/web"]')"
 assert_eq "$next_web" "feat/m2-web" "the next milestone's branch still resolves from the stubbed plan"
 out3="$($ROOT/loop-milestone.sh advance --state "$COORD/state.json" --next 2 --branches "$BRANCHES")"; rc=$?
 assert_exit "$rc" "0" "advance succeeds"

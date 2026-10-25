@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Loop engineering — the pure half of `loop-plan.sh archive`: compute the archived plan text and
 // the archive file text for one shipped milestone. Writes nothing outside --out; the caller
-// checks the gate PRs and moves the files into place. Needs Node >= 22.18 (it imports the
-// daemon's TypeScript plan parser).
+// checks the gate PRs and moves the files into place. Requires Node >= 22.18
+// for the retained TypeScript plan model.
 //
 //   loop-plan-archive.mjs --plan <plan.md> --milestone <N> --out <dir> [--outcome <text>] [--retro <file>]
 //
@@ -18,7 +18,7 @@
 // Exit 0 for every status above; 1 on a usage or I/O error (also a missing archive file to attach to).
 import fs from "node:fs";
 import path from "node:path";
-import { archiveMilestone, attachRetro } from "./loop-web/src/model/archive-milestone.ts";
+import { archiveMilestone, attachRetro } from "./loop-plan-model/archive-milestone.ts";
 
 const args = parseArgs(process.argv.slice(2));
 const planText = fs.readFileSync(args.plan, "utf8");
