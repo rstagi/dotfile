@@ -381,6 +381,7 @@ The tools return the daemon JSON in both text and structured content.
 | `session_rename` | `ws name <name> --json` |
 | `session_get` | `ws session get <target> --json` |
 | `session_send` | `ws send <target> <message> --json` |
+| `session_output` | `ws session output <target> --json` |
 | `session_tail` | `ws session tail <target> --json [--stream stdout|stderr] [--max-bytes <n>]` |
 | `session_event` | `ws event <type> [--body <json>] [--target <target>]` |
 | `session_log` | `ws log [<target>] [--type <prefix>] [--since <seq>]` |
@@ -401,6 +402,11 @@ MCP `session_create` also accepts `scratch: true`, or `repo` with optional `bran
 `agent` (`claude`, `codex` or `grok`, default `claude`) and `prompt` (first message) apply to interactive starts.
 Use only one of `cwd`, `scratch`, `repo` or `workspace_id`. The caller becomes the parent. The result is the session record.
 MCP `session_rename` takes `{"name":"<name>"}` and renames the caller session only.
+
+`ws session output <target>` reads the published `output.md` text. It prints the text without adding a newline.
+MCP `session_output` and `--json` return `{session_id, output, truncated}`.
+`GET /v1/sessions/{id}/output` accepts `parent_session_id` for caller audit.
+The response contains the first 65536 bytes at most. It preserves complete UTF-8 characters at the limit.
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use ws_core::ids::SessionId;
 
 use crate::{
-    api::{self, ApiError, Store},
+    api::{self, ApiError, CallContext, Store},
     sessions::Error,
 };
 
@@ -40,8 +40,70 @@ struct TailResponse {
     truncated: bool,
 }
 
+#[derive(Serialize)]
+struct OutputResponse {
+    session_id: SessionId,
+    output: String,
+    truncated: bool,
+}
+
 pub(crate) fn router() -> Router<Store> {
-    Router::new().route("/v1/sessions/{id}/tail", get(tail))
+    Router::new()
+        .route("/v1/sessions/{id}/tail", get(tail))
+        .route("/v1/sessions/{id}/output", get(output))
+}
+
+async fn output(
+    State(store): State<Store>,
+    Path(id): Path<String>,
+    Query(context): Query<CallContext>,
+) -> Result<Json<OutputResponse>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| {
+            sessions.record_call(context.parent_session_id, "session.output", Some(&id))?;
+            let session = sessions.get_record(&id)?;
+            let path = sessions
+                .state
+                .join("sessions")
+                .join(session.id.to_string())
+                .join("output.md");
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+                .open(path)?;
+            if !file.metadata()?.is_file() {
+                return Err(Error::InvalidRequest(
+                    "The session output must be a regular file.",
+                ));
+            }
+            let mut bytes = Vec::with_capacity(MAX_BYTES as usize + 1);
+            file.take(u64::from(MAX_BYTES) + 1)
+                .read_to_end(&mut bytes)?;
+            let truncated = bytes.len() > MAX_BYTES as usize;
+            bytes.truncate(MAX_BYTES as usize);
+            // Preserve complete UTF-8 characters at the byte limit.
+            if truncated {
+                if let Err(error) = std::str::from_utf8(&bytes) {
+                    if error.error_len().is_none() {
+                        bytes.truncate(error.valid_up_to());
+                    }
+                }
+            }
+            let mut output = String::from_utf8_lossy(&bytes).into_owned();
+            let mut end = output.len().min(MAX_BYTES as usize);
+            while !output.is_char_boundary(end) {
+                end -= 1;
+            }
+            let truncated = truncated || end < output.len();
+            output.truncate(end);
+            Ok(OutputResponse {
+                session_id: session.id,
+                output,
+                truncated,
+            })
+        })
+        .await?,
+    ))
 }
 
 async fn tail(

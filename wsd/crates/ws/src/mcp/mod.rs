@@ -99,6 +99,15 @@ impl Control {
                 )
                 .await
             }
+            "session_output" => {
+                let request: Target = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::GET,
+                    &format!("{}/output", self.session_path(&request.target)?),
+                    None,
+                )
+                .await
+            }
             "session_tail" => {
                 let request: Tail = serde_json::from_value(arguments)?;
                 let stream = match request.stream.unwrap_or(Stream::Stdout) {
@@ -348,6 +357,10 @@ fn tools() -> Vec<Tool> {
         tool::<Spawn>(
             "phase_spawn",
             "Start a local phase with a maximum runtime. WS_SESSION_ID identifies its parent.",
+        ),
+        tool::<Target>(
+            "session_output",
+            "Read the published output.md text of a session. The maximum is 65536 bytes.",
         ),
         tool::<Tail>(
             "session_tail",

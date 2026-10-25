@@ -42,6 +42,7 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
             "session_get",
             "session_list",
             "session_log",
+            "session_output",
             "session_rename",
             "session_send",
             "session_stop",
@@ -857,5 +858,42 @@ async fn event_and_log_tools_match_the_cli_and_record_the_caller() {
     assert_eq!(later["entries"].as_array().unwrap().len(), 1);
     server.assert_audit("session.event");
     server.assert_audit("session.log");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn session_output_returns_published_text_with_a_utf8_safe_cap() {
+    let server = TestServer::start().await;
+    let child = server.call("session_create", json!({})).await;
+    let id = child["id"].as_str().unwrap();
+    for text in [
+        "Report\nwith a final verdict.\n".to_owned(),
+        format!("{}éz", "a".repeat(65535)),
+    ] {
+        let response = common::request(
+            &server.socket,
+            "POST",
+            &format!("/v1/sessions/{id}/done"),
+            &json!({"output":text}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let result = server.call("session_output", json!({"target":id})).await;
+        let expected = if text.len() > 65536 {
+            "a".repeat(65535)
+        } else {
+            text.clone()
+        };
+        assert_eq!(result["output"], expected);
+        assert_eq!(result["session_id"], id);
+        assert_eq!(result["truncated"], text.len() > 65536);
+        assert_eq!(result, server.cli(&["session", "output", id, "--json"]));
+        let plain = common::ws(server.home.path(), &server.socket)
+            .args(["session", "output", id])
+            .output()
+            .unwrap();
+        assert!(plain.status.success(), "{plain:?}");
+        assert_eq!(String::from_utf8(plain.stdout).unwrap(), expected);
+    }
+    server.assert_audit("session.output");
     server.finish().await;
 }
