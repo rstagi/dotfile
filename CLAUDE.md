@@ -53,8 +53,8 @@ node --test tests/loop-retro.test.mjs
 # ws picker shell smoke test with a private tmux server
 zsh ws/tests/run.sh
 
-# Loop Observatory (loop-web) tests + build
-cd loop-web && npm test && npm run build && cd ..
+# Loop daemon (loop-web) model and server tests
+(cd loop-web && npm test)
 
 # Rust daemon and CLI tests + lint
 (cd wsd && cargo test && cargo clippy --all-targets -- -D warnings)
@@ -85,8 +85,8 @@ loop-plan-review.sh     Loop engineering: one rotating AR reviewer ↔ critic ro
 loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)
 loop-models.conf        Loop engineering: model chains, budgets, timeouts
 loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model/tier controls). Reads a wsd loop with `ws loop get --json` and steers it with `ws loop …`. Reads every other loop from the loop-web daemon
-loop-web.sh             Loop Observatory launcher (--daemon = central observer on :7717)
-loop-web/               Loop Observatory: zero-dep Node daemon + Vite/React graph UI
+loop-web.sh             Loop daemon launcher (--daemon = central observer on :7717)
+loop-web/               Loop daemon: Node HTTP API, persistence and pure TypeScript model
 ws/ws.sh                Rust CLI launcher (see ws/README.md)
 wsd/crates/ws/src/cmd/picker.zsh  Embedded fzf picker UI
 ws/tests/               Picker smoke test and Rust picker integration shell checks
@@ -140,9 +140,11 @@ GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.js
 
 **Milestone retrospective:** at each merge gate and at the finish, supervise runs `loop-retro.mjs --dir .loop --milestone <n> --json` (facts only: attempts, Verify results, escalations, questions, HIL, merge conflicts, review rounds, plan edits, wall time, and `setbackCandidates` with evidence paths). The `ship` explainer runner turns the same facts into the page's "Setbacks and hiccups" scene (`process` + `setbacks` props) and into `.loop/milestones/m<n>.retro.md` for agents (format: protocol § Milestone retrospective). A deviation is a different result; a setback is a process cost. `loop-plan.sh archive` puts the retro first in `milestones/m<n>.md` (then `## Raw log`), uses its Outcome for the stub and removes the retro file. Milestone resume seeds the SUB with the latest archived Lessons (≤15 lines); `multiphase-plan` reads the Lessons of the last 3 archives before it revises phases. A missing retro never blocks a park or a finish.
 
-**AR rollout:** after pulling, restart the daemon with `launchctl kickstart -k gui/$(id -u)/com.rstagi.loop-web`, then check `curl -fsS http://localhost:7717/api/health`. Retag any active plan's review phase using a legacy tier to `[review: standard]` or `[review: max]` before execution. Legacy shallow and medium tiers are rejected by execution paths and the tier endpoint; the Observatory and `loop-top` still render them for historical loops.
+**AR rollout:** after an update, restart the daemon with `launchctl kickstart -k gui/$(id -u)/com.rstagi.loop-web`. Check `curl -fsS http://localhost:7717/api/health`. Before execution, replace each active plan's legacy review tier with `[review: standard]` or `[review: max]`. Execution paths and the tier endpoint reject legacy shallow and medium tiers. The model and `loop-top` retain these tiers for historical loops.
 
-**Loop Observatory (`loop-web`):** a perpetual central daemon (launchd LaunchAgent, `127.0.0.1:7717`) that is the base backend for every plan and renders every loop as a live L→R graph. `multiphase-plan` registers a plan on it (status `planned`) before any run; loops then register + push lifecycle events (`loop-emit.sh`/`loop-plan.sh`, sourced by/talking to the daemon) so status is authoritative via a monotone promotion lattice — never stale. Each loop is kept forever in `~/.loop/loops/<runId>.json`; a header selector switches between loops. Daemon/event contract lives in `loop-protocol.md` → Daemon & events.
+**Loop daemon (`loop-web`):** a central Node daemon on `127.0.0.1:7717` stores plans and lifecycle events for the old engine. `multiphase-plan` registers plans before execution. Loop scripts send events through `loop-emit.sh` and `loop-plan.sh`. Events promote phase status through a monotone lattice. Each loop persists in `~/.loop/loops/<runId>.json`.
+
+Use `ws top` to view loops and change steering controls. The server imports its TypeScript model through Node's native type stripping. It needs no build step. The daemon and event contract is in `loop-protocol.md` → Daemon & events.
 
 ## Git Aliases (from .zshrc_git_ext)
 
