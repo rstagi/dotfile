@@ -161,7 +161,10 @@ impl Sessions {
 }
 
 /// Checks the body of a `loop.*` event against its type.
-fn check_body(event_type: &str, body: &Map<String, Value>) -> std::result::Result<(), String> {
+pub(crate) fn check_body(
+    event_type: &str,
+    body: &Map<String, Value>,
+) -> std::result::Result<(), String> {
     let kind = event_type
         .strip_prefix(CLIENT_EVENT_PREFIX)
         .unwrap_or(event_type);

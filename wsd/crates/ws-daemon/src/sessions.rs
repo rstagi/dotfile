@@ -137,6 +137,7 @@ impl Sessions {
             sessions.recover_spans()?;
             sessions.restore_triggers()?;
         }
+        sessions.recover_loop_executions()?;
         sessions.recover_phase_worktrees()?;
         Ok(sessions)
     }
@@ -299,6 +300,7 @@ impl Sessions {
             self.registry.rebuild(&self.state)?;
             self.restore_triggers()?;
             self.recover_spans()?;
+            self.recover_loop_executions()?;
             self.usage = None;
             self.needs_rebuild = false;
         }
@@ -351,6 +353,12 @@ impl Sessions {
         self.changes.send_replace(());
         self.quota_requests.observe(id, event_type);
         self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
+        // The child fact and its Loop event share the serialized store operation.
+        // Keep recovery enabled if the second durable append fails.
+        if let Err(error) = self.record_loop_execution(&entry) {
+            self.needs_rebuild = true;
+            return Err(error);
+        }
         Ok(entry)
     }
 

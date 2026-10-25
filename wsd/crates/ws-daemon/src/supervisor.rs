@@ -583,6 +583,9 @@ impl Sessions {
             },
             Some(&id.to_string()),
         )?;
+        if let Some(child) = &loop_child {
+            child.validate_execution(id, request.key.as_deref().unwrap_or(&id.to_string()))?;
+        }
         if let Some(session) = &reserved
             && (self.registry.latest_event(id, "session.running")?.is_some()
                 || ["finished", "failed"].contains(&session.state.as_str()))
@@ -646,6 +649,8 @@ impl Sessions {
                 body["parent_session_id"] = json!(request.parent_session_id);
                 body["actor"] = json!(actor);
                 body["loop"] = json!(child);
+                // Phase spawns have no caller key, so their session ID names the execution.
+                body["key"] = json!(request.key.as_deref().unwrap_or(&id.to_string()));
             }
             // The reservation is durable before the process starts.
             self.append(id, "session.created", body)?;
