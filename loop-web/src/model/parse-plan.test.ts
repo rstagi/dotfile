@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
-import { parsePlan } from "./parse-plan.ts";
+import { parsePlan as parseDaemonPlan } from "./parse-plan.ts";
 import type { PlanPhase } from "./types.ts";
+
+const PARSER_CLI = fileURLToPath(new URL("../../../loop-plan-parse.mjs", import.meta.url));
+const checkedInputs = new Set<string>();
 
 const MULTI_LANE = `<!-- loop-plan
 planId: loop-widget-revamp-2026-08-01
@@ -718,3 +723,18 @@ describe("parsePlan — plan-format.md document template", () => {
     expect(plan.prose.parallelGuide).not.toContain("Deferred");
   });
 });
+
+// Check CLI parity for every fixture and every malformed variant in this suite.
+function parsePlan(md: string) {
+  const plan = parseDaemonPlan(md);
+  if (!checkedInputs.has(md)) {
+    const result = spawnSync(process.execPath, [PARSER_CLI, "--plan", "-"], {
+      input: md,
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(plan);
+    checkedInputs.add(md);
+  }
+  return plan;
+}

@@ -25,6 +25,8 @@ New Loop plans include an estimate and confidence for each work phase. The plann
 
 Each `runs/review-p<N>-<owner--repo>.ledger.tsv` row contains `a<k>`, stage, role, provider, verdict token, and run directory relative to `.loop/`. Roles are `review|critic|respond|confirm|disputed|fix|final`; a clean round implies skipped rounds without writing skipped rows. Old ledgers with third-provider `confirm` rows still replay. Resume recovers completed runs, reconciles the GitHub final marker, then calls `next`. Plan review uses the same shared `loop-ar.sh` core: `loop-plan-review.sh run --round r` runs one independent round; the planner verifies findings and disputes against code and edits between rounds (at most 2 via `LOOP_PLAN_REVIEW_ROUNDS`, round 2 only after a blocking fix). `multiphase-plan light <goal>` skips plan review and the plan explainer. See [the AR protocol](.claude/skills/loop-execute/references/loop-protocol.md) and [rollout steps](CLAUDE.md#architecture) before upgrading an active loop.
 
+The plan tools require Node >= 22.18. `node loop-plan-parse.mjs --plan .loop/plan.md` prints normalized plan JSON. Use `--plan -` to read standard input. The parser and `loop-plan.sh archive` use `loop-plan-model/` and need no `loop-web/` files. The daemon keeps its own parser until it retires.
+
 ## Loop dashboard (`loop-top`)
 
 `loop-top` shows the phases of a Loop run in the terminal, live from the central daemon (`:7717`). Run it anywhere: it infers the loop from cwd (coordinator worktree, phase worktree, or git branch + origin) and otherwise opens an fzf picker over active + finished loops. HIL questions are still answered through the orchestrating agent.
