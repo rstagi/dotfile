@@ -414,6 +414,9 @@ async fn add(
     let place = api::call(store.clone(), move |sessions| {
         sessions.record_call(request.parent_session_id, "workspace.add", None)?;
         check_agent(&request.agent)?;
+        if let Some(directory) = sessions.directory_place(&request.target)? {
+            return Ok(Place::Directory { directory });
+        }
         match workspace_path(&request.target) {
             Ok((name, directory)) => Ok(Place::Workspace { name, directory }),
             Err(error) => {

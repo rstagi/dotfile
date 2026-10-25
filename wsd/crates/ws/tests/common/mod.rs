@@ -23,6 +23,29 @@ pub fn latency_assertions_enabled() -> bool {
 }
 
 #[allow(dead_code)]
+#[cfg(target_os = "macos")]
+pub fn test_process_has_inherited_clamp() -> bool {
+    let output = Command::new("ps")
+        .args(["-o", "pri=", "-p", &std::process::id().to_string()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let priority: i32 = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // Use priority < 20 to detect inherited QoS clamps without Loop environment variables.
+    let clamped = priority < 20;
+    if clamped {
+        eprintln!(
+            "Skip absolute priority assertions because the test process inherits a QoS clamp."
+        );
+    }
+    clamped
+}
+
+#[allow(dead_code)]
 pub fn wait_for_empty_spool(state: &Path) {
     let deadline = Instant::now() + Duration::from_secs(60);
     while std::fs::read_dir(state.join("spool"))

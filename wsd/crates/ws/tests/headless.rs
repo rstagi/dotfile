@@ -54,6 +54,7 @@ fn inherited_environment_reaches_the_child_without_entering_durable_state() {
 #[test]
 #[cfg(target_os = "macos")]
 fn agent_priority_clamps_headless_commands() {
+    let inherited_clamp = common::test_process_has_inherited_clamp();
     // macOS reports a background clamp as scheduling priority 4.
     for (config, clamped) in [
         ("[agent]\npriority = \"background\"\n", true),
@@ -71,7 +72,9 @@ fn agent_priority_clamps_headless_commands() {
                 .join("stdout.log"),
         )
         .unwrap();
-        assert_eq!(stdout.trim() == "4", clamped, "{config}: {stdout}");
+        if !inherited_clamp {
+            assert_eq!(stdout.trim() == "4", clamped, "{config}: {stdout}");
+        }
     }
 }
 
