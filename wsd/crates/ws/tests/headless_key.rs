@@ -22,14 +22,23 @@ struct Sandbox {
 fn a_retry_after_a_lost_response_returns_the_first_session_and_runs_once() {
     let sandbox = Sandbox::new();
     let parent = sandbox.create(&[], "true");
-    let first = sandbox.create(&["--parent", &parent, "--key", "k1"], &sandbox.script(1, ""));
+    let first = sandbox.create(
+        &["--parent", &parent, "--key", "k1"],
+        &sandbox.script(1, ""),
+    );
     sandbox.wait_state(&first, "finished");
     // The client lost the response, so it sends the same request again.
-    let retry = sandbox.create(&["--parent", &parent, "--key", "k1"], &sandbox.script(1, ""));
+    let retry = sandbox.create(
+        &["--parent", &parent, "--key", "k1"],
+        &sandbox.script(1, ""),
+    );
     assert_eq!(retry, first);
     // A terminal result stays the result of the key. A new execution needs a new key.
     assert_eq!(sandbox.runs(1), 1);
-    let other = sandbox.create(&["--parent", &parent, "--key", "k2"], &sandbox.script(2, ""));
+    let other = sandbox.create(
+        &["--parent", &parent, "--key", "k2"],
+        &sandbox.script(2, ""),
+    );
     assert_ne!(other, first);
     sandbox.wait_state(&other, "finished");
     assert_eq!(sandbox.runs(2), 1);
@@ -61,9 +70,16 @@ fn a_key_survives_a_crash_after_the_launch_and_the_process_runs_once() {
     let retry = sandbox.create(&["--parent", &parent, "--key", "k"], &script);
     assert_eq!(retry, first);
     assert_eq!(sandbox.runs(1), 1);
-    let stop = sandbox.command().args(["session", "stop", &first]).output().unwrap();
+    let stop = sandbox
+        .command()
+        .args(["session", "stop", &first])
+        .output()
+        .unwrap();
     assert!(stop.status.success(), "{stop:?}");
-    assert_eq!(sandbox.create(&["--parent", &parent, "--key", "k"], &script), first);
+    assert_eq!(
+        sandbox.create(&["--parent", &parent, "--key", "k"], &script),
+        first
+    );
     assert_eq!(sandbox.runs(1), 1);
 }
 
@@ -96,7 +112,10 @@ fn a_reservation_without_a_process_survives_a_crash_and_starts_once() {
     let retry = sandbox.create(&["--parent", &parent, "--key", "k"], &script);
     assert_eq!(retry, id.to_string());
     sandbox.wait_state(&retry, "finished");
-    assert_eq!(sandbox.create(&["--parent", &parent, "--key", "k"], &script), retry);
+    assert_eq!(
+        sandbox.create(&["--parent", &parent, "--key", "k"], &script),
+        retry
+    );
     assert_eq!(sandbox.runs(1), 1);
     assert_eq!(sandbox.entries(&retry, "session.created"), 1);
     assert_eq!(sandbox.entries(&retry, "session.running"), 1);

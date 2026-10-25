@@ -539,7 +539,9 @@ impl Sessions {
             Some(key) => self.find_keyed(request.parent_session_id, key)?,
             None => None,
         };
-        let id = reserved.as_ref().map_or_else(Ulid::new, |session| session.id);
+        let id = reserved
+            .as_ref()
+            .map_or_else(Ulid::new, |session| session.id);
         self.record_call(
             request.parent_session_id,
             if metadata.get("phase").is_some() {
