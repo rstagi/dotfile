@@ -95,6 +95,16 @@ impl Sessions {
     /// and the producer under `source`.
     fn append_client_event(&mut self, id: &str, request: AppendEvent) -> Result<LogEntry> {
         self.record_call(request.parent_session_id, "session.event", Some(id))?;
+        if request.event_type == "loop.control"
+            && request
+                .body
+                .as_ref()
+                .is_some_and(|body| body.get("action").is_some_and(|action| action == "ack"))
+        {
+            return Err(Error::InvalidRequest(
+                "Use loop ack to acknowledge a violation.",
+            ));
+        }
         let source = match request.source.as_deref() {
             None | Some(SOURCE_AGENT) => SOURCE_AGENT,
             Some(SOURCE_TOOL) => SOURCE_TOOL,

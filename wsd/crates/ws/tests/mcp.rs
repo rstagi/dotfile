@@ -33,6 +33,7 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
         names,
         [
             "loop_accept",
+            "loop_ack",
             "loop_check",
             "loop_create",
             "loop_get",

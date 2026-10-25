@@ -406,6 +406,7 @@ The tools return the daemon JSON in both text and structured content.
 | `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
 | `loop_get` | `ws loop get <id> --json` |
 | `loop_check` | `ws loop check <id> --json` |
+| `loop_ack` | `ws loop ack <violation id> --reason <text> --json` |
 | `loop_list` | `ws loop list --json` |
 | `loop_create` | `ws loop create --dir <loop_dir> --json` |
 | `loop_start` | `ws loop start <loop_dir> --json` |
@@ -451,6 +452,15 @@ Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox
 Both routes rebuild the state from the loop session's `loop.*` events and accept `parent_session_id` for caller audit.
 The state contains the plan, phases, milestone, and records for attempts, merges, gates, reviews, notes, decisions, controls, guards and violations.
 Phase status only increases: `todo < claimed < running < done < merged`. A stale phase event cannot lower the status.
+The daemon checks Loop rules after each Loop event. It records each new result as a
+`loop.violation` event with `source: daemon`. A hard violation blocks phase spawns and
+keyed creates for that loop until the human acknowledges it. A soft violation never blocks.
+An orchestrator continuation can still start. Each new hard result sends one desktop notification.
+`ws loop get <id> --json` lists violation IDs. Use `ws loop ack <violation id> --reason <text>`
+to record an acknowledgment as a `loop.control` event. An agent cannot acknowledge a hard
+violation. MCP `loop_ack` takes `{"id":"<violation id>","reason":"<text>"}`.
+`POST /v1/loops/ack` accepts the same fields and optional `parent_session_id` for the caller.
+
 MCP `loop_get` takes `{"id":"<loop session>"}`. MCP `loop_list` takes `{}`.
 The CLI read commands print formatted JSON by default. `--json` prints compact JSON.
 
