@@ -82,6 +82,12 @@ pub enum Command {
         #[command(flatten)]
         arguments: HeadlessArgs,
     },
+    /// Read the published output.md text, up to 65536 bytes.
+    Output {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read the session output.
     Tail {
         id: String,
@@ -251,6 +257,16 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 &mut signals,
             )
             .await;
+        }
+        Command::Output { id, json } => {
+            let value = crate::mcp::Control::for_caller(socket, super::caller(socket).await?)
+                .call("session_output", serde_json::json!({"target":id}))
+                .await?;
+            if json {
+                println!("{value}");
+            } else {
+                io::stdout().write_all(value["output"].as_str().unwrap_or_default().as_bytes())?;
+            }
         }
         Command::Tail {
             id,

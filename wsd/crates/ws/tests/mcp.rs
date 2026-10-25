@@ -42,6 +42,7 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
             "session_get",
             "session_list",
             "session_log",
+            "session_output",
             "session_rename",
             "session_send",
             "session_stop",
@@ -857,5 +858,104 @@ async fn event_and_log_tools_match_the_cli_and_record_the_caller() {
     assert_eq!(later["entries"].as_array().unwrap().len(), 1);
     server.assert_audit("session.event");
     server.assert_audit("session.log");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn session_output_returns_published_text_with_a_utf8_safe_cap() {
+    let server = TestServer::start().await;
+    let child = server.call("session_create", json!({})).await;
+    let id = child["id"].as_str().unwrap();
+    for text in [
+        "Report\nwith a final verdict.\n".to_owned(),
+        format!("{}éz", "a".repeat(65535)),
+    ] {
+        let response = common::request(
+            &server.socket,
+            "POST",
+            &format!("/v1/sessions/{id}/done"),
+            &json!({"output":text}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let result = server.call("session_output", json!({"target":id})).await;
+        let expected = if text.len() > 65536 {
+            "a".repeat(65535)
+        } else {
+            text.clone()
+        };
+        assert_eq!(result["output"], expected);
+        assert_eq!(result["session_id"], id);
+        assert_eq!(result["truncated"], text.len() > 65536);
+        assert_eq!(result, server.cli(&["session", "output", id, "--json"]));
+        let plain = common::ws(server.home.path(), &server.socket)
+            .args(["session", "output", id])
+            .output()
+            .unwrap();
+        assert!(plain.status.success(), "{plain:?}");
+        assert_eq!(String::from_utf8(plain.stdout).unwrap(), expected);
+    }
+    server.assert_audit("session.output");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn multiwait_matches_the_cli_and_filters_each_target_by_sequence() {
+    let server = TestServer::start().await;
+    let first = server.call("session_create", json!({})).await;
+    let second = server.call("session_create", json!({})).await;
+    let a = first["id"].as_str().unwrap();
+    let b = second["id"].as_str().unwrap();
+    let old = server
+        .call("session_event", json!({"target":a,"type":"loop.note"}))
+        .await;
+    server
+        .call("session_event", json!({"target":b,"type":"loop.note"}))
+        .await;
+    let targets = json!([{"target":a,"after_seq":old["seq"]},{"target":b,"after_seq":0}]);
+    let result = server
+        .call(
+            "wait",
+            json!({"targets":targets,"mode":"any","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(result["matches"][0]["session"]["id"], b);
+    let seq = old["seq"].as_u64().unwrap().to_string();
+    assert_eq!(
+        result,
+        server.cli(&[
+            "wait",
+            a,
+            b,
+            "--mode",
+            "any",
+            "--for",
+            "event=loop.note",
+            "--after-seq",
+            &seq,
+            "--after-seq",
+            "0",
+            "--timeout",
+            "0",
+            "--json"
+        ])
+    );
+    let error = server
+        .error(
+            "wait",
+            json!({"targets":targets,"mode":"all","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(error["error"]["code"], "wait_timeout");
+    server
+        .call("session_event", json!({"target":a,"type":"loop.note"}))
+        .await;
+    let all = server
+        .call(
+            "wait",
+            json!({"targets":targets,"mode":"all","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(all["matches"].as_array().unwrap().len(), 2);
     server.finish().await;
 }

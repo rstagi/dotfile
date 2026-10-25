@@ -235,6 +235,16 @@ After a session reopens, only events after its latest `session.reopened` event s
 State conditions check the current lifecycle state.
 The API is `POST /v1/sessions/{id}/wait` with `{"for":"done","timeout":30}`. Omit `timeout` for an indefinite wait.
 It returns the session and the matching event, or a null event for a state condition. A timeout returns HTTP 408.
+`ws wait <target>... --mode any|all --for <condition>` waits for several sessions. The default mode is `all`.
+Repeat `--after-seq <seq>` once per target, in target order. Without this option, every target uses zero.
+Only events with `seq > after_seq` count. A state condition requires a matching state event after that sequence.
+A zero sequence keeps the existing current-state check.
+The multi-target API is `POST /v1/wait` with `{"targets":[{"target":"<id>","after_seq":10}],"mode":"all","for":"done","timeout":30}`.
+MCP `wait` accepts the same `targets` and `mode`, with `condition` in place of `for`.
+The response is `{"matches":[{"session":...,"event":...}]}`, in target order.
+Mode `any` returns the targets that match. Mode `all` requires every target to match at the same check.
+The single-target API also accepts `after_seq` and keeps its existing response format.
+
 Daemon shutdown releases pending waits with HTTP 503.
 `POST /v1/sessions/{id}/done` accepts `{"output":"completion text"}`. Both routes accept `parent_session_id` for caller audit.
 
@@ -381,13 +391,14 @@ The tools return the daemon JSON in both text and structured content.
 | `session_rename` | `ws name <name> --json` |
 | `session_get` | `ws session get <target> --json` |
 | `session_send` | `ws send <target> <message> --json` |
+| `session_output` | `ws session output <target> --json` |
 | `session_tail` | `ws session tail <target> --json [--stream stdout|stderr] [--max-bytes <n>]` |
 | `session_event` | `ws event <type> [--body <json>] [--target <target>]` |
 | `session_log` | `ws log [<target>] [--type <prefix>] [--since <seq>]` |
 | `session_stop` | `ws session stop <target> --json` |
 | `session_depends_on` | `ws session depends-on <target> <dependency> --json` |
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
-| `wait` | `ws wait <target> --for <condition> [--timeout <seconds>] --json` |
+| `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
 | `loop_start` | `ws loop start <loop_dir> --json` |
 | `loop_stop` | `ws loop stop <loop_dir> --json` |
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
@@ -401,6 +412,11 @@ MCP `session_create` also accepts `scratch: true`, or `repo` with optional `bran
 `agent` (`claude`, `codex` or `grok`, default `claude`) and `prompt` (first message) apply to interactive starts.
 Use only one of `cwd`, `scratch`, `repo` or `workspace_id`. The caller becomes the parent. The result is the session record.
 MCP `session_rename` takes `{"name":"<name>"}` and renames the caller session only.
+
+`ws session output <target>` reads the published `output.md` text. It prints the text without adding a newline.
+MCP `session_output` and `--json` return `{session_id, output, truncated}`.
+`GET /v1/sessions/{id}/output` accepts `parent_session_id` for caller audit.
+The response contains the first 65536 bytes at most. It preserves complete UTF-8 characters at the limit.
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.

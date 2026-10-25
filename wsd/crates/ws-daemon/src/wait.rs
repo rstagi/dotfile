@@ -34,7 +34,42 @@ struct WaitRequest {
     #[serde(rename = "for")]
     condition: String,
     timeout: Option<u32>,
+    #[serde(default)]
+    after_seq: u64,
     parent_session_id: Option<SessionId>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitTarget {
+    target: String,
+    #[serde(default)]
+    after_seq: u64,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum WaitMode {
+    Any,
+    #[default]
+    All,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MultiWaitRequest {
+    targets: Vec<WaitTarget>,
+    #[serde(default)]
+    mode: WaitMode,
+    #[serde(rename = "for")]
+    condition: String,
+    timeout: Option<u32>,
+    parent_session_id: Option<SessionId>,
+}
+
+#[derive(Serialize)]
+struct MultiWaitResult {
+    matches: Vec<WaitResult>,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +88,7 @@ pub(crate) fn router() -> Router<Store> {
     Router::new()
         .route("/v1/sessions/{id}/done", post(done))
         .route("/v1/sessions/{id}/wait", post(wait))
+        .route("/v1/wait", post(wait_many))
 }
 
 async fn done(
@@ -75,10 +111,31 @@ async fn wait(
     Json(request): Json<WaitRequest>,
 ) -> std::result::Result<Json<WaitResult>, ApiError> {
     let condition = Condition::parse(&request.condition).map_err(ApiError)?;
+    let mut result = wait_for(
+        store,
+        vec![WaitTarget {
+            target: id,
+            after_seq: request.after_seq,
+        }],
+        WaitMode::All,
+        condition,
+        request.parent_session_id,
+        request.timeout,
+    )
+    .await?;
+    Ok(Json(result.matches.remove(0)))
+}
+
+async fn wait_many(
+    State(store): State<Store>,
+    Json(request): Json<MultiWaitRequest>,
+) -> std::result::Result<Json<MultiWaitResult>, ApiError> {
+    let condition = Condition::parse(&request.condition).map_err(ApiError)?;
     Ok(Json(
         wait_for(
             store,
-            id,
+            request.targets,
+            request.mode,
             condition,
             request.parent_session_id,
             request.timeout,
@@ -87,26 +144,40 @@ async fn wait(
     ))
 }
 
-/// Subscribes and checks under one lock. Later appends wake the wait without polling.
-pub(crate) async fn wait_for(
+/// Subscribes and checks every target under one lock. Appends wake the wait without polling.
+async fn wait_for(
     store: Store,
-    input: String,
+    targets: Vec<WaitTarget>,
+    mode: WaitMode,
     condition: Condition,
     caller: Option<SessionId>,
     timeout: Option<u32>,
-) -> std::result::Result<WaitResult, ApiError> {
+) -> std::result::Result<MultiWaitResult, ApiError> {
     let first_condition = condition.clone();
-    let (id, mut changes, mut shutdown, matched) = api::call(store.clone(), move |sessions| {
+    let (targets, mut changes, mut shutdown, matched) = api::call(store.clone(), move |sessions| {
         if *sessions.shutdown.borrow() {
             return Err(Error::ShuttingDown);
         }
-        sessions.record_call(caller, "session.wait", Some(&input))?;
-        let id = sessions.get_record(&input)?.id;
+        if targets.is_empty() {
+            return Err(Error::InvalidRequest("Supply at least one wait target."));
+        }
+        let mut resolved = Vec::with_capacity(targets.len());
+        for target in targets {
+            sessions.record_call(caller, "session.wait", Some(&target.target))?;
+            let id = sessions.get_record(&target.target)?.id;
+            if resolved.iter().any(|(previous, _)| *previous == id) {
+                return Err(Error::InvalidRequest(
+                    "Use each session only once in a wait.",
+                ));
+            }
+            resolved.push((id, target.after_seq));
+        }
+        let matched = sessions.wait_matches(&resolved, &first_condition, mode)?;
         Ok((
-            id,
+            resolved,
             sessions.changes.subscribe(),
             sessions.shutdown.subscribe(),
-            sessions.wait_match(id, &first_condition)?,
+            matched,
         ))
     })
     .await?;
@@ -121,8 +192,9 @@ pub(crate) async fn wait_for(
                 changed = changes.changed() => changed.map_err(|_| ApiError(Error::ShuttingDown))?,
             }
             let condition = condition.clone();
+            let targets = targets.clone();
             let matched = api::call(store.clone(), move |sessions| {
-                sessions.wait_match(id, &condition)
+                sessions.wait_matches(&targets, &condition, mode)
             })
             .await?;
             if let Some(result) = matched {
@@ -211,14 +283,50 @@ impl Sessions {
         }
         self.get_record(input)
     }
-    fn wait_match(&self, id: SessionId, condition: &Condition) -> Result<Option<WaitResult>> {
+    fn wait_matches(
+        &self,
+        targets: &[(SessionId, u64)],
+        condition: &Condition,
+        mode: WaitMode,
+    ) -> Result<Option<MultiWaitResult>> {
+        let mut matches = Vec::new();
+        for &(id, after_seq) in targets {
+            if let Some(result) = self.wait_match(id, condition, after_seq)? {
+                matches.push(result);
+            }
+        }
+        let satisfied = match mode {
+            WaitMode::Any => !matches.is_empty(),
+            WaitMode::All => matches.len() == targets.len(),
+        };
+        Ok(satisfied.then_some(MultiWaitResult { matches }))
+    }
+
+    fn wait_match(
+        &self,
+        id: SessionId,
+        condition: &Condition,
+        after_seq: u64,
+    ) -> Result<Option<WaitResult>> {
         let session = self.get_record(&id.to_string())?;
         match condition {
             Condition::State(state) => {
-                Ok((session.state == state.to_string()).then_some(WaitResult {
-                    session,
-                    event: None,
-                }))
+                let fresh = after_seq == 0
+                    || self
+                        .registry
+                        .latest_event(id, state.event_type())?
+                        .is_some_and(|event| event.seq > after_seq)
+                    || (*state == SessionState::Finished
+                        && self
+                            .registry
+                            .latest_event(id, "done")?
+                            .is_some_and(|event| event.seq > after_seq));
+                Ok(
+                    (fresh && session.state == state.to_string()).then_some(WaitResult {
+                        session,
+                        event: None,
+                    }),
+                )
             }
             Condition::Event(event_type) => {
                 let reopened = self.registry.latest_event(id, "session.reopened")?;
@@ -226,9 +334,10 @@ impl Sessions {
                     .registry
                     .latest_event(id, event_type)?
                     .filter(|event| {
-                        reopened
-                            .as_ref()
-                            .is_none_or(|reopened| event.seq > reopened.seq)
+                        event.seq > after_seq
+                            && reopened
+                                .as_ref()
+                                .is_none_or(|reopened| event.seq > reopened.seq)
                     })
                     .map(|event| WaitResult {
                         session,
@@ -236,5 +345,100 @@ impl Sessions {
                     }))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn multiwait_requires_events_after_each_targets_sequence() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(crate::sessions::Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, first) = request(&app, "/v1/sessions", json!({})).await;
+        let (_, second) = request(&app, "/v1/sessions", json!({})).await;
+        let first = first["id"].as_str().unwrap();
+        let second = second["id"].as_str().unwrap();
+        let (_, old) = request(
+            &app,
+            &format!("/v1/sessions/{first}/events"),
+            json!({"type":"loop.note"}),
+        )
+        .await;
+        let (_, ready) = request(
+            &app,
+            &format!("/v1/sessions/{second}/events"),
+            json!({"type":"loop.note"}),
+        )
+        .await;
+        let targets =
+            json!([{"target":first,"after_seq":old["seq"]},{"target":second,"after_seq":0}]);
+        let body = json!({"targets":targets,"mode":"all","for":"event=loop.note","timeout":0});
+        let (status, _) = request(&app, "/v1/wait", body.clone()).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        let mut later = body.clone();
+        later["targets"][0]["after_seq"] = json!(old["seq"].as_u64().unwrap() + 1);
+        let (status, _) = request(&app, "/v1/wait", later).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        let mut any = body.clone();
+        any["mode"] = json!("any");
+        let (status, result) = request(&app, "/v1/wait", any).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(result["matches"][0]["event"], ready);
+        let (status, _) = request(
+            &app,
+            &format!("/v1/sessions/{first}/wait"),
+            json!({"for":"event=loop.note","after_seq":old["seq"],"timeout":0}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        let (_, new) = request(
+            &app,
+            &format!("/v1/sessions/{first}/events"),
+            json!({"type":"loop.note"}),
+        )
+        .await;
+        let (status, result) = request(&app, "/v1/wait", body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["matches"].as_array().unwrap().len(), 2);
+        assert_eq!(result["matches"][0]["event"], new);
+        assert_eq!(result["matches"][1]["event"], ready);
+        let (status, _) = request(
+            &app,
+            "/v1/wait",
+            json!({"targets":[],"mode":"all","for":"done","timeout":0}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    async fn request(app: &Router, path: &str, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 }
