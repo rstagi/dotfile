@@ -406,6 +406,13 @@ The tools return the daemon JSON in both text and structured content.
 | `loop_create` | `ws loop create --dir <loop_dir> --json` |
 | `loop_start` | `ws loop start <loop_dir> --json` |
 | `loop_stop` | `ws loop stop <loop_dir> --json` |
+| `loop_pause` | `ws loop pause <id> [<phase>] --json` |
+| `loop_resume` | `ws loop resume <id> [<phase>] --json` |
+| `loop_accept` | `ws loop accept <id> --json` |
+| `loop_reject` | `ws loop reject <id> --json` |
+| `loop_note` | `ws loop note <id> <phase> <text> --json` |
+| `loop_model` | `ws loop model <id> <phase> <chain> --json` |
+| `loop_tier` | `ws loop tier <id> <phase> <standard\|max> [--rounds N] --json` |
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
 
 The record form accepts a name and a workspace ID. The headless form rejects both fields.
@@ -442,6 +449,26 @@ The state contains the plan, phases, milestone, and records for attempts, merges
 Phase status only increases: `todo < claimed < running < done < merged`. A stale phase event cannot lower the status.
 MCP `loop_get` takes `{"id":"<loop session>"}`. MCP `loop_list` takes `{}`.
 The CLI read commands print formatted JSON by default. `--json` prints compact JSON.
+
+Skills-loop controls use `POST /v1/loops/{id}/{action}` and return the appended event.
+The actions are `pause`, `resume`, `accept`, `reject`, `note`, `model` and `tier`.
+They require a session of kind `loop`. The body accepts `parent_session_id` for caller audit.
+MCP tools take `id` and the same control fields. They derive the caller from `WS_SESSION_ID`.
+
+Pause and resume accept an optional `phase`. They append `loop.control` and write or remove
+`control/pause` or `control/pause-<phase>`. A loop pause and a phase pause are independent.
+The daemon refuses phase spawns and keyed creates for a paused loop or phase with HTTP 409.
+Resume clears a pause. It does not advance a milestone gate.
+
+Accept and reject close the open accept gate with a daemon-produced `loop.gate` event.
+The event copies the gate's milestone, phase and artifacts. A missing open gate gets HTTP 409.
+Note requires `phase` and `text` and appends `loop.note`.
+Model requires `phase` and `model`, such as `codex:@sol+high`. It appends `loop.control` and writes
+`control/model-<phase>`, which the runner reads for the next attempt.
+Tier requires `phase` and `tier` (`standard` or `max`). Optional `rounds` accepts 1 through 5.
+It calls `loop-plan-tier.mjs` to edit `plan.md`, then appends `loop.plan` with the text and SHA-256.
+It refuses a review that already started, including a status in `state.json` or the session events.
+`LOOP_PLAN_TIER_MJS` overrides the tool path in the daemon environment. The default is `~/dotfile/loop-plan-tier.mjs`.
 
 `POST /v1/loops/start` and `POST /v1/loops/stop` accept `loop_dir` and optional `parent_session_id`.
 The API requires an absolute directory with a `state.json` file and a nonempty `runId`.

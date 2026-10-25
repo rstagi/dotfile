@@ -13,6 +13,83 @@ struct Sandbox {
 }
 
 #[test]
+fn skills_tier_changes_the_plan_and_refuses_a_review_that_started() {
+    let sandbox = Sandbox::new();
+    let plan = sandbox.loop_dir.join("plan.md");
+    fs::write(&plan, "# Plan\n## Phases\n### Phase 9 — Review `[kind: pr-review]` `[status: todo]` `[review: standard]` `[rounds: 2]`\n").unwrap();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    let run = || {
+        common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(["loop", "tier", id, "9", "max", "--rounds", "4", "--json"])
+            .output()
+            .unwrap()
+    };
+    let result = run();
+    assert!(result.status.success(), "{result:?}");
+    let entry: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(entry["type"], "loop.plan");
+    let text = fs::read_to_string(&plan).unwrap();
+    assert!(text.contains("[review: max]"));
+    assert!(text.contains("[rounds: 4]"));
+    assert_eq!(entry["body"]["text"], text);
+    assert_eq!(entry["body"]["sha"].as_str().unwrap().len(), 64);
+    fs::write(
+        sandbox.loop_dir.join("state.json"),
+        r#"{"runId":"loop-test","phases":{"9":{"status":"running","attempt":1}}}"#,
+    )
+    .unwrap();
+    let result = run();
+    assert!(!result.status.success(), "{result:?}");
+    assert_eq!(fs::read_to_string(&plan).unwrap(), text);
+    fs::write(
+        sandbox.loop_dir.join("state.json"),
+        r#"{"runId":"loop-test","phases":{}}"#,
+    )
+    .unwrap();
+    sandbox.request(
+        &format!("/v1/sessions/{id}/events"),
+        json!({"type":"loop.review", "body":{
+        "phase":9,"repo":"none","key":"r9","role":"review","round":1,
+        "state":"started","session":"reviewer","provider":"gpt"}}),
+    );
+    let result = run();
+    assert!(!result.status.success(), "{result:?}");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("already started"),
+        "{result:?}"
+    );
+    assert_eq!(fs::read_to_string(plan).unwrap(), text);
+}
+
+#[test]
+fn skills_cli_controls_record_events_and_bridge_runner_files() {
+    let sandbox = Sandbox::new();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    let run = |args: &[&str]| {
+        let output = common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let paused = run(&["loop", "pause", id, "7", "--json"]);
+    assert_eq!(paused["body"]["action"], "pause");
+    assert!(sandbox.loop_dir.join("control/pause-7").exists());
+    run(&["loop", "model", id, "7", "claude:claude-opus-5-5", "--json"]);
+    let note = run(&["loop", "note", id, "7", "Use the public API.", "--json"]);
+    assert_eq!(note["body"]["text"], "Use the public API.");
+    run(&["loop", "resume", id, "7", "--json"]);
+    assert!(!sandbox.loop_dir.join("control/pause-7").exists());
+    run(&["loop", "pause", id, "--json"]);
+    assert!(sandbox.loop_dir.join("control/pause").exists());
+    run(&["loop", "resume", id, "--json"]);
+    assert!(!sandbox.loop_dir.join("control/pause").exists());
+}
+
+#[test]
 fn stop_writes_the_dashboard_pause_control_and_audits_the_caller() {
     let sandbox = Sandbox::new();
     let parent = sandbox.request("/v1/sessions", json!({}));
@@ -444,6 +521,14 @@ impl Sandbox {
                 .canonicalize()
                 .unwrap(),
             scripts.join("loop-orchestrator.sh"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../loop-plan-tier.mjs")
+                .canonicalize()
+                .unwrap(),
+            scripts.join("loop-plan-tier.mjs"),
         )
         .unwrap();
         let sub = loop_dir.join("sub");

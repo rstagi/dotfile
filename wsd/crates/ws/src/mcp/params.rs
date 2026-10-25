@@ -187,6 +187,49 @@ pub struct Loop {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct LoopPause {
+    /// ULID, alias, or name of the loop session.
+    pub id: String,
+    /// Omit the phase to control the whole loop.
+    pub phase: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopNote {
+    pub id: String,
+    pub phase: u64,
+    pub text: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopModel {
+    pub id: String,
+    pub phase: u64,
+    /// Runner model as provider:model[+effort].
+    pub model: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewTier {
+    Standard,
+    Max,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopTier {
+    pub id: String,
+    pub phase: u64,
+    pub tier: ReviewTier,
+    #[schemars(range(min = 1, max = 5))]
+    pub rounds: Option<u8>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Event {
     /// Session ULID, alias, name, or me.
     pub target: String,

@@ -32,11 +32,18 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
     assert_eq!(
         names,
         [
+            "loop_accept",
             "loop_create",
             "loop_get",
             "loop_list",
+            "loop_model",
+            "loop_note",
+            "loop_pause",
+            "loop_reject",
+            "loop_resume",
             "loop_start",
             "loop_stop",
+            "loop_tier",
             "phase_spawn",
             "session_block_on",
             "session_create",
@@ -1031,5 +1038,104 @@ async fn loop_reads_match_http_and_json_cli_and_reject_a_forged_caller() {
     );
     server.assert_audit("loop.get");
     server.assert_audit("loop.list");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn skills_loop_controls_use_the_same_routes_and_reject_a_forged_caller() {
+    let server = TestServer::start().await;
+    let directory = server.home.path().join("loop");
+    std::fs::create_dir(&directory).unwrap();
+    let created = server
+        .call("loop_create", json!({"loop_dir":directory}))
+        .await;
+    let id = created["id"].as_str().unwrap();
+    for (tool, args, operation) in [
+        ("loop_pause", json!({"id":id,"phase":3}), "loop.pause"),
+        ("loop_resume", json!({"id":id,"phase":3}), "loop.resume"),
+        (
+            "loop_model",
+            json!({"id":id,"phase":3,"model":"codex:@sol+high"}),
+            "loop.model",
+        ),
+        (
+            "loop_note",
+            json!({"id":id,"phase":3,"text":"Use the public API."}),
+            "loop.note",
+        ),
+    ] {
+        let entry = server.call(tool, args.clone()).await;
+        assert_eq!(entry["body"]["phase"], 3);
+        let mut forged = args;
+        forged["parent_session_id"] = json!(id);
+        assert!(server.error(tool, forged).await["error"].is_object());
+        server.assert_audit(operation);
+    }
+    for (tool, state) in [("loop_accept", "accepted"), ("loop_reject", "rejected")] {
+        server
+            .call(
+                "session_event",
+                json!({"target":id,"type":"loop.gate",
+            "body":{"kind":"accept","state":"open","milestone":2,"phase":4,"artifacts":[]}}),
+            )
+            .await;
+        let gate = server.call(tool, json!({"id":id})).await;
+        assert_eq!(gate["body"]["state"], state);
+        assert_eq!(gate["body"]["source"], "daemon");
+        assert!(server.error(tool, json!({"id":id})).await["error"].is_object());
+        assert!(
+            server
+                .error(tool, json!({"id":id,"parent_session_id":id}))
+                .await["error"]
+                .is_object()
+        );
+        server
+            .call(
+                "session_event",
+                json!({"target":id,"type":"loop.gate",
+            "body":{"kind":"accept","state":"open","milestone":2,"phase":4,"artifacts":[]}}),
+            )
+            .await;
+        let cli = server.cli(&["loop", tool.strip_prefix("loop_").unwrap(), id, "--json"]);
+        assert_eq!(cli["body"]["state"], state);
+    }
+    let scripts = server.home.path().join("dotfile");
+    std::fs::create_dir_all(&scripts).unwrap();
+    std::os::unix::fs::symlink(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../loop-plan-tier.mjs")
+            .canonicalize()
+            .unwrap(),
+        scripts.join("loop-plan-tier.mjs"),
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("plan.md"),
+        "# Plan\n## Phases\n### Phase 4 — Review `[kind: pr-review]` `[status: todo]`\n",
+    )
+    .unwrap();
+    let plan = server
+        .call(
+            "loop_tier",
+            json!({"id":id,"phase":4,"tier":"standard","rounds":2}),
+        )
+        .await;
+    assert_eq!(plan["type"], "loop.plan");
+    assert!(
+        plan["body"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[rounds: 2]")
+    );
+    assert!(
+        server
+            .error(
+                "loop_tier",
+                json!({"id":id,"phase":4,"tier":"max","parent_session_id":id})
+            )
+            .await["error"]
+            .is_object()
+    );
+    server.assert_audit("loop.tier");
     server.finish().await;
 }

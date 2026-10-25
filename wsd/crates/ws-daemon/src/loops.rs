@@ -1,4 +1,4 @@
-//! Loop controls use the existing shell orchestrator and dashboard control files.
+//! Loop controls record events and bridge the runner control files.
 //! A loop session holds the Loop state as events. It has no process.
 
 use std::{
@@ -29,6 +29,17 @@ const PHASE_RANKS: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
 pub struct LoopRequest {
     pub loop_dir: PathBuf,
     pub parent_session_id: Option<SessionId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ControlRequest {
+    phase: Option<u64>,
+    text: Option<String>,
+    model: Option<String>,
+    tier: Option<String>,
+    rounds: Option<u8>,
+    parent_session_id: Option<SessionId>,
 }
 
 /// Names the loop that owns a new session, and the phase attempt or review step it runs.
@@ -68,6 +79,19 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/loops/create", post(create))
         .route("/v1/loops/start", post(start))
         .route("/v1/loops/stop", post(stop))
+        .route("/v1/loops/{id}/{action}", post(control))
+}
+
+async fn control(
+    State(store): State<Store>,
+    RoutePath((id, action)): RoutePath<(String, String)>,
+    Json(request): Json<ControlRequest>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    let entry = api::call(store, move |sessions| {
+        sessions.control_loop(&id, &action, request)
+    })
+    .await?;
+    Ok(Json(entry))
 }
 
 async fn list(
@@ -140,6 +164,184 @@ async fn create(
 }
 
 impl Sessions {
+    fn control_loop(&mut self, id: &str, action: &str, request: ControlRequest) -> Result<Value> {
+        self.record_call(
+            request.parent_session_id,
+            &format!("loop.{action}"),
+            Some(id),
+        )?;
+        let session = self.get_record(id)?;
+        if session.body["kind"] != "loop" {
+            return Err(Error::InvalidRequest("The session is not a loop."));
+        }
+        if request.phase == Some(0) {
+            return Err(Error::InvalidRequest("The phase must be positive."));
+        }
+        let directory = PathBuf::from(session.body["loop_dir"].as_str().unwrap());
+        let (kind, body, file) = match action {
+            "pause" | "resume" => {
+                let name = request
+                    .phase
+                    .map_or_else(|| "pause".into(), |n| format!("pause-{n}"));
+                (
+                    "loop.control",
+                    json!({"action":action,"phase":request.phase}),
+                    Some((
+                        directory.join("control").join(name),
+                        action == "pause",
+                        "paused\n".to_owned(),
+                    )),
+                )
+            }
+            "model" => {
+                let phase = request
+                    .phase
+                    .ok_or(Error::InvalidRequest("Specify a phase."))?;
+                let model = request
+                    .model
+                    .as_deref()
+                    .filter(|model| valid_model(model))
+                    .ok_or(Error::InvalidRequest(
+                        "Specify a runner model as provider:model[+effort].",
+                    ))?;
+                (
+                    "loop.control",
+                    json!({"action":"model","phase":phase,"model":model}),
+                    Some((
+                        directory.join(format!("control/model-{phase}")),
+                        true,
+                        format!("{model}\n"),
+                    )),
+                )
+            }
+            "tier" => {
+                let phase = request
+                    .phase
+                    .ok_or(Error::InvalidRequest("Specify a phase."))?;
+                let state = self.loop_state(&session)?;
+                let live = match fs::read(directory.join("state.json")) {
+                    Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(Error::Json)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+                    Err(error) => return Err(Error::Io(error)),
+                };
+                let live_phase = &live["phases"][phase.to_string()];
+                if live_phase["status"]
+                    .as_str()
+                    .is_some_and(|status| status != "todo")
+                    || live_phase["attempt"]
+                        .as_u64()
+                        .is_some_and(|attempt| attempt > 0)
+                    || state["phases"][phase.to_string()]["status"]
+                        .as_str()
+                        .is_some_and(|status| status != "todo")
+                    || state["attempts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|record| record["n"] == phase)
+                    || state["reviews"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|record| record["phase"] == phase)
+                {
+                    return Err(Error::LoopControlConflict(
+                        "The review phase already started.",
+                    ));
+                }
+                let tier = request
+                    .tier
+                    .as_deref()
+                    .filter(|tier| ["standard", "max"].contains(tier))
+                    .ok_or(Error::InvalidRequest(
+                        "Use standard or max as the review tier.",
+                    ))?;
+                if request
+                    .rounds
+                    .is_some_and(|rounds| !(1..=5).contains(&rounds))
+                {
+                    return Err(Error::InvalidRequest(
+                        "The review rounds must be between 1 and 5.",
+                    ));
+                }
+                let script = script_path("LOOP_PLAN_TIER_MJS", "loop-plan-tier.mjs")?;
+                let mut command = std::process::Command::new("node");
+                command
+                    .arg(script)
+                    .arg("--plan")
+                    .arg(directory.join("plan.md"))
+                    .arg("--phase")
+                    .arg(phase.to_string())
+                    .arg("--tier")
+                    .arg(tier);
+                if let Some(rounds) = request.rounds {
+                    command.arg("--rounds").arg(rounds.to_string());
+                }
+                let output = command.output()?;
+                if !output.status.success() {
+                    let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                    if message.contains("already started") {
+                        return Err(Error::LoopControlConflict(
+                            "The review phase already started.",
+                        ));
+                    }
+                    return Err(Error::InvalidBody(message));
+                }
+                let body = serde_json::from_slice(&output.stdout).map_err(Error::Json)?;
+                ("loop.plan", body, None)
+            }
+            "accept" | "reject" => {
+                let state = self.loop_state(&session)?;
+                let gate = state["gates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|gate| gate["kind"] == "accept")
+                    .filter(|gate| gate["state"] == "open")
+                    .ok_or(Error::LoopControlConflict(
+                        "The loop has no open accept gate.",
+                    ))?;
+                (
+                    "loop.gate",
+                    json!({
+                        "kind":"accept",
+                        "state":if action == "accept" {"accepted"} else {"rejected"},
+                        "milestone":gate["milestone"],
+                        "phase":gate["phase"],
+                        "artifacts":gate["artifacts"],
+                    }),
+                    None,
+                )
+            }
+            "note" => {
+                let phase = request
+                    .phase
+                    .ok_or(Error::InvalidRequest("Specify a phase."))?;
+                let text = request
+                    .text
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty())
+                    .ok_or(Error::InvalidRequest("Specify the note text."))?;
+                ("loop.note", json!({"phase":phase,"text":text}), None)
+            }
+            _ => return Err(Error::InvalidRequest("The loop control is unknown.")),
+        };
+        crate::events::check_body(kind, body.as_object().unwrap()).map_err(Error::InvalidBody)?;
+        if let Some((path, write, text)) = file {
+            if write {
+                fs::create_dir_all(path.parent().unwrap())?;
+                atomic_write(&path, text.as_bytes())?;
+            } else if let Err(error) = fs::remove_file(path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(Error::Io(error));
+            }
+        }
+        let entry = self.append_daemon_loop_event(id, kind, body.as_object().unwrap().clone())?;
+        serde_json::to_value(entry).map_err(Error::Json)
+    }
+
     /// Records execution facts while the caller still holds the session store lock.
     pub(crate) fn record_loop_execution(&mut self, entry: &LogEntry) -> Result<()> {
         let state = match entry.event_type.as_str() {
@@ -264,6 +466,17 @@ impl Sessions {
         Ok(())
     }
 
+    /// Refuses every phase execution while its loop or its phase is paused.
+    pub(crate) fn check_loop_pause(&self, id: SessionId, phase: u64) -> Result<()> {
+        let state = self.loop_state(&self.get_record(&id.to_string())?)?;
+        if state["pauses"]["all"] == true || state["pauses"][phase.to_string()] == true {
+            return Err(Error::LoopControlConflict(
+                "The loop or the phase is paused.",
+            ));
+        }
+        Ok(())
+    }
+
     fn loop_state(&self, session: &Session) -> Result<Value> {
         let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
         Ok(fold_loop(session, log.entries))
@@ -305,6 +518,28 @@ impl Sessions {
         )?;
         Ok((true, self.get_record(&id.to_string())?))
     }
+}
+
+fn valid_model(model: &str) -> bool {
+    let Some((provider, leg)) = model.split_once(':') else {
+        return false;
+    };
+    if !["codex", "claude", "grok"].contains(&provider) {
+        return false;
+    }
+    let leg = leg.strip_prefix('@').unwrap_or(leg);
+    let mut parts = leg.split('+');
+    let identifier = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    };
+    identifier(parts.next().unwrap_or_default())
+        && parts
+            .next()
+            .is_none_or(|effort| effort.split(',').all(identifier))
+        && parts.next().is_none()
 }
 
 /// Returns the phase and the status that a Loop fact implies, if that status is higher.
@@ -573,7 +808,7 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
         "id":session.id, "alias":session.alias, "loop_dir":session.body["loop_dir"],
         "status":"planned", "plan":null, "phases":{}, "milestone":null,
         "merge_gates":{}, "attempts":[], "merges":[], "gates":[], "reviews":[], "notes":[],
-        "decisions":[], "controls":[], "guards":[], "violations":[], "finish":null
+        "decisions":[], "controls":[], "pauses":{}, "guards":[], "violations":[], "finish":null
     });
     for entry in entries {
         let body = entry.body;
@@ -611,11 +846,24 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
                     "loop.violation" => "violations",
                     _ => continue,
                 };
-                if kind == "loop.control" && state["status"] != "finished" {
-                    match body["action"].as_str() {
-                        Some("pause") => state["status"] = json!("paused"),
-                        Some("resume") => state["status"] = json!("active"),
-                        _ => {}
+                if kind == "loop.control"
+                    && let Some("pause" | "resume") = body["action"].as_str()
+                {
+                    let key = body["phase"]
+                        .as_u64()
+                        .map_or_else(|| "all".into(), |n| n.to_string());
+                    state["pauses"][key] = json!(body["action"] == "pause");
+                    if state["status"] != "finished" {
+                        state["status"] = if state["pauses"]
+                            .as_object()
+                            .unwrap()
+                            .values()
+                            .any(|paused| *paused == true)
+                        {
+                            json!("paused")
+                        } else {
+                            json!("active")
+                        };
                     }
                 }
                 if kind == "loop.gate"
@@ -683,6 +931,122 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::sessions::Sessions;
+
+    #[tokio::test]
+    async fn a_pause_after_finish_preserves_terminal_status_and_blocks_spawns() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        post(&app, &id, "loop.finish", json!({})).await;
+        let (code, _) = request(&app, "POST", &format!("{uri}/pause"), json!({})).await;
+        assert_eq!(code, StatusCode::OK);
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["status"], "finished");
+        let (code, _) = request(
+            &app,
+            "POST",
+            "/v1/sessions",
+            json!({
+            "headless":true,"command":["/bin/true"],"cwd":sandbox.path(),"key":"after-finish",
+            "loop":{"loop":id,"phase":1,"attempt":1}}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn accept_controls_close_only_the_open_gate_and_copy_its_identity() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        let (code, _) = request(&app, "POST", &format!("{uri}/accept"), json!({})).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+        for (action, state, milestone, phase) in
+            [("accept", "accepted", 3, 9), ("reject", "rejected", 4, 12)]
+        {
+            post(
+                &app,
+                &id,
+                "loop.gate",
+                json!({"kind":"accept","state":"open",
+                "milestone":milestone,"phase":phase,"artifacts":["report.md"]}),
+            )
+            .await;
+            let (code, entry) = request(&app, "POST", &format!("{uri}/{action}"), json!({})).await;
+            assert_eq!(code, StatusCode::OK, "{entry}");
+            assert_eq!(entry["type"], "loop.gate");
+            assert_eq!(entry["body"]["source"], "daemon");
+            assert_eq!(entry["body"]["state"], state);
+            assert_eq!(entry["body"]["milestone"], milestone);
+            assert_eq!(entry["body"]["phase"], phase);
+            assert_eq!(entry["body"]["artifacts"], json!(["report.md"]));
+            let (code, _) = request(&app, "POST", &format!("{uri}/{action}"), json!({})).await;
+            assert_eq!(code, StatusCode::CONFLICT);
+        }
+    }
+
+    #[tokio::test]
+    async fn skills_controls_bridge_files_and_block_new_children_until_resume() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        let control = format!("{uri}/pause");
+        let (code, body) = request(&app, "POST", &control, json!({"phase":7})).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert!(sandbox.path().join("control/pause-7").exists());
+        let (_, caller) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let phase_spawn = |phase| {
+            json!({"parent_session_id":caller["id"],
+            "phase":{"command":["/bin/true"]},"repo":sandbox.path(),"base":"HEAD",
+            "caps_required":[],"max_runtime":30,"loop":{"loop":id,"phase":phase,"attempt":1}})
+        };
+        let (code, body) = request(&app, "POST", "/v1/phases/spawn", phase_spawn(7)).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{body}");
+        let (code, body) = request(&app, "POST", "/v1/phases/spawn", phase_spawn(8)).await;
+        assert_eq!(code, StatusCode::CREATED, "{body}");
+        let spawn = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),
+            "key":"p7-a1","loop":{"loop":id,"phase":7,"attempt":1}});
+        let (code, _) = request(&app, "POST", "/v1/sessions", spawn.clone()).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+        request(&app, "POST", &format!("{uri}/pause"), json!({})).await;
+        request(&app, "POST", &format!("{uri}/resume"), json!({"phase":7})).await;
+        assert!(!sandbox.path().join("control/pause-7").exists());
+        let (code, _) = request(&app, "POST", "/v1/sessions", spawn.clone()).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+        request(&app, "POST", &format!("{uri}/resume"), json!({})).await;
+        assert!(!sandbox.path().join("control/pause").exists());
+        let (code, body) = request(
+            &app,
+            "POST",
+            &format!("{uri}/model"),
+            json!({"phase":7,"model":"claude:claude-opus-5-5"}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(sandbox.path().join("control/model-7")).unwrap(),
+            "claude:claude-opus-5-5\n"
+        );
+        let (code, body) = request(
+            &app,
+            "POST",
+            &format!("{uri}/note"),
+            json!({"phase":7,"text":"Use the new contract."}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["notes"][0]["phase"], 7);
+        assert_eq!(state["notes"][0]["text"], "Use the new contract.");
+        assert_eq!(state["controls"][4]["model"], "claude:claude-opus-5-5");
+        let (code, body) = request(&app, "POST", "/v1/sessions", spawn).await;
+        assert_eq!(code, StatusCode::CREATED, "{body}");
+        request(&app, "POST", &format!("{uri}/pause"), json!({"phase":7})).await;
+        let duplicate = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),
+            "key":"p7-a1","loop":{"loop":id,"phase":7,"attempt":1}});
+        let (code, _) = request(&app, "POST", "/v1/sessions", duplicate).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+    }
 
     #[tokio::test]
     async fn invalid_review_metadata_leaves_no_child_reservation() {
