@@ -103,7 +103,7 @@ assert_eq "$(emitted phase.merged | jq -r .phase)" "7" "the old-engine event sta
 echo "loop-merge: a failed merged-tree Verify appends loop.merge with verify fail"
 export FAKE_WS_LOG="$TMP/ws-fail.log"; : > "$FAKE_WS_LOG"
 WT="$(new_repo wsfail)"
-WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" merge "$WT" "exit 3"
+WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" merge "$WT" false
 assert_exit "$RC" "4" "a failed Verify keeps exit 4"
 body="$(sed -n 's/.*--body\t\([^\t]*\)\t.*/\1/p' "$FAKE_WS_LOG")"
 assert_eq "$(print -r -- "$body" | jq -c '{n,repo,verify}')" '{"n":7,"repo":"acme/api","verify":"fail"}' "the body has verify fail"
