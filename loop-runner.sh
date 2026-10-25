@@ -26,6 +26,7 @@ esac
 #     [--timeout <s>] [--verify-cmd <cmd>]
 #     [--resume <sessionId> --engine codex|claude|grok] [--models-conf <f>] [--budget <usd>]
 #     [--loop-dir <d>]   (default: RUN_DIR/../.. — the coordinator .loop/)
+#     [--publish-output <file>]   (publish a terminal report to the runner's ws session)
 #
 # Live controls (polled every LOOP_CONTROL_POLL_SEC, default 2s, while the engine runs):
 #   <loopDir>/control/pause | control/pause-<phase>  → kill the engine, exit 30 (resumable)
@@ -49,6 +50,7 @@ fi
 WT="" RUN_DIR="" PROMPT_FILE="" CHAIN_NAME="task" TIMEOUT="" VERIFY=""
 RESUME_SID="" RESUME_ENGINE="" MODELS_CONF="$SCRIPT_DIR/loop-models.conf" BUDGET=""
 RUN_ID="" PHASE="" REPOSITORY="" LOOP_DIR="" REVIEW_TIER=""
+PUBLISH_OUTPUT=""
 ROUTE_PROPOSED_PROFILE="" ROUTE_ACTUAL_PROFILE="" ROUTE_FALLBACK_REASON=""
 
 while [[ $# -gt 0 ]]; do
@@ -68,6 +70,9 @@ while [[ $# -gt 0 ]]; do
   --repository) REPOSITORY="$2"; shift 2 ;;
   --loop-dir) LOOP_DIR="$2"; shift 2 ;;
   --review-tier) REVIEW_TIER="$2"; shift 2 ;;
+  --publish-output)
+    [[ -n "${2:-}" ]] || { echo "loop-runner: --publish-output requires a file" >&2; exit 1; }
+    PUBLISH_OUTPUT="$2"; shift 2 ;;
   *) echo "loop-runner: unknown arg $1" >&2; exit 1 ;;
   esac
 done
@@ -853,8 +858,8 @@ write_meta 0
 
 outcome="$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null)"
 case "$outcome" in
-question) exit 10 ;;
-blocked) exit 20 ;;
+question) result_rc=10 ;;
+blocked) result_rc=20 ;;
 done)
   if [[ -n "$VERIFY" ]]; then
     if ! ( cd "$WT" && eval "$VERIFY" ) > "$RUN_DIR/verify.log" 2>&1; then
@@ -862,10 +867,25 @@ done)
       exit 12
     fi
   fi
-  exit 0
+  result_rc=0
   ;;
 *)
   echo "loop-runner: no valid status.json (outcome='$outcome') — crash" >&2
   exit 50
   ;;
 esac
+
+# The Loop owns this opt-in flag. Remove it only after all callers adopt session output.
+if [[ -n "$PUBLISH_OUTPUT" && "$rc" == 0 && "$TIMED_OUT" == 0 ]] &&
+    ! jq -e '.checkpoint == true' "$STATUS" >/dev/null 2>&1; then
+  sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+  if [[ -z "$WS_BIN" || -z "$sid" ]]; then
+    echo "loop-runner: cannot publish output without a runner ws session" >&2
+    exit 50
+  fi
+  WS_SESSION_ID="$sid" "$WS_BIN" done --output "$PUBLISH_OUTPUT" || {
+    echo "loop-runner: cannot publish session output" >&2
+    exit 50
+  }
+fi
+exit "$result_rc"

@@ -15,7 +15,9 @@ cleanup() {
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
 home_guard_sandbox "$TMP/home"
+unset WS_SESSION_ID WS_SESSION
 export WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock"
 export WS_RUST_BIN
 export WS_NOTIFY=0 WS_TMUX_SOCKET="loop-ws-test-$$"
@@ -47,6 +49,69 @@ run_attempt() {
     --prompt-file "$TMP/input.md" --chain task --timeout 30 "$@" < /dev/null > "$FAKE_RUN_DIR/runner.log" 2>&1
   RC=$?
 }
+
+echo "runner: verified reports become session output only with the flag"
+mkdir -p "$TMP/reviewer-bin"
+cat > "$TMP/reviewer-bin/codex" <<'EOF'
+#!/bin/zsh
+set -eu
+if [[ "${1:-}" == debug && "${2:-}" == models ]]; then
+  print -r -- '{"models":[{"slug":"gpt-6-sol","visibility":"list"}]}'
+  exit 0
+fi
+verdict="$(print -r -- "$FAKE_REVIEW_STATUS" | jq -r '.event // "APPROVE"')"
+printf 'Review complete.\nVerdict: %s\n' "$verdict" > "$FAKE_RUN_DIR/report.md"
+if [[ "${FAKE_REVIEW_CRASH:-0}" != 1 ]]; then
+  print -r -- "$FAKE_REVIEW_STATUS" > "$FAKE_RUN_DIR/status.json"
+fi
+print -r -- '{"type":"result","result":"Review complete."}'
+EOF
+chmod +x "$TMP/reviewer-bin/codex"
+export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
+PARENT_SID="$(ws session create --headless --cwd "$TMP/work tree" -- /usr/bin/true)"
+ws wait "$PARENT_SID" --for exit --timeout 30 >/dev/null
+WS_SESSION_ID="$PARENT_SID" PATH="$TMP/reviewer-bin:$PATH" run_attempt publish-done --chain review-gpt \
+  --publish-output "$TMP/publish-done/report.md" \
+  --verify-cmd 'test -f "$FAKE_RUN_DIR/report.md" && ! ws session output "$(cat "$FAKE_RUN_DIR/ws-session")" >/dev/null 2>&1'
+assert_exit "$RC" 0 "verified review completes"
+SID="$(jq -r '.wsSession // empty' "$FAKE_RUN_DIR/meta.json" 2>/dev/null)"
+if [[ -n "$SID" ]]; then
+  OUTPUT="$(ws session output "$SID" --json)"
+  assert_eq "$(print -r -- "$OUTPUT" | jq -r '.output')" $'Review complete.\nVerdict: APPROVE' "session_output returns the report and verdict"
+  assert_eq "$(ws log "$SID" --type done | jq '.entries | length')" 1 "runner publishes the report once"
+  assert_eq "$(ws log "$PARENT_SID" --type done | jq '.entries | length')" 0 "runner does not publish for its caller"
+else
+  assert_eq "$SID" registered "publication records its runner session"
+fi
+
+echo "runner: final COMMENT and REQUEST_CHANGES reviews publish once"
+for outcome event expected in question COMMENT 10 blocked REQUEST_CHANGES 20; do
+  export FAKE_REVIEW_STATUS="$(jq -cn --arg outcome "$outcome" --arg event "$event" '{outcome:$outcome,event:$event}')"
+  PATH="$TMP/reviewer-bin:$PATH" run_attempt "publish-$event" --chain review-gpt \
+    --publish-output "$TMP/publish-$event/report.md"
+  assert_exit "$RC" "$expected" "$event keeps its runner exit code"
+  SID="$(jq -r '.wsSession' "$FAKE_RUN_DIR/meta.json")"
+  assert_contains "$(ws session output "$SID")" "Verdict: $event" "$event publishes its final verdict"
+  assert_eq "$(ws log "$SID" --type done | jq '.entries | length')" 1 "$event publishes once"
+done
+
+echo "runner: checkpoints, crashes and failed Verify do not publish"
+for fixture expected in checkpoint 10 crash 50 verify-failed 12 no-flag 0; do
+  export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
+  args=(--publish-output "$TMP/publish-$fixture/report.md")
+  case "$fixture" in
+    checkpoint) export FAKE_REVIEW_STATUS='{"outcome":"question","checkpoint":true}' ;;
+    crash) export FAKE_REVIEW_CRASH=1 ;;
+    verify-failed) args+=(--verify-cmd false) ;;
+    no-flag) args=() ;;
+  esac
+  PATH="$TMP/reviewer-bin:$PATH" run_attempt "publish-$fixture" --chain review-gpt "${args[@]}"
+  assert_exit "$RC" "$expected" "$fixture keeps its runner exit code"
+  SID="$(jq -r '.wsSession' "$FAKE_RUN_DIR/meta.json")"
+  assert_eq "$(ws log "$SID" --type done | jq '.entries | length')" 0 "$fixture publishes nothing"
+  unset FAKE_REVIEW_CRASH
+done
+unset FAKE_REVIEW_STATUS
 
 echo "runner: Rust daemon owns the runner session"
 run_attempt codex
