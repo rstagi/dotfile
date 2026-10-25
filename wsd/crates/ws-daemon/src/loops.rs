@@ -107,6 +107,7 @@ async fn start(
             stdin: None,
             stdout: Some(sub.join("orchestrator.stdout.log")),
             stderr: Some(sub.join("orchestrator.stderr.log")),
+            key: None,
         },
         json!({"loop_dir":directory,"run_id":run_id}),
     )

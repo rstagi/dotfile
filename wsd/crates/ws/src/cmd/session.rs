@@ -119,6 +119,9 @@ pub struct HeadlessArgs {
     stdout: Option<PathBuf>,
     #[arg(long)]
     stderr: Option<PathBuf>,
+    /// Name one execution. The same key under the same parent returns the first session.
+    #[arg(long)]
+    key: Option<String>,
     #[arg(last = true)]
     command: Vec<String>,
 }
@@ -222,6 +225,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                     || arguments.stdin.is_some()
                     || arguments.stdout.is_some()
                     || arguments.stderr.is_some()
+                    || arguments.key.is_some()
                 {
                     return Err("Use --headless to set process options.".into());
                 }
@@ -332,6 +336,7 @@ async fn create(
         stdin: arguments.stdin.map(absolute),
         stdout: arguments.stdout.map(absolute),
         stderr: arguments.stderr.map(absolute),
+        key: arguments.key,
     };
     let bytes = client::request(
         socket,

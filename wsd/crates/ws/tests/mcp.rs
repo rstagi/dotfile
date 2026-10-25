@@ -427,6 +427,23 @@ async fn wait_matches_the_json_cli_and_records_the_caller() {
 }
 
 #[tokio::test]
+async fn session_create_passes_the_key_so_a_retry_returns_the_first_session() {
+    let server = TestServer::start().await;
+    let request = json!({"headless":true,"key":"mcp-key","command":["/bin/sh","-c","true"],"cwd":server.home.path()});
+    let first = server.call("session_create", request.clone()).await;
+    let retry = server.call("session_create", request).await;
+    assert_eq!(retry["id"], first["id"]);
+    assert_eq!(first["body"]["key"], "mcp-key");
+    server
+        .call(
+            "wait",
+            json!({"target":first["id"],"condition":"exit","timeout":30}),
+        )
+        .await;
+    server.finish().await;
+}
+
+#[tokio::test]
 async fn session_create_launches_a_headless_process_with_cli_json_parity() {
     let server = TestServer::start().await;
     let child = server.call("session_create", json!({"headless":true, "command":["/bin/sh","-c","printf mcp-output"], "cwd":server.home.path()})).await;

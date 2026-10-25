@@ -57,6 +57,8 @@ pub struct Create {
     pub stdin: Option<PathBuf>,
     pub stdout: Option<PathBuf>,
     pub stderr: Option<PathBuf>,
+    /// Names one headless execution under your session. The same key returns the first session and never starts a second process. Use a new key for a new execution.
+    pub key: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

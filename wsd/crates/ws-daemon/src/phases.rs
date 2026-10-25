@@ -71,6 +71,7 @@ async fn spawn(
             stdin: None,
             stdout: None,
             stderr: None,
+            key: None,
         },
         metadata,
     )
