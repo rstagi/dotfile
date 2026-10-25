@@ -23,6 +23,10 @@ pub const SOURCE_DAEMON: &str = "daemon";
 pub const SOURCE_TOOL: &str = "tool";
 pub const SOURCE_AGENT: &str = "agent";
 
+/// The entry body field that holds the key of an append.
+const KEY_FIELD: &str = "event_key";
+const MAX_KEY_BYTES: usize = 256;
+
 const PHASE_KINDS: [&str; 2] = ["work", "review"];
 /// The D19 output kinds of a work phase.
 const OUTPUT_KINDS: [&str; 4] = ["pr", "file", "document", "output.md"];
@@ -41,6 +45,8 @@ struct AppendEvent {
     body: Option<Map<String, Value>>,
     /// `tool` or `agent`. A missing value means `agent`.
     source: Option<String>,
+    /// A stable key for one fact. A second append with the same key adds nothing.
+    key: Option<String>,
     parent_session_id: Option<SessionId>,
 }
 
@@ -73,11 +79,16 @@ async fn append(
     Path(id): Path<String>,
     Json(request): Json<AppendEvent>,
 ) -> std::result::Result<(StatusCode, Json<LogEntry>), ApiError> {
-    let entry = api::call(store, move |sessions| {
+    let (entry, created) = api::call(store, move |sessions| {
         sessions.append_client_event(&id, request)
     })
     .await?;
-    Ok((StatusCode::CREATED, Json(entry)))
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(entry)))
 }
 
 async fn log(
@@ -92,8 +103,10 @@ async fn log(
 
 impl Sessions {
     /// Appends a `loop.*` event for a client. The entry body records the caller under `caller`
-    /// and the producer under `source`.
-    fn append_client_event(&mut self, id: &str, request: AppendEvent) -> Result<LogEntry> {
+    /// and the producer under `source`. With a key, a session that already has an event with that
+    /// key gets no new entry: the result holds the existing entry and `false`. The check and the
+    /// append share one store operation, and the key lives in the durable log.
+    fn append_client_event(&mut self, id: &str, request: AppendEvent) -> Result<(LogEntry, bool)> {
         self.record_call(request.parent_session_id, "session.event", Some(id))?;
         if request.event_type == "loop.control"
             && request
@@ -114,13 +127,41 @@ impl Sessions {
                 ));
             }
         };
-        self.append_loop_entry(
+        let body = request.body.unwrap_or_default();
+        if body.contains_key(KEY_FIELD) {
+            return Err(Error::InvalidRequest("Use the key field to set a key."));
+        }
+        let key = request.key;
+        if let Some(key) = &key {
+            if key.is_empty() || key.len() > MAX_KEY_BYTES || key.chars().any(char::is_control) {
+                return Err(Error::InvalidRequest(
+                    "Use a key of 1 to 256 characters with no control characters.",
+                ));
+            }
+            // A bad body is refused before the key lookup, so a retry never hides an error.
+            check_body(&request.event_type, &body).map_err(Error::InvalidBody)?;
+            if let Some(existing) = self.find_keyed_entry(id, key)? {
+                return Ok((existing, false));
+            }
+        }
+        let entry = self.append_loop_entry(
             id,
             &request.event_type,
-            request.body.unwrap_or_default(),
+            body,
             source,
             request.parent_session_id,
-        )
+            key.as_deref(),
+        )?;
+        Ok((entry, true))
+    }
+
+    fn find_keyed_entry(&mut self, id: &str, key: &str) -> Result<Option<LogEntry>> {
+        let session = self.get_record(id)?;
+        let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
+        Ok(log.entries.into_iter().find(|entry| {
+            entry.event_type.starts_with(CLIENT_EVENT_PREFIX)
+                && entry.body.get(KEY_FIELD).is_some_and(|value| value == key)
+        }))
     }
 
     /// Appends a `loop.*` event that the daemon produces itself, with `source: daemon`.
@@ -130,7 +171,7 @@ impl Sessions {
         event_type: &str,
         body: Map<String, Value>,
     ) -> Result<LogEntry> {
-        self.append_loop_entry(id, event_type, body, SOURCE_DAEMON, None)
+        self.append_loop_entry(id, event_type, body, SOURCE_DAEMON, None, None)
     }
 
     fn append_loop_entry(
@@ -140,6 +181,7 @@ impl Sessions {
         mut body: Map<String, Value>,
         source: &str,
         caller: Option<SessionId>,
+        key: Option<&str>,
     ) -> Result<LogEntry> {
         let suffix = event_type.strip_prefix(CLIENT_EVENT_PREFIX);
         if suffix.is_none_or(|suffix| {
@@ -156,6 +198,9 @@ impl Sessions {
         let session = self.get_record(id)?;
         body.insert("caller".into(), json!(caller));
         body.insert("source".into(), json!(source));
+        if let Some(key) = key {
+            body.insert(KEY_FIELD.into(), json!(key));
+        }
         let entry = self.append_entry(session.id, event_type, Value::Object(body))?;
         // The fact and the status that it causes share the serialized store operation.
         // Keep recovery enabled if the second durable append fails.
