@@ -106,11 +106,7 @@ impl Sessions {
     /// and the producer under `source`. With a key, a session that already has an event with that
     /// key gets no new entry: the result holds the existing entry and `false`. The check and the
     /// append share one store operation, and the key lives in the durable log.
-    fn append_client_event(
-        &mut self,
-        id: &str,
-        request: AppendEvent,
-    ) -> Result<(LogEntry, bool)> {
+    fn append_client_event(&mut self, id: &str, request: AppendEvent) -> Result<(LogEntry, bool)> {
         self.record_call(request.parent_session_id, "session.event", Some(id))?;
         if request.event_type == "loop.control"
             && request
