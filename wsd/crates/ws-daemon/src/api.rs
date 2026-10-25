@@ -266,6 +266,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::TOO_MANY_REQUESTS, "max_depth_exceeded")
             }
             Error::PendingMessages => (StatusCode::CONFLICT, "pending_messages"),
+            Error::MilestoneGateOpen => (StatusCode::CONFLICT, "milestone_gate_open"),
             Error::DependencyCycle(_) => (StatusCode::CONFLICT, "dependency_cycle"),
             Error::NameTaken(_) => (StatusCode::CONFLICT, "name_taken"),
             Error::Transition(_) => (StatusCode::CONFLICT, "invalid_transition"),

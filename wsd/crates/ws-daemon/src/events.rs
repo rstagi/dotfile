@@ -23,6 +23,11 @@ pub const SOURCE_DAEMON: &str = "daemon";
 pub const SOURCE_TOOL: &str = "tool";
 pub const SOURCE_AGENT: &str = "agent";
 
+const PHASE_KINDS: [&str; 2] = ["work", "review"];
+/// The D19 output kinds of a work phase.
+const OUTPUT_KINDS: [&str; 4] = ["pr", "file", "document", "output.md"];
+const PHASE_STATUSES: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
+
 const REVIEW_ROLES: [&str; 7] = [
     "review", "critic", "respond", "confirm", "disputed", "fix", "final",
 ];
@@ -141,7 +146,14 @@ impl Sessions {
         let session = self.get_record(id)?;
         body.insert("caller".into(), json!(caller));
         body.insert("source".into(), json!(source));
-        self.append_entry(session.id, event_type, Value::Object(body))
+        let entry = self.append_entry(session.id, event_type, Value::Object(body))?;
+        // The fact and the status that it causes share the serialized store operation.
+        // Keep recovery enabled if the second durable append fails.
+        if let Err(error) = self.derive_phase_status(session.id, &entry) {
+            self.needs_rebuild = true;
+            return Err(error);
+        }
+        Ok(entry)
     }
 
     fn read_log(&mut self, id: &str, query: &LogQuery) -> Result<LogResponse> {
@@ -174,7 +186,7 @@ pub(crate) fn check_body(
             check.string("text")?;
             check.string("sha")
         }
-        "phases" => check.array_of_objects("phases"),
+        "phases" => check_phases(&check),
         "phase" => {
             check.integer("n")?;
             check.string("status")?;
@@ -266,10 +278,36 @@ fn check_review(check: &Check) -> std::result::Result<(), String> {
     }
 }
 
+fn check_phases(check: &Check) -> std::result::Result<(), String> {
+    check.array_of_objects("phases")?;
+    for phase in check.body["phases"].as_array().into_iter().flatten() {
+        let phase = Check {
+            event_type: check.event_type,
+            body: phase.as_object().unwrap(),
+        };
+        phase.integer("n")?;
+        phase.string("title")?;
+        phase.one_of("kind", &PHASE_KINDS)?;
+        phase.one_of("output", &OUTPUT_KINDS)?;
+        phase.integer("milestone")?;
+        phase.nullable_one_of("gate", &["merge", "accept"])?;
+        phase.nullable_string("repo")?;
+        phase.nullable_string("branch")?;
+        phase.array_of_integers("depends_on")?;
+        phase.one_of("status", &PHASE_STATUSES)?;
+    }
+    Ok(())
+}
+
 fn check_gate(check: &Check) -> std::result::Result<(), String> {
     let kind = check.one_of("kind", &["merge", "accept"])?;
-    check.string("state")?;
-    check.optional_integer("milestone")?;
+    check.integer("milestone")?;
+    if kind == "merge" {
+        check.one_of("state", &["open", "merged"])?;
+    } else {
+        check.one_of("state", &["open", "accepted", "rejected"])?;
+        check.integer("phase")?;
+    }
     let field = if kind == "merge" { "prs" } else { "artifacts" };
     match check.body.get(field) {
         Some(Value::Array(_) | Value::Object(_)) => Ok(()),
@@ -356,6 +394,20 @@ impl Check<'_> {
         match self.body.get(key).and_then(Value::as_str) {
             Some(value) if values.contains(&value) => Ok(value),
             _ => Err(self.fail(key, &format!("one of {}", values.join(", ")))),
+        }
+    }
+
+    fn nullable_one_of(&self, key: &str, values: &[&str]) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            Some(Value::Null) => Ok(()),
+            _ => self.one_of(key, values).map(drop),
+        }
+    }
+
+    fn array_of_integers(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            Some(Value::Array(items)) if items.iter().all(|i| i.is_i64() || i.is_u64()) => Ok(()),
+            _ => Err(self.fail(key, "an array of integers")),
         }
     }
 
@@ -512,7 +564,11 @@ mod tests {
     fn valid_bodies() -> Vec<(&'static str, Value)> {
         vec![
             ("loop.plan", json!({"text":"# Plan","sha":"abc"})),
-            ("loop.phases", json!({"phases":[{"n":1,"title":"A"}]})),
+            (
+                "loop.phases",
+                json!({"phases":[{"n":1,"title":"A","kind":"work","output":"pr","milestone":1,
+                    "gate":null,"repo":null,"branch":null,"depends_on":[],"status":"todo"}]}),
+            ),
             (
                 "loop.phase",
                 json!({"n":1,"status":"in-progress","attempt":1,"session":"01ARZ3NDEKTSV4RRFFQ69G5FAA"}),
@@ -536,11 +592,11 @@ mod tests {
             ("loop.milestone", json!({"milestone":5})),
             (
                 "loop.gate",
-                json!({"kind":"merge","state":"open","prs":{"o/r":"https://example.test/pull/1"}}),
+                json!({"kind":"merge","state":"open","milestone":1,"prs":{"o/r":"https://example.test/pull/1"}}),
             ),
             (
                 "loop.gate",
-                json!({"kind":"accept","state":"open","artifacts":["out.md"]}),
+                json!({"kind":"accept","state":"open","milestone":1,"phase":4,"artifacts":["out.md"]}),
             ),
             (
                 "loop.review",

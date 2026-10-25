@@ -376,6 +376,55 @@ fn loop_controls_reject_missing_state_and_a_parked_milestone() {
     assert!(!sandbox.loop_dir.join("sub/engine-ready").exists());
 }
 
+#[test]
+fn a_started_child_marks_its_phase_running_and_an_open_merge_gate_refuses_the_next_milestone() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("gate-loop");
+    fs::create_dir_all(&directory).unwrap();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":directory}));
+    let id = owner["id"].as_str().unwrap();
+    let phase = |n: u64, milestone: u64| {
+        json!({"n":n,"title":format!("P{n}"),"kind":"work","output":"pr","milestone":milestone,
+            "gate":null,"repo":null,"branch":null,"depends_on":[],"status":"todo"})
+    };
+    let event = |kind: &str, body: Value| {
+        sandbox.request(
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":kind,"body":body}),
+        )
+    };
+    event("loop.phases", json!({"phases":[phase(1, 1), phase(2, 2)]}));
+    let spawn = |n: u64| {
+        common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/sessions",
+            &json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.home.path(),
+                "key":format!("p{n}"),"loop":{"loop":id,"phase":n,"attempt":1}})
+            .to_string(),
+        )
+    };
+    assert!(spawn(1).starts_with("HTTP/1.1 201"));
+    let state = |sandbox: &Sandbox| {
+        let response = common::get(&sandbox.socket, &format!("/v1/loops/{id}"));
+        serde_json::from_str::<Value>(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    assert_eq!(state(&sandbox)["phases"]["1"]["status"], "running");
+    event(
+        "loop.gate",
+        json!({"kind":"merge","state":"open","milestone":1,"prs":[]}),
+    );
+    assert_eq!(state(&sandbox)["status"], "awaiting-merge");
+    let refused = spawn(2);
+    assert!(refused.starts_with("HTTP/1.1 409"), "{refused}");
+    assert!(refused.contains("milestone_gate_open"), "{refused}");
+    event(
+        "loop.gate",
+        json!({"kind":"merge","state":"merged","milestone":1,"prs":[]}),
+    );
+    assert!(spawn(2).starts_with("HTTP/1.1 201"));
+}
+
 impl Sandbox {
     fn new() -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
