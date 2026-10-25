@@ -146,12 +146,31 @@ impl Control {
             }
             "wait" => {
                 let request: Wait = serde_json::from_value(arguments)?;
-                self.request(
-                    Method::POST,
-                    &format!("{}/wait", self.session_path(&request.target)?),
-                    Some(json!({"for":request.condition, "timeout":request.timeout})),
-                )
-                .await
+                match (request.target, request.targets) {
+                    (Some(target), None) => {
+                        if request.mode.is_some() {
+                            return Err("Use mode with targets.".into());
+                        }
+                        self.request(Method::POST, &format!("{}/wait", self.session_path(&target)?),
+                            Some(json!({"for":request.condition,"timeout":request.timeout,"after_seq":request.after_seq.unwrap_or(0)}))).await
+                    }
+                    (None, Some(mut targets)) => {
+                        if request.after_seq.is_some() {
+                            return Err("Set after_seq in each target.".into());
+                        }
+                        for target in &mut targets {
+                            if target.target == "me" {
+                                target.target = self
+                                    .caller
+                                    .ok_or("Set WS_SESSION_ID to use me.")?
+                                    .to_string();
+                            }
+                            target.after_seq = Some(target.after_seq.unwrap_or(0));
+                        }
+                        self.request(Method::POST, "/v1/wait", Some(json!({"targets":targets,"mode":request.mode.unwrap_or(params::WaitMode::All),"for":request.condition,"timeout":request.timeout}))).await
+                    }
+                    _ => Err("Supply target or targets, but not both.".into()),
+                }
             }
             "session_send" => {
                 let request: Send = serde_json::from_value(arguments)?;
@@ -353,7 +372,10 @@ fn tools() -> Vec<Tool> {
             "Rename your own session. ws names each session from its first prompt. Use this tool only when that name is wrong. Use 2 to 4 words in kebab case. Names are unique.",
         ),
         tool::<Send>("session_send", "Queue a message for a session."),
-        tool::<Wait>("wait", "Wait for a session state or event."),
+        tool::<Wait>(
+            "wait",
+            "Wait for session states or events. Use target for one session. Use targets and mode any or all for several sessions. Each target accepts after_seq.",
+        ),
         tool::<Spawn>(
             "phase_spawn",
             "Start a local phase with a maximum runtime. WS_SESSION_ID identifies its parent.",

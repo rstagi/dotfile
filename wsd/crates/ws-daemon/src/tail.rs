@@ -82,12 +82,11 @@ async fn output(
             let truncated = bytes.len() > MAX_BYTES as usize;
             bytes.truncate(MAX_BYTES as usize);
             // Preserve complete UTF-8 characters at the byte limit.
-            if truncated {
-                if let Err(error) = std::str::from_utf8(&bytes) {
-                    if error.error_len().is_none() {
-                        bytes.truncate(error.valid_up_to());
-                    }
-                }
+            if truncated
+                && let Err(error) = std::str::from_utf8(&bytes)
+                && error.error_len().is_none()
+            {
+                bytes.truncate(error.valid_up_to());
             }
             let mut output = String::from_utf8_lossy(&bytes).into_owned();
             let mut end = output.len().min(MAX_BYTES as usize);

@@ -78,11 +78,32 @@ pub struct Dependency {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Wait {
-    pub target: String,
+    /// Use target for one session, or targets for several sessions.
+    pub target: Option<String>,
+    pub targets: Option<Vec<WaitTarget>>,
+    /// Use any or all for targets. The default is all.
+    pub mode: Option<WaitMode>,
+    /// Match only events with a sequence number above this value. Use this field with target.
+    pub after_seq: Option<u64>,
     /// Use done, exit, state=<state>, or event=<type>.
     pub condition: String,
     /// Maximum wait in seconds. Omit this field for an indefinite wait.
     pub timeout: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitTarget {
+    pub target: String,
+    /// Match only events with a sequence number above this value. The default is zero.
+    pub after_seq: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WaitMode {
+    Any,
+    All,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

@@ -897,3 +897,65 @@ async fn session_output_returns_published_text_with_a_utf8_safe_cap() {
     server.assert_audit("session.output");
     server.finish().await;
 }
+
+#[tokio::test]
+async fn multiwait_matches_the_cli_and_filters_each_target_by_sequence() {
+    let server = TestServer::start().await;
+    let first = server.call("session_create", json!({})).await;
+    let second = server.call("session_create", json!({})).await;
+    let a = first["id"].as_str().unwrap();
+    let b = second["id"].as_str().unwrap();
+    let old = server
+        .call("session_event", json!({"target":a,"type":"loop.note"}))
+        .await;
+    server
+        .call("session_event", json!({"target":b,"type":"loop.note"}))
+        .await;
+    let targets = json!([{"target":a,"after_seq":old["seq"]},{"target":b,"after_seq":0}]);
+    let result = server
+        .call(
+            "wait",
+            json!({"targets":targets,"mode":"any","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(result["matches"][0]["session"]["id"], b);
+    let seq = old["seq"].as_u64().unwrap().to_string();
+    assert_eq!(
+        result,
+        server.cli(&[
+            "wait",
+            a,
+            b,
+            "--mode",
+            "any",
+            "--for",
+            "event=loop.note",
+            "--after-seq",
+            &seq,
+            "--after-seq",
+            "0",
+            "--timeout",
+            "0",
+            "--json"
+        ])
+    );
+    let error = server
+        .error(
+            "wait",
+            json!({"targets":targets,"mode":"all","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(error["error"]["code"], "wait_timeout");
+    server
+        .call("session_event", json!({"target":a,"type":"loop.note"}))
+        .await;
+    let all = server
+        .call(
+            "wait",
+            json!({"targets":targets,"mode":"all","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(all["matches"].as_array().unwrap().len(), 2);
+    server.finish().await;
+}

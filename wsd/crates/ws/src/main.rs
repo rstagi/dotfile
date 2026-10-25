@@ -123,13 +123,8 @@ enum Command {
     },
     /// Wait for a session condition through the daemon.
     Wait {
-        target: String,
-        #[arg(long = "for")]
-        condition: String,
-        #[arg(long)]
-        timeout: Option<u32>,
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        arguments: cmd::wait::Args,
     },
     /// Mark selected messages, or all unread messages, as read.
     Ack {
@@ -350,23 +345,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Done { output, stdin } => {
             cmd::done::run(&socket_path()?, output.as_deref().or(stdin.as_deref())).await?
         }
-        Command::Wait {
-            target,
-            condition,
-            timeout,
-            json,
-        } => {
-            if json {
-                cmd::mcp::print(
-                    &socket_path()?,
-                    "wait",
-                    serde_json::json!({"target":target,"condition":condition,"timeout":timeout}),
-                )
-                .await?;
-            } else {
-                cmd::wait::run(&socket_path()?, &target, &condition, timeout).await?;
-            }
-        }
+        Command::Wait { arguments } => cmd::wait::run(&socket_path()?, arguments).await?,
         Command::Event {
             event_type,
             body,
