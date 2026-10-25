@@ -49,6 +49,15 @@ pub struct LoopChild {
     pub inner: Option<u64>,
 }
 
+impl LoopChild {
+    /// Checks the derived start body before the daemon reserves the child session.
+    pub(crate) fn validate_execution(&self, session: SessionId, key: &str) -> Result<()> {
+        let child = serde_json::to_value(self).map_err(Error::Json)?;
+        let (kind, body) = execution_event(&child, session, key, "started", None);
+        crate::events::check_body(kind, &body).map_err(Error::InvalidBody)
+    }
+}
+
 pub(crate) fn router() -> Router<Store> {
     Router::new()
         .route("/v1/loops", get(list))
@@ -140,7 +149,10 @@ impl Sessions {
         let created = if state == "started" {
             entry.clone()
         } else {
-            let Some(created) = self.registry.latest_event(entry.session_id, "session.created")? else {
+            let Some(created) = self
+                .registry
+                .latest_event(entry.session_id, "session.created")?
+            else {
                 return Ok(());
             };
             created
@@ -157,8 +169,13 @@ impl Sessions {
         let owner = self.get_record(owner)?;
         let session = entry.session_id.to_string();
         let key = created.body["key"].as_str().unwrap_or(&session);
-        let review = child["role"].is_string();
-        let kind = if review { "loop.review" } else { "loop.attempt" };
+        let (kind, body) = execution_event(
+            child,
+            entry.session_id,
+            key,
+            state,
+            entry.body["code"].as_i64(),
+        );
         let entries = ws_core::log::SessionLog::new(&self.state, owner.id, self.device_id)
             .read()?
             .entries;
@@ -170,24 +187,7 @@ impl Sessions {
         }) {
             return Ok(());
         }
-        let mut body = json!({
-            "attempt":child["attempt"], "key":key, "session":session, "state":state,
-        });
-        body[if review { "phase" } else { "n" }] = child["phase"].clone();
-        for field in ["repo", "role", "provider", "round", "inner"] {
-            if let Some(value) = child.get(field) {
-                body[field] = value.clone();
-            }
-        }
-        if !review && state == "exited" {
-            // A restart or a session completion can precede a known process status.
-            body["exit"] = json!(entry.body["code"].as_i64().unwrap_or(-1));
-        }
-        self.append_daemon_loop_event(
-            &owner.id.to_string(),
-            kind,
-            body.as_object().unwrap().clone(),
-        )?;
+        self.append_daemon_loop_event(&owner.id.to_string(), kind, body)?;
         Ok(())
     }
 
@@ -248,6 +248,35 @@ impl Sessions {
         )?;
         Ok((true, self.get_record(&id.to_string())?))
     }
+}
+
+fn execution_event(
+    child: &Value,
+    session: SessionId,
+    key: &str,
+    state: &str,
+    exit: Option<i64>,
+) -> (&'static str, serde_json::Map<String, Value>) {
+    let review = child["role"].is_string();
+    let kind = if review {
+        "loop.review"
+    } else {
+        "loop.attempt"
+    };
+    let mut body = json!({
+        "attempt":child["attempt"], "key":key, "session":session, "state":state,
+    });
+    body[if review { "phase" } else { "n" }] = child["phase"].clone();
+    for field in ["repo", "role", "provider", "round", "inner"] {
+        if let Some(value) = child.get(field) {
+            body[field] = value.clone();
+        }
+    }
+    if !review && state == "exited" {
+        // A restart or a session completion can precede a known process status.
+        body["exit"] = json!(exit.unwrap_or(-1));
+    }
+    (kind, body.as_object().unwrap().clone())
 }
 
 async fn start(
@@ -518,6 +547,36 @@ mod tests {
     use crate::sessions::Sessions;
 
     #[tokio::test]
+    async fn invalid_review_metadata_leaves_no_child_reservation() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, owner) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":sandbox.path()}),
+        )
+        .await;
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/v1/sessions",
+            json!({
+                "headless":true,"command":["/bin/true"],"cwd":sandbox.path(),"key":"r1",
+                "loop":{"loop":owner["id"],"phase":117,"attempt":1,"repo":"owner/repo",
+                    "role":"invalid","provider":"gpt","round":1,"inner":1},
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, sessions) = request(&app, "GET", "/v1/sessions", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{sessions}");
+        assert_eq!(sessions.as_array().unwrap().len(), 1, "{sessions}");
+        drop(app);
+        assert!(Sessions::open(sandbox.path(), 1).is_ok());
+    }
+
+    #[tokio::test]
     async fn recovery_repairs_interrupted_loop_appends_once_and_preserves_later_writes() {
         let sandbox = tempfile::tempdir().unwrap();
         let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
@@ -538,11 +597,12 @@ mod tests {
         log.append(0, "exit", json!({"code":3})).unwrap();
         log.append(0, "session.failed", json!({})).unwrap();
         let uri = format!("/v1/loops/{}", owner.id);
-        for _ in 0..2 {
+        for count in 0..2 {
             let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
             let (_, state) = request(&app, "GET", &uri, Value::Null).await;
             let attempts = state["attempts"].as_array().unwrap();
             assert_eq!(attempts.len(), 2, "{state}");
+            assert_eq!(state["notes"].as_array().unwrap().len(), count);
             assert_eq!(attempts[0]["state"], "started");
             assert_eq!(attempts[1]["state"], "exited");
             assert_eq!(attempts[1]["exit"], 3);

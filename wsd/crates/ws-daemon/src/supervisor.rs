@@ -583,6 +583,9 @@ impl Sessions {
             },
             Some(&id.to_string()),
         )?;
+        if let Some(child) = &loop_child {
+            child.validate_execution(id, request.key.as_deref().unwrap_or(&id.to_string()))?;
+        }
         if let Some(session) = &reserved
             && (self.registry.latest_event(id, "session.running")?.is_some()
                 || ["finished", "failed"].contains(&session.state.as_str()))

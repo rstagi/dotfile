@@ -24,7 +24,9 @@ impl Drop for TestProcess {
     fn drop(&mut self) {
         let Some(pid) = self.0 else { return };
         // The script execs sleep, so the recorded child has no descendants.
-        let _ = Command::new("/bin/kill").args(["-KILL", &pid.to_string()]).output();
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &pid.to_string()])
+            .output();
     }
 }
 
@@ -66,7 +68,16 @@ fn loop_review_events_copy_metadata_and_keyed_retries_append_once() {
 fn loop_attempt_exit_is_recorded_once_after_a_daemon_restart() {
     let mut sandbox = Sandbox::new();
     let owner = sandbox.loop_session();
-    let flags = ["--loop", &owner, "--phase", "117", "--attempt", "1", "--key", "p117-a1"];
+    let flags = [
+        "--loop",
+        &owner,
+        "--phase",
+        "117",
+        "--attempt",
+        "1",
+        "--key",
+        "p117-a1",
+    ];
     let child = sandbox.create(&flags, &sandbox.script("ready", "exec /bin/sleep 120"));
     let running = sandbox.entry(&child, "session.running");
     let mut group = TestProcess(Some(running.body["process"]["pid"].as_u64().unwrap() as u32));
@@ -93,7 +104,16 @@ fn loop_attempt_exit_is_recorded_once_after_a_daemon_restart() {
         assert!(event.get("verdict").is_none());
     }
     let next = sandbox.create(
-        &["--loop", &owner, "--phase", "117", "--attempt", "2", "--key", "p117-a2"],
+        &[
+            "--loop",
+            &owner,
+            "--phase",
+            "117",
+            "--attempt",
+            "2",
+            "--key",
+            "p117-a2",
+        ],
         "true",
     );
     sandbox.wait_state(&next, "finished");
@@ -320,10 +340,18 @@ impl Sandbox {
     }
 
     fn loop_events(&self, owner: &str, kind: &str) -> Vec<Value> {
-        let response = common::get(&self.socket, &format!("/v1/sessions/{owner}/log?type={kind}"));
+        let response = common::get(
+            &self.socket,
+            &format!("/v1/sessions/{owner}/log?type={kind}"),
+        );
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         let log: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
-        log["entries"].as_array().unwrap().iter().map(|entry| entry["body"].clone()).collect()
+        log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["body"].clone())
+            .collect()
     }
 
     fn loop_session(&self) -> String {
