@@ -5,11 +5,14 @@ set -u -o pipefail
 # integration worktree (the only place merges and pushes happen).
 #
 # Usage:
-#   loop-merge.sh --worktree <int-wt> --lane-branch <b> --verify-cmd <c> [--no-push]
+#   loop-merge.sh --worktree <int-wt> --lane-branch <b> --verify-cmd <c> [--verified-record <f>] [--no-push]
 #   loop-merge.sh --worktree <int-wt> --finish --verify-cmd <c> [--no-push]
 #   loop-merge.sh --worktree <int-wt> --abort
 #
 # A push without a verify gate needs an explicit --no-verify — never silently.
+# --verified-record names the runner's verified.json ({tree, verify}). When the merged tree and
+# the Verify command equal the record, the Verify already passed on this exact tree and does not
+# run again. Any other record, or no record, runs the Verify.
 #
 # Exit codes:
 #   0  merged (verified, pushed)   — also for an already-merged lane ({"already":true})
@@ -28,7 +31,7 @@ else
   loop_emit() { :; }
 fi
 
-WT="" LANE="" VERIFY="" MODE="merge" PUSH=1 NOVERIFY=0
+WT="" LANE="" VERIFY="" MODE="merge" PUSH=1 NOVERIFY=0 VERIFIED_RECORD=""
 RUN_ID="" PHASE="" REPOSITORY=""
 VERIFY_LOG=""   # a copy of the Verify output, outside the worktree; the EXIT trap removes it
 VERIFY_DETAIL_BYTES=2048
@@ -39,6 +42,7 @@ while [[ $# -gt 0 ]]; do
   --worktree) WT="$2"; shift 2 ;;
   --lane-branch) LANE="$2"; shift 2 ;;
   --verify-cmd) VERIFY="$2"; shift 2 ;;
+  --verified-record) VERIFIED_RECORD="$2"; shift 2 ;;
   --finish) MODE="finish"; shift ;;
   --abort) MODE="abort"; shift ;;
   --no-push) PUSH=0; shift ;;
@@ -108,7 +112,9 @@ fi
 # The copy keeps the order inside each stream, not between stdout and stderr.
 verify_and_push() {
   local rc
-  if [[ -n "$VERIFY" ]]; then
+  if [[ -n "$VERIFY" ]] && tree_already_verified; then
+    echo "loop-merge: tree $(git rev-parse 'HEAD^{tree}') passed this Verify in the runner; Verify skipped" >&2
+  elif [[ -n "$VERIFY" ]]; then
     VERIFY_LOG="$(mktemp "${TMPDIR:-/tmp}/loop-merge-verify.XXXXXX")" || VERIFY_LOG=""
     # The braces make zsh wait for both tee processes before the next command.
     { eval "$VERIFY" } > >(tee -a "${VERIFY_LOG:-/dev/null}") 2> >(tee -a "${VERIFY_LOG:-/dev/null}" >&2)
@@ -125,6 +131,15 @@ verify_and_push() {
   # After the push: a lost push must not leave a loop.merge that says merged.
   ws_loop_merge_event "$([[ -n "$VERIFY" ]] && print pass || print none)"
   return 0
+}
+
+# True when the runner record names the merged tree and this Verify command.
+tree_already_verified() {
+  [[ -n "$VERIFIED_RECORD" && -r "$VERIFIED_RECORD" ]] || return 1
+  local tree
+  tree="$(git rev-parse 'HEAD^{tree}')" || return 1
+  jq -e --arg tree "$tree" --arg verify "$VERIFY" '.tree == $tree and .verify == $verify' \
+    "$VERIFIED_RECORD" >/dev/null 2>&1
 }
 
 case "$MODE" in

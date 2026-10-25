@@ -136,4 +136,49 @@ assert_exit "$?" "0" "the merge succeeds"
 assert_eq "$(cat "$FAKE_WS_LOG")" "" "no ws call is made"
 assert_eq "$(cat "$TMP/err")" "" "no warning is printed"
 
+echo "loop-merge: a runner-verified tree skips the merged-tree Verify"
+# record <worktree> <verify-cmd> <file> — a runner Verify record for the lane tree.
+record() {
+  jq -cn --arg tree "$(git -C "$1" rev-parse feat/lane^{tree})" --arg verify "$2" \
+    '{tree:$tree, verify:$verify}' > "$3"
+}
+# merge_recorded <worktree> <verify-cmd> <record> — merge with a runner Verify record.
+merge_recorded() {
+  zsh "$ROOT/loop-merge.sh" --worktree "$1" --lane-branch feat/lane --verify-cmd "$2" --no-push \
+    --verified-record "$3" --run-id run-1 --phase 7 --repository acme/api > "$TMP/out" 2> "$TMP/err"
+  RC=$?
+  ERR="$(cat "$TMP/err")"
+}
+VERIFY_CMD="touch $TMP/verify-ran"
+export EMIT_LOG="$TMP/emit-skip.log"; : > "$EMIT_LOG"
+WT="$(new_repo skip)"
+record "$WT" "$VERIFY_CMD" "$TMP/skip.json"
+rm -f "$TMP/verify-ran"
+merge_recorded "$WT" "$VERIFY_CMD" "$TMP/skip.json"
+assert_exit "$RC" "0" "a merge of a verified tree exits 0"
+assert_eq "$([[ -e "$TMP/verify-ran" ]] && print ran)" "" "the merged-tree Verify does not run again"
+assert_contains "$ERR" "Verify skipped" "stderr names the skip"
+assert_eq "$(emitted phase.merged | jq -r .phase)" "7" "a skipped Verify still emits phase.merged"
+
+echo "loop-merge: a record of another tree or command does not skip the Verify"
+WT="$(new_repo moved)"
+record "$WT" "$VERIFY_CMD" "$TMP/moved.json"
+print other > "$WT/other.txt"
+git -C "$WT" add other.txt
+git -C "$WT" commit -qm "integration moved"
+rm -f "$TMP/verify-ran"
+merge_recorded "$WT" "$VERIFY_CMD" "$TMP/moved.json"
+assert_exit "$RC" "0" "the merge of a moved integration branch exits 0"
+assert_eq "$([[ -e "$TMP/verify-ran" ]] && print ran)" "ran" "a merged tree that differs runs the Verify"
+WT="$(new_repo command)"
+record "$WT" "true" "$TMP/command.json"
+rm -f "$TMP/verify-ran"
+merge_recorded "$WT" "$VERIFY_CMD" "$TMP/command.json"
+assert_eq "$([[ -e "$TMP/verify-ran" ]] && print ran)" "ran" "a record of another Verify command runs the Verify"
+WT="$(new_repo missing)"
+rm -f "$TMP/verify-ran"
+merge_recorded "$WT" "$VERIFY_CMD" "$TMP/no-such-record.json"
+assert_exit "$RC" "0" "a missing record is not an error"
+assert_eq "$([[ -e "$TMP/verify-ran" ]] && print ran)" "ran" "a missing record runs the Verify"
+
 test_summary

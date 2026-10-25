@@ -883,6 +883,17 @@ if [[ ! -s "$LAST" ]]; then
 fi
 write_meta 0
 
+# A passed Verify of a clean worktree writes verified.json ({tree, verify}). loop-merge.sh
+# --verified-record then skips the same Verify on the same merged tree.
+record_verified_tree() {
+  [[ -n "$VERIFY" ]] || return 0
+  local tree
+  [[ -z "$(git -C "$WT" status --porcelain 2>/dev/null)" ]] || return 0
+  tree="$(git -C "$WT" rev-parse 'HEAD^{tree}' 2>/dev/null)" || return 0
+  jq -cn --arg tree "$tree" --arg verify "$VERIFY" '{tree:$tree, verify:$verify}' \
+    > "$RUN_DIR/verified.json" || rm -f "$RUN_DIR/verified.json"
+}
+
 # --- validate the runner's status.json (the actual contract) ---
 
 outcome="$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null)"
@@ -899,6 +910,7 @@ done)
     fi
     verify_result=pass
   fi
+  record_verified_tree
   result_rc=0
   ;;
 *)

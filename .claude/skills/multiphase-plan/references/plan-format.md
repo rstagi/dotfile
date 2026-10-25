@@ -44,6 +44,11 @@ between repositories.
   it names a repository, the slug must match a declared one. A PR-review phase covers every
   repository and omits `Repository:`. Repository `Verify:` is mandatory; a work phase
   `Verify:` overrides it. For an output other than `pr`, `Verify:` is optional.
+- `Build caches:` is optional on a repository. It lists gitignored build-cache paths relative
+  to the repository root (for example `target`, `wsd/target`, `node_modules`). `loop-execute`
+  clones them from the integration worktree into each new lane worktree, so a phase does not
+  build from zero. Declare it for each repository whose cold build takes more than about one
+  minute.
 - `Estimate:` is required on every work phase of a new Loop plan. It is a human-readable range,
   confidence, and basis; the parser ignores it. Its upper bound should normally be at most
   25 minutes to leave room before the runner's 30-minute checkpoint. State exceptions
@@ -223,6 +228,7 @@ repository's default branch (loop-execute then adopts that branch/worktree); oth
 
 ### `owner/api`
 - **Verify:** `<command>`
+- **Build caches:** `<optional — gitignored build-cache paths, for example wsd/target>`
 - **Integration branch:** `<optional per-repository override>`
 - **PR:** _none yet_
 

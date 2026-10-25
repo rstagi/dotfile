@@ -85,7 +85,8 @@ async function launch(candidates, profile) {
   for (const [i, chrome] of candidates.entries()) {
     const dir = path.join(profile, String(i));
     const browser = spawn(chrome, ["--headless", "--remote-debugging-port=0", `--user-data-dir=${dir}`, "--no-first-run", "--no-default-browser-check",
-      "--hide-scrollbars", "--disable-gpu", "--disable-extensions", "--mute-audio", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+      // A mock keychain: a sandbox HOME has no login keychain, and Chrome would ask the user for one.
+      "--use-mock-keychain", "--password-store=basic", "--hide-scrollbars", "--disable-gpu", "--disable-extensions", "--mute-audio", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
     try {
       return { browser, port: await debugPort(browser) };
     } catch (err) {

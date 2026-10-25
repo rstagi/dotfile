@@ -260,6 +260,23 @@ done
 unset FAKE_STATUS_OUTCOME
 run_attempt verify-failed --verify-cmd false
 assert_exit "$RC" 12 "verification failure returns 12"
+assert_eq "$([[ -e "$FAKE_RUN_DIR/verified.json" ]] && print yes)" "" "a failed Verify writes no Verify record"
+
+echo "runner: a passed Verify of a clean worktree records the verified tree"
+GIT_TREE="$TMP/git tree"
+git init -q -b main "$GIT_TREE"
+print base > "$GIT_TREE/file.txt"
+git -C "$GIT_TREE" add file.txt
+git -C "$GIT_TREE" -c user.email=t@example.com -c user.name=T commit -qm base
+run_attempt verified-clean --worktree "$GIT_TREE" --verify-cmd 'test -f file.txt'
+assert_exit "$RC" 0 "a passed Verify returns 0"
+assert_eq "$(jq -r .tree "$FAKE_RUN_DIR/verified.json" 2>/dev/null)" "$(git -C "$GIT_TREE" rev-parse 'HEAD^{tree}')" \
+  "the record has the tree of HEAD"
+assert_eq "$(jq -r .verify "$FAKE_RUN_DIR/verified.json" 2>/dev/null)" "test -f file.txt" "the record has the Verify command"
+print dirty > "$GIT_TREE/dirty.txt"
+run_attempt verified-dirty --worktree "$GIT_TREE" --verify-cmd 'test -f file.txt'
+assert_exit "$RC" 0 "a passed Verify of a dirty worktree returns 0"
+assert_eq "$([[ -e "$FAKE_RUN_DIR/verified.json" ]] && print yes)" "" "a dirty worktree gets no Verify record"
 
 echo "runner: disabled, unavailable and legacy ws paths use direct engines"
 for availability in disabled down legacy missing; do
