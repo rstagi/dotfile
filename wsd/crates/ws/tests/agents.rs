@@ -1168,6 +1168,51 @@ fn terminal_spawn_trigger_uses_the_current_directory() {
 }
 
 #[test]
+fn four_orchestrator_continuations_keep_the_loop_parent() {
+    let loop_id = ws_core::ids::SessionId::new();
+    let sandbox = Sandbox::with_setup("", |home, _| {
+        let state = home.join("state");
+        let device = ws_core::device::Device::init(&state, "test").unwrap();
+        ws_core::log::SessionLog::new(&state, loop_id, device.device_id)
+            .append(0, "session.created", json!({"alias":1,"kind":"loop"}))
+            .unwrap();
+    });
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/sessions/start",
+        &json!({"cwd":sandbox.home.path(),"agent":"codex","parent_session_id":loop_id}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    let (mut owner, mut running) = sandbox.capture();
+    for _ in 0..4 {
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", owner["id"].as_str().unwrap())
+            .args(["on", "me", "exit", "--spawn", "codex", "Continue the loop."])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        running.write_all(b"0").unwrap();
+        let (child, child_running) = sandbox.capture();
+        let session = sandbox.json(&["show", child["id"].as_str().unwrap(), "--json"]);
+        assert_eq!(session["parent_session_id"], loop_id.to_string());
+        owner = child;
+        running = child_running;
+    }
+    running.write_all(b"0").unwrap();
+    let output = sandbox.output(&[
+        "wait",
+        owner["id"].as_str().unwrap(),
+        "--for",
+        "exit",
+        "--timeout",
+        "30",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
 fn trigger_spawn_uses_the_owners_directory_without_a_workspace() {
     let mut sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("owner notes");
