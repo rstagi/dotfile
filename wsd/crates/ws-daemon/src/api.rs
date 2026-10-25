@@ -73,6 +73,7 @@ pub(crate) fn router_with_store(store: Store) -> Router {
         .merge(crate::import::backend::router())
         .merge(crate::bus::router())
         .merge(crate::edges::router())
+        .merge(crate::events::router())
         .merge(crate::triggers::router())
         .merge(crate::wait::router())
         .merge(crate::hooks::router())

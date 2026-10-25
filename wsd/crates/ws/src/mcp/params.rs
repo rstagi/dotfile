@@ -126,3 +126,27 @@ pub struct Loop {
     /// Directory that contains the Loop state.json file.
     pub loop_dir: PathBuf,
 }
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Event {
+    /// Session ULID, alias, name, or me.
+    pub target: String,
+    /// Event type. It must start with loop.
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// JSON object with the event data.
+    pub body: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Log {
+    /// Session ULID, alias, name, or me.
+    pub target: String,
+    /// Keep entries whose type starts with this prefix.
+    #[serde(rename = "type")]
+    pub event_type: Option<String>,
+    /// Keep entries with a sequence number above this value.
+    pub since: Option<u64>,
+}

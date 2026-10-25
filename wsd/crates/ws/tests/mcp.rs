@@ -38,8 +38,10 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
             "session_block_on",
             "session_create",
             "session_depends_on",
+            "session_event",
             "session_get",
             "session_list",
+            "session_log",
             "session_rename",
             "session_send",
             "session_stop",
@@ -811,5 +813,49 @@ async fn loop_stop_matches_the_json_cli_and_rejects_a_forged_caller() {
         .unwrap();
     assert_eq!(forged.is_error, Some(true));
     server.assert_audit("loop.stop");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn event_and_log_tools_match_the_cli_and_record_the_caller() {
+    let server = TestServer::start().await;
+    let appended = server
+        .call(
+            "session_event",
+            json!({"target":"me","type":"loop.note","body":{"text":"from mcp"}}),
+        )
+        .await;
+    assert_eq!(appended["type"], "loop.note");
+    assert_eq!(appended["body"]["caller"], server.parent);
+    let cli = server.cli(&[
+        "event",
+        "loop.decision",
+        "--body",
+        r#"{"reason":"from cli"}"#,
+    ]);
+    assert_eq!(cli["body"]["caller"], server.parent);
+    let rejected = server
+        .error(
+            "session_event",
+            json!({"target":"me","type":"session.done"}),
+        )
+        .await;
+    assert_eq!(rejected["error"]["code"], "invalid_request");
+    let logged = server
+        .call("session_log", json!({"target":"me","type":"loop."}))
+        .await;
+    let types: Vec<_> = logged["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, ["loop.note", "loop.decision"]);
+    assert_eq!(logged, server.cli(&["log", "--type", "loop."]));
+    let since = appended["seq"].as_u64().unwrap().to_string();
+    let later = server.cli(&["log", "--type", "loop.", "--since", &since]);
+    assert_eq!(later["entries"].as_array().unwrap().len(), 1);
+    server.assert_audit("session.event");
+    server.assert_audit("session.log");
     server.finish().await;
 }
