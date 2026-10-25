@@ -17,7 +17,8 @@ use crate::{Result, client};
 mod params;
 
 use params::{
-    Agent, Create, Dependency, Empty, Loop, Rename, Send, Spawn, Stream, Tail, Target, Wait,
+    Agent, Create, Dependency, Empty, Event, Log, Loop, Rename, Send, Spawn, Stream, Tail, Target,
+    Wait,
 };
 use rmcp::schemars::{self, JsonSchema};
 
@@ -111,6 +112,27 @@ impl Control {
                     "{}/tail?stream={stream}&max_bytes={max_bytes}",
                     self.session_path(&request.target)?
                 );
+                self.request(Method::GET, &path, None).await
+            }
+            "session_event" => {
+                let request: Event = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::POST,
+                    &format!("{}/events", self.session_path(&request.target)?),
+                    Some(json!({"type":request.event_type,"body":request.body})),
+                )
+                .await
+            }
+            "session_log" => {
+                let request: Log = serde_json::from_value(arguments)?;
+                let mut path = format!(
+                    "{}/log?since={}",
+                    self.session_path(&request.target)?,
+                    request.since.unwrap_or(0)
+                );
+                if let Some(prefix) = request.event_type {
+                    path = format!("{path}&type={}", client::encode(&prefix));
+                }
                 self.request(Method::GET, &path, None).await
             }
             "wait" => {
@@ -330,6 +352,14 @@ fn tools() -> Vec<Tool> {
         tool::<Tail>(
             "session_tail",
             "Read the last output bytes from a session. The maximum is 65536 bytes.",
+        ),
+        tool::<Event>(
+            "session_event",
+            "Append a loop.* event to a session log. Other event types are rejected. The entry records your session as the caller.",
+        ),
+        tool::<Log>(
+            "session_log",
+            "Read the log entries of a session in order. Filter by type prefix and by sequence number.",
         ),
         tool::<Dependency>(
             "session_depends_on",

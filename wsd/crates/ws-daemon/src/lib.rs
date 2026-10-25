@@ -25,6 +25,7 @@ pub mod agents;
 pub mod api;
 pub mod bus;
 pub mod edges;
+pub mod events;
 pub mod forwarder;
 pub mod hooks;
 pub mod import;

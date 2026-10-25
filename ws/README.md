@@ -28,6 +28,8 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws inbox [--json]` lists unread messages. `ws ack [<event_id>...]` acknowledges selected messages, or all visible unread messages.
 - `ws done [--output <file>|-]` publishes completion output. Unread messages refuse completion.
 - `ws wait <target> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through the daemon.
+- `ws event <type> [--body <json-object>] [--target <target>]` appends a `loop.*` event to a session log. The default target is the current session. Other event types get HTTP 400. The entry body records the caller in `caller`.
+- `ws log [<target>] [--type <prefix>] [--since <seq>]` prints the log entries as JSON, in order. `--since` keeps entries with a higher sequence number.
 - `ws on <ids> done|exit --send-to <target> <text>` registers a continuation. `--spawn <prompt> [--agent <agent>]` starts a child instead.
 - `ws triggers [--json]` lists pending actions. `ws on --rm <trigger-ULID>` removes one action.
 - `ws mcp` serves local stdio MCP tools. Agent launches configure this server without changing Claude or Codex configuration files.
@@ -380,6 +382,8 @@ The tools return the daemon JSON in both text and structured content.
 | `session_get` | `ws session get <target> --json` |
 | `session_send` | `ws send <target> <message> --json` |
 | `session_tail` | `ws session tail <target> --json [--stream stdout|stderr] [--max-bytes <n>]` |
+| `session_event` | `ws event <type> [--body <json>] [--target <target>]` |
+| `session_log` | `ws log [<target>] [--type <prefix>] [--since <seq>]` |
 | `session_stop` | `ws session stop <target> --json` |
 | `session_depends_on` | `ws session depends-on <target> <dependency> --json` |
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
@@ -402,6 +406,7 @@ Send keeps exit code 75 after it queues the message. JSON tail returns `session_
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.
 It replaces invalid UTF-8 bytes and enforces the limit after decoding. JSON tail does not support `--follow`.
 `GET /v1/sessions/{id}/tail` accepts `stream`, `max_bytes`, and `parent_session_id` as query parameters.
+`POST /v1/sessions/{id}/events` takes `{type, body, parent_session_id}` and appends the event when `type` starts with `loop.`. `GET /v1/sessions/{id}/log` accepts `type` (prefix), `since` and `parent_session_id` as query parameters and returns `{session_id, entries}`.
 Phase spawn requires `$WS_SESSION_ID`. Repeat `--caps-required <capability>` to record required capabilities.
 Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox daemon.
 
