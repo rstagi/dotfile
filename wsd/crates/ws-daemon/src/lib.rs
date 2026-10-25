@@ -30,6 +30,7 @@ pub mod forwarder;
 pub mod hooks;
 pub mod import;
 pub mod limits;
+pub mod loop_check;
 pub mod loops;
 pub mod naming;
 pub mod notify;

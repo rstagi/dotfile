@@ -405,6 +405,7 @@ The tools return the daemon JSON in both text and structured content.
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
 | `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
 | `loop_get` | `ws loop get <id> --json` |
+| `loop_check` | `ws loop check <id> --json` |
 | `loop_list` | `ws loop list --json` |
 | `loop_create` | `ws loop create --dir <loop_dir> --json` |
 | `loop_start` | `ws loop start <loop_dir> --json` |

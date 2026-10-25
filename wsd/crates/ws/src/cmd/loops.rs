@@ -13,6 +13,12 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Check the events of one loop against the Loop rules.
+    Check {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// List the loop states from their session events.
     List {
         #[arg(long)]
@@ -95,6 +101,7 @@ pub enum Command {
 pub async fn run(socket: &Path, command: Command) -> Result<()> {
     let (tool, arguments, json_output) = match command {
         Command::Get { id, json } => ("loop_get", json!({"id":id}), json),
+        Command::Check { id, json } => ("loop_check", json!({"id":id}), json),
         Command::List { json } => ("loop_list", json!({}), json),
         Command::Create { dir, json } => ("loop_create", json!({"loop_dir":dir}), json),
         Command::Start { loop_dir, json } => ("loop_start", json!({"loop_dir":loop_dir}), json),
@@ -140,6 +147,8 @@ pub async fn run(socket: &Path, command: Command) -> Result<()> {
     let response = Control::from_env(socket)?.call(tool, arguments).await?;
     if json_output {
         println!("{response}");
+    } else if tool == "loop_check" {
+        print_check(&response);
     } else if matches!(
         tool,
         "loop_get"
@@ -169,4 +178,36 @@ pub async fn run(socket: &Path, command: Command) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn print_check(result: &serde_json::Value) {
+    let violations = result["violations"].as_array().into_iter().flatten();
+    for violation in violations {
+        let seqs: Vec<String> = violation["seqs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|seq| seq.to_string())
+            .collect();
+        println!(
+            "{} {} phase={} seq={} {}",
+            violation["severity"].as_str().unwrap_or("?"),
+            violation["rule"].as_str().unwrap_or("?"),
+            violation["phase"]
+                .as_u64()
+                .map_or_else(|| "-".into(), |phase| phase.to_string()),
+            seqs.join(","),
+            violation["message"].as_str().unwrap_or_default()
+        );
+    }
+    println!(
+        "{}: {} hard, {} soft",
+        if result["ok"] == true {
+            "ok"
+        } else {
+            "violations"
+        },
+        result["hard"],
+        result["soft"]
+    );
 }
