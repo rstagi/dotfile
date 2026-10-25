@@ -79,7 +79,7 @@ loop-plan-archive.mjs   Loop engineering: pure milestone-archive transform for `
 loop-retro.mjs          Loop engineering: milestone retrospective facts collector (attempts, setback candidates, totals; facts only, zero-dep, Node ≥20)
 loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap (or adopt existing branch)
 loop-milestone.sh       Loop engineering: milestone merge gate — check gate PR states, advance (prepare next milestone, print state patch)
-loop-ar.sh              Loop engineering: shared AR verdicts, rotation, state machine, prompts, disputed reports (sourced)
+loop-ar.sh              Loop engineering: shared AR verdicts, rotation, state machine, prompts, disputed reports, fix proof (sourced, or run as `verdict|prompt|disputed|prove-fix`)
 loop-review.sh          Loop engineering: ledger-driven PR review — next/record/recover/prompt (a<k>, stage, role, chain)
 loop-plan-review.sh     Loop engineering: one rotating AR reviewer ↔ critic round on a frozen draft plan
 loop-emit.sh            Loop engineering: best-effort event push to the loop-web daemon (sourced)

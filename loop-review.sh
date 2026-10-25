@@ -102,7 +102,7 @@ review_record() {
   case "$role" in
     review|respond) verdict="$(ar_parse_verdict "$run_dir/report.md" reviewer)" || return 2 ;;
     critic|confirm) verdict="$(ar_parse_verdict "$run_dir/report.md" critic)" || return 2 ;;
-    fix) verdict="$(review_fix_verdict "$run_dir")" || return 1 ;;
+    fix) verdict="$(ar_prove_fix "$run_dir")" || return 1 ;;
     final) verdict="$(jq -er 'select(.commentUrl | type == "string" and length > 0) | .event // .reviewEvent' "$run_dir/status.json")" || return 1 ;;
     *) die "invalid role '$role'"; return 1 ;;
   esac
@@ -328,31 +328,6 @@ summary, and outcome (blocked for REQUEST_CHANGES, done for APPROVE). An existin
 is a completed final run. Its verdict is its "Verdict:" line. Without that line, its verdict is
 its event, and an old COMMENT review gives the outcome question.
 FINAL
-}
-
-review_fix_verdict() {
-  local run_dir="$1" data result before after remote branch worktree remote_head
-  data="$(jq -es '.[0] as $status | (.[1] // {}) as $meta |
-    select($status.outcome == "done") |
-    {result: $status.result, before: ($meta.headBefore // $status.headBefore),
-     after: ($meta.headAfter // $status.headAfter), remote: $status.remote,
-     branch: $status.branch, worktree: ($status.worktree // ".")} |
-    select(all(.[]; type == "string" and length > 0))' \
-    "$run_dir/status.json" <([[ -f "$run_dir/meta.json" ]] && cat "$run_dir/meta.json" || print '{}'))" || return 1
-  result="$(jq -r .result <<< "$data")"
-  before="$(jq -r .before <<< "$data")"; after="$(jq -r .after <<< "$data")"
-  remote="$(jq -r .remote <<< "$data")"; branch="$(jq -r .branch <<< "$data")"
-  worktree="$(jq -r .worktree <<< "$data")"
-  [[ "$before" =~ '^([0-9a-f]{40}|[0-9a-f]{64})$' && "$after" =~ '^([0-9a-f]{40}|[0-9a-f]{64})$' ]] || return 1
-  case "$result" in
-    PUSHED) [[ "$before" != "$after" ]] || return 1 ;;
-    NOOP) [[ "$before" == "$after" ]] || return 1 ;;
-    *) return 1 ;;
-  esac
-  git check-ref-format "refs/heads/$branch" >/dev/null || return 1
-  remote_head="$(git -C "$worktree" ls-remote --exit-code -- "$remote" "refs/heads/$branch")" || return 1
-  [[ "${remote_head%%$'\t'*}" == "$after" ]] || { die 'remote head does not match completed fix'; return 1; }
-  print -r -- "$result"
 }
 
 review_save_config() {
