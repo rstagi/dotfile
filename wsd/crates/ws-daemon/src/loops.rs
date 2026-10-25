@@ -28,6 +28,27 @@ pub struct LoopRequest {
     pub parent_session_id: Option<SessionId>,
 }
 
+/// Names the loop that owns a new session, and the phase attempt or review step it runs.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoopChild {
+    /// ULID, alias or name of the loop session.
+    #[serde(rename = "loop")]
+    pub loop_id: String,
+    pub phase: u64,
+    pub attempt: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<u64>,
+}
+
 pub(crate) fn router() -> Router<Store> {
     Router::new()
         .route("/v1/loops", get(list))
@@ -219,6 +240,7 @@ async fn start(
             stdout: Some(sub.join("orchestrator.stdout.log")),
             stderr: Some(sub.join("orchestrator.stderr.log")),
             key: None,
+            loop_child: None,
         },
         json!({"loop_dir":directory,"run_id":run_id}),
     )

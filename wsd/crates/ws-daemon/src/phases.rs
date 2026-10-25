@@ -13,6 +13,7 @@ use ws_core::ids::SessionId;
 
 use crate::{
     api::{ApiError, SessionResponse, Store},
+    loops::LoopChild,
     sessions::{Error, Result, Sessions},
     supervisor::{self, CreateHeadless},
 };
@@ -27,6 +28,9 @@ pub struct SpawnPhase {
     pub caps_required: Vec<String>,
     /// Maximum runtime in seconds.
     pub max_runtime: u64,
+    /// Makes the loop session the parent of the phase. The caller becomes the actor.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_child: Option<LoopChild>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -72,6 +76,7 @@ async fn spawn(
             stdout: None,
             stderr: None,
             key: None,
+            loop_child: request.loop_child.map(Box::new),
         },
         metadata,
     )
@@ -321,6 +326,63 @@ mod tests {
                     .starts_with('Z')
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_phase_with_a_loop_object_is_a_child_of_the_loop_and_records_the_actor() {
+        let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+        let app = crate::api::router(crate::sessions::Sessions::open(sandbox.path(), 1).unwrap());
+        let directory = sandbox.path().join("loop");
+        fs::create_dir(&directory).unwrap();
+        let (_, loop_session) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir": directory, "parent_session_id": null}),
+        )
+        .await;
+        let (_, caller) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let script = format!(
+            "printf '%s|%s|%s' \"$WS_LOOP_ID\" \"$WS_LOOP_PHASE\" \"$WS_LOOP_ATTEMPT\" > '{}'",
+            sandbox.path().join("environment").display()
+        );
+        let (status, child) = request(
+            &app,
+            "POST",
+            "/v1/phases/spawn",
+            json!({
+                "parent_session_id": caller["id"], "phase": {"command": ["/bin/sh", "-c", script]},
+                "repo": sandbox.path(), "base": "main", "caps_required": [], "max_runtime": 3600,
+                "loop": {"loop": loop_session["id"], "phase": 110, "attempt": 3},
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(child["parent_session_id"], loop_session["id"]);
+        let id = child["id"].as_str().unwrap().to_owned();
+        let log = ws_core::log::SessionLog::new(
+            sandbox.path(),
+            id.parse().unwrap(),
+            ws_core::ids::Ulid::new(),
+        );
+        let created = log
+            .read()
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|entry| entry.event_type == "session.created")
+            .unwrap();
+        assert_eq!(created.body["actor"], caller["id"]);
+        assert_eq!(created.body["parent_session_id"], loop_session["id"]);
+        let environment = sandbox.path().join("environment");
+        wait_for("the environment file", false, || {
+            fs::read_to_string(&environment).is_ok_and(|text| text.ends_with("|3"))
+        })
+        .await;
+        assert_eq!(
+            fs::read_to_string(&environment).unwrap(),
+            format!("{}|110|3", loop_session["id"].as_str().unwrap())
+        );
     }
 
     async fn wait_for(event: &str, advance_clock: bool, mut condition: impl FnMut() -> bool) {

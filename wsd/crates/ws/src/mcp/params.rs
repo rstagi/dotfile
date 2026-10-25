@@ -59,6 +59,31 @@ pub struct Create {
     pub stderr: Option<PathBuf>,
     /// Names one headless execution under your session. The same key returns the first session and never starts a second process. Use a new key for a new execution.
     pub key: Option<String>,
+    /// Makes a loop session the parent and the key namespace of a headless session. Your session stays the actor.
+    #[serde(default, rename = "loop")]
+    pub loop_child: Option<LoopChild>,
+}
+
+/// The loop that owns a new session, and the phase attempt or review step it runs.
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopChild {
+    /// ULID, alias, or name of the loop session.
+    #[serde(rename = "loop")]
+    pub loop_id: String,
+    pub phase: u64,
+    pub attempt: u64,
+    /// A review step sets repo, role, provider, round and inner together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -141,6 +166,9 @@ pub struct Spawn {
     pub caps_required: Vec<String>,
     /// Maximum process runtime in seconds.
     pub max_runtime: u64,
+    /// Makes a loop session the parent of the phase. Your session stays the actor.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_child: Option<LoopChild>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
