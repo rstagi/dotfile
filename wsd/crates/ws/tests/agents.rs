@@ -448,7 +448,7 @@ fn session_create_starts_an_interactive_agent_in_a_directory() {
 #[test]
 #[cfg(target_os = "macos")]
 fn agent_priority_clamps_interactive_agents() {
-    let inherited_clamp = test_process_has_inherited_clamp();
+    let inherited_clamp = common::test_process_has_inherited_clamp();
     // macOS reports a background clamp as scheduling priority 4.
     for (config, clamped) in [
         ("[agent]\npriority = \"background\"\n", true),
@@ -472,7 +472,7 @@ fn agent_priority_clamps_interactive_agents() {
 #[test]
 #[cfg(target_os = "macos")]
 fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversation() {
-    let inherited_clamp = test_process_has_inherited_clamp();
+    let inherited_clamp = common::test_process_has_inherited_clamp();
     let sandbox = Sandbox::with_config("[agent]\npriority = \"normal\"\n");
     let result = sandbox
         .command()
@@ -2527,28 +2527,6 @@ sys.exit(int(control or b'0'))
             .unwrap()
     }
 }
-#[cfg(target_os = "macos")]
-fn test_process_has_inherited_clamp() -> bool {
-    let output = Command::new("ps")
-        .args(["-o", "pri=", "-p", &std::process::id().to_string()])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let priority: i32 = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    // Use priority < 20 to detect inherited QoS clamps without Loop environment variables.
-    let clamped = priority < 20;
-    if clamped {
-        eprintln!(
-            "Skip absolute priority assertions because the test process inherits a QoS clamp."
-        );
-    }
-    clamped
-}
-
 fn git(path: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
