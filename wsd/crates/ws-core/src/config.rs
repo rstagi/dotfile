@@ -8,6 +8,7 @@ use std::{fs, io, path::Path};
 pub struct Config {
     pub agent: AgentConfig,
     pub limits: SpawnLimits,
+    pub r#loop: LoopConfig,
     pub naming: NamingConfig,
     pub telemetry: TelemetryConfig,
 }
@@ -36,6 +37,12 @@ pub enum AgentPriority {
 pub struct SpawnLimits {
     pub max_children: usize,
     pub max_depth: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LoopConfig {
+    pub max_spawns: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,5 +136,11 @@ impl Default for NamingConfig {
             model: "haiku".into(),
             program: "claude".into(),
         }
+    }
+}
+
+impl Default for LoopConfig {
+    fn default() -> Self {
+        Self { max_spawns: 500 }
     }
 }

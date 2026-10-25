@@ -446,17 +446,27 @@ The daemon reads spawn limits from `$WS_STATE/config.toml` when it starts:
 [limits]
 max_children = 8
 max_depth = 3
+
+[loop]
+max_spawns = 500
 ```
 
 Missing fields use these defaults. Zero prevents child creation. Restart the daemon after a configuration change.
-The child count includes finished and failed children. The count survives daemon restarts.
+Outside a Loop, the child count includes finished and failed children.
+Within a Loop, only live children count toward `max_children`.
+`loop.max_spawns` caps all creations and moves into a Loop, including terminal sessions.
+The old engine uses the same rules, grouped by the `--run-id` of `loop-orchestrator.sh`.
+The counts survive daemon restarts. A move out of a Loop does not restore its total spawn capacity.
 
 Each root has depth zero. A child adds one to its parent's depth.
 The daemon checks limits before it creates an interactive session, a headless session, or a phase.
 A resume keeps the existing session and does not consume another child slot.
+A self-exit spawn trigger owned by a direct child of a `loop` session creates another child of that Loop.
+This keeps the depth constant across orchestrator continuations.
+A reparent into a Loop checks its capacity and consumes one spawn.
 
 A violation returns HTTP 429 with `error.code`, `error.message`, `error.parent_session_id`, and `error.limit`.
-The codes are `max_children_exceeded` and `max_depth_exceeded`.
+The codes are `max_children_exceeded`, `max_depth_exceeded` and `max_spawns_exceeded`.
 The CLI exits with code 1 and writes this JSON error to standard error.
 MCP returns the same error as structured content with `isError: true`.
 

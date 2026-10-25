@@ -424,10 +424,20 @@ impl Sessions {
                 "edge.action_fired",
                 json!({"trigger_id":trigger.id, "spawned_session":child}),
             )?;
+            let mut parent = trigger.owner;
+            if trigger.event == "exit" && trigger.sources == [trigger.owner] {
+                let owner = self.get_record(&trigger.owner.to_string())?;
+                if let Some(id) = owner.body["parent_session_id"].as_str() {
+                    let candidate = self.get_record(id)?;
+                    if candidate.body["kind"] == "loop" {
+                        parent = candidate.id;
+                    }
+                }
+            }
             self.start_place_agent(
                 place,
                 trigger.agent.as_deref().unwrap_or("claude"),
-                Some(trigger.owner),
+                Some(parent),
                 crate::workspaces::LaunchContext {
                     resume: None,
                     run: None,

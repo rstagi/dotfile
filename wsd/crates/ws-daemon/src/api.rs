@@ -257,6 +257,9 @@ impl IntoResponse for ApiError {
             Error::SpawnLimit(crate::limits::SpawnLimit::Children { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, "max_children_exceeded")
             }
+            Error::SpawnLimit(crate::limits::SpawnLimit::Spawns { .. }) => {
+                (StatusCode::TOO_MANY_REQUESTS, "max_spawns_exceeded")
+            }
             Error::SpawnLimit(crate::limits::SpawnLimit::Depth { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, "max_depth_exceeded")
             }
@@ -269,7 +272,8 @@ impl IntoResponse for ApiError {
         let mut error = json!({"code": code, "message": self.0.to_string()});
         if let Error::SpawnLimit(
             crate::limits::SpawnLimit::Children { parent, limit }
-            | crate::limits::SpawnLimit::Depth { parent, limit },
+            | crate::limits::SpawnLimit::Depth { parent, limit }
+            | crate::limits::SpawnLimit::Spawns { parent, limit },
         ) = &self.0
         {
             error["parent_session_id"] = json!(parent);

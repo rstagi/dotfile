@@ -116,3 +116,19 @@ fn naming_defaults_to_haiku_through_claude() {
         ("off", "claude")
     );
 }
+
+#[test]
+fn loop_spawn_cap_accepts_configuration() {
+    let sandbox = tempfile::tempdir().unwrap();
+    assert_eq!(Config::load(sandbox.path()).unwrap().r#loop.max_spawns, 500);
+    let path = sandbox.path().join("config.toml");
+    fs::write(&path, "[loop]\nmax_spawns = 12\n").unwrap();
+    assert_eq!(Config::load(sandbox.path()).unwrap().r#loop.max_spawns, 12);
+    for value in ["-1", "false"] {
+        fs::write(&path, format!("[loop]\nmax_spawns = {value}\n")).unwrap();
+        assert_eq!(
+            Config::load(sandbox.path()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+}
