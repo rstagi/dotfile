@@ -7,10 +7,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Path as RoutePath, Query, State},
+    routing::{get, post},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use ws_core::{ids::SessionId, registry::Session};
+use ws_core::{ids::SessionId, log::LogEntry, registry::Session};
 
 use crate::{
     api::{self, ApiError, SessionResponse, Store},
@@ -26,9 +30,48 @@ pub struct LoopRequest {
 
 pub(crate) fn router() -> Router<Store> {
     Router::new()
+        .route("/v1/loops", get(list))
+        .route("/v1/loops/{id}", get(fetch))
         .route("/v1/loops/create", post(create))
         .route("/v1/loops/start", post(start))
         .route("/v1/loops/stop", post(stop))
+}
+
+async fn list(
+    State(store): State<Store>,
+    Query(context): Query<api::CallContext>,
+) -> std::result::Result<Json<Vec<Value>>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| {
+            sessions.record_call(context.parent_session_id, "loop.list", None)?;
+            sessions
+                .registry
+                .sessions()?
+                .into_iter()
+                .filter(|session| session.body["kind"] == "loop")
+                .map(|session| sessions.loop_state(&session))
+                .collect()
+        })
+        .await?,
+    ))
+}
+
+async fn fetch(
+    State(store): State<Store>,
+    RoutePath(id): RoutePath<String>,
+    Query(context): Query<api::CallContext>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| {
+            sessions.record_call(context.parent_session_id, "loop.get", Some(&id))?;
+            let session = sessions.get_record(&id)?;
+            if session.body["kind"] != "loop" {
+                return Err(Error::InvalidRequest("The session is not a loop."));
+            }
+            sessions.loop_state(&session)
+        })
+        .await?,
+    ))
 }
 
 /// Resolves an installed Loop script. An environment override supports custom installations.
@@ -64,6 +107,11 @@ async fn create(
 }
 
 impl Sessions {
+    fn loop_state(&self, session: &Session) -> Result<Value> {
+        let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
+        Ok(fold_loop(session, log.entries))
+    }
+
     /// Returns `(true, session)` for a new loop session and `(false, session)` for the session
     /// that already holds this canonical loop directory.
     pub fn create_loop_session(
@@ -267,4 +315,320 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&temporary);
     }
     result.map_err(Error::Io)
+}
+
+/// Builds the Loop projection from the session log. Phase statuses only increase.
+fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
+    let mut state = json!({
+        "id":session.id, "alias":session.alias, "loop_dir":session.body["loop_dir"],
+        "status":"planned", "plan":null, "phases":{}, "milestone":null,
+        "attempts":[], "merges":[], "gates":[], "reviews":[], "notes":[],
+        "decisions":[], "controls":[], "guards":[], "violations":[], "finish":null
+    });
+    for entry in entries {
+        let body = entry.body;
+        if !entry.event_type.starts_with("loop.") {
+            continue;
+        }
+        if state["status"] == "planned" {
+            state["status"] = json!("active");
+        }
+        match entry.event_type.as_str() {
+            "loop.plan" => state["plan"] = body,
+            "loop.phases" => {
+                if let Some(phases) = body["phases"].as_array() {
+                    for phase in phases {
+                        promote_phase(&mut state["phases"], phase);
+                    }
+                }
+            }
+            "loop.phase" => promote_phase(&mut state["phases"], &body),
+            "loop.milestone" => state["milestone"] = body["milestone"].clone(),
+            "loop.finish" => {
+                state["status"] = json!("finished");
+                state["finish"] = body;
+            }
+            kind => {
+                let field = match kind {
+                    "loop.attempt" => "attempts",
+                    "loop.merge" => "merges",
+                    "loop.gate" => "gates",
+                    "loop.review" => "reviews",
+                    "loop.note" => "notes",
+                    "loop.decision" => "decisions",
+                    "loop.control" => "controls",
+                    "loop.guard" => "guards",
+                    "loop.violation" => "violations",
+                    _ => continue,
+                };
+                if kind == "loop.control" && state["status"] != "finished" {
+                    match body["action"].as_str() {
+                        Some("pause") => state["status"] = json!("paused"),
+                        Some("resume") => state["status"] = json!("active"),
+                        _ => {}
+                    }
+                }
+                state[field].as_array_mut().unwrap().push(body);
+            }
+        }
+    }
+    state
+}
+
+fn promote_phase(phases: &mut Value, incoming: &Value) {
+    let Some(n) = incoming["n"].as_u64() else {
+        return;
+    };
+    let key = n.to_string();
+    let ranks = ["todo", "claimed", "running", "done", "merged"];
+    let rank = |phase: &Value| {
+        ranks
+            .iter()
+            .position(|status| phase["status"] == *status)
+            .unwrap_or(0)
+    };
+    let current = &mut phases[&key];
+    if rank(incoming) < rank(current) {
+        return;
+    }
+    if !current.is_object() {
+        *current = json!({"n":n, "status":"todo"});
+    }
+    if let Some(fields) = incoming.as_object() {
+        for (name, value) in fields {
+            if name != "status" || ranks.iter().any(|status| value == status) {
+                current[name] = value.clone();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    use crate::sessions::Sessions;
+
+    #[tokio::test]
+    async fn loop_reads_fold_events_without_lowering_phase_status_and_survive_restart() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let directory = sandbox.path().join("loop");
+        std::fs::create_dir(&directory).unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, ordinary) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let (_, created) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":directory}),
+        )
+        .await;
+        let id = created["id"].as_str().unwrap();
+        let uri = format!("/v1/loops/{id}");
+        let (status, initial) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(initial["status"], "planned");
+        assert_eq!(initial["phases"], json!({}));
+        let events = [
+            ("loop.plan", json!({"text":"# Plan", "sha":"abc"})),
+            (
+                "loop.phases",
+                json!({"phases":[{"n":1,"title":"Build", "status":"todo"}]}),
+            ),
+            (
+                "loop.phase",
+                json!({"n":1,"status":"claimed","attempt":1,"session":null}),
+            ),
+            (
+                "loop.phase",
+                json!({"n":1,"status":"running","attempt":1,"session":null}),
+            ),
+            (
+                "loop.phase",
+                json!({"n":1,"status":"done","attempt":1,"session":null}),
+            ),
+            (
+                "loop.phase",
+                json!({"n":1,"status":"merged","attempt":1,"session":null}),
+            ),
+            (
+                "loop.phase",
+                json!({"n":1,"status":"running","attempt":0,"session":null}),
+            ),
+            (
+                "loop.phases",
+                json!({"phases":[{"n":1,"title":"Build", "status":"todo"}]}),
+            ),
+            ("loop.milestone", json!({"milestone":5})),
+            ("loop.note", json!({"text":"Ready"})),
+            ("loop.control", json!({"action":"pause"})),
+        ];
+        for (kind, body) in events {
+            let (status, _) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{id}/events"),
+                json!({"type":kind,"body":body}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{kind}");
+            let (_, current) = request(&app, "GET", &uri, Value::Null).await;
+            if kind == "loop.phase" && body["attempt"] == 0 {
+                assert_eq!(current["phases"]["1"]["status"], "merged");
+                assert_eq!(current["phases"]["1"]["attempt"], 1);
+            }
+        }
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["id"], created["id"]);
+        assert_eq!(state["loop_dir"], json!(directory.canonicalize().unwrap()));
+        assert_eq!(state["plan"]["sha"], "abc");
+        assert_eq!(state["phases"]["1"]["status"], "merged");
+        assert_eq!(state["phases"]["1"]["title"], "Build");
+        assert_eq!(state["milestone"], 5);
+        assert_eq!(state["notes"][0]["text"], "Ready");
+        assert_eq!(state["status"], "paused");
+        let (_, listed) = request(&app, "GET", "/v1/loops", Value::Null).await;
+        assert_eq!(listed, json!([state]));
+        let (status, _) = request(
+            &app,
+            "GET",
+            &format!("/v1/loops/{}", ordinary["id"].as_str().unwrap()),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        drop(app);
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, recovered) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(recovered, state);
+    }
+
+    #[tokio::test]
+    async fn loop_reads_keep_work_records_and_a_terminal_finish() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, empty) = request(&app, "GET", "/v1/loops", Value::Null).await;
+        assert_eq!(empty, json!([]));
+        let (_, created) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":sandbox.path()}),
+        )
+        .await;
+        let id = created["id"].as_str().unwrap();
+        let cases = [
+            (
+                "loop.attempt",
+                "attempts",
+                json!({"n":1,"attempt":1,"session":"child","state":"result","outcome":"done","verify":"pass"}),
+            ),
+            (
+                "loop.merge",
+                "merges",
+                json!({"n":1,"repo":"owner/repo","head":"abc","verify":"pass"}),
+            ),
+            (
+                "loop.gate",
+                "gates",
+                json!({"kind":"merge","state":"open","milestone":5,"prs":[]}),
+            ),
+            (
+                "loop.review",
+                "reviews",
+                json!({"phase":2,"repo":"owner/repo","key":"r1","role":"final","provider":"gpt","round":1,"state":"finished","verdict":"APPROVE","session":"reviewer"}),
+            ),
+            (
+                "loop.decision",
+                "decisions",
+                json!({"topic":"depth","default":"standard","choice":"max","reason":"Review the boundary."}),
+            ),
+            (
+                "loop.guard",
+                "guards",
+                json!({"session":"child","rule":"write","command":"git push"}),
+            ),
+            (
+                "loop.violation",
+                "violations",
+                json!({"id":"v1","rule":"write","severity":"hard","phase":1,"evidence":"guard"}),
+            ),
+        ];
+        for (kind, _, body) in &cases {
+            let (status, _) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{id}/events"),
+                json!({"type":kind,"body":body}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{kind}");
+        }
+        for (kind, body) in [
+            ("loop.finish", json!({"summary":"Complete"})),
+            ("loop.control", json!({"action":"resume"})),
+        ] {
+            let (status, _) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{id}/events"),
+                json!({"type":kind,"body":body}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        let (_, state) = request(&app, "GET", &format!("/v1/loops/{id}"), Value::Null).await;
+        for (_, field, mut body) in cases {
+            body["source"] = json!("agent");
+            body["caller"] = Value::Null;
+            assert_eq!(state[field], json!([body]), "{field}");
+        }
+        assert_eq!(state["status"], "finished");
+        assert_eq!(state["finish"]["summary"], "Complete");
+        assert_eq!(state["controls"][0]["action"], "resume");
+        let (status, _) = request(
+            &app,
+            "GET",
+            &format!("/v1/loops/{}", ws_core::ids::Ulid::new()),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    async fn request(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(if body.is_null() {
+                        Body::empty()
+                    } else {
+                        Body::from(body.to_string())
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            },
+        )
+    }
 }
