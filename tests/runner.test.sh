@@ -590,6 +590,12 @@ done
 # --- LOOP_PRIORITY: the runner and its engine run under the macOS QoS clamp ---
 if [[ -x /usr/sbin/taskpolicy ]]; then
   echo "runner: LOOP_PRIORITY clamps the engine"
+  TEST_SHELL_PRIORITY="$(ps -o pri= -p $$)" || exit 1
+  # Use priority < 20 to detect inherited QoS clamps without Loop environment variables.
+  INHERITED_CLAMP=$(( TEST_SHELL_PRIORITY < 20 ))
+  if (( INHERITED_CLAMP )); then
+    echo "  Skip absolute priority assertions because the test shell inherits a QoS clamp."
+  fi
   for priority expected in background 4 normal unclamped; do
     rm -f "$TMP/pri.log"
     rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
@@ -598,7 +604,9 @@ if [[ -x /usr/sbin/taskpolicy ]]; then
       --chain task --timeout 5 > "$TMP/runner-pri.out" 2>&1
     PRI="$(tail -1 "$TMP/pri.log" 2>/dev/null)"
     [[ $PRI == 4 ]] && actual=4 || actual=unclamped
-    assert_eq "$actual" "$expected" "LOOP_PRIORITY=$priority gives a $expected engine (pri=$PRI)"
+    if (( ! INHERITED_CLAMP )); then
+      assert_eq "$actual" "$expected" "LOOP_PRIORITY=$priority gives a $expected engine (pri=$PRI)"
+    fi
   done
   LOOP_PRIORITY=fast zsh "$ROOT/loop-runner.sh" --worktree "$ROOT" --run-dir "$RUN_DIR" \
     --prompt-file "$TMP/prompt.md" > "$TMP/runner-pri.out" 2>&1
