@@ -198,7 +198,7 @@ impl Control {
                 self.request(
                     Method::POST,
                     &format!("{}/events", self.session_path(&request.target)?),
-                    Some(json!({"type":request.event_type,"body":request.body,"source":request.source})),
+                    Some(json!({"type":request.event_type,"body":request.body,"source":request.source,"key":request.key})),
                 )
                 .await
             }

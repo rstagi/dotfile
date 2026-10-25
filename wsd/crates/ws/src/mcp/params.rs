@@ -249,6 +249,8 @@ pub struct Event {
     pub body: Option<serde_json::Map<String, serde_json::Value>>,
     /// Who produced the event: tool or agent. The default is agent.
     pub source: Option<String>,
+    /// Stable key of the fact. When the session already has an event with this key, nothing is appended and that event is returned.
+    pub key: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

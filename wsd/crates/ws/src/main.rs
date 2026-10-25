@@ -110,6 +110,9 @@ enum Command {
         /// Who produced the event. Tools use tool. The default is agent.
         #[arg(long, value_parser = ["tool", "agent"])]
         source: Option<String>,
+        /// Stable key of the fact. A second append with the same key adds nothing.
+        #[arg(long)]
+        key: Option<String>,
         #[arg(long, default_value = "me")]
         target: String,
     },
@@ -353,6 +356,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             event_type,
             body,
             source,
+            key,
             target,
         } => {
             cmd::events::event(
@@ -361,6 +365,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 &event_type,
                 body.as_deref(),
                 source.as_deref(),
+                key.as_deref(),
             )
             .await?
         }
