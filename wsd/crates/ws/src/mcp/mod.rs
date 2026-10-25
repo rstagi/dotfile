@@ -265,6 +265,7 @@ impl Control {
             stdin: request.stdin.map(|path| directory.join(path)),
             stdout: request.stdout.map(|path| directory.join(path)),
             stderr: request.stderr.map(|path| directory.join(path)),
+            key: request.key,
         })?;
         self.request(Method::POST, "/v1/sessions", Some(body)).await
     }
