@@ -19,6 +19,14 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Acknowledge a Loop violation with a reason.
+    Ack {
+        id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// List the loop states from their session events.
     List {
         #[arg(long)]
@@ -102,6 +110,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<()> {
     let (tool, arguments, json_output) = match command {
         Command::Get { id, json } => ("loop_get", json!({"id":id}), json),
         Command::Check { id, json } => ("loop_check", json!({"id":id}), json),
+        Command::Ack { id, reason, json } => ("loop_ack", json!({"id":id,"reason":reason}), json),
         Command::List { json } => ("loop_list", json!({}), json),
         Command::Create { dir, json } => ("loop_create", json!({"loop_dir":dir}), json),
         Command::Start { loop_dir, json } => ("loop_start", json!({"loop_dir":loop_dir}), json),
@@ -152,6 +161,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<()> {
     } else if matches!(
         tool,
         "loop_get"
+            | "loop_ack"
             | "loop_list"
             | "loop_pause"
             | "loop_resume"

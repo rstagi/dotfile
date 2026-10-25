@@ -17,8 +17,8 @@ use crate::{Result, client};
 mod params;
 
 use params::{
-    Agent, Create, Dependency, Empty, Event, Log, Loop, LoopId, LoopModel, LoopNote, LoopPause,
-    LoopTier, Rename, Send, Spawn, Stream, Tail, Target, Wait,
+    Agent, Create, Dependency, Empty, Event, Log, Loop, LoopAck, LoopId, LoopModel, LoopNote,
+    LoopPause, LoopTier, Rename, Send, Spawn, Stream, Tail, Target, Wait,
 };
 use rmcp::schemars::{self, JsonSchema};
 
@@ -67,6 +67,25 @@ impl Control {
                     None,
                 )
                 .await
+            }
+            "loop_ack" => {
+                let request: LoopAck = serde_json::from_value(arguments)?;
+                // A legacy agent must not become an anonymous human for an acknowledgment.
+                let legacy = if self.caller.is_none() {
+                    std::env::var("WS_SESSION")
+                        .ok()
+                        .map(|id| id.parse())
+                        .transpose()?
+                } else {
+                    None
+                };
+                Self::for_caller(&self.socket, self.caller.or(legacy))
+                    .request(
+                        Method::POST,
+                        "/v1/loops/ack",
+                        Some(serde_json::to_value(request)?),
+                    )
+                    .await
             }
             "loop_create" | "loop_start" | "loop_stop" => {
                 let mut request: Loop = serde_json::from_value(arguments)?;
@@ -408,6 +427,10 @@ fn tools() -> Vec<Tool> {
         tool::<LoopId>(
             "loop_get",
             "Read the state of one loop from its session events.",
+        ),
+        tool::<LoopAck>(
+            "loop_ack",
+            "Record an acknowledgment of a Loop violation with a reason. Only the human can acknowledge a hard violation. Read the violation ID from loop_get.",
         ),
         tool::<LoopId>(
             "loop_check",

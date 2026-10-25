@@ -180,6 +180,15 @@ pub struct LoopId {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct LoopAck {
+    /// ID of the Loop violation. Read it from loop_get.
+    pub id: String,
+    /// Reason for the acknowledgment. The text must not be empty.
+    pub reason: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Loop {
     /// Directory that contains the Loop state.json file.
     pub loop_dir: PathBuf,
