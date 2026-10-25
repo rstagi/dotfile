@@ -635,6 +635,112 @@ describe("parsePlan — milestone guardrails", () => {
     expect(plan.warnings.join("\n")).toMatch(/Phase 2.*unknown gate "merged"/i);
   });
 
+  describe("output kinds and the accept gate", () => {
+    const REPOS = `# P
+
+## Repositories
+
+### \`acme/api\`
+- **Verify:** \`npm test\`
+
+## Milestone 1 — Mixed outputs
+
+`;
+
+    it("defaults a work phase to the pr output", () => {
+      const plan = parsePlan(`${REPOS}### Phase 1 — W [lane: A]
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+`);
+      expect(plan.phases[0]).toMatchObject({ output: "pr", repository: "acme/api" });
+      expect(plan.warnings).toEqual([]);
+    });
+
+    it.each(["pr", "file", "doc", "output.md"])("parses [output: %s]", (output) => {
+      const plan = parsePlan(`${REPOS}### Phase 1 — Make it \`[lane: A]\` \`[output: ${output}]\`
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+`);
+      expect(plan.phases[0]).toMatchObject({ output, title: "Make it" });
+      expect(plan.warnings).toEqual([]);
+    });
+
+    it.each(["file", "doc", "output.md"])("allows %s output with no repository and no Verify", (output) => {
+      const plan = parsePlan(`${REPOS}### Phase 1 — Write it [lane: A] [output: ${output}]
+- **Depends on:** none
+- **Done when:** written
+`);
+      expect(plan.phases[0]).toMatchObject({ output, repository: "", verify: null });
+      expect(plan.milestones[0].participants).toEqual([]);
+      expect(plan.warnings).toEqual([]);
+    });
+
+    it("still requires a repository for a pr output in a multi-repository plan", () => {
+      const plan = parsePlan(`${REPOS}### Phase 1 — W [lane: A] [output: pr]
+- **Depends on:** none
+`);
+      expect(plan.warnings.join("\n")).toMatch(/Phase 1.*missing Repository/i);
+    });
+
+    it("keeps an explicit repository on a non-pr phase without making it a participant", () => {
+      const plan = parsePlan(`${REPOS}### Phase 1 — Doc [lane: A] [output: doc]
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+`);
+      expect(plan.phases[0].repository).toBe("acme/api");
+      expect(plan.milestones[0].participants).toEqual([]);
+    });
+
+    it("warns on an unknown output and uses pr", () => {
+      const plan = parsePlan(`${REPOS}### Phase 1 — W [lane: A] [output: zip]
+- **Repository:** \`acme/api\`
+- **Depends on:** none
+`);
+      expect(plan.phases[0].output).toBe("pr");
+      expect(plan.warnings.join("\n")).toMatch(/Phase 1.*unknown output "zip"/i);
+    });
+
+    it("warns on an output tag on a review phase", () => {
+      const plan = parsePlan("# P\n\n## Phases\n\n### Phase 1 — W [lane: A]\n\n### Phase 2 — R [kind: pr-review] [output: doc]\n- **Depends on:** Phase 1\n");
+      expect(plan.phases[1].output).toBeNull();
+      expect(plan.warnings.join("\n")).toMatch(/Phase 2.*output.*work phases/i);
+    });
+
+    it("parses [gate: accept] and treats it as the milestone gate", () => {
+      const md = `# P
+
+## Milestone 1 — Notes
+
+### Phase 1 — Draft [lane: A] [output: doc]
+- **Depends on:** none
+
+### Phase 2 — Review draft [kind: pr-review] [gate: accept]
+- **Depends on:** Phase 1
+
+## Milestone 2 — Next
+- **Integration branch:** \`feat/next\`
+
+### Phase 3 — Next [lane: A]
+- **Depends on:** Phase 2
+
+### Phase 4 — Review [kind: pr-review]
+- **Depends on:** Phase 3
+`;
+      const plan = parsePlan(md);
+      expect(plan.phases[1]).toMatchObject({ kind: "pr-review", gate: "accept", output: null });
+      expect(plan.milestones[0].gatePhase).toBe("2");
+      expect(plan.warnings).toEqual([]);
+    });
+
+    it("warns on [gate: accept] on a work phase and on a final accept gate", () => {
+      const work = parsePlan("# P\n\n## Phases\n\n### Phase 1 — W [lane: A] [gate: accept]\n");
+      expect(work.milestones[0].gatePhase).toBeNull();
+      expect(work.warnings.join("\n")).toMatch(/Phase 1.*gate.*PR-review/i);
+      const final = parsePlan("# P\n\n## Phases\n\n### Phase 1 — W [lane: A]\n\n### Phase 2 — R [kind: pr-review] [gate: accept]\n- **Depends on:** Phase 1\n");
+      expect(final.warnings.join("\n")).toMatch(/Phase 2.*final.*gate: accept/i);
+    });
+  });
+
   it("warns when a bare PR bullet is ambiguous across several participants", () => {
     const md = `# P
 

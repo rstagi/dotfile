@@ -108,6 +108,13 @@ Author the plan in the **canonical plan format** (see
 - **Milestones** — default to none (one `## Phases` list, one PR per repository). Propose milestones only when the effort is too big for one PR and each milestone leaves main shippable on its own; confirm in the step-1 question gate. Each non-final milestone ends with a `[kind: pr-review]` `[gate: merge]` phase, and the next milestone's root phases list that gate in `Depends on`; milestones ≥2 must declare their own integration branch; milestone 1 may fall back to Loop config. Grammar and template: `references/plan-format.md` → Milestones.
   A plan keeps full phase blocks only for milestones that have not shipped. When the gate PRs of a milestone merge, `loop-execute` archives the milestone. Its phase blocks and its progress-log entries move to `.loop/milestones/m<N>.md`. `plan.md` keeps a short `[archived]` stub. When you edit an existing plan, do not copy archived blocks back into it. A phase that an `[archived]` stub lists is an existing phase with status `done`. Grammar: `references/plan-format.md` → Archived milestones.
   **Lessons.** Before you change the phases of a plan with archived milestones, read the `### Lessons` of the last 3 archive files. These are the `.loop/milestones/m<N>.md` files with the 3 highest N. An archive file without a `### Lessons` section gives no lessons. Apply each lesson that fits a phase that you add or change. For example, change its *Done when*, its `Verify:` command or its estimate. In the step 3 disposition table or the report, name each lesson that you applied and its archive file.
+- **Output kind** — choose the output of each work phase and tag it
+  `` `[output: pr|file|doc|output.md]` `` (no tag = `pr`). Use `pr` for a change to a repository.
+  Use `file` for files that are not a repository change, `doc` for a document, and `output.md`
+  for a short answer. A non-`pr` phase needs no `Repository:` and no `Verify:`. Its files go
+  to `.loop/outputs/p<N>/`. The review follows the output: AR on the PR for `pr`, AR on the
+  artifact for `file` and `doc`, and one reviewer for `output.md`. A milestone with no `pr`
+  phase ends with `[gate: accept]` in place of `[gate: merge]`. Grammar: `references/plan-format.md` → Output kinds.
 - **Terminal review phase** — every executable plan ends with one explicit
   `` `[kind: pr-review]` `` phase in lane `review`, depending on every terminal work phase.
   It represents the bounded per-repository reviews run by `loop-execute`; it has no
@@ -137,7 +144,7 @@ Author the plan in the **canonical plan format** (see
   outside work-phase estimates and can make elapsed wall time longer.
 - **Repositories** — resolve every touched checkout to its GitHub `owner/repo` slug from
   its `origin`; declare it under `## Repositories`, give it a mandatory repository-wide
-  `Verify:` command, and put `Repository:` on every work phase. One work phase belongs to one
+  `Verify:` command, and put `Repository:` on every work phase with output `pr`. One work phase belongs to one
   repository; a lane may hop repositories. Store no checkout paths in the plan. Default the
   shared integration branch to the current checkout's branch when it is not the repository's
   default branch (loop-execute adopts it), else `<type>/<effort-slug>`; override per

@@ -2,6 +2,8 @@
 
 export type PlanPhaseStatus = "todo" | "in-progress" | "blocked" | "done";
 export type PlanPhaseKind = "work" | "pr-review";
+/** What a work phase produces. Non-PR outputs live under `.loop/outputs/p<N>/`. */
+export type PlanPhaseOutput = "pr" | "file" | "doc" | "output.md";
 
 export interface LoopConfig {
   integrationBranch: string | null;
@@ -26,8 +28,10 @@ export interface PlanPhase {
   /** Descriptive title with the bracket markers stripped. */
   title: string;
   kind: PlanPhaseKind;
-  /** Human merge barrier, from `[gate: merge]`. */
-  gate: "merge" | null;
+  /** Human barrier: `[gate: merge]` (PR outputs) or `[gate: accept]` (file, doc and output.md outputs). */
+  gate: "merge" | "accept" | null;
+  /** Work phases only (default `pr`); null on review phases. */
+  output: PlanPhaseOutput | null;
   lane: string;
   status: PlanPhaseStatus;
   repository: string;

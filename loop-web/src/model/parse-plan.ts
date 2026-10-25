@@ -4,6 +4,7 @@ import type {
   PlanMilestone,
   PlanPhase,
   PlanPhaseKind,
+  PlanPhaseOutput,
   PlanPhaseStatus,
   LoopConfig,
   PlanProse,
@@ -11,6 +12,8 @@ import type {
   ReviewConfig,
   ReviewTier,
 } from "./types.ts";
+
+const PLAN_PHASE_OUTPUTS: readonly PlanPhaseOutput[] = ["pr", "file", "doc", "output.md"];
 
 const PLAN_STATUSES: readonly PlanPhaseStatus[] = [
   "todo",
@@ -30,6 +33,7 @@ const REVIEW_TAG = /\[review:\s*([^\]]+?)\s*\]/i;
 const ROUNDS_TAG = /\[rounds:\s*([^\]]+?)\s*\]/i;
 const INNER_TAG = /\[inner:\s*([^\]]*?)\s*\]/i;
 const GATE_TAG = /\[gate:\s*([^\]]+?)\s*\]/i;
+const OUTPUT_TAG = /\[output:\s*([^\]]+?)\s*\]/i;
 /** Archived milestone stub marker, last on the `## Milestone N — <outcome>` heading. */
 const ARCHIVED_TAG = /\s*`?\[archived\]`?\s*$/i;
 /** Stub bullet listing the archived milestone's phases, in document order. */
@@ -66,8 +70,8 @@ export function parsePlan(md: string): Plan {
   if (phases.some((phase) => phase.kind === "pr-review") && finalPhase?.kind !== "pr-review") {
     warnings.push("Executable plans with explicit review phases must end with a PR-review phase");
   }
-  if (finalPhase?.kind === "pr-review" && finalPhase.gate === "merge") {
-    warnings.push(`Phase ${finalPhase.phase}: the final review must not carry [gate: merge] — the loop would park forever`);
+  if (finalPhase?.kind === "pr-review" && finalPhase.gate) {
+    warnings.push(`Phase ${finalPhase.phase}: the final review must not carry [gate: ${finalPhase.gate}] — the loop would park forever`);
   }
 
   return {
@@ -142,7 +146,7 @@ function parseMilestones(
 /** Repositories of a milestone's work phases, in document order. */
 function workParticipants(phases: PlanPhase[]): string[] {
   return [...new Set(phases
-    .filter((phase) => phase.kind === "work" && phase.repository)
+    .filter((phase) => phase.kind === "work" && phase.output === "pr" && phase.repository)
     .map((phase) => phase.repository))];
 }
 
@@ -196,6 +200,7 @@ function archivedPhases(
       title: ARCHIVED_TITLE,
       kind: isGate ? "pr-review" : "work",
       gate: isGate ? "merge" : null,
+      output: isGate ? null : "pr",
       lane: isGate ? "review" : "archived",
       status: "done",
       repository: isGate ? "all" : participants.length === 1 ? participants[0] : "",
@@ -233,7 +238,7 @@ function buildMilestone(
   return {
     number: section.number,
     title: section.title,
-    gatePhase: phases.find((phase) => phase.kind === "pr-review" && phase.gate === "merge")?.phase ?? null,
+    gatePhase: phases.find((phase) => phase.kind === "pr-review" && phase.gate)?.phase ?? null,
     integrationBranches: Object.fromEntries(participants.map((slug) => {
       const fallback = section.number === 1
         ? repositories.find((repo) => repo.slug === slug)?.integrationBranch ?? null
@@ -286,12 +291,13 @@ function validateMilestones(
   for (const [index, milestone] of milestones.entries()) {
     const milestonePhases = phases.filter((phase) => phase.milestone === milestone.number);
     // An archived stub already warned about its own participants; its phases carry no edges.
-    if (milestonePlan && !milestone.archive && milestone.participants.length === 0) {
+    if (milestonePlan && !milestone.archive && milestone.participants.length === 0
+      && !milestonePhases.some((phase) => phase.kind === "work" && phase.output !== "pr")) {
       warnings.push(`Milestone ${milestone.number} has no work phases — its review has no repositories to review`);
     }
     const lastPhase = milestonePhases.at(-1);
-    if (milestone !== milestones.at(-1) && (lastPhase?.kind !== "pr-review" || lastPhase.gate !== "merge")) {
-      warnings.push(`Milestone ${milestone.number} must end with a PR-review phase tagged [gate: merge]`);
+    if (milestone !== milestones.at(-1) && (lastPhase?.kind !== "pr-review" || !lastPhase.gate)) {
+      warnings.push(`Milestone ${milestone.number} must end with a PR-review phase tagged [gate: merge] or [gate: accept]`);
     }
     const previousGate = milestones[index - 1]?.gatePhase;
     if (previousGate && !milestone.archive) {
@@ -482,9 +488,12 @@ function buildPhase(
   const rawGate = raw.heading.match(GATE_TAG)?.[1].toLowerCase();
   if (rawGate && kind !== "pr-review") {
     warnings.push(`Phase ${raw.num}: gate tags are only allowed on PR-review phases`);
-  } else if (rawGate && rawGate !== "merge") {
-    warnings.push(`Phase ${raw.num}: unknown gate "${rawGate}" (merge) — ignoring`);
+  } else if (rawGate && rawGate !== "merge" && rawGate !== "accept") {
+    warnings.push(`Phase ${raw.num}: unknown gate "${rawGate}" (merge|accept) — ignoring`);
   }
+  const rawOutput = raw.heading.match(OUTPUT_TAG)?.[1];
+  if (rawOutput && kind !== "work") warnings.push(`Phase ${raw.num}: output tags are only allowed on work phases`);
+  const output = kind === "work" ? normalizeOutput(rawOutput, raw.num, warnings) : null;
   const title = raw.heading
     .replace(/`?\[lane:[^\]]*\]`?/i, "")
     .replace(/`?\[status:[^\]]*\]`?/i, "")
@@ -493,16 +502,20 @@ function buildPhase(
     .replace(/`?\[rounds:[^\]]*\]`?/i, "")
     .replace(/`?\[inner:[^\]]*\]`?/i, "")
     .replace(/`?\[gate:[^\]]*\]`?/i, "")
+    .replace(/`?\[output:[^\]]*\]`?/i, "")
     .replace(/^\s*[—–-]\s*/, "")
     .replace(/`/g, "")
     .trim();
 
+  // A phase whose output is not a PR may have no repository.
   const repository = kind === "pr-review"
     ? "all"
-    : multiRepository
+    : output !== "pr"
       ? stripBackticks(bulletValue(raw.body, "Repository")) ?? ""
-      : "primary";
-  if (kind === "work" && multiRepository && !repository) {
+      : multiRepository
+        ? stripBackticks(bulletValue(raw.body, "Repository")) ?? ""
+        : "primary";
+  if (output === "pr" && multiRepository && !repository) {
     warnings.push(`Phase ${raw.num}: missing Repository assignment`);
   } else if (kind === "work" && repository && !repositories.some((entry) => entry.slug === repository)) {
     warnings.push(`Phase ${raw.num}: unknown repository ${repository}`);
@@ -513,7 +526,8 @@ function buildPhase(
     milestone,
     title: title || `Phase ${raw.num}`,
     kind,
-    gate: rawGate === "merge" ? "merge" : null,
+    gate: rawGate === "merge" || rawGate === "accept" ? rawGate : null,
+    output,
     lane: laneMatch ? laneMatch[1].trim() : "A",
     status: normalizeStatus(statusMatch?.[1], raw.num, warnings),
     repository,
@@ -552,6 +566,17 @@ function parseReviewConfig(heading: string, phaseNum: string, warnings: string[]
     else warnings.push(`Phase ${phaseNum}: inner must be 1..${REVIEW_ROUNDS_CAP} — using the runtime default`);
   }
   return { tier, rounds, inner };
+}
+
+function normalizeOutput(
+  raw: string | undefined,
+  phaseNum: string,
+  warnings: string[],
+): PlanPhaseOutput {
+  const value = (raw ?? "pr").trim().toLowerCase();
+  if ((PLAN_PHASE_OUTPUTS as readonly string[]).includes(value)) return value as PlanPhaseOutput;
+  warnings.push(`Phase ${phaseNum}: unknown output "${value}" (pr|file|doc|output.md) — defaulting to pr`);
+  return "pr";
 }
 
 function normalizeKind(

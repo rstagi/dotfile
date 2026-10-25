@@ -30,15 +30,20 @@ between repositories.
   evidence for verification against the code. Only the fixer/planner edits the artifact,
   between outer rounds. PR review uses Opus fixes when needed and ends with one Opus
   verdict; `loop-review.sh next` advances the ledger-driven pipeline.
-- A review phase that ends a non-final milestone adds `` `[gate: merge]` `` (see
-  **Milestones** below); the tag is only valid together with `[kind: pr-review]`.
+- A review phase that ends a non-final milestone adds `` `[gate: merge]` `` or
+  `` `[gate: accept]` `` (see **Milestones** below); the tag is only valid together with
+  `[kind: pr-review]`.
+- A work phase may add `` `[output: pr|file|doc|output.md]` ``. The default is `pr`. The
+  planner chooses the kind of each phase (see **Output kinds** below).
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.
 - `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
   the daemon.
-- `Repository:` is mandatory on every work phase when `## Repositories` exists and must match
-  one declared slug. A PR-review phase covers every repository and omits `Repository:`.
-  Repository `Verify:` is mandatory; a work phase `Verify:` overrides it.
+- `Repository:` is mandatory on every work phase with output `pr` when `## Repositories`
+  exists and must match one declared slug. A work phase with another output may omit it. When
+  it names a repository, the slug must match a declared one. A PR-review phase covers every
+  repository and omits `Repository:`. Repository `Verify:` is mandatory; a work phase
+  `Verify:` overrides it. For an output other than `pr`, `Verify:` is optional.
 - `Estimate:` is required on every work phase of a new Loop plan. It is a human-readable range,
   confidence, and basis; the parser ignores it. Its upper bound should normally be at most
   25 minutes to leave room before the runner's 30-minute checkpoint. State exceptions
@@ -76,6 +81,27 @@ line in each phase.
 - **Parser safety.** Do not start a sub-bullet with a bold `**Label:**`. Parsers read such a
   line as a phase field.
 
+## Output kinds
+
+Each work phase declares what it produces. The planner chooses the kind per phase. When the
+tag is absent, the output is `pr`.
+
+| Output | Product | Review of the phase |
+|---|---|---|
+| `pr` | A commit on a branch of `Repository:`, merged into the integration branch. | AR on the PR. |
+| `file` | One or more files in `.loop/outputs/p<N>/`. | AR on the files. |
+| `doc` | A document in `.loop/outputs/p<N>/`. | AR on the document. |
+| `output.md` | One answer file, `.loop/outputs/p<N>/output.md`. | One reviewer, no critic. |
+
+- The review kind follows the output kind. A `[kind: pr-review]` phase that reviews `pr`
+  outputs runs AR on each PR. A review phase that reviews `file` or `doc` outputs runs AR on
+  the artifact in `.loop/outputs/p<N>/`. A review phase that reviews `output.md` outputs
+  runs one reviewer.
+- Outputs other than `pr` have no branch, no merge and no integration worktree. They add no
+  participant to a milestone.
+- A work phase with an output other than `pr` may have no `Repository:` and no `Verify:`.
+  Then *Done when* states the check that a reviewer can make.
+
 ## Milestones (optional)
 
 One plan may carry several **milestones**: macro phases that each ship as their own PR per
@@ -94,7 +120,8 @@ milestones.
 - **Participants.** A milestone's participants are the repositories of its work phases.
   Prepare, PR creation, review, and the merge gate are scoped to participants.
 - **Gate.** Every non-final milestone ends with a `` `[kind: pr-review]` `` `` `[gate: merge]` ``
-  phase. The root phases of milestone N+1 must list the gate in `Depends on` explicitly (the
+  phase. When the milestone has no PR output, the gate is `` `[gate: accept]` `` and the human
+  accepts the outputs in `.loop/outputs/` in place of a merge. The root phases of milestone N+1 must list the gate in `Depends on` explicitly (the
   parser warns, `loop-execute` preflight rejects if missing). Milestones always block the next;
   there is no stacking. After the gate review verdict is posted the loop parks in
   `awaiting-merge` (plan Status `awaiting merge`) until a human merges and runs
