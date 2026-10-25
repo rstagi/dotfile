@@ -21,6 +21,8 @@ use crate::{
     sessions::{Error, Result, Sessions},
 };
 
+pub(crate) mod guard;
+
 /// The phase statuses from lowest to highest. The Loop fold never lowers a status.
 const PHASE_RANKS: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
 
@@ -77,6 +79,7 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/loops", get(list))
         .route("/v1/loops/{id}", get(fetch))
         .route("/v1/loops/create", post(create))
+        .route("/v1/loops/guard", post(guard::run))
         .route("/v1/loops/start", post(start))
         .route("/v1/loops/stop", post(stop))
         .route("/v1/loops/{id}/{action}", post(control))
