@@ -59,6 +59,15 @@ impl Control {
                 )
                 .await
             }
+            "loop_check" => {
+                let request: LoopId = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::GET,
+                    &format!("/v1/loops/{}/check", client::encode(&request.id)),
+                    None,
+                )
+                .await
+            }
             "loop_create" | "loop_start" | "loop_stop" => {
                 let mut request: Loop = serde_json::from_value(arguments)?;
                 request.loop_dir = std::env::current_dir()?.join(request.loop_dir);
@@ -399,6 +408,10 @@ fn tools() -> Vec<Tool> {
         tool::<LoopId>(
             "loop_get",
             "Read the state of one loop from its session events.",
+        ),
+        tool::<LoopId>(
+            "loop_check",
+            "Check the events of one loop against the Loop rules. Each violation names the rule, the severity (hard or soft), the phase and the sequence numbers of the events that prove it.",
         ),
         tool::<Empty>(
             "loop_list",

@@ -78,6 +78,7 @@ pub(crate) fn router() -> Router<Store> {
     Router::new()
         .route("/v1/loops", get(list))
         .route("/v1/loops/{id}", get(fetch))
+        .route("/v1/loops/{id}/check", get(check))
         .route("/v1/loops/create", post(create))
         .route("/v1/loops/guard", post(guard::run))
         .route("/v1/loops/start", post(start))
@@ -129,6 +130,29 @@ async fn fetch(
                 return Err(Error::InvalidRequest("The session is not a loop."));
             }
             sessions.loop_state(&session)
+        })
+        .await?,
+    ))
+}
+
+async fn check(
+    State(store): State<Store>,
+    RoutePath(id): RoutePath<String>,
+    Query(context): Query<api::CallContext>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| {
+            sessions.record_call(context.parent_session_id, "loop.check", Some(&id))?;
+            let session = sessions.get_record(&id)?;
+            if session.body["kind"] != "loop" {
+                return Err(Error::InvalidRequest("The session is not a loop."));
+            }
+            let log =
+                ws_core::log::SessionLog::new(&sessions.state, session.id, sessions.device_id)
+                    .read()?;
+            let mut result = crate::loop_check::check_entries(&log.entries);
+            result["id"] = json!(session.id);
+            Ok(result)
         })
         .await?,
     ))
