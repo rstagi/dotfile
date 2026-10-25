@@ -73,6 +73,19 @@ path_without_command() {
   print -r -- "${(j.:.)kept}"
 }
 
+# make_fake_ws <dir> — write <dir>/ws, a double that appends each call to $FAKE_WS_LOG (one tab-separated
+# line of arguments) and exits with $FAKE_WS_EXIT (default 0). Put <dir> first on PATH to use it.
+make_fake_ws() {
+  mkdir -p "$1"
+  cat > "$1/ws" <<'FAKE'
+#!/bin/sh
+[ -n "${FAKE_WS_LOG:-}" ] && { printf '%s\t' "$@"; printf '\n'; } >> "$FAKE_WS_LOG"
+[ "${FAKE_WS_EXIT:-0}" = 0 ] || echo "fake ws failure" >&2
+exit "${FAKE_WS_EXIT:-0}"
+FAKE
+  chmod +x "$1/ws"
+}
+
 # Require the debug binary for each Rust suite.
 require_ws_test_binary() {
   [[ -x "$ROOT/wsd/target/debug/ws" ]] && return 0
