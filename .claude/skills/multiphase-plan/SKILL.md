@@ -13,6 +13,9 @@ argument-hint: "[light] <goal> (optional)"
 
 # Multi-Phase Plan
 
+> Source of truth for these rules: [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md). When this skill and that file differ, the file wins. Update the file first.
+
+
 Produce a correct phased plan, and register it on the local **Loop daemon**
 (http://localhost:7717) as the shared source of truth so any coding agent — **Claude
 Code or Codex**, in any worktree — can pick it up and continue. *Where the work genuinely allows it*, mark phases into **lanes** that
