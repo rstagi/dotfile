@@ -9,6 +9,10 @@
 //   loop-top archive [runId] [--yes] hide a loop from selectors (default: the inferred one;
 //                                    worktrees untouched) · loop-top unarchive <runId>
 //
+// Two sources. A loop that wsd knows (`ws loop list|get --json`) is read from wsd and steered with
+// `ws loop …`. Every other loop is read from the loop-web daemon and steered through its endpoints.
+// Without `ws loop`, or when it exits non-zero, only the loop-web source is used.
+//
 // Status comes from the daemon's materialized snapshot (never re-derived here). Phase worktree
 // paths aren't in the snapshot, so they're read from the coordinator's .loop/state.json, else
 // the store record's lastState.
@@ -23,6 +27,8 @@ const STORE_DIR = process.env.LOOP_STORE_DIR || path.join(os.homedir(), ".loop",
 const HTTP_TIMEOUT_MS = 1500;
 const POLL_MS = 2000;
 const QUOTA_TIMEOUT_MS = 1500;
+const WS_TIMEOUT_MS = 1500;
+const WS_CONTROL_TIMEOUT_MS = 10_000;
 let quotaRead = null;
 let quotaReadAt = 0;
 const SELF = new URL(import.meta.url).pathname;
@@ -61,7 +67,7 @@ async function main(argv) {
   const explicit = argv.find((a) => !a.startsWith("--")) ?? null;
 
   const { loops, online } = await loadLoops();
-  const runId = explicit ?? inferLoop(cwdContext(), loops);
+  const runId = explicit ? (findRef(loops, explicit)?.runId ?? explicit) : inferLoop(cwdContext(), loops);
 
   if (once) {
     if (!runId) throw new Error("no loop inferred from cwd — pass a runId (see `loop-top` picker)");
@@ -78,8 +84,9 @@ async function archiveCommand(archive, argv) {
   const verb = archive ? "archive" : "unarchive";
   const explicit = argv.find((a) => !a.startsWith("--")) ?? null;
   const { loops, online } = await loadLoops();
-  const runId = explicit ?? (archive ? inferLoop(cwdContext(), loops) : null);
+  const runId = explicit ? (findRef(loops, explicit)?.runId ?? explicit) : archive ? inferLoop(cwdContext(), loops) : null;
   if (!runId) throw new Error(`no loop inferred from cwd — pass a runId (loop-top ${verb} <runId>)`);
+  if (findRef(loops, runId)?.source === "wsd") throw new Error(`${runId} is a wsd loop — wsd loops cannot be archived`);
   const status = loops.find((l) => l.runId === runId)?.status ?? "unknown";
   if (archive && !argv.includes("--yes") && !(await confirm(`archive ${runId} (${status})?`))) {
     console.log("not archived");
@@ -193,6 +200,7 @@ async function interactive(initialRunId, initialLoops, { showWorktrees, graph })
     loops: initialLoops, runId: initialRunId, frame: null, showWorktrees, graph, live: null,
     selected: null, details: false, confirm: null, message: null, messageAt: 0,
   };
+  const control = (action, args) => loopControl(ui.loops, ui.runId, action, args);
 
   if (!ui.runId) ui.runId = pickLoop(ui.loops);
   if (!ui.runId) return;
@@ -265,7 +273,7 @@ async function interactive(initialRunId, initialLoops, { showWorktrees, graph })
       }
     },
     p: async () => {
-      const plan = await loadPlanText(ui.runId);
+      const plan = ui.frame?.wsd?.plan?.text ?? (await loadPlanText(ui.runId));
       if (!plan) return say("no plan text for this loop");
       handOver(() => spawnSync(process.env.PAGER || "less", ["-R"], { input: plan, stdio: ["pipe", "inherit", "inherit"] }));
     },
@@ -275,15 +283,14 @@ async function interactive(initialRunId, initialLoops, { showWorktrees, graph })
       const current = ui.frame.snapshot?.graph?.nodes?.find((n) => n.id === row.id)?.noteMarkdown ?? "";
       const edited = handOver(() => editText(current, `loop-note-${row.label}`));
       if (edited == null || edited.trim() === current.trim()) return say("note unchanged");
-      const body = edited.trim() ? { key: row.id, markdown: edited } : { key: row.id, clear: true };
-      const res = await postJson(`/api/loops/${encodeURIComponent(ui.runId)}/note`, body);
+      const res = await control("note", edited.trim() ? { phase: row.id, markdown: edited } : { phase: row.id, clear: true });
       say(res.ok ? (edited.trim() ? `note saved for ${row.label}` : `note cleared for ${row.label}`) : `note failed: ${res.error}`);
     },
     x: async () => {
       const row = selectedRow();
       if (!row) return;
       const action = row.paused ? "resume" : "pause";
-      const res = await postJson(`/api/loops/${encodeURIComponent(ui.runId)}/control`, { action, phase: row.id });
+      const res = await control(action, { phase: row.id });
       say(res.ok ? `${action === "pause" ? "paused" : "resumed"} phase ${row.label}` : `${action} failed: ${res.error}`);
     },
     X: () => {
@@ -291,7 +298,7 @@ async function interactive(initialRunId, initialLoops, { showWorktrees, graph })
       ui.confirm = {
         prompt: `${action === "pause" ? "Pause the WHOLE loop (orchestrator + all runners)" : "Resume the whole loop"}? [y/N]`,
         run: async () => {
-          const res = await postJson(`/api/loops/${encodeURIComponent(ui.runId)}/control`, { action });
+          const res = await control(action, {});
           say(res.ok ? `loop ${action === "pause" ? "paused" : "resumed"}` : `${action} failed: ${res.error}`);
         },
       };
@@ -304,12 +311,12 @@ async function interactive(initialRunId, initialLoops, { showWorktrees, graph })
       if (row.review) {
         const tier = handOver(() => pickTier(row));
         if (!tier) return;
-        const res = await postJson(`/api/loops/${encodeURIComponent(ui.runId)}/control`, { action: "review", phase: row.id, tier });
+        const res = await control("tier", { phase: row.id, tier });
         return say(res.ok ? `phase ${row.label} will review at ${tier}` : `tier failed: ${res.error}`);
       }
       const leg = handOver(() => pickModel(row));
       if (leg === undefined) return;
-      const res = await postJson(`/api/loops/${encodeURIComponent(ui.runId)}/control`, { action: "model", phase: row.id, leg });
+      const res = await control("model", { phase: row.id, leg });
       say(res.ok ? (leg ? `phase ${row.label} will run on ${leg}` : `phase ${row.label} back to the default chain`) : `model failed: ${res.error}`);
     },
   };
@@ -416,6 +423,12 @@ function followLoop(runId, getLoops, onFrame) {
     timer = setTimeout(poll, POLL_MS);
   };
 
+  // A wsd loop has no event stream: poll `ws loop get`.
+  if (findRef(getLoops(), runId)?.source === "wsd") {
+    poll();
+    return { stop() { stopped = true; clearTimeout(timer); clearInterval(quotaTimer); } };
+  }
+
   // Immediate first frame (also covers a loop the daemon streams as `null`: store fallback).
   fetchFrame(runId, getLoops(), null).then((f) => !stopped && publish(f), () => {});
 
@@ -499,16 +512,185 @@ export function pickerRows(loops) {
 
 /** Loop refs (daemon summary + store record) for inference/picker; `online` = daemon reachable. */
 async function loadLoops() {
-  const summaries = await getJson("/api/loops");
+  const [summaries, wsdLoops] = await Promise.all([getJson("/api/loops"), loadWsdLoops()]);
   const records = new Map(readStoreRecords().map((r) => [r.runId, r]));
-  if (summaries) return { loops: summaries.map((s) => loopRef(s, records.get(s.runId))), online: true };
-  const loops = [...records.values()].map((r) => loopRef(storeSummary(r), r));
-  loops.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
-  return { loops, online: false };
+  let loops;
+  if (summaries) {
+    loops = summaries.map((s) => loopRef(s, records.get(s.runId)));
+  } else {
+    loops = [...records.values()].map((r) => loopRef(storeSummary(r), r));
+    loops.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+  }
+  // wsd wins when it knows the loop.
+  const wsdIds = new Set(wsdLoops.map((l) => l.runId));
+  return { loops: [...wsdLoops, ...loops.filter((l) => !wsdIds.has(l.runId))], online: summaries != null };
+}
+
+/** The loop that `key` names: a run id, a wsd session id or a wsd alias. */
+function findRef(loops, key) {
+  return loops.find((l) => l.runId === key) ?? loops.find((l) => l.wsId === key || (l.alias && l.alias === key)) ?? null;
+}
+
+// ---- wsd source ----
+
+/** Loop states that wsd knows. An older `ws` has no `loop list`: no wsd loops, loop-web only. */
+async function loadWsdLoops() {
+  const data = await runWs(["loop", "list", "--json"]);
+  return Array.isArray(data) ? data.filter(isWsdState).map(wsdRef) : [];
+}
+
+async function wsLoopGet(id) {
+  const data = await runWs(["loop", "get", id, "--json"]);
+  return isWsdState(data) ? data : null;
+}
+
+function isWsdState(value) {
+  return Boolean(value) && typeof value.id === "string" && Boolean(value.phases) && typeof value.phases === "object";
+}
+
+/** Run `ws` and parse its JSON stdout; null on a missing command, a non-zero exit or bad JSON. */
+function runWs(args) {
+  return new Promise((resolve) => {
+    execFile("ws", args, { timeout: WS_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+      if (error) return resolve(null);
+      try { resolve(JSON.parse(stdout)); } catch { resolve(null); }
+    });
+  });
+}
+
+/** A wsd loop as a loop ref. The run id comes from the loop directory's state.json when it has one. */
+function wsdRef(state) {
+  const loopDir = typeof state.loop_dir === "string" ? state.loop_dir : null;
+  const live = loopDir ? readJson(path.join(loopDir, "state.json")) : null;
+  const phases = Object.values(state.phases);
+  const livePhases = Object.values(live?.phases ?? {});
+  return {
+    runId: live?.runId || state.id,
+    wsId: state.id,
+    alias: state.alias ?? null,
+    source: "wsd",
+    status: state.status ?? "unknown",
+    updatedAt: live?.updatedAt ?? null,
+    startedAt: live?.startedAt ?? null,
+    finishedAt: live?.finishedAt ?? null,
+    integrationBranch: live?.integrationBranch ?? null,
+    repositories: [...new Set(phases.map((p) => p.repo).filter(Boolean))],
+    loopDir,
+    coordinatorDir: loopDir ? realpath(path.dirname(loopDir)) : null,
+    worktrees: livePhases.map((p) => p.worktree).filter(Boolean).map(realpath),
+    branches: [...phases, ...livePhases].map((p) => p.branch).filter(Boolean),
+  };
+}
+
+/** wsd loop state → the graph snapshot shape that phaseRows and the headers read. */
+export function wsdSnapshot(state) {
+  const phases = Object.values(state.phases ?? {}).sort((a, b) => a.n - b.n);
+  const list = (key) => (Array.isArray(state[key]) ? state[key] : []);
+  const planText = state.plan?.text ?? "";
+  const finished = (p) => p.status === "done" || p.status === "merged";
+  const byId = new Map(phases.map((p) => [p.n, p]));
+  const openGate = Object.entries(state.merge_gates ?? {}).filter(([, v]) => v === "open").map(([m]) => Number(m)).sort((a, b) => a - b)[0];
+  const mergeGate = openGate == null ? null : [...list("gates")].reverse().find((g) => g.kind === "merge" && g.state === "open" && g.milestone === openGate);
+  const acceptGate = [...list("gates")].reverse().find((g) => g.kind === "accept");
+  const numbers = [...new Set(phases.map((p) => p.milestone).filter((m) => m != null))].sort((a, b) => a - b);
+  const titles = new Map([...planText.matchAll(/^## Milestone (\d+) — (.+)$/gm)].map((m) => [Number(m[1]), m[2].trim()]));
+
+  const nodes = phases.map((p) => {
+    const attempts = list("attempts").filter((a) => a.n === p.n);
+    const last = attempts[attempts.length - 1];
+    const result = last?.state === "result" && !finished(p) ? last : null;
+    const parked = p.gate === "merge" && p.milestone === openGate && p.status !== "merged";
+    const acceptOpen = p.gate === "accept" && acceptGate?.state === "open" && acceptGate.phase === p.n;
+    const ui = finished(p) ? "done"
+      : result?.outcome === "question" ? "awaiting"
+      : result?.outcome === "blocked" ? "blocked"
+      : result?.verify === "fail" ? "problem"
+      : p.status === "running" || p.status === "claimed" ? "running" : "todo";
+    const header = planText.split("\n").find((l) => new RegExp(`^### Phase ${p.n}\\b`).test(l)) ?? "";
+    const review = p.kind === "review"
+      ? { tier: header.match(/\[review: (\w+)\]/)?.[1] ?? "standard", rounds: header.match(/\[rounds: (\d+)\]/)?.[1] ? Number(header.match(/\[rounds: (\d+)\]/)[1]) : null }
+      : null;
+    const override = [...list("controls")].reverse().find((c) => c.action === "model" && c.phase === p.n)?.model ?? null;
+    const notes = list("notes").filter((n) => n.phase === p.n).map((n) => n.text).join("\n\n");
+    return {
+      id: String(p.n), kind: p.kind === "review" ? "pr-review" : "phase", phase: String(p.n), title: p.title,
+      lane: p.output ?? null, repository: p.repo ?? null, status: p.status, ui,
+      paused: state.pauses?.[p.n] === true, noteMarkdown: notes, modelOverride: override, review, reviewStages: [],
+      milestone: p.milestone ?? null, awaitingMerge: parked, prs: parked ? mergeGate?.prs ?? {} : undefined,
+      runtime: {
+        attempt: p.attempt ?? 0, branch: p.branch ?? null, engine: last?.engine ?? null, model: last?.model ?? null,
+        lastHeartbeatAgeSec: null, problem: result?.verify === "fail" ? "verify-fail" : result?.outcome ?? null,
+        awaiting: acceptOpen, hilOpen: false,
+        attempts: attempts.filter((a) => a.state === "result").map((a) => ({ k: a.attempt, engine: a.engine, model: a.model, outcome: a.outcome, ended: true })),
+      },
+    };
+  });
+  const edges = phases.flatMap((p) => (p.depends_on ?? []).map((d) => ({
+    source: String(d), target: String(p.n), kind: "depends", blocking: !(byId.has(d) && finished(byId.get(d))),
+  })));
+  return {
+    paused: state.pauses?.all === true,
+    effort: { milestone: state.milestone, milestoneTotal: numbers.length, integrationBranch: null },
+    graph: { nodes, edges, milestones: numbers.map((number) => ({ number, title: titles.get(number) ?? "" })) },
+  };
+}
+
+/** Steer a loop. A wsd loop goes through `ws loop …`; any other loop through the loop-web daemon.
+ * action: note | pause | resume | model | tier → { ok, error }. */
+export async function loopControl(loops, runId, action, args = {}) {
+  const ref = findRef(loops, runId);
+  if (ref?.source === "wsd") {
+    try {
+      return await runWsControl(wsControlArgs(ref, action, args));
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+  const base = `/api/loops/${encodeURIComponent(runId)}`;
+  const res = action === "note"
+    ? await postJson(`${base}/note`, args.clear ? { key: args.phase, clear: true } : { key: args.phase, markdown: args.markdown })
+    : await postJson(`${base}/control`, action === "tier" ? { action: "review", phase: args.phase, tier: args.tier }
+      : action === "model" ? { action, phase: args.phase, leg: args.leg } : { action, phase: args.phase });
+  return { ok: res.ok, error: res.error };
+}
+
+/** The `ws loop` argv for one control. Throws when wsd cannot do it. */
+export function wsControlArgs(ref, action, { phase, markdown, leg, tier, clear } = {}) {
+  if (phase != null && !/^\d+$/.test(String(phase))) throw new Error(`wsd loops use a phase number, not "${phase}"`);
+  const target = ["loop", action, ref.wsId, ...(phase != null ? [String(phase)] : [])];
+  switch (action) {
+    case "note":
+      if (clear) throw new Error("A note on a wsd loop cannot be cleared.");
+      return [...target, "--", markdown];
+    case "pause":
+    case "resume":
+      return target;
+    case "model":
+      if (!leg) throw new Error("A wsd loop has no default chain to go back to; pick a model.");
+      return [...target, leg];
+    case "tier":
+      return [...target, tier];
+    default:
+      throw new Error(`unknown control: ${action}`);
+  }
+}
+
+function runWsControl(args) {
+  return new Promise((resolve) => {
+    execFile("ws", args, { timeout: WS_CONTROL_TIMEOUT_MS, killSignal: "SIGKILL" }, (error, _stdout, stderr) => {
+      if (!error) return resolve({ ok: true, error: null });
+      resolve({ ok: false, error: String(stderr).trim().split("\n")[0] || error.message });
+    });
+  });
 }
 
 /** One renderable frame: snapshot from the daemon (or store), worktrees from coordinator state. */
 async function fetchFrame(runId, loops, online) {
+  const wsdRef = findRef(loops, runId);
+  if (wsdRef?.source === "wsd") {
+    const state = await wsLoopGet(wsdRef.wsId);
+    if (state) return { ref: wsdRef, snapshot: wsdSnapshot(state), wsd: state, state: readPhaseState(wsdRef), source: "wsd", at: new Date(), quota: await loadQuota() };
+  }
   const snapshot = online === false ? null : await getJson(`/api/loops/${encodeURIComponent(runId)}/snapshot`);
   if (snapshot) return frameFrom(runId, loops, snapshot, "live");
   const record = readStoreRecord(runId);
@@ -517,7 +699,7 @@ async function fetchFrame(runId, loops, online) {
 }
 
 async function frameFrom(runId, loops, snapshot, source) {
-  const ref = loops.find((l) => l.runId === runId) ?? loopRef(storeSummary(readStoreRecord(runId) ?? { runId }), null);
+  const ref = loops.find((l) => l.runId === runId && l.source !== "wsd") ?? loopRef(storeSummary(readStoreRecord(runId) ?? { runId }), null);
   return { ref, snapshot, state: readPhaseState(ref), source, at: new Date(), quota: await loadQuota() };
 }
 
@@ -881,7 +1063,8 @@ function renderHeader({ ref, snapshot }, width, paint) {
 
 /** Status line (or a transient banner/confirm prompt), plus key hints in interactive mode. */
 function renderFooter({ source, at }, { width, keys, banner, paint, hints }) {
-  const status = `updated ${at.toTimeString().slice(0, 8)} · ${source === "live" ? "live" : "daemon offline · from store"}`;
+  const origin = source === "wsd" ? "live · wsd" : source === "live" ? "live" : "daemon offline · from store";
+  const status = `updated ${at.toTimeString().slice(0, 8)} · ${origin}`;
   if (!keys) return [status];
   const left = banner ? paint(STYLE.yellow, truncate(banner, width - status.length - 2)) : "";
   const pad = " ".repeat(Math.max(2, width - (banner ? Math.min(banner.length, width - status.length - 2) : 0) - status.length));
