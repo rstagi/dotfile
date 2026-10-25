@@ -1,5 +1,5 @@
 // Concept graph: validated props -> nodes, edges, groups and one fixed layout. Zero dependencies.
-// The page and the video draw this graph with the same positions.
+// The graph page draws this graph with these positions.
 //
 // Node ids are stable: the same props always give the same ids and the same positions.
 //   plan: goal, milestone-<n>, phase-<n>, layer-<i>, component-<slug>, decision-<i>, risk-<i>
@@ -28,7 +28,7 @@ const RAY_STEP = 12;
 const SCREEN = 16 / 9;
 const ELLIPSIS = "…";
 
-// The kinds of each mode, in legend order. `color` names a color token of the page and the video.
+// The kinds of each mode, in legend order. `color` names a color token of the page.
 export const KINDS = {
   goal: { label: "Goal", color: "accent" },
   milestone: { label: "Milestones", color: "ink" },
@@ -518,7 +518,7 @@ function graphBuilder() {
   };
 }
 
-// A fact with text, or null when the value is absent. `key` facts go on the video card.
+// A fact with text, or null when the value is absent. `key` facts are the main facts of a node.
 function fact(label, value, key = false) {
   if (value === undefined || value === null || value === "") return null;
   return key ? { label, text: String(value), key } : { label, text: String(value) };

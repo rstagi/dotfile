@@ -1,4 +1,4 @@
-// Shared props check of render.mjs and render-video.mjs: read the JSON, check the mode, then the
+// Props check of render.mjs: read the JSON, check the mode, then the
 // schema of that mode, then the ids in the relation fields (graph.mjs relationErrors), then the
 // fields of the report page (one sequence diagram at most, its participants, the media files).
 import fs from "node:fs";

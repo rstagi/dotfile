@@ -1,6 +1,7 @@
-// Narration: the spoken text of the video. Version 3 has one entry for each scene of the video:
+// Narration: the commentary of the report walkthrough. Version 3 has one entry for each step:
 // { version: 3, mode, scenes: [{ scene, text }] }. The scenes follow the sections of the report
-// page (SCENES). A scene that the narration omits is not in the video.
+// page (SCENES). The walkthrough focuses each scene's section, in this order, and shows its text.
+// A scene that the narration omits is not in the walkthrough.
 //
 // The graph page (graph.html) does not read a narration. Its tour is the default tour of
 // tourStops: the overview, the root node, each group, then a last "explore" stop.
@@ -12,13 +13,13 @@ import { validate } from "./validate.mjs";
 const SCHEMA_FILE = path.join(import.meta.dirname, "..", "schema", "narration.schema.json");
 const TITLE_CHARS = 60;
 
-// The scene ids of each mode, in video order.
+// The scene ids of each mode, in page order.
 export const SCENES = {
   plan: ["intro", "tldr", "done-when", "phases", "architecture", "decisions", "rabbit-holes", "outro"],
   ship: ["intro", "tldr", "done-when", "changes", "findings", "hand-test", "rollback", "outro"],
 };
-// Word limits: one scene, and all scenes together. At about 2.5 words a second, a narration
-// of 80 to 450 words gives a video of about 45 s to 3 min.
+// Word limits: one scene, and all scenes together. A step card stays short enough to read in a few
+// seconds, and the whole walkthrough in one to three minutes.
 export const WORDS = { scene: [10, 90], total: [80, 450] };
 
 // The props field that each scene shows, for the scenes that can have no data. The test gets
@@ -42,7 +43,7 @@ const DATA = {
 
 // checkNarration(file, props) -> { narration, scenes, errors }. `props` must be valid. `errors`
 // is [] for a valid narration, else [{ path, message }] with paths that start with "narration".
-// `scenes` is [{ id, text }] in video order for a valid narration, else null.
+// `scenes` is [{ id, text }] in page order for a valid narration, else null.
 // Throws an Error "cannot read <file>: <reason>" when the file cannot be read.
 export function checkNarration(file, props) {
   let text;

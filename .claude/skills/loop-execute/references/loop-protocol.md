@@ -136,9 +136,9 @@ no stacking.
 
 Supervise makes a `visual-explainer` page when a milestone ships and when a milestone starts.
 A milestone ships at its merge gate (the park) or at the end of the plan (the finish). A
-detached explainer runner writes the props and the narration. Supervise only renders the page
-and the video, publishes and links. A
-failed explainer never blocks the park, the finish or the resume.
+detached explainer runner writes the props and the narration. The narration is the commentary
+of the page walkthrough. Supervise only renders the page, publishes and links. A failed
+explainer never blocks the park, the finish or the resume.
 
 The finish row applies to every plan. A plan with no milestones is milestone 1. Its finish
 `ship` page explains the whole plan.
@@ -156,13 +156,13 @@ Spawn the runner detached, like § Runner spawn. It is not a phase attempt, so i
 nohup "$RUNTIME_ROOT/loop-runner.sh" --worktree <integration worktree of the first participant> \
   --run-dir <abs .loop/runs/explainer-m<n>-<mode>-a<k>> --prompt-file <run dir>/prompt.md \
   --chain task --timeout 900 \
-  --verify-cmd 'node <RUNTIME_ROOT>/.claude/skills/visual-explainer/scripts/render-video.mjs --props <abs output dir>/props.json --narration <abs output dir>/narration.json --check' \
+  --verify-cmd 'node <RUNTIME_ROOT>/.claude/skills/visual-explainer/scripts/render.mjs --props <abs output dir>/props.json --narration <abs output dir>/narration.json --check' \
   > <run dir>/spawn.log 2>&1 &
 echo $! > <run dir>/pid; disown
 ```
 
-- Exit 0: supervise renders the page and the video, publishes and writes `link.txt`, as the
-  skill tells it.
+- Exit 0: supervise renders the page with `--narration`, publishes and writes `link.txt`, as
+  the skill tells it.
 - Exit 12: one relaunch in `-a<k+1>` with the `verify.log` tail in the prompt.
 - Any other exit, or a second failure: write the reason to `error.txt` and make no page.
 
@@ -172,8 +172,8 @@ goes again to the URL in `link.txt`. At the park and at the finish, a `ship` lin
 artifact URL also goes into the PR body of each participating repository. It is one line with
 the marker `<!-- loop-explainer:m<n>-ship -->`.
 
-**GitHub media.** After the publish of a `ship` page, supervise uploads the screenshots,
-the preview GIF and the video, and posts them on each PR of the page:
+**GitHub media.** After the publish of a `ship` page, supervise uploads the screenshots and
+posts them on each PR of the page:
 
 ```sh
 node "$RUNTIME_ROOT/.claude/skills/visual-explainer/scripts/gh-media.mjs" --repo <owner/repo> \
@@ -191,7 +191,7 @@ Explainer runner prompt skeleton:
 You are a Loop explainer runner: fully non-interactive, nobody reads your output live.
 RUN_DIR is <abs path>. Use the visual-explainer skill in <mode> mode.
 Write only <abs output dir>/props.json and <abs output dir>/narration.json.
-Do not render or publish the page or the video.
+Do not render or publish the page.
 Ship only: also write the retro file <abs .loop>/milestones/m<n>.retro.md.
 Do not commit, push, or edit a repository file, the plan or the state.
 
@@ -217,8 +217,10 @@ Ship only: write the props `process` and `setbacks` and the retro file from the 
 Write the retro file `<abs .loop>/milestones/m<n>.retro.md` in the format of loop-protocol.md
 § Milestone retrospective. When there are no retro facts, omit `process` and `setbacks`, and
 write the retro from the other facts. The narration can name the largest setback in the outro scene.
+The narration is the walkthrough commentary: the reader reads it, so write code names as the
+page writes them.
 
-WHEN FINISHED: run `node <skill>/scripts/render-video.mjs --props <props> --narration <narration> --check`
+WHEN FINISHED: run `node <skill>/scripts/render.mjs --props <props> --narration <narration> --check`
 until it exits 0.
 Then write RUN_DIR/status.json with outcome "done" and a one-line summary.
 If you cannot finish, write outcome "blocked" with the reason in details.
@@ -259,8 +261,8 @@ the previous checkpoint `props.json` when it exists. The runner writes the `ship
   revert the merged phases.
 - The narration has no `findings` scene. The outro names the next phases.
 
-**Publish.** When the runner exits 0, supervise renders the page, the screenshots and the video,
-and publishes as the skill tells it. Each checkpoint gets its own artifact. Notify once
+**Publish.** When the runner exits 0, supervise renders the page with `--narration` and the
+screenshots, and publishes as the skill tells it. Each checkpoint gets its own artifact. Notify once
 (`loop-notify.sh --level info --title "M<n> checkpoint <k>"`) with the link. When an open PR
 exists for the integration branch, post the GitHub media on it, as in § Milestone explainers,
 with the key `m<n>-cp<k>`. A failure goes to `error.txt` in the output directory.
@@ -413,15 +415,12 @@ State lives in the launching coordinator checkout (add `.loop/` to
       narration.json         # written by the explainer runner (or the planner)
       retro-facts.json       # ship only: loop-retro.mjs --json output, written by supervise
       retro-error.txt        # ship only: why the retro file is missing
-      index.html             # report page, rendered by supervise (or the planner)
+      index.html             # report page with its walkthrough, rendered by supervise (or the planner)
       graph.html             # concept graph of the same props, linked from index.html
       shots/*.png            # screenshots of the report sections
-      video.mp4              # rendered by supervise (or the planner), embedded in index.html
-      preview.gif            # short preview of the video for GitHub
       link.txt               # artifact URL, or the absolute path of index.html
       media.md               # ship only: the GitHub media block that gh-media.mjs printed
       error.txt              # the failure reason, when the explainer failed
-      video-error.txt        # the failure reason, when only the video failed
       media-error.txt        # ship only: the failure reason, when the GitHub media upload failed
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md

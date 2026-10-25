@@ -3,7 +3,8 @@
 // Done when planned vs delivered, changes in reading order (with the one sequence diagram),
 // findings, hand test, rollback. Both end with a collapsed "Full detail" and a link to graph.html.
 // Rule: every props value passes through esc(), inline() or href() before it reaches the page.
-// Each section root has data-shot="<id>": shoot.mjs writes one PNG for each.
+// Each section root has data-shot="<id>": shoot.mjs writes one PNG for each, and the walkthrough
+// focuses it.
 import fs from "node:fs";
 import path from "node:path";
 import { architectureDiagram, sequenceDiagram } from "./diagrams.mjs";
@@ -23,25 +24,30 @@ const RESULT_TONE = { pass: "ok", fail: "bad", skipped: "" };
 const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
 const CIRCLED = ["①", "②", "③"];
 const GRAPH_PAGE = "graph.html";
+const WALKTHROUGH_SCRIPT = path.join(import.meta.dirname, "..", "template", "walkthrough.js");
+// The section that each narration scene focuses (its data-shot id). outro focuses no section.
+const SCENE_TARGET = { intro: "header", outro: null };
 const PROCESS_LABELS = {
   phases: "Phases", attempts: "Attempts", retries: "Retries", escalations: "Escalations", questions: "Questions", hil: "HIL pauses",
   mergeConflicts: "Merge conflicts", reviewRounds: "Review rounds", fixRounds: "Fix rounds", wallTime: "Wall time",
 };
 
-// renderReport(template, props, { video, dir }) -> the complete report page for validated props.
-// `video` is a checked relative MP4 path or undefined. `dir` is the directory of the props file:
-// media paths resolve against it.
-export function renderReport(template, props, { video, dir }) {
+// renderReport(template, props, { scenes, dir }) -> the complete report page for validated props.
+// `scenes` is the checked narration (narration.mjs checkNarration) or null: with scenes, the page
+// has a walkthrough. `dir` is the directory of the props file: media paths resolve against it.
+export function renderReport(template, props, { scenes, dir }) {
   const media = (props.media ?? []).map((m) => ({ ...m, src: dataUri(path.join(dir, m.path)) }));
   const sections = props.mode === "plan" ? planSections(props, media) : shipSections(props, media);
   const numbered = sections.filter(Boolean).map((s, i) => section(s, i + 1)).join("\n");
-  const body = [header(props), tldr(props), video ? player(video) : "", numbered, fullDetail(props)].filter(Boolean).join("\n");
+  const steps = scenes ? walkthroughSteps(scenes) : null;
+  const body = [header(props), tldr(props), steps ? startBar(steps) : "", numbered, fullDetail(props)].filter(Boolean).join("\n");
   return fill(template, {
     MODE: esc(props.mode),
     TITLE: esc(props.meta.title),
     DESCRIPTION: esc(props.meta.subtitle),
     DATE: esc(props.meta.date),
     BODY: body,
+    WALKTHROUGH: steps ? walkthrough(steps) : "",
   });
 }
 
@@ -129,9 +135,23 @@ function shipTldr(props) {
   return rows;
 }
 
-function player(src) {
-  return `<section class="player" aria-label="Video"><h2>Watch the explainer</h2>`
-    + `<video controls preload="metadata" playsinline src="${esc(src)}"><a href="${esc(src)}">Download the video</a></video></section>`;
+// ---- walkthrough ----
+
+// One step for each scene: the data-shot id of the section to focus, or null, and the commentary.
+function walkthroughSteps(scenes) {
+  return scenes.map(({ id, text }) => ({ scene: id, target: id in SCENE_TARGET ? SCENE_TARGET[id] : id, text }));
+}
+
+function startBar(steps) {
+  return `<p class="wt-bar"><button type="button" class="wt-start" data-walkthrough-start>Start the walkthrough</button>`
+    + `<span class="wt-hint">${steps.length} steps · one section at a time, with commentary</span></p>`;
+}
+
+// The steps as JSON data, then the script that runs them. In the JSON, "<" is \u003c, so no
+// text can close the script element.
+function walkthrough(steps) {
+  const json = JSON.stringify(steps).replace(/</g, "\\u003c");
+  return `<script type="application/json" id="ve-walkthrough">${json}</script>\n<script>\n${fs.readFileSync(WALKTHROUGH_SCRIPT, "utf8")}</script>`;
 }
 
 // ---- plan ----

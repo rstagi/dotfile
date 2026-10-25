@@ -4,11 +4,11 @@
   "scenes": [
     {
       "scene": "intro",
-      "text": "This is the review of W S version six, milestone two. A Rust daemon called W S D replaces the Z shell version of W S on one machine. The verdict: ready to merge, with one major finding."
+      "text": "This is the review of ws version six, milestone two. A Rust daemon called wsd replaces the zsh version of ws on one machine. The verdict: ready to merge, with one major finding."
     },
     {
       "scene": "tldr",
-      "text": "What changed: W S runs on one Rust daemon instead of shell scripts and lock files. Commands, flags, output and exit codes stay the same. Look first at change six, messages: delivery moved from the file inbox to log events. The risk is medium, and one command switches back to the Z shell backend."
+      "text": "What changed: ws runs on one Rust daemon instead of shell scripts and lock files. Commands, flags, output and exit codes stay the same. Look first at change six, messages: delivery moved from the file inbox to log events. The risk is medium, and one command switches back to the zsh backend."
     },
     {
       "scene": "done-when",

@@ -167,7 +167,7 @@ svg.graph:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px
 .lk:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 html:not(.js) .legend, html:not(.js) .zoom { display: none; }
 
-/* Panel, tour and drawer */
+/* Panel and tour */
 .panel { position: fixed; top: var(--bar-h, 58px); right: 0; bottom: 0; z-index: 30; width: min(440px, 100%); overflow: auto; padding: 16px 20px 40px;
   background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow); }
 .panel:focus { outline: none; }
@@ -183,11 +183,6 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
 .t-title { flex: 1; min-width: 0; font-weight: 700; }
 .t-text { margin: 6px 0 10px; max-height: 32vh; overflow: auto; }
 .t-nav { display: flex; gap: 8px; justify-content: flex-end; }
-.drawer { position: fixed; right: 16px; bottom: 16px; z-index: 40; width: min(600px, calc(100% - 32px)); padding: 10px 12px 12px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
-.d-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.d-head h2 { font-size: 1rem; }
-.drawer video { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; background: #000; }
 
 /* Facts */
 .facts { display: grid; gap: 10px; margin: 10px 0 0; }
@@ -239,11 +234,10 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
   .legend { left: 8px; right: 8px; top: 8px; }
   .zoom { right: 8px; bottom: 8px; }
   .tour { bottom: 8px; width: calc(100% - 16px); }
-  .drawer { right: 8px; bottom: 8px; width: calc(100% - 16px); }
 }
 @media (prefers-reduced-motion: no-preference) {
   .n, .e, .spoke { transition: opacity 0.25s ease; }
-  .panel:not([hidden]), .tour:not([hidden]), .drawer:not([hidden]) { animation: rise 0.22s ease both; }
+  .panel:not([hidden]), .tour:not([hidden]) { animation: rise 0.22s ease both; }
   .e-flow { animation: flow 1.2s linear infinite; }
 }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
@@ -251,7 +245,7 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
 @keyframes rise-x { from { opacity: 0; transform: translate(-50%, 8px); } }
 @keyframes flow { to { stroke-dashoffset: -12; } }
 @media print {
-  .bar, .graph-view, .panel, .tour, .drawer { display: none !important; }
+  .bar, .graph-view, .panel, .tour { display: none !important; }
   .js body[data-view] { height: auto; overflow: visible; display: block; }
   .js body[data-view] .outline { display: block; }
 }
@@ -266,7 +260,6 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
 <div class="seg" role="group" aria-label="View"><button type="button" class="btn" data-view-btn="graph" aria-pressed="true">Graph</button><button type="button" class="btn" data-view-btn="outline" aria-pressed="false">Outline</button></div>
 <button type="button" class="btn" data-tour>Play tour</button>
 <button type="button" class="btn" data-legend aria-controls="legend" aria-expanded="true">Filters</button>
-{{VIDEO_BUTTON}}
 </div>
 </header>
 <main class="graph-view" id="graph-view" aria-label="Graph">
@@ -285,7 +278,7 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
 <p class="t-text" id="tour-text" aria-live="polite"></p>
 <div class="t-nav"><button type="button" class="btn" data-tour-prev>Previous</button><button type="button" class="btn primary" data-tour-next>Next</button></div>
 </section>
-{{VIDEO}}<script type="application/json" id="ve-data">{{DATA}}</script>
+<script type="application/json" id="ve-data">{{DATA}}</script>
 <script>
 (function () {
   "use strict";
@@ -637,7 +630,7 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
     legendBtn.setAttribute("aria-expanded", String(!legend.hidden));
   });
 
-  // ---- tour: the stops of the video, at the reader's pace ----
+  // ---- tour: the default stops of the graph, at the reader's pace ----
   var stopIndex = 0;
   function startTour() {
     if (!data.stops.length) return;
@@ -669,27 +662,12 @@ html:not(.js) .legend, html:not(.js) .zoom { display: none; }
   });
   tour.querySelector("[data-tour-close]").addEventListener("click", function () { endTour(); });
 
-  // ---- video drawer ----
-  var videoBtn = document.querySelector("[data-video]");
-  var drawer = document.getElementById("video-panel");
-  if (videoBtn && drawer) {
-    var video = drawer.querySelector("video");
-    var toggle = function (show) {
-      drawer.hidden = !show;
-      videoBtn.setAttribute("aria-expanded", String(show));
-      if (!show) video.pause();
-    };
-    videoBtn.addEventListener("click", function () { toggle(drawer.hidden); });
-    drawer.querySelector("[data-video-close]").addEventListener("click", function () { toggle(false); videoBtn.focus(); });
-  }
-
   // ---- keys for the whole page ----
   document.addEventListener("keydown", function (e) {
     var typing = e.target === search;
     if (e.key === "Escape" && !typing) {
       if (!tour.hidden) endTour();
       else if (!panel.hidden) closePanel();
-      else if (drawer && !drawer.hidden) drawer.querySelector("[data-video-close]").click();
     } else if (!tour.hidden && !typing && (e.key === "ArrowRight" || e.key === "ArrowLeft") && e.target.closest && !e.target.closest("svg")) {
       e.preventDefault();
       goStop(stopIndex + (e.key === "ArrowRight" ? 1 : -1));
