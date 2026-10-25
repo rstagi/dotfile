@@ -443,13 +443,13 @@ The same file sets the CPU priority of agent processes on macOS:
 
 ```toml
 [agent]
-priority = "background"   # background | utility | normal
+priority = "utility"   # background | utility | normal
 ```
 
 The daemon starts each interactive and headless agent with `taskpolicy -c <priority>`.
 All child processes of the agent, such as test runners and compilers, inherit this clamp.
-`background` is the default. It uses only the efficiency cores and throttles disk I/O, so your own apps keep the performance cores.
-`utility` uses all cores when the Mac is idle, and your own apps get the CPU first. `normal` applies no clamp.
+`utility` is the default. It uses all cores when the Mac is idle, and your own apps get the CPU first.
+`background` uses only the efficiency cores and throttles disk I/O, also when the Mac is idle. `normal` applies no clamp.
 Processes outside an agent's process tree keep their priority. Examples are a shell in your own terminal, a plain tmux pane and Docker containers.
 New sessions use the new value after a daemon restart.
 
