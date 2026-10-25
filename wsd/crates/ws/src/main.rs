@@ -107,6 +107,9 @@ enum Command {
         /// JSON object with the event data.
         #[arg(long)]
         body: Option<String>,
+        /// Who produced the event. Tools use tool. The default is agent.
+        #[arg(long, value_parser = ["tool", "agent"])]
+        source: Option<String>,
         #[arg(long, default_value = "me")]
         target: String,
     },
@@ -349,8 +352,18 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Event {
             event_type,
             body,
+            source,
             target,
-        } => cmd::events::event(&socket_path()?, &target, &event_type, body.as_deref()).await?,
+        } => {
+            cmd::events::event(
+                &socket_path()?,
+                &target,
+                &event_type,
+                body.as_deref(),
+                source.as_deref(),
+            )
+            .await?
+        }
         Command::Log {
             target,
             event_type,

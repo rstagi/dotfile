@@ -18,6 +18,15 @@ use crate::{
 /// A client may append only event types with this prefix.
 pub const CLIENT_EVENT_PREFIX: &str = "loop.";
 
+/// Who produced an event. The daemon sets `daemon` itself. A client may claim `tool` or `agent`.
+pub const SOURCE_DAEMON: &str = "daemon";
+pub const SOURCE_TOOL: &str = "tool";
+pub const SOURCE_AGENT: &str = "agent";
+
+const REVIEW_ROLES: [&str; 7] = [
+    "review", "critic", "respond", "confirm", "disputed", "fix", "final",
+];
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AppendEvent {
@@ -25,6 +34,8 @@ struct AppendEvent {
     event_type: String,
     /// A missing or null body means an empty object.
     body: Option<Map<String, Value>>,
+    /// `tool` or `agent`. A missing value means `agent`.
+    source: Option<String>,
     parent_session_id: Option<SessionId>,
 }
 
@@ -75,10 +86,47 @@ async fn log(
 }
 
 impl Sessions {
-    /// Appends a `loop.*` event. The entry body records the caller under `caller`.
+    /// Appends a `loop.*` event for a client. The entry body records the caller under `caller`
+    /// and the producer under `source`.
     fn append_client_event(&mut self, id: &str, request: AppendEvent) -> Result<LogEntry> {
         self.record_call(request.parent_session_id, "session.event", Some(id))?;
-        let suffix = request.event_type.strip_prefix(CLIENT_EVENT_PREFIX);
+        let source = match request.source.as_deref() {
+            None | Some(SOURCE_AGENT) => SOURCE_AGENT,
+            Some(SOURCE_TOOL) => SOURCE_TOOL,
+            Some(_) => {
+                return Err(Error::InvalidRequest(
+                    "Use tool or agent as the event source.",
+                ));
+            }
+        };
+        self.append_loop_entry(
+            id,
+            &request.event_type,
+            request.body.unwrap_or_default(),
+            source,
+            request.parent_session_id,
+        )
+    }
+
+    /// Appends a `loop.*` event that the daemon produces itself, with `source: daemon`.
+    pub fn append_daemon_loop_event(
+        &mut self,
+        id: &str,
+        event_type: &str,
+        body: Map<String, Value>,
+    ) -> Result<LogEntry> {
+        self.append_loop_entry(id, event_type, body, SOURCE_DAEMON, None)
+    }
+
+    fn append_loop_entry(
+        &mut self,
+        id: &str,
+        event_type: &str,
+        mut body: Map<String, Value>,
+        source: &str,
+        caller: Option<SessionId>,
+    ) -> Result<LogEntry> {
+        let suffix = event_type.strip_prefix(CLIENT_EVENT_PREFIX);
         if suffix.is_none_or(|suffix| {
             suffix.is_empty()
                 || !suffix
@@ -89,10 +137,11 @@ impl Sessions {
                 "Use an event type that starts with loop. and holds letters, digits, dots, underscores or hyphens.",
             ));
         }
+        check_body(event_type, &body).map_err(Error::InvalidBody)?;
         let session = self.get_record(id)?;
-        let mut body = request.body.unwrap_or_default();
-        body.insert("caller".into(), json!(request.parent_session_id));
-        self.append_entry(session.id, &request.event_type, Value::Object(body))
+        body.insert("caller".into(), json!(caller));
+        body.insert("source".into(), json!(source));
+        self.append_entry(session.id, event_type, Value::Object(body))
     }
 
     fn read_log(&mut self, id: &str, query: &LogQuery) -> Result<LogResponse> {
@@ -108,6 +157,223 @@ impl Sessions {
             session_id: session.id,
             entries,
         })
+    }
+}
+
+/// Checks the body of a `loop.*` event against its type.
+fn check_body(event_type: &str, body: &Map<String, Value>) -> std::result::Result<(), String> {
+    let kind = event_type
+        .strip_prefix(CLIENT_EVENT_PREFIX)
+        .unwrap_or(event_type);
+    let check = Check { event_type, body };
+    match kind {
+        "plan" => {
+            check.string("text")?;
+            check.string("sha")
+        }
+        "phases" => check.array_of_objects("phases"),
+        "phase" => {
+            check.integer("n")?;
+            check.string("status")?;
+            check.optional_integer("attempt")?;
+            check.nullable_string("session")
+        }
+        "attempt" => check_attempt(&check),
+        "merge" => {
+            check.integer("n")?;
+            check.string("repo")?;
+            check.string("head")?;
+            check.one_of("verify", &["pass", "fail", "none"]).map(drop)
+        }
+        "milestone" => check.integer("milestone"),
+        "gate" => check_gate(&check),
+        "review" => check_review(&check),
+        "note" => {
+            check.string("text")?;
+            check.optional_integer("phase")
+        }
+        "decision" => {
+            check.string("topic")?;
+            check.present("default")?;
+            check.present("choice")?;
+            check.string("reason")
+        }
+        "control" => check.optional_integer("phase"),
+        "guard" => {
+            check.string("session")?;
+            check.string("rule")?;
+            check.string("command")
+        }
+        "violation" => {
+            check.string("id")?;
+            check.string("rule")?;
+            check.one_of("severity", &["hard", "soft"])?;
+            check.nullable_integer("phase")?;
+            check.present("evidence")
+        }
+        "finish" => Ok(()),
+        _ => Err(format!("{event_type} is not a known loop event type.")),
+    }
+}
+
+fn check_attempt(check: &Check) -> std::result::Result<(), String> {
+    check.integer("n")?;
+    check.integer("attempt")?;
+    check.string("session")?;
+    let state = check.one_of("state", &["started", "exited", "result"])?;
+    match state {
+        "started" => check.absent(&["exit", "outcome", "verify"]),
+        "exited" => {
+            check.integer("exit")?;
+            check.absent(&["outcome", "verify"])
+        }
+        _ => {
+            check.string("outcome")?;
+            check.one_of("verify", &["pass", "fail", "none"])?;
+            check.absent(&["exit"])
+        }
+    }
+}
+
+fn check_review(check: &Check) -> std::result::Result<(), String> {
+    check.integer("phase")?;
+    check.string("repo")?;
+    check.string("key")?;
+    let role = check.one_of("role", &REVIEW_ROLES)?;
+    check.integer("round")?;
+    let state = check.one_of("state", &["started", "exited", "finished"])?;
+    check.optional_string("commentUrl")?;
+    check.optional_string("sidecar")?;
+    if role == "disputed" {
+        // A disputed round has no runner.
+        check.null("session")?;
+        check.null("provider")?;
+    } else {
+        check.string("session")?;
+        if state == "finished" {
+            check.string("provider")?;
+        } else {
+            check.optional_string("provider")?;
+        }
+    }
+    if state == "finished" {
+        check.string("verdict")
+    } else {
+        check.absent(&["verdict"])
+    }
+}
+
+fn check_gate(check: &Check) -> std::result::Result<(), String> {
+    let kind = check.one_of("kind", &["merge", "accept"])?;
+    check.string("state")?;
+    check.optional_integer("milestone")?;
+    let field = if kind == "merge" { "prs" } else { "artifacts" };
+    match check.body.get(field) {
+        Some(Value::Array(_) | Value::Object(_)) => Ok(()),
+        _ => Err(format!(
+            "{} body needs `{field}` as an array or an object for the gate kind {kind}.",
+            check.event_type
+        )),
+    }
+}
+
+/// Field checks that name the event type in each error.
+struct Check<'a> {
+    event_type: &'a str,
+    body: &'a Map<String, Value>,
+}
+
+impl Check<'_> {
+    fn fail(&self, key: &str, expected: &str) -> String {
+        format!("{} body needs `{key}` as {expected}.", self.event_type)
+    }
+
+    fn string(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            Some(Value::String(text)) if !text.trim().is_empty() => Ok(()),
+            _ => Err(self.fail(key, "a non-empty string")),
+        }
+    }
+
+    fn optional_string(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            None | Some(Value::Null | Value::String(_)) => Ok(()),
+            _ => Err(self.fail(key, "a string")),
+        }
+    }
+
+    /// The key must be present. Its value is a non-empty string or null.
+    fn nullable_string(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            Some(Value::Null) => Ok(()),
+            Some(_) => self.string(key).map(drop),
+            None => Err(self.fail(key, "a string or null")),
+        }
+    }
+
+    fn null(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            None | Some(Value::Null) => Ok(()),
+            _ => Err(format!(
+                "{} body has `{key}` null for this role.",
+                self.event_type
+            )),
+        }
+    }
+
+    fn integer(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            Some(value) if value.is_i64() || value.is_u64() => Ok(()),
+            _ => Err(self.fail(key, "an integer")),
+        }
+    }
+
+    fn optional_integer(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            None | Some(Value::Null) => Ok(()),
+            _ => self.integer(key),
+        }
+    }
+
+    fn nullable_integer(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            Some(Value::Null) => Ok(()),
+            _ => self.integer(key),
+        }
+    }
+
+    fn present(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            None | Some(Value::Null) => Err(self.fail(key, "a value")),
+            Some(_) => Ok(()),
+        }
+    }
+
+    fn one_of(&self, key: &str, values: &[&str]) -> std::result::Result<&str, String> {
+        match self.body.get(key).and_then(Value::as_str) {
+            Some(value) if values.contains(&value) => Ok(value),
+            _ => Err(self.fail(key, &format!("one of {}", values.join(", ")))),
+        }
+    }
+
+    fn array_of_objects(&self, key: &str) -> std::result::Result<(), String> {
+        match self.body.get(key) {
+            Some(Value::Array(items)) if items.iter().all(Value::is_object) => Ok(()),
+            _ => Err(self.fail(key, "an array of objects")),
+        }
+    }
+
+    fn absent(&self, keys: &[&str]) -> std::result::Result<(), String> {
+        match keys
+            .iter()
+            .find(|key| self.body.get(**key).is_some_and(|value| !value.is_null()))
+        {
+            Some(key) => Err(format!(
+                "{} body must not have `{key}` for this state.",
+                self.event_type
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -193,11 +459,16 @@ mod tests {
         let id = session["id"].as_str().unwrap();
         let mut seqs = Vec::new();
         for event_type in ["loop.phase", "loop.note", "loop.phase"] {
+            let body = if event_type == "loop.note" {
+                json!({"text":"hi"})
+            } else {
+                json!({"n":1,"status":"todo","attempt":1,"session":null})
+            };
             let (_, entry) = request(
                 &app,
                 "POST",
                 &format!("/v1/sessions/{id}/events"),
-                json!({"type":event_type}),
+                json!({"type":event_type,"body":body}),
             )
             .await;
             seqs.push((event_type, entry["seq"].as_u64().unwrap()));
@@ -233,6 +504,295 @@ mod tests {
         assert_eq!(found, [seqs[1].1, seqs[2].1]);
         let (status, _) = request(&app, "GET", "/v1/sessions/missing/log", Value::Null).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    fn valid_bodies() -> Vec<(&'static str, Value)> {
+        vec![
+            ("loop.plan", json!({"text":"# Plan","sha":"abc"})),
+            ("loop.phases", json!({"phases":[{"n":1,"title":"A"}]})),
+            (
+                "loop.phase",
+                json!({"n":1,"status":"in-progress","attempt":1,"session":"01ARZ3NDEKTSV4RRFFQ69G5FAA"}),
+            ),
+            (
+                "loop.attempt",
+                json!({"n":1,"attempt":1,"session":"s","state":"started"}),
+            ),
+            (
+                "loop.attempt",
+                json!({"n":1,"attempt":1,"session":"s","state":"exited","exit":0}),
+            ),
+            (
+                "loop.attempt",
+                json!({"n":1,"attempt":1,"session":"s","state":"result","outcome":"done","verify":"pass"}),
+            ),
+            (
+                "loop.merge",
+                json!({"n":1,"repo":"o/r","head":"abc123","verify":"pass"}),
+            ),
+            ("loop.milestone", json!({"milestone":5})),
+            (
+                "loop.gate",
+                json!({"kind":"merge","state":"open","prs":{"o/r":"https://example.test/pull/1"}}),
+            ),
+            (
+                "loop.gate",
+                json!({"kind":"accept","state":"open","artifacts":["out.md"]}),
+            ),
+            (
+                "loop.review",
+                json!({"phase":146,"repo":"o/r","key":"k","role":"review","round":1,"state":"started","session":"s"}),
+            ),
+            (
+                "loop.review",
+                json!({"phase":146,"repo":"o/r","key":"k","role":"final","round":2,"state":"finished","session":"s","provider":"claude","verdict":"APPROVE","commentUrl":"https://example.test/c"}),
+            ),
+            (
+                "loop.review",
+                json!({"phase":146,"repo":"o/r","key":"k","role":"disputed","round":1,"state":"finished","session":null,"provider":null,"verdict":"DISPUTED","sidecar":"r.disputed.md"}),
+            ),
+            ("loop.note", json!({"text":"hi","phase":3})),
+            (
+                "loop.decision",
+                json!({"topic":"rounds","default":2,"choice":1,"reason":"small diff"}),
+            ),
+            ("loop.control", json!({"action":"pause"})),
+            (
+                "loop.guard",
+                json!({"session":"s","rule":"no-push","command":"git push"}),
+            ),
+            (
+                "loop.violation",
+                json!({"id":"v1","rule":"r","severity":"hard","phase":null,"evidence":{"seq":3}}),
+            ),
+            ("loop.finish", json!({})),
+        ]
+    }
+
+    #[tokio::test]
+    async fn every_event_type_accepts_a_valid_body() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = super::super::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, session) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let id = session["id"].as_str().unwrap();
+        for (event_type, body) in valid_bodies() {
+            let (status, entry) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{id}/events"),
+                json!({"type":event_type,"body":body}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{event_type} {body}: {entry}");
+            assert_eq!(entry["body"]["source"], "agent");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_body_that_does_not_match_its_type_is_rejected_with_a_reason() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = super::super::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, session) = request(&app, "POST", "/v1/sessions", json!({})).await;
+        let id = session["id"].as_str().unwrap();
+        let attempt = json!({"n":1,"attempt":1,"session":"s"});
+        let review =
+            json!({"phase":1,"repo":"o/r","key":"k","role":"review","round":1,"session":"s"});
+        let merge = |patch: Value| {
+            let mut body = attempt.clone();
+            body.as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            body
+        };
+        let review_with = |patch: Value| {
+            let mut body = review.clone();
+            body.as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            body
+        };
+        let cases = [
+            ("loop.phase", json!({})),
+            ("loop.plan", json!({"text":"x"})),
+            ("loop.note", json!({"text":7})),
+            (
+                "loop.merge",
+                json!({"n":1,"repo":"o/r","head":"h","verify":"maybe"}),
+            ),
+            ("loop.unknown", json!({})),
+            // loop.attempt depends on its state.
+            ("loop.attempt", merge(json!({"state":"paused"}))),
+            ("loop.attempt", merge(json!({"state":"started","exit":0}))),
+            ("loop.attempt", merge(json!({"state":"exited"}))),
+            (
+                "loop.attempt",
+                merge(json!({"state":"exited","exit":1,"verify":"pass"})),
+            ),
+            (
+                "loop.attempt",
+                merge(json!({"state":"result","outcome":"done"})),
+            ),
+            (
+                "loop.attempt",
+                merge(json!({"state":"result","outcome":"done","verify":"yes"})),
+            ),
+            // loop.review depends on its state and role.
+            (
+                "loop.review",
+                review_with(json!({"state":"started","verdict":"APPROVE"})),
+            ),
+            (
+                "loop.review",
+                review_with(json!({"state":"finished","verdict":"APPROVE"})),
+            ),
+            (
+                "loop.review",
+                review_with(json!({"state":"finished","provider":"claude"})),
+            ),
+            (
+                "loop.review",
+                review_with(json!({"state":"started","role":"judge"})),
+            ),
+            (
+                "loop.review",
+                review_with(json!({"state":"started","role":"disputed"})),
+            ),
+            ("loop.gate", json!({"kind":"merge","state":"open"})),
+        ];
+        for (event_type, body) in cases {
+            let (status, error) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{id}/events"),
+                json!({"type":event_type,"body":body}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{event_type} {body}");
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(event_type),
+                "{error}"
+            );
+        }
+        let (_, log) = request(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{id}/log?type=loop."),
+            Value::Null,
+        )
+        .await;
+        assert!(log["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_source_is_agent_by_default_tool_on_request_and_daemon_for_the_daemon() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let id = sessions.create(Default::default()).unwrap().id.to_string();
+        let note = || serde_json::from_value(json!({"text":"n"})).unwrap();
+        let entry = sessions
+            .append_daemon_loop_event(&id, "loop.note", note())
+            .unwrap();
+        assert_eq!(entry.body["source"], "daemon");
+        assert_eq!(entry.body["caller"], Value::Null);
+        let invalid = sessions.append_daemon_loop_event(&id, "loop.note", Default::default());
+        assert!(invalid.is_err());
+
+        let app = super::super::api::router(sessions);
+        for (source, expected) in [
+            (json!(null), "agent"),
+            (json!("agent"), "agent"),
+            (json!("tool"), "tool"),
+        ] {
+            let (status, entry) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{id}/events"),
+                json!({"type":"loop.note","body":{"text":"n","source":"daemon"},"source":source}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            assert_eq!(
+                entry["body"]["source"], expected,
+                "a body cannot set the source"
+            );
+        }
+        let (status, _) = request(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":"loop.note","body":{"text":"n"},"source":"daemon"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_makes_one_loop_session_with_no_process_per_directory() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let loop_dir = tempfile::tempdir().unwrap();
+        let app = super::super::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (status, created) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":loop_dir.path()}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["body"]["kind"], "loop");
+        let (status, again) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":loop_dir.path()}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(again["id"], created["id"]);
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":"relative"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let id = created["id"].as_str().unwrap();
+        let (_, log) = request(&app, "GET", &format!("/v1/sessions/{id}/log"), Value::Null).await;
+        assert!(log["entries"].as_array().unwrap().iter().all(|entry| {
+            !entry["type"]
+                .as_str()
+                .unwrap()
+                .starts_with("session.running")
+        }));
+    }
+
+    #[test]
+    fn a_loop_session_and_its_events_survive_a_restart() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let loop_dir = tempfile::tempdir().unwrap();
+        let note = || serde_json::from_value(json!({"text":"n"})).unwrap();
+        let id = {
+            let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+            let (created, session) = sessions.create_loop_session(loop_dir.path(), None).unwrap();
+            assert!(created);
+            let id = session.id.to_string();
+            sessions
+                .append_daemon_loop_event(&id, "loop.note", note())
+                .unwrap();
+            id
+        };
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let (created, session) = sessions.create_loop_session(loop_dir.path(), None).unwrap();
+        assert!(!created);
+        assert_eq!(session.id.to_string(), id);
+        let entry = sessions
+            .append_daemon_loop_event(&id, "loop.note", note())
+            .unwrap();
+        assert_eq!(entry.body["source"], "daemon");
     }
 
     async fn request(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {

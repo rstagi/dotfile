@@ -107,6 +107,64 @@ fn start_runs_the_existing_orchestrator_as_a_detached_session() {
 }
 
 #[test]
+fn cli_create_makes_a_loop_session_without_a_process_and_events_record_their_source() {
+    let sandbox = Sandbox::new();
+    let ws = |args: &[&str]| {
+        let output = common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(args)
+            .env_remove("WS_SESSION_ID")
+            .env_remove("WS_SESSION")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let dir = sandbox.loop_dir.to_str().unwrap();
+    let created = ws(&["loop", "create", "--dir", dir, "--json"]);
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["body"]["kind"], "loop");
+    assert_eq!(ws(&["loop", "create", "--dir", dir, "--json"])["id"], id);
+    let tool = ws(&[
+        "event",
+        "loop.note",
+        "--target",
+        id,
+        "--source",
+        "tool",
+        "--body",
+        r#"{"text":"t"}"#,
+    ]);
+    assert_eq!(tool["body"]["source"], "tool");
+    let agent = ws(&[
+        "event",
+        "loop.note",
+        "--target",
+        id,
+        "--body",
+        r#"{"text":"a"}"#,
+    ]);
+    assert_eq!(agent["body"]["source"], "agent");
+    let rejected = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args(["event", "loop.phase", "--target", id, "--body", "{}"])
+        .env_remove("WS_SESSION_ID")
+        .env_remove("WS_SESSION")
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("loop.phase"));
+    let sessions = ws(&["sessions", "--json"]);
+    let session = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == id)
+        .unwrap();
+    assert_eq!(session["body"]["kind"], "loop");
+    let log = ws(&["log", id, "--type", "session.running"]);
+    assert!(log["entries"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn cli_start_and_stop_use_the_loop_api() {
     let sandbox = Sandbox::new();
     let output = common::ws(sandbox.home.path(), &sandbox.socket)

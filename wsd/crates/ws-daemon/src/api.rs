@@ -245,7 +245,9 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         use ws_core::registry;
         let (status, code) = match &self.0 {
-            Error::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Error::InvalidRequest(_) | Error::InvalidBody(_) => {
+                (StatusCode::BAD_REQUEST, "invalid_request")
+            }
             Error::Registry(registry::Error::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "session_not_found")
             }

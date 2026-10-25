@@ -53,6 +53,8 @@ pub enum Error {
     Io(io::Error),
     Registry(registry::Error),
     InvalidRequest(&'static str),
+    /// A `loop.*` event body that does not match its type.
+    InvalidBody(String),
     Transition(TransitionError),
     NameTaken(String),
     DependencyCycle(Vec<SessionId>),
@@ -425,6 +427,7 @@ impl fmt::Display for Error {
             Self::Io(error) => error.fmt(formatter),
             Self::Registry(error) => error.fmt(formatter),
             Self::InvalidRequest(message) => formatter.write_str(message),
+            Self::InvalidBody(message) => formatter.write_str(message),
             Self::Transition(error) => error.fmt(formatter),
             Self::Json(error) => error.fmt(formatter),
             Self::NameTaken(name) => write!(formatter, "name already in use: {name}"),

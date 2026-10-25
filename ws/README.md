@@ -28,7 +28,8 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws inbox [--json]` lists unread messages. `ws ack [<event_id>...]` acknowledges selected messages, or all visible unread messages.
 - `ws done [--output <file>|-]` publishes completion output. Unread messages refuse completion.
 - `ws wait <target> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through the daemon.
-- `ws event <type> [--body <json-object>] [--target <target>]` appends a `loop.*` event to a session log. The default target is the current session. Other event types get HTTP 400. The entry body records the caller in `caller`.
+- `ws event <type> [--body <json-object>] [--source tool|agent] [--target <target>]` appends a `loop.*` event to a session log. The default target is the current session. Other event types, unknown `loop.*` types and a body that does not match its type get HTTP 400. The checked types are `loop.plan`, `loop.phases`, `loop.phase`, `loop.attempt`, `loop.merge`, `loop.milestone`, `loop.gate`, `loop.review`, `loop.note`, `loop.decision`, `loop.control`, `loop.guard`, `loop.violation` and `loop.finish`. `loop.attempt` and `loop.review` fields depend on `state`. The entry body records the caller in `caller` and the producer in `source`: `tool` with `--source tool`, `agent` otherwise, and `daemon` for events that the daemon appends itself.
+- `ws loop create --dir <loop dir> [--json]` creates the session of kind `loop` for a loop directory. The session has no process. A second call for the same directory returns the same session.
 - `ws log [<target>] [--type <prefix>] [--since <seq>]` prints the log entries as JSON, in order. `--since` keeps entries with a higher sequence number.
 - `ws on <ids> done|exit --send-to <target> <text>` registers a continuation. `--spawn <prompt> [--agent <agent>]` starts a child instead.
 - `ws triggers [--json]` lists pending actions. `ws on --rm <trigger-ULID>` removes one action.
@@ -393,12 +394,13 @@ The tools return the daemon JSON in both text and structured content.
 | `session_send` | `ws send <target> <message> --json` |
 | `session_output` | `ws session output <target> --json` |
 | `session_tail` | `ws session tail <target> --json [--stream stdout|stderr] [--max-bytes <n>]` |
-| `session_event` | `ws event <type> [--body <json>] [--target <target>]` |
+| `session_event` | `ws event <type> [--body <json>] [--source tool\|agent] [--target <target>]` |
 | `session_log` | `ws log [<target>] [--type <prefix>] [--since <seq>]` |
 | `session_stop` | `ws session stop <target> --json` |
 | `session_depends_on` | `ws session depends-on <target> <dependency> --json` |
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
 | `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
+| `loop_create` | `ws loop create --dir <loop_dir> --json` |
 | `loop_start` | `ws loop start <loop_dir> --json` |
 | `loop_stop` | `ws loop stop <loop_dir> --json` |
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
