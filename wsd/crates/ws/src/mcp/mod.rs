@@ -17,8 +17,8 @@ use crate::{Result, client};
 mod params;
 
 use params::{
-    Agent, Create, Dependency, Empty, Event, Log, Loop, LoopId, Rename, Send, Spawn, Stream, Tail,
-    Target, Wait,
+    Agent, Create, Dependency, Empty, Event, Log, Loop, LoopId, LoopModel, LoopNote, LoopPause,
+    LoopTier, Rename, Send, Spawn, Stream, Tail, Target, Wait,
 };
 use rmcp::schemars::{self, JsonSchema};
 
@@ -67,6 +67,35 @@ impl Control {
                     Method::POST,
                     &format!("/v1/loops/{operation}"),
                     Some(serde_json::to_value(request)?),
+                )
+                .await
+            }
+            "loop_pause" | "loop_resume" | "loop_note" | "loop_model" | "loop_tier"
+            | "loop_accept" | "loop_reject" => {
+                let mut body = match name {
+                    "loop_pause" | "loop_resume" => {
+                        serde_json::to_value(serde_json::from_value::<LoopPause>(arguments)?)?
+                    }
+                    "loop_note" => {
+                        serde_json::to_value(serde_json::from_value::<LoopNote>(arguments)?)?
+                    }
+                    "loop_model" => {
+                        serde_json::to_value(serde_json::from_value::<LoopModel>(arguments)?)?
+                    }
+                    "loop_tier" => {
+                        serde_json::to_value(serde_json::from_value::<LoopTier>(arguments)?)?
+                    }
+                    _ => serde_json::to_value(serde_json::from_value::<LoopId>(arguments)?)?,
+                };
+                let id = body.as_object_mut().unwrap().remove("id").unwrap();
+                self.request(
+                    Method::POST,
+                    &format!(
+                        "/v1/loops/{}/{}",
+                        client::encode(id.as_str().unwrap()),
+                        name.strip_prefix("loop_").unwrap()
+                    ),
+                    Some(body),
                 )
                 .await
             }
@@ -386,6 +415,34 @@ fn tools() -> Vec<Tool> {
         tool::<Loop>(
             "loop_stop",
             "Pause a loop through its control/pause file. The orchestrator and phase runners observe this file.",
+        ),
+        tool::<LoopId>(
+            "loop_accept",
+            "Accept the open accept gate. The daemon copies the milestone and phase from that gate.",
+        ),
+        tool::<LoopId>(
+            "loop_reject",
+            "Reject the open accept gate. The daemon copies the milestone and phase from that gate.",
+        ),
+        tool::<LoopTier>(
+            "loop_tier",
+            "Change the tier and optional rounds of a review phase before it starts. Record the changed plan.",
+        ),
+        tool::<LoopPause>(
+            "loop_pause",
+            "Pause a loop or one phase. Record the control and write the runner pause file.",
+        ),
+        tool::<LoopPause>(
+            "loop_resume",
+            "Resume a paused loop or phase. Remove its pause file. This operation does not advance a milestone gate.",
+        ),
+        tool::<LoopNote>(
+            "loop_note",
+            "Record guidance for a phase as a loop.note event.",
+        ),
+        tool::<LoopModel>(
+            "loop_model",
+            "Set the model for the next phase attempt. Record the control and write the runner model file.",
         ),
         tool::<Empty>("session_list", "List the registered sessions."),
         tool::<Target>("session_get", "Read one registered session."),
