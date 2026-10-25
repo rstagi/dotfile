@@ -18,6 +18,12 @@
 # A DISPUTED row records the round's <ledger-stem>.disputed.md sidecar. Replay uses
 # that row, so an earlier round's sidecar cannot taint later rounds.
 # Its synthetic run_dir is the sidecar's parent (runs); it has no runner report.
+#
+# Commands (run as a script; inactive when sourced):
+#   loop-ar.sh verdict <report> reviewer|critic   → token; invalid → "invalid", exit 2
+#   loop-ar.sh prompt --role R --framing F --ledger L --run-dir D
+#   loop-ar.sh disputed --ledger L                → sidecar path
+#   loop-ar.sh prove-fix <run-dir>                → PUSHED|NOOP, checked against the remote head
 
 typeset -g _LOOP_AR_ROOT="${${(%):-%x}:A:h}"
 
@@ -311,3 +317,49 @@ _ar_valid_row() {
     *) return 1 ;;
   esac
 }
+
+# ar_prove_fix <run-dir> → PUSHED|NOOP when the fix status proves the remote branch head.
+# Status: {outcome:"done", result, headBefore, headAfter, remote, branch, worktree?};
+# runner meta.json headBefore/headAfter may supply the SHAs instead.
+ar_prove_fix() {
+  emulate -L zsh
+  local run_dir="$1" data result before after remote branch worktree remote_head
+  data="$(jq -es '.[0] as $status | (.[1] // {}) as $meta |
+    select($status.outcome == "done") |
+    {result: $status.result, before: ($meta.headBefore // $status.headBefore),
+     after: ($meta.headAfter // $status.headAfter), remote: $status.remote,
+     branch: $status.branch, worktree: ($status.worktree // ".")} |
+    select(all(.[]; type == "string" and length > 0))' \
+    "$run_dir/status.json" <([[ -f "$run_dir/meta.json" ]] && cat "$run_dir/meta.json" || print '{}'))" || return 1
+  result="$(jq -r .result <<< "$data")"
+  before="$(jq -r .before <<< "$data")"; after="$(jq -r .after <<< "$data")"
+  remote="$(jq -r .remote <<< "$data")"; branch="$(jq -r .branch <<< "$data")"
+  worktree="$(jq -r .worktree <<< "$data")"
+  [[ "$before" =~ '^([0-9a-f]{40}|[0-9a-f]{64})$' && "$after" =~ '^([0-9a-f]{40}|[0-9a-f]{64})$' ]] || return 1
+  case "$result" in
+    PUSHED) [[ "$before" != "$after" ]] || return 1 ;;
+    NOOP) [[ "$before" == "$after" ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  git check-ref-format "refs/heads/$branch" >/dev/null || return 1
+  remote_head="$(git -C "$worktree" ls-remote --exit-code -- "$remote" "refs/heads/$branch")" || return 1
+  [[ "${remote_head%%$'\t'*}" == "$after" ]] || { print -u2 -r -- 'loop-ar: remote head does not match completed fix'; return 1; }
+  print -r -- "$result"
+}
+
+ar_main() {
+  local cmd="${1:-}"
+  (( $# )) && shift
+  case "$cmd" in
+    verdict) [[ $# == 2 ]] || { print -u2 -r -- 'usage: loop-ar.sh verdict <report> reviewer|critic'; return 1; }
+      ar_parse_verdict "$@" ;;
+    prompt) ar_prompt "$@" ;;
+    disputed) ar_write_disputed "$@" ;;
+    prove-fix) [[ $# == 1 ]] || { print -u2 -r -- 'usage: loop-ar.sh prove-fix <run-dir>'; return 1; }
+      ar_prove_fix "$1" ;;
+    *) print -u2 -r -- 'usage: loop-ar.sh verdict|prompt|disputed|prove-fix [args]'; return 1 ;;
+  esac
+}
+
+# Dispatch only when run as a script; sourcing keeps the library inert.
+[[ "$ZSH_EVAL_CONTEXT" == *:file* ]] || ar_main "$@"
