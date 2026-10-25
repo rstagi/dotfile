@@ -18,6 +18,93 @@ struct Sandbox {
     socket: PathBuf,
 }
 
+struct TestProcess(Option<u32>);
+
+impl Drop for TestProcess {
+    fn drop(&mut self) {
+        let Some(pid) = self.0 else { return };
+        // The script execs sleep, so the recorded child has no descendants.
+        let _ = Command::new("/bin/kill").args(["-KILL", &pid.to_string()]).output();
+    }
+}
+
+#[test]
+fn loop_review_events_copy_metadata_and_keyed_retries_append_once() {
+    let sandbox = Sandbox::new();
+    let owner = sandbox.loop_session();
+    let child = sandbox.create(&review(&owner, "r1"), "true");
+    sandbox.wait_state(&child, "finished");
+    let retry = sandbox.create(&review(&owner, "r1"), "true");
+    assert_eq!(retry, child);
+    let events = sandbox.loop_events(&owner, "loop.review");
+    assert_eq!(events.len(), 2);
+    for (event, state) in events.iter().zip(["started", "exited"]) {
+        assert_eq!(event["state"], state);
+        assert_eq!(event["phase"], 2);
+        assert_eq!(event["attempt"], 1);
+        assert_eq!(event["repo"], "owner/repo");
+        assert_eq!(event["role"], "review");
+        assert_eq!(event["provider"], "gpt");
+        assert_eq!(event["round"], 1);
+        assert_eq!(event["inner"], 1);
+        assert_eq!(event["key"], "r1");
+        assert_eq!(event["session"], child);
+        assert_eq!(event["source"], "daemon");
+        assert!(event.get("verdict").is_none());
+    }
+    let next = sandbox.create(&review(&owner, "r2"), "true");
+    sandbox.wait_state(&next, "finished");
+    assert_ne!(next, child);
+    let events = sandbox.loop_events(&owner, "loop.review");
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[2]["state"], "started");
+    assert_eq!(events[2]["key"], "r2");
+    assert_eq!(events[2]["session"], next);
+}
+
+#[test]
+fn loop_attempt_exit_is_recorded_once_after_a_daemon_restart() {
+    let mut sandbox = Sandbox::new();
+    let owner = sandbox.loop_session();
+    let flags = ["--loop", &owner, "--phase", "117", "--attempt", "1", "--key", "p117-a1"];
+    let child = sandbox.create(&flags, &sandbox.script("ready", "exec /bin/sleep 120"));
+    let running = sandbox.entry(&child, "session.running");
+    let mut group = TestProcess(Some(running.body["process"]["pid"].as_u64().unwrap() as u32));
+    sandbox.wait_until(|| sandbox.lines("ready") == 1);
+    let events = sandbox.loop_events(&owner, "loop.attempt");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["state"], "started");
+    sandbox.restart();
+    assert_eq!(sandbox.create(&flags, "true"), child);
+    sandbox.run_ok(sandbox.command().args(["session", "stop", &child]));
+    group.0 = None;
+    sandbox.restart();
+    let events = sandbox.loop_events(&owner, "loop.attempt");
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1]["state"], "exited");
+    // The daemon cannot recover a process status that belonged to its predecessor.
+    assert_eq!(events[1]["exit"], -1);
+    for event in &events {
+        assert_eq!(event["n"], 117);
+        assert_eq!(event["attempt"], 1);
+        assert_eq!(event["key"], "p117-a1");
+        assert_eq!(event["session"], child);
+        assert_eq!(event["source"], "daemon");
+        assert!(event.get("verdict").is_none());
+    }
+    let next = sandbox.create(
+        &["--loop", &owner, "--phase", "117", "--attempt", "2", "--key", "p117-a2"],
+        "true",
+    );
+    sandbox.wait_state(&next, "finished");
+    let events = sandbox.loop_events(&owner, "loop.attempt");
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[2]["state"], "started");
+    assert_eq!(events[2]["attempt"], 2);
+    assert_eq!(events[2]["session"], next);
+    assert_eq!(events[3]["exit"], 0);
+}
+
 #[test]
 fn a_new_orchestrator_gets_the_same_review_step_and_no_second_process_starts() {
     let sandbox = Sandbox::new();
@@ -224,6 +311,19 @@ impl Sandbox {
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
         command
+    }
+
+    fn restart(&mut self) {
+        self._daemon.child.kill().unwrap();
+        self._daemon.child.wait().unwrap();
+        self._daemon = common::Daemon::start(self.command(), &self.socket);
+    }
+
+    fn loop_events(&self, owner: &str, kind: &str) -> Vec<Value> {
+        let response = common::get(&self.socket, &format!("/v1/sessions/{owner}/log?type={kind}"));
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let log: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        log["entries"].as_array().unwrap().iter().map(|entry| entry["body"].clone()).collect()
     }
 
     fn loop_session(&self) -> String {

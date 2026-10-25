@@ -191,6 +191,22 @@ impl Sessions {
         Ok(())
     }
 
+    /// Repairs a crash between the child log append and its derived Loop append.
+    pub(crate) fn recover_loop_executions(&mut self) -> Result<()> {
+        for session in self.registry.sessions()? {
+            if session.body["kind"] != "headless" || !session.body["loop"].is_object() {
+                continue;
+            }
+            let entries = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id)
+                .read()?
+                .entries;
+            for entry in entries {
+                self.record_loop_execution(&entry)?;
+            }
+        }
+        Ok(())
+    }
+
     fn loop_state(&self, session: &Session) -> Result<Value> {
         let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
         Ok(fold_loop(session, log.entries))
@@ -500,6 +516,52 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::sessions::Sessions;
+
+    #[tokio::test]
+    async fn recovery_repairs_interrupted_loop_appends_once_and_preserves_later_writes() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let (_, owner) = sessions.create_loop_session(sandbox.path(), None).unwrap();
+        drop(sessions);
+        // Model a crash after each child fact, before the corresponding Loop append.
+        let child = ws_core::ids::Ulid::new();
+        let log = ws_core::log::SessionLog::new(sandbox.path(), child, owner.device_id);
+        log.append(
+            0,
+            "session.created",
+            json!({
+                "alias":2,"kind":"headless","key":"p117-a1","parent_session_id":owner.id,
+                "loop":{"loop":owner.id,"phase":117,"attempt":1},
+            }),
+        )
+        .unwrap();
+        log.append(0, "exit", json!({"code":3})).unwrap();
+        log.append(0, "session.failed", json!({})).unwrap();
+        let uri = format!("/v1/loops/{}", owner.id);
+        for _ in 0..2 {
+            let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+            let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+            let attempts = state["attempts"].as_array().unwrap();
+            assert_eq!(attempts.len(), 2, "{state}");
+            assert_eq!(attempts[0]["state"], "started");
+            assert_eq!(attempts[1]["state"], "exited");
+            assert_eq!(attempts[1]["exit"], 3);
+            for attempt in attempts {
+                assert_eq!(attempt["source"], "daemon");
+                assert_eq!(attempt["session"], child.to_string());
+                assert_eq!(attempt["key"], "p117-a1");
+                assert!(attempt.get("verdict").is_none());
+            }
+            let (status, _) = request(
+                &app,
+                "POST",
+                &format!("/v1/sessions/{}/events", owner.id),
+                json!({"type":"loop.note","body":{"text":"Recovery permits another write."}}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+    }
 
     #[tokio::test]
     async fn loop_reads_fold_events_without_lowering_phase_status_and_survive_restart() {

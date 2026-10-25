@@ -137,6 +137,7 @@ impl Sessions {
             sessions.recover_spans()?;
             sessions.restore_triggers()?;
         }
+        sessions.recover_loop_executions()?;
         sessions.recover_phase_worktrees()?;
         Ok(sessions)
     }
@@ -299,6 +300,7 @@ impl Sessions {
             self.registry.rebuild(&self.state)?;
             self.restore_triggers()?;
             self.recover_spans()?;
+            self.recover_loop_executions()?;
             self.usage = None;
             self.needs_rebuild = false;
         }
