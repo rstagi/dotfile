@@ -70,14 +70,24 @@ pub fn prepare(
     session: &AgentSession,
     resume: Option<&str>,
 ) -> io::Result<Prepared> {
+    let loop_context = crate::loops::guard::context(
+        &session.state,
+        session.id.parse().map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+        session.parent_session_id,
+    )?;
+    let guarded = loop_context.is_some();
     let mut prepared = Prepared {
         program: agent.into(),
         argv: vec![],
         env: BTreeMap::from([("WS_SESSION_ID".into(), session.id.clone())]),
-        unset_env: vec!["WS_SESSION".into()],
+        unset_env: vec!["WS_SESSION".into(), "WS_LOOP_ID".into(), "WS_LOOP_GUARD_AGENT".into()],
         files: vec![],
         telemetry: None,
     };
+    if let Some(context) = loop_context {
+        prepared.env.insert("WS_LOOP_ID".into(), context.id.to_string());
+        prepared.env.insert("WS_LOOP_GUARD_AGENT".into(), agent.into());
+    }
     let preamble = if session.spawned {
         format!(
             "You are ws session #{}; run `ws done` when the user's task is complete. Use the ws-sessions skill to coordinate sessions.",
@@ -102,7 +112,7 @@ pub fn prepare(
                 .join("claude-settings.json");
             prepared.files.push(GeneratedFile {
                 path: path.clone(),
-                contents: serde_json::to_vec(&hooks("claude", &hook))?,
+                contents: serde_json::to_vec(&hooks("claude", &hook, guarded))?,
             });
             let mcp_path = path.with_file_name("claude-mcp.json");
             prepared.files.push(GeneratedFile {
@@ -173,9 +183,12 @@ pub fn prepare(
                 ("Interrupt", "cancel"),
             ] {
                 let command = serde_json::to_string(&format!("{hook} {state}"))?;
+                let guard = if guarded && event == "PreToolUse" {
+                    format!(",{{type=\"command\",command={}}}", serde_json::to_string(&format!("{hook} guard"))?)
+                } else { String::new() };
                 prepared.argv.extend([
                     "-c".into(),
-                    format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={command}}}]}}]"),
+                    format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={command}}}{guard}]}}]"),
                 ]);
             }
         }
@@ -186,7 +199,7 @@ pub fn prepare(
                     .clone()
                     .unwrap_or_else(|| session.home.join(".grok"))
                     .join("hooks/ws.json"),
-                contents: serde_json::to_vec(&hooks("grok", &hook))?,
+                contents: serde_json::to_vec(&hooks("grok", &hook, guarded))?,
             });
             prepared
                 .argv
@@ -274,13 +287,18 @@ impl Prepared {
     }
 }
 
-fn hooks(agent: &str, command: &str) -> Value {
+fn hooks(agent: &str, command: &str, guarded: bool) -> Value {
     let run = |state: &str| json!([{ "hooks": [{"type": "command", "command": format!("{command} {state}"), "timeout": if matches!(state, "stop" | "exit") { crate::hooks::STOP_CLI_BUDGET.as_secs() + 10 } else { 5 }}] }]);
     let mut settings = json!({"hooks": {
         "UserPromptSubmit": run("working"), "PreToolUse": run("working"), "PostToolUse": run("working"),
         "Stop": run("stop"), "PermissionRequest": run("waiting")
     }});
     let hooks = settings["hooks"].as_object_mut().unwrap();
+    if guarded {
+        hooks["PreToolUse"].as_array_mut().unwrap().push(json!({
+            "hooks": [{"type":"command", "command":format!("{command} guard"), "timeout":5}]
+        }));
+    }
     if agent == "claude" {
         hooks.insert("SessionEnd".into(), run("exit"));
         // Claude runs hooks only after its trust dialog. SessionStart marks input readiness.

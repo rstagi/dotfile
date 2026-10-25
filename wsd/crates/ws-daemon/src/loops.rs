@@ -21,6 +21,8 @@ use crate::{
     sessions::{Error, Result, Sessions},
 };
 
+pub mod guard;
+
 /// The phase statuses from lowest to highest. The Loop fold never lowers a status.
 const PHASE_RANKS: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
 
