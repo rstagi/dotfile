@@ -565,7 +565,9 @@ impl Sessions {
         let actor = request.parent_session_id;
         let loop_child = request.loop_child.take();
         if let Some(child) = &loop_child {
-            request.parent_session_id = Some(self.loop_session(child)?);
+            let owner = self.loop_session(child)?;
+            self.check_loop_pause(owner, child.phase)?;
+            request.parent_session_id = Some(owner);
         }
         let reserved = match &request.key {
             Some(key) => self.find_keyed(request.parent_session_id, key)?,

@@ -62,6 +62,7 @@ pub enum Error {
     PendingMessages,
     /// A merge gate of an earlier milestone is open, so the loop starts no later phase.
     MilestoneGateOpen,
+    LoopControlConflict(&'static str),
     WaitTimeout,
     ShuttingDown,
     Json(serde_json::Error),
@@ -425,6 +426,7 @@ impl fmt::Display for Error {
             }
             Self::PendingMessages => formatter
                 .write_str("The session has pending messages. Process them before completion."),
+            Self::LoopControlConflict(message) => formatter.write_str(message),
             Self::MilestoneGateOpen => formatter.write_str(
                 "A merge gate is open. Merge it and resume before you start a later milestone.",
             ),
