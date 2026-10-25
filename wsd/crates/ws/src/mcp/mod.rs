@@ -17,7 +17,8 @@ use crate::{Result, client};
 mod params;
 
 use params::{
-    Agent, Create, Dependency, Empty, Loop, Rename, Send, Spawn, Stream, Tail, Target, Wait,
+    Agent, Create, Dependency, Empty, Event, Log, Loop, LoopAck, LoopId, LoopModel, LoopNote,
+    LoopPause, LoopTier, Rename, Send, Spawn, Stream, Tail, Target, Wait,
 };
 use rmcp::schemars::{self, JsonSchema};
 
@@ -45,7 +46,48 @@ impl Control {
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {
         match name {
-            "loop_start" | "loop_stop" => {
+            "loop_list" => {
+                let _: Empty = serde_json::from_value(arguments)?;
+                self.request(Method::GET, "/v1/loops", None).await
+            }
+            "loop_get" => {
+                let request: LoopId = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::GET,
+                    &format!("/v1/loops/{}", client::encode(&request.id)),
+                    None,
+                )
+                .await
+            }
+            "loop_check" => {
+                let request: LoopId = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::GET,
+                    &format!("/v1/loops/{}/check", client::encode(&request.id)),
+                    None,
+                )
+                .await
+            }
+            "loop_ack" => {
+                let request: LoopAck = serde_json::from_value(arguments)?;
+                // A legacy agent must not become an anonymous human for an acknowledgment.
+                let legacy = if self.caller.is_none() {
+                    std::env::var("WS_SESSION")
+                        .ok()
+                        .map(|id| id.parse())
+                        .transpose()?
+                } else {
+                    None
+                };
+                Self::for_caller(&self.socket, self.caller.or(legacy))
+                    .request(
+                        Method::POST,
+                        "/v1/loops/ack",
+                        Some(serde_json::to_value(request)?),
+                    )
+                    .await
+            }
+            "loop_create" | "loop_start" | "loop_stop" => {
                 let mut request: Loop = serde_json::from_value(arguments)?;
                 request.loop_dir = std::env::current_dir()?.join(request.loop_dir);
                 let operation = name.strip_prefix("loop_").unwrap();
@@ -53,6 +95,35 @@ impl Control {
                     Method::POST,
                     &format!("/v1/loops/{operation}"),
                     Some(serde_json::to_value(request)?),
+                )
+                .await
+            }
+            "loop_pause" | "loop_resume" | "loop_note" | "loop_model" | "loop_tier"
+            | "loop_accept" | "loop_reject" => {
+                let mut body = match name {
+                    "loop_pause" | "loop_resume" => {
+                        serde_json::to_value(serde_json::from_value::<LoopPause>(arguments)?)?
+                    }
+                    "loop_note" => {
+                        serde_json::to_value(serde_json::from_value::<LoopNote>(arguments)?)?
+                    }
+                    "loop_model" => {
+                        serde_json::to_value(serde_json::from_value::<LoopModel>(arguments)?)?
+                    }
+                    "loop_tier" => {
+                        serde_json::to_value(serde_json::from_value::<LoopTier>(arguments)?)?
+                    }
+                    _ => serde_json::to_value(serde_json::from_value::<LoopId>(arguments)?)?,
+                };
+                let id = body.as_object_mut().unwrap().remove("id").unwrap();
+                self.request(
+                    Method::POST,
+                    &format!(
+                        "/v1/loops/{}/{}",
+                        client::encode(id.as_str().unwrap()),
+                        name.strip_prefix("loop_").unwrap()
+                    ),
+                    Some(body),
                 )
                 .await
             }
@@ -98,6 +169,15 @@ impl Control {
                 )
                 .await
             }
+            "session_output" => {
+                let request: Target = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::GET,
+                    &format!("{}/output", self.session_path(&request.target)?),
+                    None,
+                )
+                .await
+            }
             "session_tail" => {
                 let request: Tail = serde_json::from_value(arguments)?;
                 let stream = match request.stream.unwrap_or(Stream::Stdout) {
@@ -113,14 +193,54 @@ impl Control {
                 );
                 self.request(Method::GET, &path, None).await
             }
-            "wait" => {
-                let request: Wait = serde_json::from_value(arguments)?;
+            "session_event" => {
+                let request: Event = serde_json::from_value(arguments)?;
                 self.request(
                     Method::POST,
-                    &format!("{}/wait", self.session_path(&request.target)?),
-                    Some(json!({"for":request.condition, "timeout":request.timeout})),
+                    &format!("{}/events", self.session_path(&request.target)?),
+                    Some(json!({"type":request.event_type,"body":request.body,"source":request.source,"key":request.key})),
                 )
                 .await
+            }
+            "session_log" => {
+                let request: Log = serde_json::from_value(arguments)?;
+                let mut path = format!(
+                    "{}/log?since={}",
+                    self.session_path(&request.target)?,
+                    request.since.unwrap_or(0)
+                );
+                if let Some(prefix) = request.event_type {
+                    path = format!("{path}&type={}", client::encode(&prefix));
+                }
+                self.request(Method::GET, &path, None).await
+            }
+            "wait" => {
+                let request: Wait = serde_json::from_value(arguments)?;
+                match (request.target, request.targets) {
+                    (Some(target), None) => {
+                        if request.mode.is_some() {
+                            return Err("Use mode with targets.".into());
+                        }
+                        self.request(Method::POST, &format!("{}/wait", self.session_path(&target)?),
+                            Some(json!({"for":request.condition,"timeout":request.timeout,"after_seq":request.after_seq.unwrap_or(0)}))).await
+                    }
+                    (None, Some(mut targets)) => {
+                        if request.after_seq.is_some() {
+                            return Err("Set after_seq in each target.".into());
+                        }
+                        for target in &mut targets {
+                            if target.target == "me" {
+                                target.target = self
+                                    .caller
+                                    .ok_or("Set WS_SESSION_ID to use me.")?
+                                    .to_string();
+                            }
+                            target.after_seq = Some(target.after_seq.unwrap_or(0));
+                        }
+                        self.request(Method::POST, "/v1/wait", Some(json!({"targets":targets,"mode":request.mode.unwrap_or(params::WaitMode::All),"for":request.condition,"timeout":request.timeout}))).await
+                    }
+                    _ => Err("Supply target or targets, but not both.".into()),
+                }
             }
             "session_send" => {
                 let request: Send = serde_json::from_value(arguments)?;
@@ -215,6 +335,11 @@ impl Control {
             stdin: request.stdin.map(|path| directory.join(path)),
             stdout: request.stdout.map(|path| directory.join(path)),
             stderr: request.stderr.map(|path| directory.join(path)),
+            key: request.key,
+            loop_child: request
+                .loop_child
+                .map(|child| serde_json::from_value(serde_json::to_value(child)?).map(Box::new))
+                .transpose()?,
         })?;
         self.request(Method::POST, "/v1/sessions", Some(body)).await
     }
@@ -299,6 +424,26 @@ impl ServerHandler for Control {
 
 fn tools() -> Vec<Tool> {
     vec![
+        tool::<LoopId>(
+            "loop_get",
+            "Read the state of one loop from its session events.",
+        ),
+        tool::<LoopAck>(
+            "loop_ack",
+            "Record an acknowledgment of a Loop violation with a reason. Only the human can acknowledge a hard violation. Read the violation ID from loop_get.",
+        ),
+        tool::<LoopId>(
+            "loop_check",
+            "Check the events of one loop against the Loop rules. Each violation names the rule, the severity (hard or soft), the phase and the sequence numbers of the events that prove it.",
+        ),
+        tool::<Empty>(
+            "loop_list",
+            "List the loop states from their session events.",
+        ),
+        tool::<Loop>(
+            "loop_create",
+            "Create the loop session of a loop directory. The session has no process. A second call for the same directory returns the same session.",
+        ),
         tool::<Loop>(
             "loop_start",
             "Start a prepared Loop orchestrator as a headless session. The loop directory must contain state.json.",
@@ -306,6 +451,34 @@ fn tools() -> Vec<Tool> {
         tool::<Loop>(
             "loop_stop",
             "Pause a loop through its control/pause file. The orchestrator and phase runners observe this file.",
+        ),
+        tool::<LoopId>(
+            "loop_accept",
+            "Accept the open accept gate. The daemon copies the milestone and phase from that gate.",
+        ),
+        tool::<LoopId>(
+            "loop_reject",
+            "Reject the open accept gate. The daemon copies the milestone and phase from that gate.",
+        ),
+        tool::<LoopTier>(
+            "loop_tier",
+            "Change the tier and optional rounds of a review phase before it starts. Record the changed plan.",
+        ),
+        tool::<LoopPause>(
+            "loop_pause",
+            "Pause a loop or one phase. Record the control and write the runner pause file.",
+        ),
+        tool::<LoopPause>(
+            "loop_resume",
+            "Resume a paused loop or phase. Remove its pause file. This operation does not advance a milestone gate.",
+        ),
+        tool::<LoopNote>(
+            "loop_note",
+            "Record guidance for a phase as a loop.note event.",
+        ),
+        tool::<LoopModel>(
+            "loop_model",
+            "Set the model for the next phase attempt. Record the control and write the runner model file.",
         ),
         tool::<Empty>("session_list", "List the registered sessions."),
         tool::<Target>("session_get", "Read one registered session."),
@@ -322,14 +495,29 @@ fn tools() -> Vec<Tool> {
             "Rename your own session. ws names each session from its first prompt. Use this tool only when that name is wrong. Use 2 to 4 words in kebab case. Names are unique.",
         ),
         tool::<Send>("session_send", "Queue a message for a session."),
-        tool::<Wait>("wait", "Wait for a session state or event."),
+        tool::<Wait>(
+            "wait",
+            "Wait for session states or events. Use target for one session. Use targets and mode any or all for several sessions. Each target accepts after_seq.",
+        ),
         tool::<Spawn>(
             "phase_spawn",
-            "Start a local phase with a maximum runtime. WS_SESSION_ID identifies its parent.",
+            "Start a local phase with a maximum runtime. WS_SESSION_ID identifies its parent. With loop, the loop session is the parent and WS_SESSION_ID is the actor.",
+        ),
+        tool::<Target>(
+            "session_output",
+            "Read the published output.md text of a session. The maximum is 65536 bytes.",
         ),
         tool::<Tail>(
             "session_tail",
             "Read the last output bytes from a session. The maximum is 65536 bytes.",
+        ),
+        tool::<Event>(
+            "session_event",
+            "Append a loop.* event to a session log. Other event types are rejected. The body must match the event type. The entry records your session as the caller and the source (tool or agent).",
+        ),
+        tool::<Log>(
+            "session_log",
+            "Read the log entries of a session in order. Filter by type prefix and by sequence number.",
         ),
         tool::<Dependency>(
             "session_depends_on",

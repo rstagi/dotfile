@@ -448,6 +448,7 @@ fn session_create_starts_an_interactive_agent_in_a_directory() {
 #[test]
 #[cfg(target_os = "macos")]
 fn agent_priority_clamps_interactive_agents() {
+    let inherited_clamp = common::test_process_has_inherited_clamp();
     // macOS reports a background clamp as scheduling priority 4.
     for (config, clamped) in [
         ("[agent]\npriority = \"background\"\n", true),
@@ -462,13 +463,16 @@ fn agent_priority_clamps_interactive_agents() {
             .unwrap();
         assert!(result.status.success(), "{result:?}");
         let (agent, _running) = sandbox.capture();
-        assert_eq!(agent["pri"] == "4", clamped, "{config}: {agent}");
+        if !inherited_clamp {
+            assert_eq!(agent["pri"] == "4", clamped, "{config}: {agent}");
+        }
     }
 }
 
 #[test]
 #[cfg(target_os = "macos")]
 fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversation() {
+    let inherited_clamp = common::test_process_has_inherited_clamp();
     let sandbox = Sandbox::with_config("[agent]\npriority = \"normal\"\n");
     let result = sandbox
         .command()
@@ -479,7 +483,9 @@ fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversatio
     assert!(result.status.success(), "{result:?}");
     let (first, _first) = sandbox.capture();
     let id = first["id"].as_str().unwrap().to_owned();
-    assert_ne!(first["pri"], "4", "{first}");
+    if !inherited_clamp {
+        assert_ne!(first["pri"], "4", "{first}");
+    }
     let window = sandbox.window(&id);
     let pane = sandbox.tmux(&["display-message", "-p", "-t", &window, "#{pane_id}"]);
     let response = common::request(
@@ -500,7 +506,9 @@ fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversatio
     assert_eq!(changed["body"]["priority"], "background");
     let (second, _second) = sandbox.capture();
     assert_eq!(second["id"], id.as_str());
-    assert_eq!(second["pri"], "4", "{second}");
+    if !inherited_clamp {
+        assert_eq!(second["pri"], "4", "{second}");
+    }
     assert_eq!(second["pane"], pane.as_str());
     assert!(
         second["argv"]
@@ -519,7 +527,9 @@ fn session_priority_restarts_the_agent_in_its_window_and_resumes_the_conversatio
     let changed = sandbox.json(&["session", "priority", &id, "normal", "--json"]);
     assert_eq!(changed["body"]["priority"], "normal");
     let (third, _third) = sandbox.capture();
-    assert_ne!(third["pri"], "4", "{third}");
+    if !inherited_clamp {
+        assert_ne!(third["pri"], "4", "{third}");
+    }
     assert_eq!(sandbox.events(&id, "session.priority").len(), 2);
 }
 
@@ -1155,6 +1165,51 @@ fn terminal_spawn_trigger_uses_the_current_directory() {
         sandbox.json(&["show", child["id"].as_str().unwrap(), "--json"])["workspace_id"].is_null()
     );
     assert_eq!(sandbox.json(&["list", "--json"]), json!([]));
+}
+
+#[test]
+fn four_orchestrator_continuations_keep_the_loop_parent() {
+    let loop_id = ws_core::ids::SessionId::new();
+    let sandbox = Sandbox::with_setup("", |home, _| {
+        let state = home.join("state");
+        let device = ws_core::device::Device::init(&state, "test").unwrap();
+        ws_core::log::SessionLog::new(&state, loop_id, device.device_id)
+            .append(0, "session.created", json!({"alias":1,"kind":"loop"}))
+            .unwrap();
+    });
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/sessions/start",
+        &json!({"cwd":sandbox.home.path(),"agent":"codex","parent_session_id":loop_id}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    let (mut owner, mut running) = sandbox.capture();
+    for _ in 0..4 {
+        let output = sandbox
+            .command()
+            .env("WS_SESSION_ID", owner["id"].as_str().unwrap())
+            .args(["on", "me", "exit", "--spawn", "codex", "Continue the loop."])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        running.write_all(b"0").unwrap();
+        let (child, child_running) = sandbox.capture();
+        let session = sandbox.json(&["show", child["id"].as_str().unwrap(), "--json"]);
+        assert_eq!(session["parent_session_id"], loop_id.to_string());
+        owner = child;
+        running = child_running;
+    }
+    running.write_all(b"0").unwrap();
+    let output = sandbox.output(&[
+        "wait",
+        owner["id"].as_str().unwrap(),
+        "--for",
+        "exit",
+        "--timeout",
+        "30",
+    ]);
+    assert!(output.status.success(), "{output:?}");
 }
 
 #[test]

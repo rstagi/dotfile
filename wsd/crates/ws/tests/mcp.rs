@@ -32,14 +32,29 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
     assert_eq!(
         names,
         [
+            "loop_accept",
+            "loop_ack",
+            "loop_check",
+            "loop_create",
+            "loop_get",
+            "loop_list",
+            "loop_model",
+            "loop_note",
+            "loop_pause",
+            "loop_reject",
+            "loop_resume",
             "loop_start",
             "loop_stop",
+            "loop_tier",
             "phase_spawn",
             "session_block_on",
             "session_create",
             "session_depends_on",
+            "session_event",
             "session_get",
             "session_list",
+            "session_log",
+            "session_output",
             "session_rename",
             "session_send",
             "session_stop",
@@ -420,6 +435,23 @@ async fn wait_matches_the_json_cli_and_records_the_caller() {
     ]);
     assert_eq!(cli, result);
     server.assert_audit("session.wait");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn session_create_passes_the_key_so_a_retry_returns_the_first_session() {
+    let server = TestServer::start().await;
+    let request = json!({"headless":true,"key":"mcp-key","command":["/bin/sh","-c","true"],"cwd":server.home.path()});
+    let first = server.call("session_create", request.clone()).await;
+    let retry = server.call("session_create", request).await;
+    assert_eq!(retry["id"], first["id"]);
+    assert_eq!(first["body"]["key"], "mcp-key");
+    server
+        .call(
+            "wait",
+            json!({"target":first["id"],"condition":"exit","timeout":30}),
+        )
+        .await;
     server.finish().await;
 }
 
@@ -811,5 +843,349 @@ async fn loop_stop_matches_the_json_cli_and_rejects_a_forged_caller() {
         .unwrap();
     assert_eq!(forged.is_error, Some(true));
     server.assert_audit("loop.stop");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn event_and_log_tools_match_the_cli_and_record_the_caller() {
+    let server = TestServer::start().await;
+    let appended = server
+        .call(
+            "session_event",
+            json!({"target":"me","type":"loop.note","body":{"text":"from mcp"}}),
+        )
+        .await;
+    assert_eq!(appended["type"], "loop.note");
+    assert_eq!(appended["body"]["caller"], server.parent);
+    let cli = server.cli(&[
+        "event",
+        "loop.decision",
+        "--body",
+        r#"{"topic":"t","default":1,"choice":2,"reason":"from cli"}"#,
+    ]);
+    assert_eq!(cli["body"]["caller"], server.parent);
+    let rejected = server
+        .error(
+            "session_event",
+            json!({"target":"me","type":"session.done"}),
+        )
+        .await;
+    assert_eq!(rejected["error"]["code"], "invalid_request");
+    let logged = server
+        .call("session_log", json!({"target":"me","type":"loop."}))
+        .await;
+    let types: Vec<_> = logged["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, ["loop.note", "loop.decision"]);
+    assert_eq!(logged, server.cli(&["log", "--type", "loop."]));
+    let since = appended["seq"].as_u64().unwrap().to_string();
+    let later = server.cli(&["log", "--type", "loop.", "--since", &since]);
+    assert_eq!(later["entries"].as_array().unwrap().len(), 1);
+    server.assert_audit("session.event");
+    server.assert_audit("session.log");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn session_output_returns_published_text_with_a_utf8_safe_cap() {
+    let server = TestServer::start().await;
+    let child = server.call("session_create", json!({})).await;
+    let id = child["id"].as_str().unwrap();
+    for text in [
+        "Report\nwith a final verdict.\n".to_owned(),
+        format!("{}éz", "a".repeat(65535)),
+    ] {
+        let response = common::request(
+            &server.socket,
+            "POST",
+            &format!("/v1/sessions/{id}/done"),
+            &json!({"output":text}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let result = server.call("session_output", json!({"target":id})).await;
+        let expected = if text.len() > 65536 {
+            "a".repeat(65535)
+        } else {
+            text.clone()
+        };
+        assert_eq!(result["output"], expected);
+        assert_eq!(result["session_id"], id);
+        assert_eq!(result["truncated"], text.len() > 65536);
+        assert_eq!(result, server.cli(&["session", "output", id, "--json"]));
+        let plain = common::ws(server.home.path(), &server.socket)
+            .args(["session", "output", id])
+            .output()
+            .unwrap();
+        assert!(plain.status.success(), "{plain:?}");
+        assert_eq!(String::from_utf8(plain.stdout).unwrap(), expected);
+    }
+    server.assert_audit("session.output");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn multiwait_matches_the_cli_and_filters_each_target_by_sequence() {
+    let server = TestServer::start().await;
+    let first = server.call("session_create", json!({})).await;
+    let second = server.call("session_create", json!({})).await;
+    let a = first["id"].as_str().unwrap();
+    let b = second["id"].as_str().unwrap();
+    let old = server
+        .call(
+            "session_event",
+            json!({"target":a,"type":"loop.note","body":{"text":"n"}}),
+        )
+        .await;
+    server
+        .call(
+            "session_event",
+            json!({"target":b,"type":"loop.note","body":{"text":"n"}}),
+        )
+        .await;
+    let targets = json!([{"target":a,"after_seq":old["seq"]},{"target":b,"after_seq":0}]);
+    let result = server
+        .call(
+            "wait",
+            json!({"targets":targets,"mode":"any","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(result["matches"][0]["session"]["id"], b);
+    let seq = old["seq"].as_u64().unwrap().to_string();
+    assert_eq!(
+        result,
+        server.cli(&[
+            "wait",
+            a,
+            b,
+            "--mode",
+            "any",
+            "--for",
+            "event=loop.note",
+            "--after-seq",
+            &seq,
+            "--after-seq",
+            "0",
+            "--timeout",
+            "0",
+            "--json"
+        ])
+    );
+    let error = server
+        .error(
+            "wait",
+            json!({"targets":targets,"mode":"all","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(error["error"]["code"], "wait_timeout");
+    server
+        .call(
+            "session_event",
+            json!({"target":a,"type":"loop.note","body":{"text":"n"}}),
+        )
+        .await;
+    let all = server
+        .call(
+            "wait",
+            json!({"targets":targets,"mode":"all","condition":"event=loop.note","timeout":0}),
+        )
+        .await;
+    assert_eq!(all["matches"].as_array().unwrap().len(), 2);
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn loop_reads_match_http_and_json_cli_and_reject_a_forged_caller() {
+    let server = TestServer::start().await;
+    let directory = server.home.path().join("loop");
+    std::fs::create_dir(&directory).unwrap();
+    let created = server
+        .call("loop_create", json!({"loop_dir":directory}))
+        .await;
+    let id = created["id"].as_str().unwrap();
+    server
+        .call(
+            "session_event",
+            json!({"target":id,"type":"loop.phase",
+        "body":{"n":109,"status":"done","attempt":1,"session":null}}),
+        )
+        .await;
+    let fetched = server.call("loop_get", json!({"id":id})).await;
+    assert_eq!(fetched["phases"]["109"]["status"], "done");
+    assert_eq!(fetched, server.cli(&["loop", "get", id, "--json"]));
+    let listed = server.call("loop_list", json!({})).await;
+    assert_eq!(listed, json!([fetched]));
+    assert_eq!(listed, server.cli(&["loop", "list", "--json"]));
+    for (path, expected) in [
+        (format!("/v1/loops/{id}"), &fetched),
+        ("/v1/loops".into(), &listed),
+    ] {
+        let response = common::request(&server.socket, "GET", &path, "");
+        let http: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(&http, expected);
+    }
+    for (tool, args) in [
+        ("loop_get", json!({"id":id,"parent_session_id":id})),
+        ("loop_list", json!({"parent_session_id":id})),
+    ] {
+        assert!(server.error(tool, args).await["error"].is_object());
+    }
+    assert_eq!(
+        server.error("loop_get", json!({"id":server.parent})).await["error"]["code"],
+        "invalid_request"
+    );
+    server.assert_audit("loop.get");
+    server.assert_audit("loop.list");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn loop_check_matches_http_and_json_cli_and_names_the_proving_events() {
+    let server = TestServer::start().await;
+    let directory = server.home.path().join("loop");
+    std::fs::create_dir(&directory).unwrap();
+    let created = server
+        .call("loop_create", json!({"loop_dir":directory}))
+        .await;
+    let id = created["id"].as_str().unwrap();
+    let clean = server.call("loop_check", json!({"id":id})).await;
+    assert_eq!(clean["ok"], true);
+    assert_eq!(clean["violations"], json!([]));
+    let merged = server
+        .call(
+            "session_event",
+            json!({"target":id,"type":"loop.phase","body":{"n":7,"status":"merged","attempt":1,"session":null}}),
+        )
+        .await;
+    let checked = server.call("loop_check", json!({"id":id})).await;
+    assert_eq!(checked["ok"], false);
+    let violations = checked["violations"].as_array().unwrap();
+    let hard = violations
+        .iter()
+        .find(|violation| violation["rule"] == "merged-needs-verify")
+        .unwrap();
+    assert_eq!(hard["severity"], "hard");
+    assert_eq!(hard["phase"], 7);
+    assert_eq!(hard["seqs"], json!([merged["seq"]]));
+    assert_eq!(checked, server.cli(&["loop", "check", id, "--json"]));
+    let response = common::request(&server.socket, "GET", &format!("/v1/loops/{id}/check"), "");
+    let http: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(http, checked);
+    assert!(
+        server
+            .error("loop_check", json!({"id":id,"parent_session_id":id}))
+            .await["error"]
+            .is_object()
+    );
+    assert_eq!(
+        server
+            .error("loop_check", json!({"id":server.parent}))
+            .await["error"]["code"],
+        "invalid_request"
+    );
+    server.assert_audit("loop.check");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn skills_loop_controls_use_the_same_routes_and_reject_a_forged_caller() {
+    let server = TestServer::start().await;
+    let directory = server.home.path().join("loop");
+    std::fs::create_dir(&directory).unwrap();
+    let created = server
+        .call("loop_create", json!({"loop_dir":directory}))
+        .await;
+    let id = created["id"].as_str().unwrap();
+    for (tool, args, operation) in [
+        ("loop_pause", json!({"id":id,"phase":3}), "loop.pause"),
+        ("loop_resume", json!({"id":id,"phase":3}), "loop.resume"),
+        (
+            "loop_model",
+            json!({"id":id,"phase":3,"model":"codex:@sol+high"}),
+            "loop.model",
+        ),
+        (
+            "loop_note",
+            json!({"id":id,"phase":3,"text":"Use the public API."}),
+            "loop.note",
+        ),
+    ] {
+        let entry = server.call(tool, args.clone()).await;
+        assert_eq!(entry["body"]["phase"], 3);
+        let mut forged = args;
+        forged["parent_session_id"] = json!(id);
+        assert!(server.error(tool, forged).await["error"].is_object());
+        server.assert_audit(operation);
+    }
+    for (tool, state) in [("loop_accept", "accepted"), ("loop_reject", "rejected")] {
+        server
+            .call(
+                "session_event",
+                json!({"target":id,"type":"loop.gate",
+            "body":{"kind":"accept","state":"open","milestone":2,"phase":4,"artifacts":[]}}),
+            )
+            .await;
+        let gate = server.call(tool, json!({"id":id})).await;
+        assert_eq!(gate["body"]["state"], state);
+        assert_eq!(gate["body"]["source"], "daemon");
+        assert!(server.error(tool, json!({"id":id})).await["error"].is_object());
+        assert!(
+            server
+                .error(tool, json!({"id":id,"parent_session_id":id}))
+                .await["error"]
+                .is_object()
+        );
+        server
+            .call(
+                "session_event",
+                json!({"target":id,"type":"loop.gate",
+            "body":{"kind":"accept","state":"open","milestone":2,"phase":4,"artifacts":[]}}),
+            )
+            .await;
+        let cli = server.cli(&["loop", tool.strip_prefix("loop_").unwrap(), id, "--json"]);
+        assert_eq!(cli["body"]["state"], state);
+    }
+    let scripts = server.home.path().join("dotfile");
+    std::fs::create_dir_all(&scripts).unwrap();
+    std::os::unix::fs::symlink(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../loop-plan-tier.mjs")
+            .canonicalize()
+            .unwrap(),
+        scripts.join("loop-plan-tier.mjs"),
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("plan.md"),
+        "# Plan\n## Phases\n### Phase 4 — Review `[kind: pr-review]` `[status: todo]`\n",
+    )
+    .unwrap();
+    let plan = server
+        .call(
+            "loop_tier",
+            json!({"id":id,"phase":4,"tier":"standard","rounds":2}),
+        )
+        .await;
+    assert_eq!(plan["type"], "loop.plan");
+    assert!(
+        plan["body"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[rounds: 2]")
+    );
+    assert!(
+        server
+            .error(
+                "loop_tier",
+                json!({"id":id,"phase":4,"tier":"max","parent_session_id":id})
+            )
+            .await["error"]
+            .is_object()
+    );
+    server.assert_audit("loop.tier");
     server.finish().await;
 }

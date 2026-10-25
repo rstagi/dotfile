@@ -100,15 +100,37 @@ enum Command {
         #[arg(value_parser = ["-"])]
         stdin: Option<String>,
     },
+    /// Append a loop.* event to a session log. The default target is the current session.
+    Event {
+        #[arg(name = "type")]
+        event_type: String,
+        /// JSON object with the event data.
+        #[arg(long)]
+        body: Option<String>,
+        /// Who produced the event. Tools use tool. The default is agent.
+        #[arg(long, value_parser = ["tool", "agent"])]
+        source: Option<String>,
+        /// Stable key of the fact. A second append with the same key adds nothing.
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long, default_value = "me")]
+        target: String,
+    },
+    /// Print the log entries of a session as JSON. The default target is the current session.
+    Log {
+        #[arg(default_value = "me")]
+        target: String,
+        /// Keep entries whose type starts with this prefix.
+        #[arg(long = "type")]
+        event_type: Option<String>,
+        /// Keep entries with a sequence number above this value.
+        #[arg(long)]
+        since: Option<u64>,
+    },
     /// Wait for a session condition through the daemon.
     Wait {
-        target: String,
-        #[arg(long = "for")]
-        condition: String,
-        #[arg(long)]
-        timeout: Option<u32>,
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        arguments: cmd::wait::Args,
     },
     /// Mark selected messages, or all unread messages, as read.
     Ack {
@@ -196,7 +218,7 @@ enum Command {
     /// Create or read a headless session.
     Session {
         #[command(subcommand)]
-        command: cmd::session::Command,
+        command: Box<cmd::session::Command>,
     },
     /// Initialize the local device identity.
     Init,
@@ -329,23 +351,29 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Done { output, stdin } => {
             cmd::done::run(&socket_path()?, output.as_deref().or(stdin.as_deref())).await?
         }
-        Command::Wait {
+        Command::Wait { arguments } => cmd::wait::run(&socket_path()?, arguments).await?,
+        Command::Event {
+            event_type,
+            body,
+            source,
+            key,
             target,
-            condition,
-            timeout,
-            json,
         } => {
-            if json {
-                cmd::mcp::print(
-                    &socket_path()?,
-                    "wait",
-                    serde_json::json!({"target":target,"condition":condition,"timeout":timeout}),
-                )
-                .await?;
-            } else {
-                cmd::wait::run(&socket_path()?, &target, &condition, timeout).await?;
-            }
+            cmd::events::event(
+                &socket_path()?,
+                &target,
+                &event_type,
+                body.as_deref(),
+                source.as_deref(),
+                key.as_deref(),
+            )
+            .await?
         }
+        Command::Log {
+            target,
+            event_type,
+            since,
+        } => cmd::events::log(&socket_path()?, &target, event_type, since).await?,
         Command::Ack { event_ids } => cmd::ack::run(&socket_path()?, event_ids).await?,
         Command::Send {
             target,
@@ -394,7 +422,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .await?
         }
         Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
-        Command::Session { command } => return cmd::session::run(&socket_path()?, command).await,
+        Command::Session { command } => return cmd::session::run(&socket_path()?, *command).await,
         Command::Init => init::run()?,
         Command::Daemon => {
             let socket = socket_path()?;

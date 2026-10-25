@@ -235,6 +235,11 @@ echo "install: each configure step is idempotent"
 for package in tmux python node terraform gcloud kubectl docker ws loop-web claude-config gh fzf zsh; do
   reset_home
   assert_idempotent "$package" run_step "install_package $package"
+  if [[ "$package" == loop-web ]]; then
+    assert_eq "$(calls npm | sed '/^install --global /d')" $'install\ninstall' "loop-web installs dependencies without a UI build"
+    assert_contains "$(cat "$TMP/home/Library/LaunchAgents/com.rstagi.loop-web.plist")" \
+      "$TMP/home/dotfile/loop-web/server/index.mjs" "loop-web keeps the daemon LaunchAgent"
+  fi
 done
 reset_home
 assert_idempotent "core setup" run_step setup_core

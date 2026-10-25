@@ -1,5 +1,5 @@
 #!/bin/bash
-# Loop Observatory launcher — a read-only live graph for the loop-engineering flow.
+# Loop daemon launcher.
 #
 # Usage:
 #   loop-web.sh [--dir <.loop path>] [--plan <plan.md>] [--port 7717]
@@ -13,7 +13,7 @@ SERVER="$SCRIPT_DIR/loop-web/server/index.mjs"
 
 usage() {
   cat <<'EOF'
-loop-web — Loop Observatory: a live read-only graph for the loop-engineering flow.
+loop-web — Loop daemon. Use 'ws top' to view loops.
 
 Usage:
   loop-web [--dir <.loop path>] [--plan <plan.md>] [--port 7717]
@@ -68,10 +68,6 @@ if [ -z "$DIR" ] && [ -z "$PLAN" ]; then
     [ "$d" = "/" ] && break
     d="$(dirname "$d")"
   done
-fi
-
-if [ ! -d "$SCRIPT_DIR/loop-web/dist" ]; then
-  echo "loop-web: UI not built — run 'npm run build' in $SCRIPT_DIR/loop-web (data endpoints still work)" >&2
 fi
 
 export LOOP_WEB_PORT="$PORT"

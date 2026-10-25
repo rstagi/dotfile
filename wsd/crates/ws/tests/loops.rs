@@ -13,6 +13,247 @@ struct Sandbox {
 }
 
 #[test]
+fn loop_ack_cli_records_the_human_reason_and_refuses_an_agent() {
+    let sandbox = Sandbox::new();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    sandbox.request(
+        &format!("/v1/sessions/{id}/events"),
+        json!({"type":"loop.phase",
+        "source":"tool","body":{"n":1,"status":"merged","session":null}}),
+    );
+    let response = common::get(&sandbox.socket, &format!("/v1/loops/{id}"));
+    let state: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let violation = state["violations"][0]["id"].as_str().unwrap();
+    let agent = sandbox.request("/v1/sessions", json!({}));
+    for identity in ["WS_SESSION_ID", "WS_SESSION"] {
+        let denied = common::ws(sandbox.home.path(), &sandbox.socket)
+            .env(identity, agent["id"].as_str().unwrap())
+            .args([
+                "loop",
+                "ack",
+                violation,
+                "--reason",
+                "I checked the merge.",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(!denied.status.success());
+        assert!(
+            String::from_utf8_lossy(&denied.stderr).contains("Only the human"),
+            "{denied:?}"
+        );
+    }
+    let output = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args([
+            "loop",
+            "ack",
+            violation,
+            "--reason",
+            "I checked the merge.",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let entry: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(entry["type"], "loop.control");
+    assert_eq!(entry["body"]["violation"], violation);
+    assert_eq!(entry["body"]["reason"], "I checked the merge.");
+}
+
+#[tokio::test]
+async fn loop_ack_mcp_uses_the_caller_identity() {
+    use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+    let sandbox = Sandbox::new();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    sandbox.request(
+        &format!("/v1/sessions/{id}/events"),
+        json!({"type":"loop.phase",
+        "source":"tool","body":{"n":1,"status":"merged","session":null}}),
+    );
+    let response = common::get(&sandbox.socket, &format!("/v1/loops/{id}"));
+    let state: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let violation = state["violations"][0]["id"].as_str().unwrap();
+    let agent = sandbox.request("/v1/sessions", json!({}));
+    for human in [false, true] {
+        let mut command =
+            tokio::process::Command::from(common::ws(sandbox.home.path(), &sandbox.socket));
+        command.arg("mcp");
+        if !human {
+            command.env("WS_SESSION_ID", agent["id"].as_str().unwrap());
+        }
+        let client = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            ().serve(TokioChildProcess::new(command).unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let tools = client.list_all_tools().await.unwrap();
+        assert!(tools.iter().any(|tool| tool.name == "loop_ack"));
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.call_tool(
+                CallToolRequestParams::new("loop_ack").with_arguments(
+                    json!({"id":violation,"reason":"I checked the merge."})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if human {
+            assert_ne!(result.is_error, Some(true), "{result:?}");
+            assert_eq!(
+                result.structured_content.unwrap()["body"]["violation"],
+                violation
+            );
+        } else {
+            assert_eq!(result.is_error, Some(true), "{result:?}");
+            assert!(
+                result.structured_content.unwrap()["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Only the human")
+            );
+        }
+        client.cancel().await.unwrap();
+    }
+}
+
+#[test]
+fn loop_enforcement_sends_one_notification_for_a_new_hard_result() {
+    let sandbox = Sandbox::with_notifications(true);
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    let event = |kind: &str, body: Value| {
+        sandbox.request(
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":kind,"source":"tool","body":body}),
+        )
+    };
+    event(
+        "loop.guard",
+        json!({"session":"child","rule":"write","command":"git push"}),
+    );
+    event(
+        "loop.phase",
+        json!({"n":1,"status":"merged","session":null}),
+    );
+    for _ in 0..3 {
+        event("loop.note", json!({"text":"Check the existing result."}));
+        let response = common::request(&sandbox.socket,"POST","/v1/sessions",
+            &json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.home.path(),"key":"blocked",
+                "loop":{"loop":id,"phase":2,"attempt":1}}).to_string());
+        assert!(response.starts_with("HTTP/1.1 409"), "{response}");
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let notifications = loop {
+        let text =
+            fs::read_to_string(sandbox.home.path().join("notifications.jsonl")).unwrap_or_default();
+        if text.ends_with('\n') {
+            break text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "The adapter did not receive a notification."
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(notifications.lines().count(), 1);
+    let event: Value = serde_json::from_str(notifications.trim()).unwrap();
+    assert_eq!(event["loop"], id);
+    assert_eq!(event["state"], "waiting");
+    let response = common::get(&sandbox.socket, &format!("/v1/loops/{id}"));
+    let state: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["violations"].as_array().unwrap().len(), 2);
+    assert_eq!(state["violations"][1]["id"], event["violation"]);
+}
+
+#[test]
+fn skills_tier_changes_the_plan_and_refuses_a_review_that_started() {
+    let sandbox = Sandbox::new();
+    let plan = sandbox.loop_dir.join("plan.md");
+    fs::write(&plan, "# Plan\n## Phases\n### Phase 9 — Review `[kind: pr-review]` `[status: todo]` `[review: standard]` `[rounds: 2]`\n").unwrap();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    let run = || {
+        common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(["loop", "tier", id, "9", "max", "--rounds", "4", "--json"])
+            .output()
+            .unwrap()
+    };
+    let result = run();
+    assert!(result.status.success(), "{result:?}");
+    let entry: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(entry["type"], "loop.plan");
+    let text = fs::read_to_string(&plan).unwrap();
+    assert!(text.contains("[review: max]"));
+    assert!(text.contains("[rounds: 4]"));
+    assert_eq!(entry["body"]["text"], text);
+    assert_eq!(entry["body"]["sha"].as_str().unwrap().len(), 64);
+    fs::write(
+        sandbox.loop_dir.join("state.json"),
+        r#"{"runId":"loop-test","phases":{"9":{"status":"running","attempt":1}}}"#,
+    )
+    .unwrap();
+    let result = run();
+    assert!(!result.status.success(), "{result:?}");
+    assert_eq!(fs::read_to_string(&plan).unwrap(), text);
+    fs::write(
+        sandbox.loop_dir.join("state.json"),
+        r#"{"runId":"loop-test","phases":{}}"#,
+    )
+    .unwrap();
+    sandbox.request(
+        &format!("/v1/sessions/{id}/events"),
+        json!({"type":"loop.review", "body":{
+        "phase":9,"repo":"none","key":"r9","role":"review","round":1,
+        "state":"started","session":"reviewer","provider":"gpt"}}),
+    );
+    let result = run();
+    assert!(!result.status.success(), "{result:?}");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("already started"),
+        "{result:?}"
+    );
+    assert_eq!(fs::read_to_string(plan).unwrap(), text);
+}
+
+#[test]
+fn skills_cli_controls_record_events_and_bridge_runner_files() {
+    let sandbox = Sandbox::new();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    let run = |args: &[&str]| {
+        let output = common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let paused = run(&["loop", "pause", id, "7", "--json"]);
+    assert_eq!(paused["body"]["action"], "pause");
+    assert!(sandbox.loop_dir.join("control/pause-7").exists());
+    run(&["loop", "model", id, "7", "claude:claude-opus-5-5", "--json"]);
+    let note = run(&["loop", "note", id, "7", "Use the public API.", "--json"]);
+    assert_eq!(note["body"]["text"], "Use the public API.");
+    run(&["loop", "resume", id, "7", "--json"]);
+    assert!(!sandbox.loop_dir.join("control/pause-7").exists());
+    run(&["loop", "pause", id, "--json"]);
+    assert!(sandbox.loop_dir.join("control/pause").exists());
+    run(&["loop", "resume", id, "--json"]);
+    assert!(!sandbox.loop_dir.join("control/pause").exists());
+}
+
+#[test]
 fn stop_writes_the_dashboard_pause_control_and_audits_the_caller() {
     let sandbox = Sandbox::new();
     let parent = sandbox.request("/v1/sessions", json!({}));
@@ -107,6 +348,64 @@ fn start_runs_the_existing_orchestrator_as_a_detached_session() {
 }
 
 #[test]
+fn cli_create_makes_a_loop_session_without_a_process_and_events_record_their_source() {
+    let sandbox = Sandbox::new();
+    let ws = |args: &[&str]| {
+        let output = common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(args)
+            .env_remove("WS_SESSION_ID")
+            .env_remove("WS_SESSION")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let dir = sandbox.loop_dir.to_str().unwrap();
+    let created = ws(&["loop", "create", "--dir", dir, "--json"]);
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["body"]["kind"], "loop");
+    assert_eq!(ws(&["loop", "create", "--dir", dir, "--json"])["id"], id);
+    let tool = ws(&[
+        "event",
+        "loop.note",
+        "--target",
+        id,
+        "--source",
+        "tool",
+        "--body",
+        r#"{"text":"t"}"#,
+    ]);
+    assert_eq!(tool["body"]["source"], "tool");
+    let agent = ws(&[
+        "event",
+        "loop.note",
+        "--target",
+        id,
+        "--body",
+        r#"{"text":"a"}"#,
+    ]);
+    assert_eq!(agent["body"]["source"], "agent");
+    let rejected = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args(["event", "loop.phase", "--target", id, "--body", "{}"])
+        .env_remove("WS_SESSION_ID")
+        .env_remove("WS_SESSION")
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("loop.phase"));
+    let sessions = ws(&["sessions", "--json"]);
+    let session = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == id)
+        .unwrap();
+    assert_eq!(session["body"]["kind"], "loop");
+    let log = ws(&["log", id, "--type", "session.running"]);
+    assert!(log["entries"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn cli_start_and_stop_use_the_loop_api() {
     let sandbox = Sandbox::new();
     let output = common::ws(sandbox.home.path(), &sandbox.socket)
@@ -167,6 +466,52 @@ fn top_prefers_the_orchestrator_session_over_the_child_worktree() {
     assert!(output.status.success(), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["args"], json!(["loop-test", "--once", "--graph"]));
+    assert_eq!(
+        result["cwd"],
+        sandbox
+            .loop_dir
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+}
+
+#[test]
+fn top_finds_the_loop_session_in_wsd_before_the_store_scan() {
+    let sandbox = Sandbox::new();
+    sandbox.dashboard();
+    let created = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let other = sandbox.home.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    let child = sandbox.request(
+        "/v1/sessions",
+        json!({"headless":true,"command":["/usr/bin/true"],"cwd":other,"parent_session_id":created["id"]}),
+    );
+    // A store record and a state.json link name a different loop. wsd wins.
+    fs::write(
+        sandbox.loop_dir.join("state.json"),
+        json!({"runId":"scanned-loop","wsSession":child["id"]}).to_string(),
+    )
+    .unwrap();
+    let store = sandbox.home.path().join(".loop/loops");
+    fs::create_dir_all(&store).unwrap();
+    fs::write(
+        store.join("scanned-loop.json"),
+        json!({"loopDir":sandbox.loop_dir}).to_string(),
+    )
+    .unwrap();
+    let output = common::ws(sandbox.home.path(), &sandbox.socket)
+        .current_dir(&other)
+        .args(["top", "--once"])
+        .env("WS_SESSION_ID", child["id"].as_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["args"], json!([created["id"], "--once"]));
     assert_eq!(
         result["cwd"],
         sandbox
@@ -318,8 +663,61 @@ fn loop_controls_reject_missing_state_and_a_parked_milestone() {
     assert!(!sandbox.loop_dir.join("sub/engine-ready").exists());
 }
 
+#[test]
+fn a_started_child_marks_its_phase_running_and_an_open_merge_gate_refuses_the_next_milestone() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("gate-loop");
+    fs::create_dir_all(&directory).unwrap();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":directory}));
+    let id = owner["id"].as_str().unwrap();
+    let phase = |n: u64, milestone: u64| {
+        json!({"n":n,"title":format!("P{n}"),"kind":"work","output":"pr","milestone":milestone,
+            "gate":null,"repo":null,"branch":null,"depends_on":[],"status":"todo"})
+    };
+    let event = |kind: &str, body: Value| {
+        sandbox.request(
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":kind,"body":body}),
+        )
+    };
+    event("loop.phases", json!({"phases":[phase(1, 1), phase(2, 2)]}));
+    let spawn = |n: u64| {
+        common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/sessions",
+            &json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.home.path(),
+                "key":format!("p{n}"),"loop":{"loop":id,"phase":n,"attempt":1}})
+            .to_string(),
+        )
+    };
+    assert!(spawn(1).starts_with("HTTP/1.1 201"));
+    let state = |sandbox: &Sandbox| {
+        let response = common::get(&sandbox.socket, &format!("/v1/loops/{id}"));
+        serde_json::from_str::<Value>(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    assert_eq!(state(&sandbox)["phases"]["1"]["status"], "running");
+    event(
+        "loop.gate",
+        json!({"kind":"merge","state":"open","milestone":1,"prs":[]}),
+    );
+    assert_eq!(state(&sandbox)["status"], "awaiting-merge");
+    let refused = spawn(2);
+    assert!(refused.starts_with("HTTP/1.1 409"), "{refused}");
+    assert!(refused.contains("milestone_gate_open"), "{refused}");
+    event(
+        "loop.gate",
+        json!({"kind":"merge","state":"merged","milestone":1,"prs":[]}),
+    );
+    assert!(spawn(2).starts_with("HTTP/1.1 201"));
+}
+
 impl Sandbox {
     fn new() -> Self {
+        Self::with_notifications(false)
+    }
+
+    fn with_notifications(notify: bool) -> Self {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         let socket = home.path().join("ws.sock");
         let loop_dir = home.path().join("coordinator/.loop");
@@ -337,6 +735,14 @@ impl Sandbox {
                 .canonicalize()
                 .unwrap(),
             scripts.join("loop-orchestrator.sh"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../loop-plan-tier.mjs")
+                .canonicalize()
+                .unwrap(),
+            scripts.join("loop-plan-tier.mjs"),
         )
         .unwrap();
         let sub = loop_dir.join("sub");
@@ -376,6 +782,16 @@ printf '{"outcome":"complete"}' > "$LOOP_SUB_DIR/status.json"
             .env("LOOP_ORCH_POLL_SEC", "1")
             .env_remove("WS_SESSION_ID")
             .env_remove("WS_SESSION");
+        if notify {
+            let adapter = home.path().join("notify");
+            fs::write(
+                &adapter,
+                "#!/bin/sh\ncat >> \"$HOME/notifications.jsonl\"\n",
+            )
+            .unwrap();
+            fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
+            command.env("WS_NOTIFY", "1").env("WS_NOTIFIER", adapter);
+        }
         let daemon = common::Daemon::start(command, &socket);
         Self {
             _daemon: daemon,

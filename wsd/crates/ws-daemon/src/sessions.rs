@@ -28,7 +28,7 @@ pub struct Sessions {
     pub(crate) state: PathBuf,
     pub(crate) device_id: DeviceId,
     pub(crate) registry: Registry,
-    needs_rebuild: bool,
+    pub(crate) needs_rebuild: bool,
     pub(crate) spans: crate::spans::SharedSpans,
     writers: HashMap<SessionId, LogWriter>,
     pub(crate) headless_hooks: HashMap<SessionId, crate::hooks::HookState>,
@@ -53,11 +53,16 @@ pub enum Error {
     Io(io::Error),
     Registry(registry::Error),
     InvalidRequest(&'static str),
+    /// A `loop.*` event body that does not match its type.
+    InvalidBody(String),
     Transition(TransitionError),
     NameTaken(String),
     DependencyCycle(Vec<SessionId>),
     SpawnLimit(crate::limits::SpawnLimit),
     PendingMessages,
+    /// A merge gate of an earlier milestone is open, so the loop starts no later phase.
+    MilestoneGateOpen,
+    LoopControlConflict(&'static str),
     WaitTimeout,
     ShuttingDown,
     Json(serde_json::Error),
@@ -135,6 +140,8 @@ impl Sessions {
             sessions.recover_spans()?;
             sessions.restore_triggers()?;
         }
+        sessions.recover_loop_executions()?;
+        sessions.recover_phase_statuses()?;
         sessions.recover_phase_worktrees()?;
         Ok(sessions)
     }
@@ -241,6 +248,9 @@ impl Sessions {
             ancestor = parent_of(&self.get_record(&id.to_string())?);
         }
         if parent_of(&session) != parent {
+            if self.spawn_scope(parent)?.is_some() {
+                self.check_spawn_limits(parent)?;
+            }
             self.append(
                 session.id,
                 "session.reparented",
@@ -294,6 +304,8 @@ impl Sessions {
             self.registry.rebuild(&self.state)?;
             self.restore_triggers()?;
             self.recover_spans()?;
+            self.recover_loop_executions()?;
+            self.recover_phase_statuses()?;
             self.usage = None;
             self.needs_rebuild = false;
         }
@@ -321,8 +333,9 @@ impl Sessions {
         &mut self,
         id: SessionId,
         event_type: &str,
-        body: serde_json::Value,
+        mut body: serde_json::Value,
     ) -> Result<ws_core::log::LogEntry> {
+        self.tag_loop_spawn(id, event_type, &mut body)?;
         let writer = self
             .writers
             .entry(id)
@@ -345,6 +358,19 @@ impl Sessions {
         self.changes.send_replace(());
         self.quota_requests.observe(id, event_type);
         self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
+        // The child fact and its Loop event share the serialized store operation.
+        // Keep recovery enabled if the second durable append fails.
+        if let Err(error) = self.record_loop_execution(&entry) {
+            self.needs_rebuild = true;
+            return Err(error);
+        }
+        if event_type.starts_with("loop.")
+            && event_type != "loop.violation"
+            && let Err(error) = self.enforce_loop_rules(id)
+        {
+            self.needs_rebuild = true;
+            return Err(error);
+        }
         Ok(entry)
     }
 
@@ -408,6 +434,10 @@ impl fmt::Display for Error {
             }
             Self::PendingMessages => formatter
                 .write_str("The session has pending messages. Process them before completion."),
+            Self::LoopControlConflict(message) => formatter.write_str(message),
+            Self::MilestoneGateOpen => formatter.write_str(
+                "A merge gate is open. Merge it and resume before you start a later milestone.",
+            ),
             Self::DependencyCycle(cycle) => write!(
                 formatter,
                 "Dependency cycle: {}.",
@@ -421,6 +451,7 @@ impl fmt::Display for Error {
             Self::Io(error) => error.fmt(formatter),
             Self::Registry(error) => error.fmt(formatter),
             Self::InvalidRequest(message) => formatter.write_str(message),
+            Self::InvalidBody(message) => formatter.write_str(message),
             Self::Transition(error) => error.fmt(formatter),
             Self::Json(error) => error.fmt(formatter),
             Self::NameTaken(name) => write!(formatter, "name already in use: {name}"),

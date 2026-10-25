@@ -26,6 +26,7 @@ esac
 #     [--timeout <s>] [--verify-cmd <cmd>]
 #     [--resume <sessionId> --engine codex|claude|grok] [--models-conf <f>] [--budget <usd>]
 #     [--loop-dir <d>]   (default: RUN_DIR/../.. — the coordinator .loop/)
+#     [--publish-output <file>]   (publish a terminal report to the runner's ws session)
 #
 # Live controls (polled every LOOP_CONTROL_POLL_SEC, default 2s, while the engine runs):
 #   <loopDir>/control/pause | control/pause-<phase>  → kill the engine, exit 30 (resumable)
@@ -49,6 +50,7 @@ fi
 WT="" RUN_DIR="" PROMPT_FILE="" CHAIN_NAME="task" TIMEOUT="" VERIFY=""
 RESUME_SID="" RESUME_ENGINE="" MODELS_CONF="$SCRIPT_DIR/loop-models.conf" BUDGET=""
 RUN_ID="" PHASE="" REPOSITORY="" LOOP_DIR="" REVIEW_TIER=""
+PUBLISH_OUTPUT=""
 ROUTE_PROPOSED_PROFILE="" ROUTE_ACTUAL_PROFILE="" ROUTE_FALLBACK_REASON=""
 
 while [[ $# -gt 0 ]]; do
@@ -68,6 +70,9 @@ while [[ $# -gt 0 ]]; do
   --repository) REPOSITORY="$2"; shift 2 ;;
   --loop-dir) LOOP_DIR="$2"; shift 2 ;;
   --review-tier) REVIEW_TIER="$2"; shift 2 ;;
+  --publish-output)
+    [[ -n "${2:-}" ]] || { echo "loop-runner: --publish-output requires a file" >&2; exit 1; }
+    PUBLISH_OUTPUT="$2"; shift 2 ;;
   *) echo "loop-runner: unknown arg $1" >&2; exit 1 ;;
   esac
 done
@@ -95,6 +100,36 @@ loop_runner_finish() {
     '{event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end),
       outcome:$outcome, exitCode:$exitCode, engine:$engine, model:$model, ts:$ts}' |
     loop_emit "$RUN_ID" event
+}
+# ws_loop_event <type> <key> <jq-filter> [jq args]: append a tool event to the loop session when
+# WS_LOOP_ID is set. The key names the fact, so a retried append records it one time. The filter
+# builds the body. A failed append prints one warning and never changes the exit code.
+ws_loop_event() {
+  [[ -n "${WS_LOOP_ID:-}" ]] || return 0
+  local type="$1" key="$2" filter="$3" ws_bin body
+  shift 3
+  ws_bin="$(whence -p ws)"
+  body="$(jq -cn --arg phase "${WS_LOOP_PHASE:-}" --arg attempt "${WS_LOOP_ATTEMPT:-}" \
+    --arg session "${WS_SESSION_ID:-}" "$@" "$filter" 2>/dev/null)"
+  if [[ -z "$ws_bin" || -z "$body" ]] ||
+      ! "$ws_bin" event "$type" --body "$body" --source tool --target "$WS_LOOP_ID" --key "$key" > /dev/null 2>&1; then
+    echo "loop-runner: warning: cannot append $type to loop session $WS_LOOP_ID" >&2
+  fi
+  return 0
+}
+ws_loop_attempt_event() { # $1 = outcome, $2 = pass|fail|none. A checkpoint is not a result.
+  jq -e '.checkpoint == true' "$STATUS" >/dev/null 2>&1 && return 0
+  ws_loop_event loop.attempt "loop.attempt:${WS_LOOP_PHASE:-}:${WS_SESSION_ID:-}:result" '{n:($phase|tonumber), attempt:($attempt|tonumber), session:$session,
+    state:"result", outcome:$outcome, verify:$verify}' --arg outcome "$1" --arg verify "$2"
+}
+ws_loop_review_event() { # a final review is published: record its verdict
+  local verdict
+  verdict="$(zsh "$SCRIPT_DIR/loop-ar.sh" verdict "$PUBLISH_OUTPUT" reviewer 2>/dev/null)" ||
+    verdict="$(jq -r '.event // "invalid"' "$STATUS" 2>/dev/null)"
+  ws_loop_event loop.review "loop.review:${WS_LOOP_PHASE:-}:${WS_SESSION_ID:-}:result" '{phase:($phase|tonumber), repo:(if $repo == "" then "none" else $repo end),
+    key:("p" + $phase + "-a" + $attempt), role:"final", round:1, state:"finished", session:$session,
+    provider:$provider, verdict:$verdict}' --arg repo "$REPOSITORY" --arg provider "${CUR_ENGINE:-}" \
+    --arg verdict "$verdict"
 }
 trap 'loop_runner_finish $?' EXIT
 
@@ -863,21 +898,41 @@ record_verified_tree() {
 # --- validate the runner's status.json (the actual contract) ---
 
 outcome="$(jq -r '.outcome // empty' "$STATUS" 2>/dev/null)"
+verify_result=none
 case "$outcome" in
-question) exit 10 ;;
-blocked) exit 20 ;;
+question) result_rc=10 ;;
+blocked) result_rc=20 ;;
 done)
   if [[ -n "$VERIFY" ]]; then
     if ! ( cd "$WT" && eval "$VERIFY" ) > "$RUN_DIR/verify.log" 2>&1; then
       echo "loop-runner: claimed done but verify failed (see verify.log)" >&2
+      ws_loop_attempt_event "$outcome" fail
       exit 12
     fi
+    verify_result=pass
   fi
   record_verified_tree
-  exit 0
+  result_rc=0
   ;;
 *)
   echo "loop-runner: no valid status.json (outcome='$outcome') — crash" >&2
   exit 50
   ;;
 esac
+ws_loop_attempt_event "$outcome" "$verify_result"
+
+# The Loop owns this opt-in flag. Remove it only after all callers adopt session output.
+if [[ -n "$PUBLISH_OUTPUT" && "$rc" == 0 && "$TIMED_OUT" == 0 ]] &&
+    ! jq -e '.checkpoint == true' "$STATUS" >/dev/null 2>&1; then
+  sid="$(cat "$RUN_DIR/ws-session" 2>/dev/null)"
+  if [[ -z "$WS_BIN" || -z "$sid" ]]; then
+    echo "loop-runner: cannot publish output without a runner ws session" >&2
+    exit 50
+  fi
+  WS_SESSION_ID="$sid" "$WS_BIN" done --output "$PUBLISH_OUTPUT" || {
+    echo "loop-runner: cannot publish session output" >&2
+    exit 50
+  }
+  ws_loop_review_event
+fi
+exit "$result_rc"

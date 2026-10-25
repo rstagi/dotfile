@@ -58,6 +58,18 @@ describe("review tier control endpoint", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("returns 404 for removed UI routes and keeps the health endpoint", async () => {
+    const origin = new URL(url).origin;
+    for (const route of ["/", "/index.html", "/assets/app.js", "/loops/tier-test"]) {
+      const response = await fetch(`${origin}${route}`);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "unknown endpoint" });
+    }
+    const health = await fetch(`${origin}/api/health`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ ok: true });
+  });
+
   it("reads review ledgers into the snapshot and preserves the live final attempt", async () => {
     const runs = path.join(root, "runs");
     const final = path.join(runs, "review-p2-acme--api-a4");
@@ -94,7 +106,7 @@ describe("review tier control endpoint", () => {
   it.each(["shallow", "medium", "huge"])("rejects tier %s without editing the plan", async (tier) => {
     const response = await control({ action: "review", phase: "2", tier });
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/standard\|max/);
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/standard\|max/) });
     expect(fs.readFileSync(planFile, "utf8")).toBe(PLAN);
   });
 

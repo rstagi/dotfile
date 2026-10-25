@@ -1,94 +1,94 @@
-# Loop Observatory (`loop-web`)
+# Loop daemon (`loop-web`)
 
-A **live** web graph for the loop-engineering flow, rendered as a left-to-right graph
-that live-updates to show what each node is working on — model, branch, attempt, problems
-(verify-fail / crash / timeout / blocked / chain-exhausted), HIL escalations, and pending
-steering notes.
+The loop-web daemon stores plans and lifecycle events for the old Loop engine.
+It runs as a launchd LaunchAgent on `127.0.0.1:7717`.
+Use `ws top` to view loops and change steering controls.
 
-It runs as a **perpetual central daemon** (a launchd LaunchAgent on `127.0.0.1:7717`). It is the
-**base backend for every loop**: `multiphase-plan` registers a plan on it (status `planned`)
-before any run starts, and every `loop-execute` run **registers** with it and **pushes clean
-lifecycle events** (via `loop-emit.sh`, sourced by the `loop-*.sh` scripts) *in addition to* the
-daemon watching `.loop/` on disk. Status is therefore **authoritative, never stale**: a
-`phase.attempt.finish{done,exit0}` event promotes a phase to `done` even when the
-orchestrator's `state.json` bookkeeping lags (a monotone `todo<claimed<running<done<merged`
-lattice — ranks never regress). Every loop is kept **forever** in a per-loop JSON store
-(`~/.loop/loops/<runId>.json`), reviewable after its worktree is gone; a header **selector**
-switches between loops.
+`multiphase-plan` registers a plan before a run starts.
+The Loop scripts send lifecycle events through `loop-emit.sh`.
+The daemon also reads each registered `.loop/` directory.
+Events promote phase status through the `todo<claimed<running<done<merged` lattice.
+Each loop persists in `~/.loop/loops/<runId>.json`, even after its worktree disappears.
 
-It reads `.loop/` and folds pushed events. The one write path is the node drawer's
-steering-note editor, which writes or clears the same `notes/<phase>.md` /
-legacy `notes/pr-review.<owner--repo>.md`
-files as `loop-state.sh note`; it never writes the plan. A distinct aqua NOTE badge remains
-visible until that phase or review finishes.
-
-For a **two-tier self-recycling** run, the header also surfaces the sub-orchestrator's live
-occupancy + recycle count (a `sub-orch: N recycles · ~Xk tok` chip, fed by `sub.recycle` /
-`sub.saturation` events) and the selector shows a per-loop pending-HIL count.
+Steering endpoints write the same `notes/<phase>.md` and `.loop/control/` files as the Loop tools.
+The legacy note path is `notes/pr-review.<owner--repo>.md`.
+Plan registration and review-tier changes can update plan text.
 
 ## Run
 
 ```bash
-../loop-web.sh --daemon              # the central daemon (what the LaunchAgent runs)
-../loop-web.sh                       # legacy single-loop: discover .loop/ from cwd (walk up)
-../loop-web.sh --plan fixtures/plan.md   # static: preview a plan, no loop running
-../loop-web.sh --dir fixtures/.loop      # observe one specific flattened loop dir
+../loop-web.sh --daemon                 # central daemon
+../loop-web.sh                          # discover .loop/ from the current directory
+../loop-web.sh --plan fixtures/plan.md   # serve model data for a static plan
+../loop-web.sh --dir fixtures/.loop      # observe one flattened loop directory
 ```
 
-`install.sh loop-web` renders + bootstraps the `com.rstagi.loop-web` LaunchAgent (auto-start on
-login + KeepAlive); `loop-emit.sh` also ensure-starts it when a loop begins. Open
-`http://localhost:7717` and pick a loop from the selector.
+`install.sh loop-web` installs dependencies and configures the `com.rstagi.loop-web` LaunchAgent.
+The daemon starts on login and remains running.
+`loop-emit.sh` also starts it when a loop begins.
 
 ## Develop
 
 ```bash
 npm install
-npm test          # vitest over the pure model layer (src/model)
-npm run dev       # Vite dev server (proxies /events + /api to the Node server on 7717)
-npm run build     # build dist/
+npm test          # model and server tests
 npm run typecheck # tsc --noEmit
 ```
 
-For live dev you run two processes: `npm run dev` (UI on 5173) and
-`node server/index.mjs --dir <loop>` (data on 7717); Vite proxies the data endpoints.
+The server imports TypeScript through Node's native type stripping.
+It needs Node 22.18 or later and no build step.
 
 ## Architecture
 
-- **`src/model/`** — pure, TDD-first parsing + derivation. Takes already-read file *contents*
-  (strings/objects), never touches the filesystem, so it is fully unit-testable with fixtures.
-  It is **isomorphic**: the Node server imports it via native TS type-stripping (no build step
-  for the backend), and Vite bundles it for the browser's "paste plan" preview.
-- **`server/index.mjs`** — zero-dep Node HTTP server, a `Map<runId, entry>` registry bound to
-  `127.0.0.1`. Does all I/O, then folds each ingest through the pure model (`reduce-loop.ts`) and
-  renders it (`materialize.ts`). Per live loop: `fs.watch` (2s debounce) **plus a 15s reconcile**
-  that self-heals missed POSTs — a hung runner emits no fs event, yet its stale heartbeat must
-  still flip a node to flatline. Endpoints: `POST /api/loops/:runId/{register,state,event,finish,note,control}`
-  (`control` takes `{action:"pause"|"resume", phase?}` or `{action:"model", phase, leg|null}` and
-  writes `.loop/control/{pause,pause-<N>,model-<N>}`; model is 409 once the phase has started;
-  snapshots expose `paused` + per-node `paused`/`modelOverride`, ui `paused`),
-  `GET /api/loops` (selector), `GET /events?runId=` (per-loop SSE), `/api/loops/:runId/{plan,
-  snapshot,review,attempt/:slug/:k}` (`review?repository=<owner/repo>` selects a repository;
-  bare `review` is the legacy alias; `plan` returns `{runId,effort,status,integrationBranch,
-  planText}` with no worktree needed — how a fresh checkout fetches the plan; archived `snapshot`
-  remains available from the frozen store, while live `review`/`attempt` logs and steering are
-  unavailable after the worktree is gone), `/api/health`; back-compat `/api/model` ·
-  `/api/snapshot` · bare `/events` resolve to the default loop. A register-only record surfaces
-  as status **`planned`** (plan on the daemon, not yet running); the first state/event flips it
-  to `active`.
-- **`server/store.mjs`** — per-loop persistence (`~/.loop/loops/<runId>.json`), atomic
-  mktemp+rename, per-loop debounce, sync flush on finish + SIGTERM/SIGINT, `loadAll` on startup
-  (corrupt file → skip + warn). Pure serialize/parse (with the event cap) live in
-  `src/model/store-serde.ts`; the reducer + materialize are `src/model/{reduce-loop,materialize}.ts`.
-- **`src/ui/`** — Vite + React + TypeScript. React Flow for the DAG, Framer-Motion CSS for the
-  three load-bearing motions (heartbeat, flatline, HIL alarm). "Phosphor Bench" oscilloscope theme.
+- **`src/model/`** contains pure parsing and derivation functions.
+  These functions take file contents as strings or objects and perform no filesystem operations.
+  The server folds events through `reduce-loop.ts` and creates snapshots through `materialize.ts`.
+- **`server/index.mjs`** provides the HTTP API and performs filesystem operations.
+  Each live loop uses `fs.watch` with a two-second debounce and a 15-second reconciliation interval.
+  The interval detects stale runner heartbeats when no file event arrives.
+- **`server/store.mjs`** persists one JSON record per loop through an atomic rename.
+  It flushes on finish, SIGTERM and SIGINT.
+  Pure serialization functions live in `src/model/store-serde.ts`.
+- **`vitest.config.ts`** configures the model and server tests with a Node environment.
+
+The API provides these endpoints:
+
+- `POST /api/loops/:runId/{register,state,event,finish,note,control}` records lifecycle events and steering changes.
+  Controls include pause, resume, model and review tier.
+- `GET /api/loops` lists loops.
+- `GET /events?runId=` streams loop snapshots through server-sent events.
+- `GET /api/loops/:runId/{plan,snapshot,review,attempt/:slug/:k}` returns plan data, snapshots and live logs.
+  `review?repository=<owner/repo>` selects a repository.
+  Archived snapshots remain available after the worktree disappears.
+  Live logs and steering require the worktree.
+- `GET /api/health` reports daemon health.
+- Legacy `/api/model`, `/api/snapshot` and bare `/events` select the default loop.
+
+A registered plan starts as `planned`.
+The first state or lifecycle event changes it to `active`.
 
 ### Milestones
 
-A plan may carry several `## Milestone N — …` sections. The graph and `loop-top` group phases by milestone; each milestone's `[gate: merge]` review ends it. After the gate verdict the loop status becomes `awaiting-merge` (typed `milestone.awaiting-merge` event, `state.awaitingMerge`): the gate node shows "awaiting merge" with one PR link per repository and the hint `/loop-execute resume`. A human merges and resumes; `milestone.resumed` switches `state.milestone`, replacing the per-repository and loop-level branch/PR/review fields. There is no resume control in the UI or `loop-top`.
+A plan may carry several `## Milestone N — …` sections.
+The model and `ws top` group phases by milestone.
+Each milestone ends with a `[gate: merge]` review.
+After the gate verdict, the loop status becomes `awaiting-merge`.
+The daemon records `milestone.awaiting-merge` and `state.awaitingMerge`, with one PR link per repository.
+A human merges and runs `/loop-execute resume`.
+The `milestone.resumed` event changes `state.milestone` and the branch, PR and review fields.
 
-At resume, `loop-plan.sh archive` moves each shipped milestone out of `plan.md` into `milestones/m<N>.md` and leaves a stub section whose heading ends with `` `[archived]` ``. The parser (`parsePlan`) reads the stub's `Phases (all done)` list as existing `done` phases (title `(archived)`, `archived: true`, a display-only dependency chain in stub order), so a `Depends on` edge to an archived gate is satisfied. The milestone carries `archive: { file, outcome }`, graph milestones carry `archived: true`, and the graph band and `loop-top` heading add `· archived`. The pure transform lives in `src/model/archive-milestone.ts`. A pending milestone retro (`milestones/m<N>.retro.md`) goes first in the archive file, before `## Raw log`, and its Outcome bullet becomes the stub `Outcome:`. For a milestone that is already archived, `attachRetro` adds the retro to the existing archive file.
+At resume, `loop-plan.sh archive` moves each shipped milestone into `milestones/m<N>.md`.
+It leaves a stub section whose heading ends with `` `[archived]` ``.
+The parser reads the stub's `Phases (all done)` list as existing `done` phases.
+A dependency on an archived phase is satisfied.
+The milestone carries `archive: { file, outcome }`, and its model data carries `archived: true`.
+The pure transform lives in `src/model/archive-milestone.ts`.
+A pending `milestones/m<N>.retro.md` precedes `## Raw log` in the archive.
+Its Outcome bullet becomes the stub's `Outcome:`.
+For an archived milestone, `attachRetro` adds the retro to the existing archive file.
 
-The daemon is perpetual, so restart the Loop daemon after upgrading to pick up the new status and events (`launchctl kickstart -k` the loop-web LaunchAgent, or rerun `../loop-web.sh --daemon`).
+To load updated status and events, restart the Loop daemon after upgrading.
+Restart the loop-web LaunchAgent with `launchctl kickstart -k`, or run `../loop-web.sh --daemon` when no LaunchAgent runs it.
 
 ### AR review protocol
 
@@ -103,10 +103,10 @@ for verification against code. An Opus final reviewer posts the sole GitHub revi
 
 The daemon reads `runs/review-p<N>-<owner--repo>.ledger.tsv`: six columns (`a<k>`, stage,
 role, provider, verdict token, run directory relative to `.loop/`). Roles are
-`review|critic|respond|confirm|disputed|fix|final`. The graph folds these completed runs and
+`review|critic|respond|confirm|disputed|fix|final`. The model folds these completed runs and
 infers skipped rounds from clean confirmation; no skipped ledger rows are stored. Resume uses
 `loop-review.sh recover`, reconciles the GitHub final marker, then calls `next`. Legacy
-shallow/medium plans still render from the static fixture, but execution and the tier endpoint
+shallow/medium plans remain readable, but execution and the tier endpoint
 reject those tiers.
 
 After pulling the AR update, restart with
@@ -116,12 +116,11 @@ or max before execution. See [the protocol](../.claude/skills/loop-execute/refer
 
 ### Jev status and replay
 
-The header shows the latest Jev mode, decision count, and fallback count. Route, question, and
-merge-risk badges identify affected phases; the drawer keeps recommendation, applied action,
-confidence, fallback, and evidence distinct. These fields remain visible in archived snapshots,
-although archived loops have no live logs or steering writes.
+Snapshots contain the latest Jev mode, decision count and fallback count.
+Phase data keeps the recommendation, applied action, confidence, fallback and evidence separate.
+Archived snapshots retain these fields.
 
-To inspect agreement and fallback behavior outside the UI, replay one or more persisted records:
+To inspect agreement and fallback behavior, replay one or more persisted records:
 
 ```bash
 node ../loop-jev-replay.mjs ~/.loop/loops/<run-id>.json | jq .
@@ -145,22 +144,6 @@ The parser is built to what `~/dotfile/loop-*.sh` **actually** writes:
 
 Cross-file skew (e.g. `state=running` while `meta.json` already exists) is normal/transient and
 is never rendered as an error.
-
-### Layout note
-
-Layout is a deterministic longest-path layered layout with horizontal swimlane bands
-(`src/ui/graph/layout.ts`). elkjs was intentionally dropped: its `layered` algorithm doesn't model
-horizontal lanes as a first-class concept, and our DAGs are tiny, so a deterministic layout gives
-  guaranteed clean bands with a synthetic Plan root. New plans render explicit PR-review
-  phases inline, including repeated review rounds after late-added work; legacy plans retain
-  stacked synthetic repository review terminals. Explicit review nodes carry `reviewStages`:
-  completed AR runs from `runs/review-p<N>-<owner--repo>.ledger.tsv` (role, provider, verdict),
-  followed by the maximum remaining path as `planned`. A clean third-provider confirmation
-  marks later rounds `skipped`, preserving the actual final attempt number. Ledger rows flow
-  through `parseLoop` and `materialize`; run directories supply live state and engine/model.
-  The drawer shows each run's role, provider, and verdict beside its live model.
-  Historical shallow/medium tiers retain their static shape, checked against
-  `src/model/legacy-stages.tsv`.
 
 Plans declare GitHub `owner/repo` slugs and assign one repository to every work phase;
 explicit review phases cover all repositories. Re-registering edited plan text preserves

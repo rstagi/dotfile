@@ -480,13 +480,13 @@ PLIST
       echo "loop-web: npm not found — install the 'node' package first" >&2
       return 1
     fi
-    ( cd "$HOME/dotfile/loop-web" && npm install && npm run build )
+    ( cd "$HOME/dotfile/loop-web" && npm install )
     append_line "source $HOME/dotfile/.zshrc_loop_web_ext" "$HOME/.zshrc_ext"
     configure_loop_web_daemon
-    echo "loop-web installed — the central daemon runs on login; open http://localhost:7717"
+    echo "loop-web installed — the central daemon runs on login. Use 'ws top' to view loops."
   }
   if [ "$INTERACTIVE_MODE" = true ]; then
-    if read_yes "Do you want to configure loop-web (Loop Observatory)?"; then
+    if read_yes "Do you want to configure the loop-web daemon?"; then
       configure_loop_web
     fi
   else

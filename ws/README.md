@@ -28,6 +28,12 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws inbox [--json]` lists unread messages. `ws ack [<event_id>...]` acknowledges selected messages, or all visible unread messages.
 - `ws done [--output <file>|-]` publishes completion output. Unread messages refuse completion.
 - `ws wait <target> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through the daemon.
+- `ws event <type> [--body <json-object>] [--source tool|agent] [--key <key>] [--target <target>]` appends a `loop.*` event to a session log. The default target is the current session. With `--key`, a session that already has an event with that key gets no new entry. The daemon returns the existing event with HTTP 200, and a new key gives HTTP 201. The key is stored in the entry body as `event_key`, so the rule also holds after a restart. A body cannot set `event_key`. Other event types, unknown `loop.*` types and a body that does not match its type get HTTP 400. The checked types are `loop.plan`, `loop.phases`, `loop.phase`, `loop.attempt`, `loop.merge`, `loop.milestone`, `loop.gate`, `loop.review`, `loop.note`, `loop.decision`, `loop.control`, `loop.guard`, `loop.violation` and `loop.finish`. `loop.attempt` and `loop.review` fields depend on `state`. The entry body records the caller in `caller` and the producer in `source`: `tool` with `--source tool`, `agent` otherwise, and `daemon` for events that the daemon appends itself. `loop.phases` lists `{n, title, kind, output, milestone, gate, repo, branch, depends_on, status}` per phase. `loop.gate` needs `milestone`. The daemon appends `loop.phase` (`source: daemon`) in the same operation as the attempt, review or merge event that raises a phase status. A merge gate that stays open gives the loop status `awaiting-merge`. Then a keyed create or a phase spawn with a `loop` object for a later milestone gets HTTP 409 (`milestone_gate_open`).
+- `ws loop create --dir <loop dir> [--json]` creates the session of kind `loop` for a loop directory. The session has no process. A second call for the same directory returns the same session.
+- With a `loop` object, the daemon records execution events in the loop session. Phase attempts use `loop.attempt`, and review steps use `loop.review`. Each execution key gets one `started` and one `exited` event, both with `source: daemon`. An attempt uses `exit: -1` when its process status is unknown. Recovery repairs interrupted appends and suppresses duplicates.
+- Agent preparation finds the loop through session parents and exports `WS_LOOP_ID`. It adds `ws hook guard` to `PreToolUse`. Sessions outside a loop receive neither.
+- The guard records bypasses as `loop.guard {session, rule, command}` with `source: daemon`. Claude and Codex deny direct merges, integration pushes, PR merges and direct agent starts. Use `loop-merge.sh`, `phase_spawn` or `ws session create`. Grok records the same events without a denial. A review step with role `fix` can push to the integration branch.
+- `ws log [<target>] [--type <prefix>] [--since <seq>]` prints the log entries as JSON, in order. `--since` keeps entries with a higher sequence number.
 - `ws on <ids> done|exit --send-to <target> <text>` registers a continuation. `--spawn <prompt> [--agent <agent>]` starts a child instead.
 - `ws triggers [--json]` lists pending actions. `ws on --rm <trigger-ULID>` removes one action.
 - `ws mcp` serves local stdio MCP tools. Agent launches configure this server without changing Claude or Codex configuration files.
@@ -167,9 +173,10 @@ Its output goes to `$WS_HOME/daemon.log`. Run `./install.sh --dry-run ws` to pre
 A Rust CLI request starts a background daemon when its socket is missing and launchd does not own `com.rstagi.wsd`.
 Concurrent starts share a startup lock. A failed start reports the log path beside the socket.
 The daemon exits when its socket file disappears or a different file replaces it.
-Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
+State callbacks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
 A stop or exit hook waits 5 s for the daemon reply. Other hooks wait 250 ms.
 When the time expires, the hook spools the callback and prints `{}`. Test sandboxes set this bound with `WS_HOOK_TRANSPORT_DEADLINE_MS`.
+The guard waits up to 4 s for the daemon. It never starts a daemon. A failed guard request leaves the tool call unchanged.
 The daemon can record a block before a stop hook times out. The batch then arrives at the next stop hook. Until then, the session shows `working`.
 
 The launcher always uses Rust. `WS_RUST_BIN` overrides the binary path for tests.
@@ -233,6 +240,16 @@ After a session reopens, only events after its latest `session.reopened` event s
 State conditions check the current lifecycle state.
 The API is `POST /v1/sessions/{id}/wait` with `{"for":"done","timeout":30}`. Omit `timeout` for an indefinite wait.
 It returns the session and the matching event, or a null event for a state condition. A timeout returns HTTP 408.
+`ws wait <target>... --mode any|all --for <condition>` waits for several sessions. The default mode is `all`.
+Repeat `--after-seq <seq>` once per target, in target order. Without this option, every target uses zero.
+Only events with `seq > after_seq` count. A state condition requires a matching state event after that sequence.
+A zero sequence keeps the existing current-state check.
+The multi-target API is `POST /v1/wait` with `{"targets":[{"target":"<id>","after_seq":10}],"mode":"all","for":"done","timeout":30}`.
+MCP `wait` accepts the same `targets` and `mode`, with `condition` in place of `for`.
+The response is `{"matches":[{"session":...,"event":...}]}`, in target order.
+Mode `any` returns the targets that match. Mode `all` requires every target to match at the same check.
+The single-target API also accepts `after_seq` and keeps its existing response format.
+
 Daemon shutdown releases pending waits with HTTP 503.
 `POST /v1/sessions/{id}/done` accepts `{"output":"completion text"}`. Both routes accept `parent_session_id` for caller audit.
 
@@ -379,13 +396,28 @@ The tools return the daemon JSON in both text and structured content.
 | `session_rename` | `ws name <name> --json` |
 | `session_get` | `ws session get <target> --json` |
 | `session_send` | `ws send <target> <message> --json` |
+| `session_output` | `ws session output <target> --json` |
 | `session_tail` | `ws session tail <target> --json [--stream stdout|stderr] [--max-bytes <n>]` |
+| `session_event` | `ws event <type> [--body <json>] [--source tool\|agent] [--key <key>] [--target <target>]` |
+| `session_log` | `ws log [<target>] [--type <prefix>] [--since <seq>]` |
 | `session_stop` | `ws session stop <target> --json` |
 | `session_depends_on` | `ws session depends-on <target> <dependency> --json` |
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
-| `wait` | `ws wait <target> --for <condition> [--timeout <seconds>] --json` |
+| `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
+| `loop_get` | `ws loop get <id> --json` |
+| `loop_check` | `ws loop check <id> --json` |
+| `loop_ack` | `ws loop ack <violation id> --reason <text> --json` |
+| `loop_list` | `ws loop list --json` |
+| `loop_create` | `ws loop create --dir <loop_dir> --json` |
 | `loop_start` | `ws loop start <loop_dir> --json` |
 | `loop_stop` | `ws loop stop <loop_dir> --json` |
+| `loop_pause` | `ws loop pause <id> [<phase>] --json` |
+| `loop_resume` | `ws loop resume <id> [<phase>] --json` |
+| `loop_accept` | `ws loop accept <id> --json` |
+| `loop_reject` | `ws loop reject <id> --json` |
+| `loop_note` | `ws loop note <id> <phase> <text> --json` |
+| `loop_model` | `ws loop model <id> <phase> <chain> --json` |
+| `loop_tier` | `ws loop tier <id> <phase> <standard\|max> [--rounds N] --json` |
 | `phase_spawn` | `ws phase spawn --repo <path> --base <ref> --max-runtime <seconds> --json -- <cmd>` |
 
 The record form accepts a name and a workspace ID. The headless form rejects both fields.
@@ -396,18 +428,61 @@ MCP `session_create` also accepts `scratch: true`, or `repo` with optional `bran
 `repo` with `branch` calls `POST /v1/workspaces`. A git `repo` requires `branch`. A non-git `repo` starts a directory session.
 `agent` (`claude`, `codex` or `grok`, default `claude`) and `prompt` (first message) apply to interactive starts.
 Use only one of `cwd`, `scratch`, `repo` or `workspace_id`. The caller becomes the parent. The result is the session record.
+A headless create and `phase_spawn` accept an optional `loop` object: `{loop, phase, attempt}` for a phase attempt, or `{loop, phase, repo, role, provider, round, inner, attempt}` for a review step. The CLI flags are `--loop <id> --phase <n> --attempt <n>`, plus `--repo --role --provider --round --inner` for a review step. With the object, the loop session is the parent and the key namespace. The daemon records the caller as `actor` in `session.created`. The new process gets `WS_LOOP_ID`, `WS_LOOP_PHASE` and `WS_LOOP_ATTEMPT`. Without the object, the caller is the parent.
 MCP `session_rename` takes `{"name":"<name>"}` and renames the caller session only.
+
+`ws session output <target>` reads the published `output.md` text. It prints the text without adding a newline.
+MCP `session_output` and `--json` return `{session_id, output, truncated}`.
+`GET /v1/sessions/{id}/output` accepts `parent_session_id` for caller audit.
+The response contains the first 65536 bytes at most. It preserves complete UTF-8 characters at the limit.
 
 Send keeps exit code 75 after it queues the message. JSON tail returns `session_id`, `stream`, `output`, and `truncated`.
 It reads the final 8192 bytes by default. The byte limit must be from 1 to 65536.
 It replaces invalid UTF-8 bytes and enforces the limit after decoding. JSON tail does not support `--follow`.
 `GET /v1/sessions/{id}/tail` accepts `stream`, `max_bytes`, and `parent_session_id` as query parameters.
+`POST /v1/sessions/{id}/events` takes `{type, body, parent_session_id}` and appends the event when `type` starts with `loop.`. `GET /v1/sessions/{id}/log` accepts `type` (prefix), `since` and `parent_session_id` as query parameters and returns `{session_id, entries}`.
 Phase spawn requires `$WS_SESSION_ID`. Repeat `--caps-required <capability>` to record required capabilities.
 Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox daemon.
 
 `ws top` opens `loop-top.mjs` for the current session. It checks the live loop state's
 `wsSession` against the session and its parents. It uses the session's worktree when no link matches.
 `--once`, `--worktrees`, and `--graph` pass to the dashboard.
+
+`GET /v1/loops` returns the loop states. `GET /v1/loops/{id}` returns one loop state.
+Both routes rebuild the state from the loop session's `loop.*` events and accept `parent_session_id` for caller audit.
+The state contains the plan, phases, milestone, and records for attempts, merges, gates, reviews, notes, decisions, controls, guards and violations.
+Phase status only increases: `todo < claimed < running < done < merged`. A stale phase event cannot lower the status.
+The daemon checks Loop rules after each Loop event. It records each new result as a
+`loop.violation` event with `source: daemon`. A hard violation blocks phase spawns and
+keyed creates for that loop until the human acknowledges it. A soft violation never blocks.
+An orchestrator continuation can still start. Each new hard result sends one desktop notification.
+`ws loop get <id> --json` lists violation IDs. Use `ws loop ack <violation id> --reason <text>`
+to record an acknowledgment as a `loop.control` event. An agent cannot acknowledge a hard
+violation. MCP `loop_ack` takes `{"id":"<violation id>","reason":"<text>"}`.
+`POST /v1/loops/ack` accepts the same fields and optional `parent_session_id` for the caller.
+
+MCP `loop_get` takes `{"id":"<loop session>"}`. MCP `loop_list` takes `{}`.
+The CLI read commands print formatted JSON by default. `--json` prints compact JSON.
+
+Skills-loop controls use `POST /v1/loops/{id}/{action}` and return the appended event.
+The actions are `pause`, `resume`, `accept`, `reject`, `note`, `model` and `tier`.
+They require a session of kind `loop`. The body accepts `parent_session_id` for caller audit.
+MCP tools take `id` and the same control fields. They derive the caller from `WS_SESSION_ID`.
+
+Pause and resume accept an optional `phase`. They append `loop.control` and write or remove
+`control/pause` or `control/pause-<phase>`. A loop pause and a phase pause are independent.
+The daemon refuses phase spawns and keyed creates for a paused loop or phase with HTTP 409.
+Resume clears a pause. It does not advance a milestone gate.
+
+Accept and reject close the open accept gate with a daemon-produced `loop.gate` event.
+The event copies the gate's milestone, phase and artifacts. A missing open gate gets HTTP 409.
+Note requires `phase` and `text` and appends `loop.note`.
+Model requires `phase` and `model`, such as `codex:@sol+high`. It appends `loop.control` and writes
+`control/model-<phase>`, which the runner reads for the next attempt.
+Tier requires `phase` and `tier` (`standard` or `max`). Optional `rounds` accepts 1 through 5.
+It calls `loop-plan-tier.mjs` to edit `plan.md`, then appends `loop.plan` with the text and SHA-256.
+It refuses a review that already started, including a status in `state.json` or the session events.
+`LOOP_PLAN_TIER_MJS` overrides the tool path in the daemon environment. The default is `~/dotfile/loop-plan-tier.mjs`.
 
 `POST /v1/loops/start` and `POST /v1/loops/stop` accept `loop_dir` and optional `parent_session_id`.
 The API requires an absolute directory with a `state.json` file and a nonempty `runId`.
@@ -425,17 +500,27 @@ The daemon reads spawn limits from `$WS_STATE/config.toml` when it starts:
 [limits]
 max_children = 8
 max_depth = 3
+
+[loop]
+max_spawns = 500
 ```
 
 Missing fields use these defaults. Zero prevents child creation. Restart the daemon after a configuration change.
-The child count includes finished and failed children. The count survives daemon restarts.
+Outside a Loop, the child count includes finished and failed children.
+Within a Loop, only live children count toward `max_children`.
+`loop.max_spawns` caps all creations and moves into a Loop, including terminal sessions.
+The old engine uses the same rules, grouped by the `--run-id` of `loop-orchestrator.sh`.
+The counts survive daemon restarts. A move out of a Loop does not restore its total spawn capacity.
 
 Each root has depth zero. A child adds one to its parent's depth.
 The daemon checks limits before it creates an interactive session, a headless session, or a phase.
 A resume keeps the existing session and does not consume another child slot.
+A self-exit spawn trigger owned by a direct child of a `loop` session creates another child of that Loop.
+This keeps the depth constant across orchestrator continuations.
+A reparent into a Loop checks its capacity and consumes one spawn.
 
 A violation returns HTTP 429 with `error.code`, `error.message`, `error.parent_session_id`, and `error.limit`.
-The codes are `max_children_exceeded` and `max_depth_exceeded`.
+The codes are `max_children_exceeded`, `max_depth_exceeded` and `max_spawns_exceeded`.
 The CLI exits with code 1 and writes this JSON error to standard error.
 MCP returns the same error as structured content with `isError: true`.
 

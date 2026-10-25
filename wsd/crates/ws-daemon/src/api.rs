@@ -73,6 +73,7 @@ pub(crate) fn router_with_store(store: Store) -> Router {
         .merge(crate::import::backend::router())
         .merge(crate::bus::router())
         .merge(crate::edges::router())
+        .merge(crate::events::router())
         .merge(crate::triggers::router())
         .merge(crate::wait::router())
         .merge(crate::hooks::router())
@@ -244,7 +245,9 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         use ws_core::registry;
         let (status, code) = match &self.0 {
-            Error::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Error::InvalidRequest(_) | Error::InvalidBody(_) => {
+                (StatusCode::BAD_REQUEST, "invalid_request")
+            }
             Error::Registry(registry::Error::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "session_not_found")
             }
@@ -256,10 +259,15 @@ impl IntoResponse for ApiError {
             Error::SpawnLimit(crate::limits::SpawnLimit::Children { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, "max_children_exceeded")
             }
+            Error::SpawnLimit(crate::limits::SpawnLimit::Spawns { .. }) => {
+                (StatusCode::TOO_MANY_REQUESTS, "max_spawns_exceeded")
+            }
             Error::SpawnLimit(crate::limits::SpawnLimit::Depth { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, "max_depth_exceeded")
             }
             Error::PendingMessages => (StatusCode::CONFLICT, "pending_messages"),
+            Error::LoopControlConflict(_) => (StatusCode::CONFLICT, "loop_control_conflict"),
+            Error::MilestoneGateOpen => (StatusCode::CONFLICT, "milestone_gate_open"),
             Error::DependencyCycle(_) => (StatusCode::CONFLICT, "dependency_cycle"),
             Error::NameTaken(_) => (StatusCode::CONFLICT, "name_taken"),
             Error::Transition(_) => (StatusCode::CONFLICT, "invalid_transition"),
@@ -268,7 +276,8 @@ impl IntoResponse for ApiError {
         let mut error = json!({"code": code, "message": self.0.to_string()});
         if let Error::SpawnLimit(
             crate::limits::SpawnLimit::Children { parent, limit }
-            | crate::limits::SpawnLimit::Depth { parent, limit },
+            | crate::limits::SpawnLimit::Depth { parent, limit }
+            | crate::limits::SpawnLimit::Spawns { parent, limit },
         ) = &self.0
         {
             error["parent_session_id"] = json!(parent);

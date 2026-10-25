@@ -28,6 +28,7 @@ use ws_core::{
 use crate::{
     agents::{self, AgentSession, Mode},
     api::{self, ApiError, Store},
+    loops::LoopChild,
     sessions::{Error, Result, Sessions},
 };
 
@@ -48,6 +49,12 @@ pub struct CreateHeadless {
     pub stdin: Option<PathBuf>,
     pub stdout: Option<PathBuf>,
     pub stderr: Option<PathBuf>,
+    /// Names one execution under the parent. A repeated key returns the first session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Makes the loop session the parent and the key namespace. The caller becomes the actor.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_child: Option<Box<LoopChild>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -57,6 +64,12 @@ struct Process {
     start: Option<String>,
     #[serde(default)]
     deadline_ms: Option<u64>,
+}
+
+/// A keyed create returns the first session when its process already started or finished.
+enum Launch {
+    Existing(Session),
+    Started(Session, tokio::process::Child, Process),
 }
 
 struct Snapshot {
@@ -140,7 +153,10 @@ pub(crate) async fn launch(
 ) -> std::result::Result<Session, ApiError> {
     let monitor_store = store.clone();
     api::call(store, move |sessions| {
-        let (session, child, process) = sessions.spawn_headless(request, metadata)?;
+        let (session, child, process) = match sessions.spawn_headless(request, metadata)? {
+            Launch::Existing(session) => return Ok(session),
+            Launch::Started(session, child, process) => (session, child, process),
+        };
         let id = session.id;
         let parent = session.body["parent_session_id"]
             .as_str()
@@ -212,6 +228,10 @@ pub(crate) async fn adopt(store: Store) -> std::result::Result<(), ApiError> {
                     serde_json::from_value::<Process>(entry.body["process"].clone()).ok()
                 });
             let Some(process) = process else {
+                // A keyed reservation waits for the retry that supplies the command environment.
+                if session.body["key"].is_string() {
+                    continue;
+                }
                 finish(
                     sessions,
                     session.id,
@@ -473,11 +493,42 @@ impl Sessions {
         Ok(running.is_none_or(|running| exit.seq > running.seq))
     }
 
+    fn loop_session(&self, child: &LoopChild) -> Result<SessionId> {
+        let review = [
+            child.repo.is_some(),
+            child.role.is_some(),
+            child.provider.is_some(),
+            child.round.is_some(),
+            child.inner.is_some(),
+        ];
+        if review.contains(&true) && review.contains(&false) {
+            return Err(Error::InvalidRequest(
+                "Set repo, role, provider, round and inner together, or none of them.",
+            ));
+        }
+        let session = self.get_record(&child.loop_id)?;
+        if session.body["kind"] != "loop" {
+            return Err(Error::InvalidRequest(
+                "The loop object must name a loop session.",
+            ));
+        }
+        Ok(session.id)
+    }
+
+    /// Finds the session that holds a key under the parent.
+    fn find_keyed(&self, parent: Option<SessionId>, key: &str) -> Result<Option<Session>> {
+        let parent = parent.map(|parent| parent.to_string());
+        Ok(self.registry.sessions()?.into_iter().find(|session| {
+            session.body["key"].as_str() == Some(key)
+                && session.body["parent_session_id"].as_str() == parent.as_deref()
+        }))
+    }
+
     fn spawn_headless(
         &mut self,
-        request: CreateHeadless,
+        mut request: CreateHeadless,
         metadata: serde_json::Value,
-    ) -> Result<(Session, tokio::process::Child, Process)> {
+    ) -> Result<Launch> {
         if !request.headless || request.command.first().is_none_or(|s| s.is_empty()) {
             return Err(Error::InvalidRequest(
                 "Specify a command for the headless session.",
@@ -510,9 +561,28 @@ impl Sessions {
                 "The working directory is not a directory.",
             ));
         }
-        let id = Ulid::new();
+        // The caller stays the actor. The loop session becomes the parent and the key namespace.
+        let actor = request.parent_session_id;
+        let loop_child = request.loop_child.take();
+        if let Some(child) = &loop_child {
+            let owner = self.loop_session(child)?;
+            self.check_loop_pause(owner, child.phase)?;
+            request.parent_session_id = Some(owner);
+        }
+        let reserved = match &request.key {
+            Some(key) => self.find_keyed(request.parent_session_id, key)?,
+            None => None,
+        };
+        if let (Some(child), Some(owner), None) =
+            (&loop_child, request.parent_session_id, &reserved)
+        {
+            self.check_milestone_gate(owner, child.phase)?;
+        }
+        let id = reserved
+            .as_ref()
+            .map_or_else(Ulid::new, |session| session.id);
         self.record_call(
-            request.parent_session_id,
+            actor,
             if metadata.get("phase").is_some() {
                 "phase.spawn"
             } else {
@@ -520,7 +590,18 @@ impl Sessions {
             },
             Some(&id.to_string()),
         )?;
-        self.check_spawn_limits(request.parent_session_id)?;
+        if let Some(child) = &loop_child {
+            child.validate_execution(id, request.key.as_deref().unwrap_or(&id.to_string()))?;
+        }
+        if let Some(session) = &reserved
+            && (self.registry.latest_event(id, "session.running")?.is_some()
+                || ["finished", "failed"].contains(&session.state.as_str()))
+        {
+            return Ok(Launch::Existing(session.clone()));
+        }
+        if reserved.is_none() {
+            self.check_spawn_limits(request.parent_session_id)?;
+        }
         let directory = self
             .state
             .canonicalize()?
@@ -558,15 +639,35 @@ impl Sessions {
         }
         output.set_len(0)?;
         errors.set_len(0)?;
-        let mut body = json!({
-            "alias": self.next_alias()?, "kind": "headless",
-            "command": request.command, "cwd": cwd, "stdout": stdout, "stderr": stderr,
-            "parent_session_id": request.parent_session_id,
-        });
-        if let Some(metadata) = metadata.as_object() {
-            body.as_object_mut().unwrap().extend(metadata.clone());
+        if reserved.is_none() {
+            let mut body = json!({
+                "alias": self.next_alias()?, "kind": "headless",
+                "command": request.command, "cwd": cwd, "stdout": stdout, "stderr": stderr,
+                "parent_session_id": request.parent_session_id,
+            });
+            if let Some(key) = &request.key {
+                body["key"] = json!(key);
+            }
+            if let Some(metadata) = metadata.as_object() {
+                body.as_object_mut().unwrap().extend(metadata.clone());
+            }
+            if let Some(child) = &loop_child {
+                // The request metadata names the caller, so restore the loop as the parent.
+                body["parent_session_id"] = json!(request.parent_session_id);
+                body["actor"] = json!(actor);
+                body["loop"] = json!(child);
+                // Phase spawns have no caller key, so their session ID names the execution.
+                body["key"] = json!(request.key.as_deref().unwrap_or(&id.to_string()));
+            }
+            // The reservation is durable before the process starts.
+            self.append(id, "session.created", body)?;
         }
-        self.append(id, "session.created", body)?;
+        if let Some(child) = &loop_child {
+            command
+                .env("WS_LOOP_ID", request.parent_session_id.unwrap().to_string())
+                .env("WS_LOOP_PHASE", child.phase.to_string())
+                .env("WS_LOOP_ATTEMPT", child.attempt.to_string());
+        }
         command
             .current_dir(cwd)
             .env("WS_SESSION_ID", id.to_string())
@@ -579,11 +680,7 @@ impl Sessions {
         let child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                self.transition(
-                    &id.to_string(),
-                    SessionState::Failed,
-                    request.parent_session_id,
-                )?;
+                self.transition(&id.to_string(), SessionState::Failed, actor)?;
                 return Err(error.into());
             }
         };
@@ -605,7 +702,7 @@ impl Sessions {
             Ok((self.get_record(&id.to_string())?, process))
         })();
         match persisted {
-            Ok((session, process)) => Ok((session, child, process)),
+            Ok((session, process)) => Ok(Launch::Started(session, child, process)),
             Err(error) => {
                 let _ = signal_group(pid, libc::SIGKILL);
                 Err(error)

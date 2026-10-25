@@ -10,7 +10,7 @@ use std::{
 use clap::{Args, Subcommand, ValueEnum};
 use hyper::Method;
 use tokio::signal::unix::{Signal, SignalKind, signal};
-use ws_daemon::supervisor::CreateHeadless;
+use ws_daemon::{loops::LoopChild, supervisor::CreateHeadless};
 
 use crate::{Result, client};
 
@@ -82,6 +82,12 @@ pub enum Command {
         #[command(flatten)]
         arguments: HeadlessArgs,
     },
+    /// Read the published output.md text, up to 65536 bytes.
+    Output {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read the session output.
     Tail {
         id: String,
@@ -113,6 +119,26 @@ pub struct HeadlessArgs {
     stdout: Option<PathBuf>,
     #[arg(long)]
     stderr: Option<PathBuf>,
+    /// Name one execution. The same key under the same parent returns the first session.
+    #[arg(long)]
+    key: Option<String>,
+    /// Make this loop session the parent and the key namespace. Requires --phase and --attempt.
+    #[arg(long = "loop", requires_all = ["phase", "attempt"])]
+    loop_id: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    phase: Option<u64>,
+    #[arg(long, requires = "loop_id")]
+    attempt: Option<u64>,
+    #[arg(long, requires = "loop_id")]
+    repo: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    role: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    provider: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    round: Option<u64>,
+    #[arg(long, requires = "loop_id")]
+    inner: Option<u64>,
     #[arg(last = true)]
     command: Vec<String>,
 }
@@ -216,6 +242,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                     || arguments.stdin.is_some()
                     || arguments.stdout.is_some()
                     || arguments.stderr.is_some()
+                    || arguments.key.is_some()
                 {
                     return Err("Use --headless to set process options.".into());
                 }
@@ -251,6 +278,16 @@ pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
                 &mut signals,
             )
             .await;
+        }
+        Command::Output { id, json } => {
+            let value = crate::mcp::Control::for_caller(socket, super::caller(socket).await?)
+                .call("session_output", serde_json::json!({"target":id}))
+                .await?;
+            if json {
+                println!("{value}");
+            } else {
+                io::stdout().write_all(value["output"].as_str().unwrap_or_default().as_bytes())?;
+            }
         }
         Command::Tail {
             id,
@@ -316,6 +353,20 @@ async fn create(
         stdin: arguments.stdin.map(absolute),
         stdout: arguments.stdout.map(absolute),
         stderr: arguments.stderr.map(absolute),
+        key: arguments.key,
+        loop_child: match arguments.loop_id {
+            Some(loop_id) => Some(Box::new(LoopChild {
+                loop_id: client::session(socket, &loop_id).await?.id.to_string(),
+                phase: arguments.phase.ok_or("Set --phase with --loop.")?,
+                attempt: arguments.attempt.ok_or("Set --attempt with --loop.")?,
+                repo: arguments.repo,
+                role: arguments.role,
+                provider: arguments.provider,
+                round: arguments.round,
+                inner: arguments.inner,
+            })),
+            None => None,
+        },
     };
     let bytes = client::request(
         socket,

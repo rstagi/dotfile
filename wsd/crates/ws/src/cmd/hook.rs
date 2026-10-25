@@ -12,6 +12,9 @@ use ws_daemon::{
     hooks::{self, Callback},
 };
 
+#[path = "hook_guard.rs"]
+mod guard;
+
 const DEFAULT_TRANSPORT_DEADLINE: Duration = Duration::from_millis(250);
 /// Test seam: sandboxes under load set a long hang guard instead of the production deadline.
 const TRANSPORT_DEADLINE_ENV: &str = "WS_HOOK_TRANSPORT_DEADLINE_MS";
@@ -25,6 +28,10 @@ pub async fn run(socket: &Path, state: &str) {
         let _ = io::stdin().read_to_string(&mut input);
     }
     let payload: Value = serde_json::from_str(&input).unwrap_or_else(|_| json!({"raw":input}));
+    if state == "guard" {
+        guard::run(socket, payload).await;
+        return;
+    }
     let event = payload["hook_event_name"]
         .as_str()
         .or_else(|| payload["hookEventName"].as_str())

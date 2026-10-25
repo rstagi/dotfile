@@ -403,6 +403,33 @@ fn directory_place_in_an_unregistered_worktree_keeps_its_directory_semantics() {
             .len(),
         1
     );
+    let output = sandbox
+        .command()
+        .current_dir(&directory)
+        .args(["add", "--agent", "codex", "--detach"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(sandbox.json(&["list", "--json"]), serde_json::json!([]));
+    let sessions = sandbox.json(&["sessions", "--json"]);
+    let sessions = sessions.as_array().unwrap();
+    assert_eq!(sessions.len(), 2);
+    for session in sessions {
+        assert!(session["workspace_id"].is_null());
+        assert_eq!(
+            session["cwd"],
+            directory.canonicalize().unwrap().to_str().unwrap()
+        );
+    }
+    let rows = sandbox.tmux(&["list-windows", "-a", "-F", "#{session_id}\t#{@ws_session}"]);
+    let tmux_sessions = rows
+        .lines()
+        .filter_map(|row| row.split_once('\t'))
+        .filter(|(_, id)| sessions.iter().any(|session| session["id"] == *id))
+        .map(|(session, _)| session)
+        .collect::<Vec<_>>();
+    assert_eq!(tmux_sessions.len(), 2);
+    assert_eq!(tmux_sessions[0], tmux_sessions[1]);
     let output = sandbox.output(&["pin", directory.to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(

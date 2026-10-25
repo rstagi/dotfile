@@ -378,4 +378,72 @@ printf 'a2\tround1\tcritic\tclaude\tAGREE\truns/a-critic\n' >> "$TMP/incomplete.
 ar_write_disputed --ledger "$TMP/incomplete.tsv" > /dev/null 2>&1
 assert_exit "$?" 1 "agreement cannot be disputed"
 
+echo "ar: commands run as a script and stay inert when sourced"
+AR="$ROOT/loop-ar.sh"
+zsh -c 'source "$1"; print sourced-ok' _ "$AR" > "$TMP/sourced.out" 2>&1
+assert_eq "$(cat "$TMP/sourced.out")" sourced-ok "sourcing runs no command and prints no usage"
+zsh "$AR" > /dev/null 2>&1; assert_exit "$?" 1 "no command is a usage error"
+zsh "$AR" bogus > /dev/null 2>&1; assert_exit "$?" 1 "unknown command is a usage error"
+
+echo "ar: verdict command"
+printf 'F1: x\nNEEDS_CHANGES: broken\n' > "$REPORT"
+assert_eq "$(zsh "$AR" verdict "$REPORT" reviewer)" NEEDS_CHANGES "verdict prints the reviewer token"
+printf 'AGREE\n' > "$REPORT"
+assert_eq "$(zsh "$AR" verdict "$REPORT" critic)" AGREE "verdict prints the critic token"
+actual="$(zsh "$AR" verdict "$REPORT" reviewer)"; rc=$?
+assert_eq "$actual" invalid "verdict prints invalid for a wrong kind"
+assert_exit "$rc" 2 "invalid verdict exits 2"
+zsh "$AR" verdict "$REPORT" > /dev/null 2>&1; assert_exit "$?" 1 "verdict needs a report and a kind"
+
+echo "ar: prompt and disputed commands"
+CLI_LOOP="$TMP/cli-loop"
+CLI_LEDGER="$CLI_LOOP/runs/cli.ledger.tsv"
+mkdir -p "$CLI_LOOP/runs/a1" "$CLI_LOOP/runs/a2"
+print -r -- 'F1 [major]: broken at source:1' > "$CLI_LOOP/runs/a1/report.md"
+print -r -- 'NEEDS_CHANGES: F1' >> "$CLI_LOOP/runs/a1/report.md"
+printf 'review-p1-acme--api\n' > "$TMP/cli-framing.md"
+printf 'a1\tround1\treview\tgpt\tNEEDS_CHANGES\truns/a1\n' > "$CLI_LEDGER"
+zsh "$AR" prompt --role critic --framing "$TMP/cli-framing.md" --ledger "$CLI_LEDGER" --run-dir "$CLI_LOOP/runs/a2" > "$TMP/cli-prompt.md"
+assert_exit "$?" 0 "prompt command renders a critic prompt"
+assert_eq "$(ar_prompt --role critic --framing "$TMP/cli-framing.md" --ledger "$CLI_LEDGER" --run-dir "$CLI_LOOP/runs/a2")" "$(cat "$TMP/cli-prompt.md")" "prompt command equals ar_prompt"
+zsh "$AR" prompt --role unknown --framing "$TMP/cli-framing.md" --ledger "$CLI_LEDGER" --run-dir "$CLI_LOOP/runs/a2" > /dev/null 2>&1
+assert_exit "$?" 1 "prompt command rejects an unknown role"
+zsh "$AR" disputed --ledger "$CLI_LEDGER" > /dev/null 2>&1
+assert_exit "$?" 1 "disputed command needs a pending disagreement"
+print -r -- 'DISAGREE_EVIDENCE: F1 refuted at source:2' > "$CLI_LOOP/runs/a2/report.md"
+printf 'a2\tround1\tcritic\tclaude\tDISAGREE_EVIDENCE\truns/a2\na3\tround1\trespond\tgpt\tNEEDS_CHANGES\truns/a1\na4\tround1\tcritic\tclaude\tDISAGREE_EVIDENCE\truns/a2\n' >> "$CLI_LEDGER"
+actual="$(zsh "$AR" disputed --ledger "$CLI_LEDGER")"; rc=$?
+assert_exit "$rc" 0 "disputed command writes the sidecar"
+assert_eq "$actual" "${CLI_LEDGER%.tsv}.disputed.md" "disputed command prints the sidecar path"
+assert_eq "$(tail -n 1 "$CLI_LEDGER" | cut -f2,3,5)" "disputed${T}disputed${T}DISPUTED" "disputed command appends the marker row"
+
+echo "ar: prove-fix command checks the remote head"
+PF_REPO="$TMP/pf-repo"; PF_REMOTE="$TMP/pf-remote.git"; PF_RUN="$TMP/pf-run"
+git init -q "$PF_REPO"
+git -C "$PF_REPO" -c user.name=Test -c user.email=test@example.test commit -qm initial --allow-empty
+PF_BEFORE="$(git -C "$PF_REPO" rev-parse HEAD)"
+git clone -q --bare "$PF_REPO" "$PF_REMOTE"
+git --git-dir="$PF_REMOTE" update-ref refs/heads/review "$PF_BEFORE"
+mkdir -p "$PF_RUN"
+pf_status() {
+  jq -n --arg result "$1" --arg before "$2" --arg after "$3" --arg remote "$PF_REMOTE" --arg wt "$PF_REPO" \
+    '{outcome:"done",result:$result,headBefore:$before,headAfter:$after,remote:$remote,branch:"review",worktree:$wt}' > "$PF_RUN/status.json"
+}
+pf_status NOOP "$PF_BEFORE" "$PF_BEFORE"
+assert_eq "$(zsh "$AR" prove-fix "$PF_RUN")" NOOP "NOOP fix proven by the remote head"
+pf_status NOOP "$PF_BEFORE" "${PF_BEFORE/#?/f}"
+zsh "$AR" prove-fix "$PF_RUN" > /dev/null 2>&1; assert_exit "$?" 1 "NOOP with changed head rejected"
+git -C "$PF_REPO" -c user.name=Test -c user.email=test@example.test commit -qm fix --allow-empty
+PF_AFTER="$(git -C "$PF_REPO" rev-parse HEAD)"
+pf_status PUSHED "$PF_BEFORE" "$PF_AFTER"
+actual="$(zsh "$AR" prove-fix "$PF_RUN" 2>&1)"; rc=$?
+assert_exit "$rc" 1 "unpublished head cannot prove PUSHED"
+assert_eq "$actual" "loop-ar: remote head does not match completed fix" "mismatch names the cause"
+git --git-dir="$PF_REMOTE" fetch -q "$PF_REPO" HEAD:refs/heads/review
+assert_eq "$(zsh "$AR" prove-fix "$PF_RUN")" PUSHED "published head proves PUSHED"
+assert_eq "$(ar_prove_fix "$PF_RUN")" PUSHED "ar_prove_fix works when sourced"
+printf '{"outcome":"blocked"}\n' > "$PF_RUN/status.json"
+zsh "$AR" prove-fix "$PF_RUN" > /dev/null 2>&1; assert_exit "$?" 1 "a blocked fix is not proven"
+zsh "$AR" prove-fix > /dev/null 2>&1; assert_exit "$?" 1 "prove-fix needs a run dir"
+
 test_summary

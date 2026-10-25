@@ -57,6 +57,33 @@ pub struct Create {
     pub stdin: Option<PathBuf>,
     pub stdout: Option<PathBuf>,
     pub stderr: Option<PathBuf>,
+    /// Names one headless execution under your session. The same key returns the first session and never starts a second process. Use a new key for a new execution.
+    pub key: Option<String>,
+    /// Makes a loop session the parent and the key namespace of a headless session. Your session stays the actor.
+    #[serde(default, rename = "loop")]
+    pub loop_child: Option<LoopChild>,
+}
+
+/// The loop that owns a new session, and the phase attempt or review step it runs.
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopChild {
+    /// ULID, alias, or name of the loop session.
+    #[serde(rename = "loop")]
+    pub loop_id: String,
+    pub phase: u64,
+    pub attempt: u64,
+    /// A review step sets repo, role, provider, round and inner together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -78,11 +105,32 @@ pub struct Dependency {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Wait {
-    pub target: String,
+    /// Use target for one session, or targets for several sessions.
+    pub target: Option<String>,
+    pub targets: Option<Vec<WaitTarget>>,
+    /// Use any or all for targets. The default is all.
+    pub mode: Option<WaitMode>,
+    /// Match only events with a sequence number above this value. Use this field with target.
+    pub after_seq: Option<u64>,
     /// Use done, exit, state=<state>, or event=<type>.
     pub condition: String,
     /// Maximum wait in seconds. Omit this field for an indefinite wait.
     pub timeout: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitTarget {
+    pub target: String,
+    /// Match only events with a sequence number above this value. The default is zero.
+    pub after_seq: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WaitMode {
+    Any,
+    All,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -118,6 +166,25 @@ pub struct Spawn {
     pub caps_required: Vec<String>,
     /// Maximum process runtime in seconds.
     pub max_runtime: u64,
+    /// Makes a loop session the parent of the phase. Your session stays the actor.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_child: Option<LoopChild>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopId {
+    /// ULID, alias, or name of the loop session.
+    pub id: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopAck {
+    /// ID of the Loop violation. Read it from loop_get.
+    pub id: String,
+    /// Reason for the acknowledgment. The text must not be empty.
+    pub reason: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -125,4 +192,75 @@ pub struct Spawn {
 pub struct Loop {
     /// Directory that contains the Loop state.json file.
     pub loop_dir: PathBuf,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopPause {
+    /// ULID, alias, or name of the loop session.
+    pub id: String,
+    /// Omit the phase to control the whole loop.
+    pub phase: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopNote {
+    pub id: String,
+    pub phase: u64,
+    pub text: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopModel {
+    pub id: String,
+    pub phase: u64,
+    /// Runner model as provider:model[+effort].
+    pub model: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewTier {
+    Standard,
+    Max,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopTier {
+    pub id: String,
+    pub phase: u64,
+    pub tier: ReviewTier,
+    #[schemars(range(min = 1, max = 5))]
+    pub rounds: Option<u8>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Event {
+    /// Session ULID, alias, name, or me.
+    pub target: String,
+    /// Event type. It must start with loop.
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// JSON object with the event data. It must match the event type.
+    pub body: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Who produced the event: tool or agent. The default is agent.
+    pub source: Option<String>,
+    /// Stable key of the fact. When the session already has an event with this key, nothing is appended and that event is returned.
+    pub key: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Log {
+    /// Session ULID, alias, name, or me.
+    pub target: String,
+    /// Keep entries whose type starts with this prefix.
+    #[serde(rename = "type")]
+    pub event_type: Option<String>,
+    /// Keep entries with a sequence number above this value.
+    pub since: Option<u64>,
 }

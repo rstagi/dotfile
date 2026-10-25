@@ -3,8 +3,7 @@
 // Two modes, one machinery:
 //   • daemon  (LOOP_DAEMON_MODE=1) — the perpetual central observer on 127.0.0.1:7717.
 //     Loops POST lifecycle to it (`/api/loops/:runId/{register,state,event,finish}`); each is
-//     kept forever in `~/.loop/loops/<runId>.json`. A selector lists them; per-loop SSE
-//     streams the graph.
+//     kept forever in `~/.loop/loops/<runId>.json`. The API lists loops and streams snapshots through SSE.
 //   • legacy  (loop-web --dir X) — discovers one flattened `.loop/`, synthesizes a single
 //     registration into the same registry. No store; ephemeral.
 //
@@ -16,12 +15,8 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { reduceLoop, emptyRecord, materialize, summarize } from "../src/model/index.ts";
 import { createStore } from "./store.mjs";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DIST_DIR = path.join(__dirname, "..", "dist");
 
 const WATCH_DEBOUNCE_MS = 2000;
 const RECONCILE_MS = 15000;
@@ -327,7 +322,7 @@ function handle(req, res) {
   if ((m = p.match(/^\/api\/loops\/([^/]+)\/attempt\/(.+)\/(\d+)\/?$/)))
     return handleAttempt(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], res);
 
-  // back-compat (pre-selector UI): resolve to the default loop.
+  // Legacy endpoints resolve to the default loop.
   if (p === "/api/model" || p === "/api/snapshot") {
     const d = defaultEntry();
     return sendJsonText(res, d ? d.lastSnapshotJson : "null");
@@ -338,8 +333,7 @@ function handle(req, res) {
     return handleAttempt(d.record.runId, decodeURIComponent(m[1]), m[2], res);
   }
 
-  if (p.startsWith("/api/")) return json(res, 404, { error: "unknown endpoint" });
-  return serveStatic(req, res);
+  return json(res, 404, { error: "unknown endpoint" });
 }
 
 /** Manual archive flag (`loop-top archive`): hides the loop from selectors without touching
@@ -754,50 +748,6 @@ function safeReaddir(p) {
     return [];
   }
 }
-
-// --- static SPA ----------------------------------------------------------------------
-
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".woff2": "font/woff2",
-  ".ico": "image/x-icon",
-};
-
-function serveStatic(req, res) {
-  const urlPath = req.url.split("?")[0];
-  const rel = urlPath === "/" ? "index.html" : decodeURIComponent(urlPath.replace(/^\/+/, ""));
-  const filePath = path.join(DIST_DIR, rel);
-  if (!isContained(path.resolve(filePath), path.resolve(DIST_DIR))) {
-    res.writeHead(403).end("forbidden");
-    return;
-  }
-  fs.readFile(filePath, (err, buf) => {
-    if (err) {
-      fs.readFile(path.join(DIST_DIR, "index.html"), (e2, idx) => {
-        if (e2) {
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(BUILD_HINT);
-        } else {
-          res.writeHead(200, { "Content-Type": MIME[".html"] });
-          res.end(idx);
-        }
-      });
-      return;
-    }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(filePath)] ?? "application/octet-stream" });
-    res.end(buf);
-  });
-}
-
-const BUILD_HINT = `<!doctype html><meta charset="utf-8"><title>Loop Observatory</title>
-<body style="font-family:ui-monospace,monospace;background:#0a0e12;color:#cfe;padding:3rem">
-<h1>Loop Observatory</h1><p>UI not built yet. Run <code>npm run build</code> in <code>loop-web/</code>,
-or use <code>npm run dev</code> for the dev server. The data endpoints
-(<code>/events</code>, <code>/api/loops</code>) are live.</p></body>`;
 
 // --- small http helpers --------------------------------------------------------------
 

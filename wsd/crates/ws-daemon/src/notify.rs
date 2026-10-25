@@ -83,6 +83,74 @@ pub(crate) async fn transition(callback: &Callback, window: &Target, previous: &
     }
 }
 
+/// Queues one desktop notification for a newly recorded hard Loop violation.
+pub(crate) fn loop_violation(id: ws_core::ids::SessionId, violation: &Value) {
+    // Library tests have no desktop. Binary contract tests use a sandbox adapter.
+    if cfg!(test) {
+        return;
+    }
+    let config = Config::from_env();
+    if config.value("WS_NOTIFY", "1") == "0" {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let event = json!({"v":1,"id":format!("ws:loop:{id}:{}", violation["id"].as_str().unwrap_or_default()),
+        "source":"ws","state":"waiting","title":"ws Loop",
+        "message":"A hard Loop violation needs a human acknowledgment.",
+        "detail":violation["message"],"loop":id,"violation":violation["id"]});
+    runtime.spawn(async move {
+        let adapter = config.value("WS_NOTIFIER", "auto");
+        let result = if adapter.contains('/') {
+            run_input(&adapter, &[], &config, &format!("{event}\n")).await
+        } else {
+            let message = format!(
+                "{} {}",
+                event["message"].as_str().unwrap_or_default(),
+                event["detail"].as_str().unwrap_or_default()
+            );
+            let notified = adapter != "osascript"
+                && run(
+                    &notifier(&config).to_string_lossy(),
+                    &[
+                        "-title".into(),
+                        "ws Loop".into(),
+                        "-message".into(),
+                        message.clone(),
+                        "-group".into(),
+                        format!("ws-loop-{id}"),
+                    ],
+                    &config,
+                )
+                .await
+                .unwrap_or(false);
+            if notified {
+                Ok(true)
+            } else {
+                run(
+                    "osascript",
+                    &[
+                        "-e".into(),
+                        "on run argv".into(),
+                        "-e".into(),
+                        "display notification (item 1 of argv) with title (item 2 of argv)".into(),
+                        "-e".into(),
+                        "end run".into(),
+                        message,
+                        "ws Loop".into(),
+                    ],
+                    &config,
+                )
+                .await
+            }
+        };
+        if let Err(error) = result {
+            eprintln!("Cannot deliver the Loop violation notification for {id}: {error}");
+        }
+    });
+}
+
 pub(crate) fn router() -> Router<crate::api::Store> {
     Router::new().route("/v1/notifications/dismiss", post(dismiss))
 }

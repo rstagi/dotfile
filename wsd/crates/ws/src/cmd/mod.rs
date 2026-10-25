@@ -8,6 +8,7 @@ pub mod claude;
 pub mod codex;
 pub mod dismiss;
 pub mod done;
+pub mod events;
 pub mod grok;
 pub mod hook;
 pub mod inbox;
