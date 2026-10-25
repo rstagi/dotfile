@@ -16,6 +16,7 @@ export type {
   PlanMilestone,
   PlanPhase,
   PlanPhaseKind,
+  PlanPhaseOutput,
   PlanPhaseStatus,
   PlanProse,
   PlanRepository,
@@ -443,7 +444,7 @@ export interface GraphNode {
   /** Containing milestone; null for the synthetic Plan / legacy PR Review nodes. Absent on older snapshots. */
   milestone?: number | null;
   /** Explicit PR-review nodes: `[gate: merge]` barrier. Absent on older snapshots. */
-  gate?: "merge" | null;
+  gate?: "merge" | "accept" | null;
   /** Merge gate parked in `awaiting-merge`: review verdict posted, waiting for a human to merge + resume. */
   awaitingMerge?: boolean;
 }

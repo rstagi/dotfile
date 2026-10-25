@@ -99,6 +99,13 @@ assert_contains "$PLAN_FLAT" 'read the `### Lessons` of the last 3 archive files
 assert_contains "$CLAUDE_MD" 'loop-retro.mjs' "CLAUDE.md: loop-retro.mjs architecture row"
 assert_contains "$CLAUDE_MD" 'node --test tests/loop-retro.test.mjs' "CLAUDE.md: loop-retro test command"
 
+echo "milestone skills: output kinds and the accept gate"
+assert_contains "$FORMAT" '`[output: pr|file|doc|output.md]`' "output tag"
+assert_contains "$FORMAT" '`[gate: accept]`' "accept gate tag"
+assert_contains "$FORMAT" '.loop/outputs/p<N>/' "non-PR output directory"
+assert_contains "$FORMAT" 'For an output other than `pr`, `Verify:` is optional.' "Verify optional for non-PR output"
+assert_contains "$PLAN_SKILL" '`[output: pr|file|doc|output.md]`' "planner chooses the output kind"
+assert_contains "$PLAN_SKILL" 'one reviewer for `output.md`' "review follows the output kind"
 echo "milestone skills: CLAUDE.md + README"
 assert_contains "$CLAUDE_MD" '**Milestones:**' "CLAUDE.md milestones paragraph"
 assert_contains "$CLAUDE_MD" '`awaiting-merge`' "CLAUDE.md awaiting-merge"
