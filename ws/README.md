@@ -31,6 +31,8 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws event <type> [--body <json-object>] [--source tool|agent] [--target <target>]` appends a `loop.*` event to a session log. The default target is the current session. Other event types, unknown `loop.*` types and a body that does not match its type get HTTP 400. The checked types are `loop.plan`, `loop.phases`, `loop.phase`, `loop.attempt`, `loop.merge`, `loop.milestone`, `loop.gate`, `loop.review`, `loop.note`, `loop.decision`, `loop.control`, `loop.guard`, `loop.violation` and `loop.finish`. `loop.attempt` and `loop.review` fields depend on `state`. The entry body records the caller in `caller` and the producer in `source`: `tool` with `--source tool`, `agent` otherwise, and `daemon` for events that the daemon appends itself. `loop.phases` lists `{n, title, kind, output, milestone, gate, repo, branch, depends_on, status}` per phase. `loop.gate` needs `milestone`. The daemon appends `loop.phase` (`source: daemon`) in the same operation as the attempt, review or merge event that raises a phase status. A merge gate that stays open gives the loop status `awaiting-merge`. Then a keyed create or a phase spawn with a `loop` object for a later milestone gets HTTP 409 (`milestone_gate_open`).
 - `ws loop create --dir <loop dir> [--json]` creates the session of kind `loop` for a loop directory. The session has no process. A second call for the same directory returns the same session.
 - With a `loop` object, the daemon records execution events in the loop session. Phase attempts use `loop.attempt`, and review steps use `loop.review`. Each execution key gets one `started` and one `exited` event, both with `source: daemon`. An attempt uses `exit: -1` when its process status is unknown. Recovery repairs interrupted appends and suppresses duplicates.
+- Agent preparation finds the loop through session parents and exports `WS_LOOP_ID`. It adds `ws hook guard` to `PreToolUse`. Sessions outside a loop receive neither.
+- The guard records bypasses as `loop.guard {session, rule, command}` with `source: daemon`. Claude and Codex deny direct merges, integration pushes, PR merges and direct agent starts. Use `loop-merge.sh`, `phase_spawn` or `ws session create`. Grok records the same events without a denial. A review step with role `fix` can push to the integration branch.
 - `ws log [<target>] [--type <prefix>] [--since <seq>]` prints the log entries as JSON, in order. `--since` keeps entries with a higher sequence number.
 - `ws on <ids> done|exit --send-to <target> <text>` registers a continuation. `--spawn <prompt> [--agent <agent>]` starts a child instead.
 - `ws triggers [--json]` lists pending actions. `ws on --rm <trigger-ULID>` removes one action.
@@ -171,9 +173,10 @@ Its output goes to `$WS_HOME/daemon.log`. Run `./install.sh --dry-run ws` to pre
 A Rust CLI request starts a background daemon when its socket is missing and launchd does not own `com.rstagi.wsd`.
 Concurrent starts share a startup lock. A failed start reports the log path beside the socket.
 The daemon exits when its socket file disappears or a different file replaces it.
-Hooks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
+State callbacks retain their bounded spool fallback when the daemon is absent. Notification dismissal remains best effort.
 A stop or exit hook waits 5 s for the daemon reply. Other hooks wait 250 ms.
 When the time expires, the hook spools the callback and prints `{}`. Test sandboxes set this bound with `WS_HOOK_TRANSPORT_DEADLINE_MS`.
+The guard waits up to 4 s for the daemon. It never starts a daemon. A failed guard request leaves the tool call unchanged.
 The daemon can record a block before a stop hook times out. The batch then arrives at the next stop hook. Until then, the session shows `working`.
 
 The launcher always uses Rust. `WS_RUST_BIN` overrides the binary path for tests.

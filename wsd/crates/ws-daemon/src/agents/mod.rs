@@ -72,7 +72,10 @@ pub fn prepare(
 ) -> io::Result<Prepared> {
     let loop_context = crate::loops::guard::context(
         &session.state,
-        session.id.parse().map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+        session
+            .id
+            .parse()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
         session.parent_session_id,
     )?;
     let guarded = loop_context.is_some();
@@ -80,13 +83,21 @@ pub fn prepare(
         program: agent.into(),
         argv: vec![],
         env: BTreeMap::from([("WS_SESSION_ID".into(), session.id.clone())]),
-        unset_env: vec!["WS_SESSION".into(), "WS_LOOP_ID".into(), "WS_LOOP_GUARD_AGENT".into()],
+        unset_env: vec![
+            "WS_SESSION".into(),
+            "WS_LOOP_ID".into(),
+            "WS_LOOP_GUARD_AGENT".into(),
+        ],
         files: vec![],
         telemetry: None,
     };
     if let Some(context) = loop_context {
-        prepared.env.insert("WS_LOOP_ID".into(), context.id.to_string());
-        prepared.env.insert("WS_LOOP_GUARD_AGENT".into(), agent.into());
+        prepared
+            .env
+            .insert("WS_LOOP_ID".into(), context.id.to_string());
+        prepared
+            .env
+            .insert("WS_LOOP_GUARD_AGENT".into(), agent.into());
     }
     let preamble = if session.spawned {
         format!(
@@ -184,11 +195,18 @@ pub fn prepare(
             ] {
                 let command = serde_json::to_string(&format!("{hook} {state}"))?;
                 let guard = if guarded && event == "PreToolUse" {
-                    format!(",{{type=\"command\",command={}}}", serde_json::to_string(&format!("{hook} guard"))?)
-                } else { String::new() };
+                    format!(
+                        ",{{type=\"command\",command={}}}",
+                        serde_json::to_string(&format!("{hook} guard"))?
+                    )
+                } else {
+                    String::new()
+                };
                 prepared.argv.extend([
                     "-c".into(),
-                    format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={command}}}{guard}]}}]"),
+                    format!(
+                        "hooks.{event}=[{{hooks=[{{type=\"command\",command={command}}}{guard}]}}]"
+                    ),
                 ]);
             }
         }
