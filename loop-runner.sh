@@ -101,31 +101,32 @@ loop_runner_finish() {
       outcome:$outcome, exitCode:$exitCode, engine:$engine, model:$model, ts:$ts}' |
     loop_emit "$RUN_ID" event
 }
-# ws_loop_event <type> <jq-filter> [jq args]: append a tool event to the loop session when WS_LOOP_ID
-# is set. The filter builds the body. A failed append prints one warning and never changes the exit code.
+# ws_loop_event <type> <key> <jq-filter> [jq args]: append a tool event to the loop session when
+# WS_LOOP_ID is set. The key names the fact, so a retried append records it one time. The filter
+# builds the body. A failed append prints one warning and never changes the exit code.
 ws_loop_event() {
   [[ -n "${WS_LOOP_ID:-}" ]] || return 0
-  local type="$1" filter="$2" ws_bin body
-  shift 2
+  local type="$1" key="$2" filter="$3" ws_bin body
+  shift 3
   ws_bin="$(whence -p ws)"
   body="$(jq -cn --arg phase "${WS_LOOP_PHASE:-}" --arg attempt "${WS_LOOP_ATTEMPT:-}" \
     --arg session "${WS_SESSION_ID:-}" "$@" "$filter" 2>/dev/null)"
   if [[ -z "$ws_bin" || -z "$body" ]] ||
-      ! "$ws_bin" event "$type" --body "$body" --source tool --target "$WS_LOOP_ID" > /dev/null 2>&1; then
+      ! "$ws_bin" event "$type" --body "$body" --source tool --target "$WS_LOOP_ID" --key "$key" > /dev/null 2>&1; then
     echo "loop-runner: warning: cannot append $type to loop session $WS_LOOP_ID" >&2
   fi
   return 0
 }
 ws_loop_attempt_event() { # $1 = outcome, $2 = pass|fail|none. A checkpoint is not a result.
   jq -e '.checkpoint == true' "$STATUS" >/dev/null 2>&1 && return 0
-  ws_loop_event loop.attempt '{n:($phase|tonumber), attempt:($attempt|tonumber), session:$session,
+  ws_loop_event loop.attempt "loop.attempt:${WS_LOOP_PHASE:-}:${WS_SESSION_ID:-}:result" '{n:($phase|tonumber), attempt:($attempt|tonumber), session:$session,
     state:"result", outcome:$outcome, verify:$verify}' --arg outcome "$1" --arg verify "$2"
 }
 ws_loop_review_event() { # a final review is published: record its verdict
   local verdict
   verdict="$(zsh "$SCRIPT_DIR/loop-ar.sh" verdict "$PUBLISH_OUTPUT" reviewer 2>/dev/null)" ||
     verdict="$(jq -r '.event // "invalid"' "$STATUS" 2>/dev/null)"
-  ws_loop_event loop.review '{phase:($phase|tonumber), repo:(if $repo == "" then "none" else $repo end),
+  ws_loop_event loop.review "loop.review:${WS_LOOP_PHASE:-}:${WS_SESSION_ID:-}:result" '{phase:($phase|tonumber), repo:(if $repo == "" then "none" else $repo end),
     key:("p" + $phase + "-a" + $attempt), role:"final", round:1, state:"finished", session:$session,
     provider:$provider, verdict:$verdict}' --arg repo "$REPOSITORY" --arg provider "${CUR_ENGINE:-}" \
     --arg verdict "$verdict"

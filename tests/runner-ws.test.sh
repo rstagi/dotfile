@@ -126,6 +126,7 @@ loop_attempt ev-pass --verify-cmd true
 assert_exit "$RC" 0 "a verified attempt exits 0"
 assert_eq "$(jq -c '[.[0], .[1], .[2], .[4], .[5], .[6], .[7]]' "$FAKE_WS_LOG")" '["event","loop.attempt","--body","--source","tool","--target","LOOP1"]' "the call appends loop.attempt as a tool to the loop session"
 assert_eq "$(attempt_body)" '{"n":7,"attempt":2,"session":"RUNNER1","state":"result","outcome":"done","verify":"pass"}' "the body has the result and verify pass"
+assert_eq "$(jq -c '.[8:]' "$FAKE_WS_LOG")" '["--key","loop.attempt:7:RUNNER1:result"]' "the attempt key names the type, the phase and the execution"
 loop_attempt ev-none
 assert_exit "$RC" 0 "an attempt without Verify exits 0"
 assert_eq "$(attempt_body | jq -r .verify)" none "no Verify records verify none"
@@ -174,6 +175,8 @@ assert_eq "$(jq -c '[.entries[] | select(.type == "loop.attempt") | .body | {n, 
 assert_eq "$(jq -c '[.entries[] | select(.type == "loop.review") | .body | {phase, state, verdict}]' "$TMP/loop-events.log.json")" \
   '[{"phase":4,"state":"finished","verdict":"APPROVE"}]' "the daemon records the review verdict"
 assert_eq "$(jq -c '[.entries[] | select(.type | startswith("loop.attempt", "loop.review")) | .body.source] | unique' "$TMP/loop-events.log.json")" '["tool"]' "both events have source tool"
+assert_eq "$(jq -c '[.entries[] | select(.type | startswith("loop.attempt", "loop.review")) | .body.event_key]' "$TMP/loop-events.log.json")" \
+  "[\"loop.attempt:4:${PARENT_SID}:result\",\"loop.review:4:${PARENT_SID}:result\"]" "the daemon stores both keys"
 unset FAKE_REVIEW_STATUS
 
 echo "runner: Rust daemon owns the runner session"
