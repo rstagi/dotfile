@@ -158,8 +158,10 @@ pub struct Event {
     /// Event type. It must start with loop.
     #[serde(rename = "type")]
     pub event_type: String,
-    /// JSON object with the event data.
+    /// JSON object with the event data. It must match the event type.
     pub body: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Who produced the event: tool or agent. The default is agent.
+    pub source: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

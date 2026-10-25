@@ -1,4 +1,5 @@
 //! Loop controls use the existing shell orchestrator and dashboard control files.
+//! A loop session holds the Loop state as events. It has no process.
 
 use std::{
     collections::BTreeMap,
@@ -9,11 +10,11 @@ use std::{
 use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use ws_core::ids::SessionId;
+use ws_core::{ids::SessionId, registry::Session};
 
 use crate::{
     api::{self, ApiError, SessionResponse, Store},
-    sessions::{Error, Result},
+    sessions::{Error, Result, Sessions},
 };
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -25,6 +26,7 @@ pub struct LoopRequest {
 
 pub(crate) fn router() -> Router<Store> {
     Router::new()
+        .route("/v1/loops/create", post(create))
         .route("/v1/loops/start", post(start))
         .route("/v1/loops/stop", post(stop))
 }
@@ -37,6 +39,67 @@ pub fn script_path(variable: &str, filename: &str) -> std::io::Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .ok_or_else(|| std::io::Error::other("Set HOME to locate the Loop scripts."))?;
     Ok(PathBuf::from(home).join("dotfile").join(filename))
+}
+
+/// Creates the session of kind `loop` for a loop directory, or returns the one that exists.
+async fn create(
+    State(store): State<Store>,
+    Json(request): Json<LoopRequest>,
+) -> std::result::Result<(axum::http::StatusCode, Json<SessionResponse>), ApiError> {
+    let (created, session) = api::call(store, move |sessions| {
+        sessions.record_call(
+            request.parent_session_id,
+            "loop.create",
+            request.loop_dir.to_str(),
+        )?;
+        sessions.create_loop_session(&request.loop_dir, request.parent_session_id)
+    })
+    .await?;
+    let status = if created {
+        axum::http::StatusCode::CREATED
+    } else {
+        axum::http::StatusCode::OK
+    };
+    Ok((status, Json(session.into())))
+}
+
+impl Sessions {
+    /// Returns `(true, session)` for a new loop session and `(false, session)` for the session
+    /// that already holds this canonical loop directory.
+    pub fn create_loop_session(
+        &mut self,
+        loop_dir: &Path,
+        parent_session_id: Option<SessionId>,
+    ) -> Result<(bool, Session)> {
+        if !loop_dir.is_absolute() {
+            return Err(Error::InvalidRequest(
+                "The loop directory must be absolute.",
+            ));
+        }
+        let directory = loop_dir.canonicalize()?;
+        if !directory.is_dir() {
+            return Err(Error::InvalidRequest(
+                "The loop directory is not a directory.",
+            ));
+        }
+        for session in self.registry.sessions()? {
+            if session.body["kind"] == "loop"
+                && session.body["loop_dir"].as_str() == directory.to_str()
+            {
+                return Ok((false, self.get_record(&session.id.to_string())?));
+            }
+        }
+        self.check_spawn_limits(parent_session_id)?;
+        let id = ws_core::ids::Ulid::new();
+        let alias = self.next_alias()?;
+        self.append(
+            id,
+            "session.created",
+            json!({"alias":alias,"name":null,"workspace_id":null,
+                "parent_session_id":parent_session_id,"kind":"loop","loop_dir":directory}),
+        )?;
+        Ok((true, self.get_record(&id.to_string())?))
+    }
 }
 
 async fn start(

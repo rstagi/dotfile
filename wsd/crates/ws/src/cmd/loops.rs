@@ -7,6 +7,13 @@ use crate::{Result, mcp::Control};
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Create the loop session of a loop directory. The session has no process.
+    Create {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Start a prepared Loop orchestrator as a headless session.
     Start {
         loop_dir: PathBuf,
@@ -23,6 +30,7 @@ pub enum Command {
 
 pub async fn run(socket: &Path, command: Command) -> Result<()> {
     let (tool, directory, json_output) = match command {
+        Command::Create { dir, json } => ("loop_create", dir, json),
         Command::Start { loop_dir, json } => ("loop_start", loop_dir, json),
         Command::Stop { loop_dir, json } => ("loop_stop", loop_dir, json),
     };
@@ -31,7 +39,7 @@ pub async fn run(socket: &Path, command: Command) -> Result<()> {
         .await?;
     if json_output {
         println!("{response}");
-    } else if tool == "loop_start" {
+    } else if tool != "loop_stop" {
         println!(
             "{}",
             response["id"]

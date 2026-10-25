@@ -370,13 +370,13 @@ mod tests {
         let (_, old) = request(
             &app,
             &format!("/v1/sessions/{first}/events"),
-            json!({"type":"loop.note"}),
+            json!({"type":"loop.note","body":{"text":"n"}}),
         )
         .await;
         let (_, ready) = request(
             &app,
             &format!("/v1/sessions/{second}/events"),
-            json!({"type":"loop.note"}),
+            json!({"type":"loop.note","body":{"text":"n"}}),
         )
         .await;
         let targets =
@@ -404,7 +404,7 @@ mod tests {
         let (_, new) = request(
             &app,
             &format!("/v1/sessions/{first}/events"),
-            json!({"type":"loop.note"}),
+            json!({"type":"loop.note","body":{"text":"n"}}),
         )
         .await;
         let (status, result) = request(&app, "/v1/wait", body).await;

@@ -32,6 +32,7 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
     assert_eq!(
         names,
         [
+            "loop_create",
             "loop_start",
             "loop_stop",
             "phase_spawn",
@@ -849,7 +850,7 @@ async fn event_and_log_tools_match_the_cli_and_record_the_caller() {
         "event",
         "loop.decision",
         "--body",
-        r#"{"reason":"from cli"}"#,
+        r#"{"topic":"t","default":1,"choice":2,"reason":"from cli"}"#,
     ]);
     assert_eq!(cli["body"]["caller"], server.parent);
     let rejected = server
@@ -923,10 +924,16 @@ async fn multiwait_matches_the_cli_and_filters_each_target_by_sequence() {
     let a = first["id"].as_str().unwrap();
     let b = second["id"].as_str().unwrap();
     let old = server
-        .call("session_event", json!({"target":a,"type":"loop.note"}))
+        .call(
+            "session_event",
+            json!({"target":a,"type":"loop.note","body":{"text":"n"}}),
+        )
         .await;
     server
-        .call("session_event", json!({"target":b,"type":"loop.note"}))
+        .call(
+            "session_event",
+            json!({"target":b,"type":"loop.note","body":{"text":"n"}}),
+        )
         .await;
     let targets = json!([{"target":a,"after_seq":old["seq"]},{"target":b,"after_seq":0}]);
     let result = server
@@ -965,7 +972,10 @@ async fn multiwait_matches_the_cli_and_filters_each_target_by_sequence() {
         .await;
     assert_eq!(error["error"]["code"], "wait_timeout");
     server
-        .call("session_event", json!({"target":a,"type":"loop.note"}))
+        .call(
+            "session_event",
+            json!({"target":a,"type":"loop.note","body":{"text":"n"}}),
+        )
         .await;
     let all = server
         .call(

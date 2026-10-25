@@ -46,7 +46,7 @@ impl Control {
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<Value> {
         match name {
-            "loop_start" | "loop_stop" => {
+            "loop_create" | "loop_start" | "loop_stop" => {
                 let mut request: Loop = serde_json::from_value(arguments)?;
                 request.loop_dir = std::env::current_dir()?.join(request.loop_dir);
                 let operation = name.strip_prefix("loop_").unwrap();
@@ -128,7 +128,7 @@ impl Control {
                 self.request(
                     Method::POST,
                     &format!("{}/events", self.session_path(&request.target)?),
-                    Some(json!({"type":request.event_type,"body":request.body})),
+                    Some(json!({"type":request.event_type,"body":request.body,"source":request.source})),
                 )
                 .await
             }
@@ -351,6 +351,10 @@ impl ServerHandler for Control {
 fn tools() -> Vec<Tool> {
     vec![
         tool::<Loop>(
+            "loop_create",
+            "Create the loop session of a loop directory. The session has no process. A second call for the same directory returns the same session.",
+        ),
+        tool::<Loop>(
             "loop_start",
             "Start a prepared Loop orchestrator as a headless session. The loop directory must contain state.json.",
         ),
@@ -391,7 +395,7 @@ fn tools() -> Vec<Tool> {
         ),
         tool::<Event>(
             "session_event",
-            "Append a loop.* event to a session log. Other event types are rejected. The entry records your session as the caller.",
+            "Append a loop.* event to a session log. Other event types are rejected. The body must match the event type. The entry records your session as the caller and the source (tool or agent).",
         ),
         tool::<Log>(
             "session_log",
