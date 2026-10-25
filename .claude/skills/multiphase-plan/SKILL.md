@@ -298,7 +298,7 @@ e.g. the user skipped it — ask it now, in one message.
 
 ### 5. Visual checkpoint (skipped in `light` mode)
 
-Show the plan to the user as a page and a short video. The user reads the page from top to
+Show the plan to the user as a page with a walkthrough. The user reads the page from top to
 bottom: the TL;DR with what you need from them, the Done when table, the phases, one
 before/after architecture diagram, the decision cards, and the rabbit holes.
 
@@ -320,19 +320,18 @@ planId first. Use the output directory `.loop/explainers/plan/`.
 - `rabbitHoles`: the `## Deferred / Not now` items and the scope limits, one line each.
 - Set `meta.planId` to the planId. Omit `meta.milestone`.
 - Write `.loop/explainers/plan/narration.json` beside `props.json`, as the skill tells you.
-  The narration explains the plan in 45 to 180 seconds from the same facts.
-- Render the page, the screenshots and the video with its voiceover, as the skill tells you.
-- Publish the page and the video as the skill tells you. The link goes to
-  `.loop/explainers/plan/link.txt`.
-- A failed explainer does not block the report. State the failure in the report. A failed
-  video does not block the page: publish the page without it and state the video failure.
+  The narration is the walkthrough commentary: one short text for each section, from the
+  same facts.
+- Render the page with its walkthrough, and the screenshots, as the skill tells you.
+- Publish the page as the skill tells you. The link goes to `.loop/explainers/plan/link.txt`.
+- A failed explainer does not block the report. State the failure in the report.
 
 ### 6. Report
 
 State the shape honestly — do not imply parallelism that isn't there. Fill every `<…>` in
 the templates below with the real captured value (planId, phase & lane counts) — never print
 a literal placeholder. The pickup/execute argument is the **planId** (or effort name). Add the
-step 5 page link and the video result, or the failure, on its own line after the first line. Omit that line
+step 5 page link, or the failure, on its own line after the first line. Omit that line
 for a `light` plan.
 
 **Single-lane (sequential) plan — the common case:**

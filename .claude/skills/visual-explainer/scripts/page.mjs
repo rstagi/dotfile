@@ -8,10 +8,9 @@ const NEAR_TITLE_CHARS = 60;
 // The characters that json() writes as \u escapes: the line and paragraph separators are U+2028 and U+2029.
 const JSON_UNSAFE = new RegExp(`[<>&'${String.fromCharCode(0x2028, 0x2029)}]`, "g");
 
-// renderPage(template, props, { video, stops }) -> the complete HTML page for validated props.
-// `video` is a checked relative MP4 path: the page then has a video drawer. `stops` is the tour
-// (narration.mjs tourStops), each { title, caption, nodes, overview }.
-export function renderPage(template, props, { video, stops }) {
+// renderPage(template, props, { stops }) -> the complete HTML page for validated props. `stops`
+// is the tour (narration.mjs tourStops), each { title, caption, nodes, overview }.
+export function renderPage(template, props, { stops }) {
   const graph = buildGraph(props);
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const kinds = MODE_KINDS[graph.mode].filter((kind) => graph.nodes.some((n) => n.kind === kind));
@@ -21,11 +20,9 @@ export function renderPage(template, props, { video, stops }) {
     DESCRIPTION: esc(props.meta.subtitle),
     EYEBROW: graph.mode === "plan" ? "Plan" : "Ship",
     KIND_STYLES: kindStyles(kinds),
-    VIDEO_BUTTON: video ? `<button type="button" class="btn" data-video aria-controls="video-panel" aria-expanded="false">Video</button>` : "",
     LEGEND: legend(graph, kinds),
     GRAPH: graphSvg(graph, byId),
-    OUTLINE: outline(graph, props, kinds, byId, video),
-    VIDEO: video ? videoDrawer(video) : "",
+    OUTLINE: outline(graph, props, kinds, byId),
     DATA: json(pageData(graph, kinds, stops)),
   });
 }
@@ -103,11 +100,10 @@ function legend(graph, kinds) {
 
 // ---- the outline ----
 
-function outline(graph, props, kinds, byId, video) {
+function outline(graph, props, kinds, byId) {
   const meta = props.meta;
   const chips = [meta.date, meta.planId, meta.milestone && `Milestone ${meta.milestone}`].filter(Boolean).map((c) => `<span class="chip">${esc(c)}</span>`);
   const links = (meta.links ?? []).map((l) => `<a class="chip chip-link" href="${href(l.url)}">${esc(l.label)}</a>`);
-  const videoLink = video ? [`<a class="chip chip-link needs-nojs" href="${esc(video)}">Video</a>`] : [];
   const sections = kinds.map((kind) => {
     const nodes = graph.nodes.filter((n) => n.kind === kind);
     return `<section class="o-kind" id="o-k-${kind}" data-kind="${kind}"><h2><i class="sw k-${kind}"></i>${esc(KINDS[kind].label)} <span class="count">${nodes.length}</span></h2>
@@ -116,7 +112,7 @@ ${nodes.map((n) => outlineNode(graph, n, byId)).join("")}</ol></section>`;
   }).join("\n");
   return `<section class="outline" id="outline" aria-label="Outline"><div class="wrap">
 <header class="o-head"><p class="eyebrow">${graph.mode === "plan" ? "Plan" : "Ship"}</p><h1>${esc(meta.title)}</h1>
-<p class="subtitle">${inline(meta.subtitle)}</p><div class="chips">${[...chips, ...links, ...videoLink].join("")}</div></header>
+<p class="subtitle">${inline(meta.subtitle)}</p><div class="chips">${[...chips, ...links].join("")}</div></header>
 ${sections}
 <footer class="o-foot">visual-explainer · ${esc(graph.mode)} · ${esc(meta.date)}</footer>
 </div></section>`;
@@ -164,14 +160,7 @@ function nearLink(node, label) {
   return `<a class="near-link k-${node.kind}" href="#node=${esc(node.id)}">${esc(text)}${label ? `<small>${esc(label)}</small>` : ""}</a>`;
 }
 
-// ---- video and data ----
-
-// The video sits in a drawer that the bar opens. It is not at the top of the page.
-function videoDrawer(src) {
-  return `<div class="drawer" id="video-panel" role="dialog" aria-label="Video" hidden><div class="d-head"><h2>Video</h2>`
-    + `<button type="button" class="icon-btn" data-video-close aria-label="Close the video">×</button></div>`
-    + `<video controls preload="metadata" playsinline src="${esc(src)}"><a href="${esc(src)}">Download the video</a></video></div>\n`;
-}
+// ---- data ----
 
 function pageData(graph, kinds, stops) {
   return {

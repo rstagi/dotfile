@@ -2,5 +2,4 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# The video test renders real MP4 files only when VE_VIDEO_E2E=1.
-exec node --test "$ROOT/tests/visual-explainer-graph.test.mjs" "$ROOT/tests/visual-explainer.test.mjs" "$ROOT/tests/visual-explainer-video.test.mjs" "$ROOT/tests/visual-explainer-explore.test.mjs"
+exec node --test "$ROOT/tests/visual-explainer-graph.test.mjs" "$ROOT/tests/visual-explainer.test.mjs" "$ROOT/tests/visual-explainer-narration.test.mjs" "$ROOT/tests/visual-explainer-explore.test.mjs"

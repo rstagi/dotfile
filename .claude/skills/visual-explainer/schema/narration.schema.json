@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "visual-explainer/narration.schema.json",
   "title": "visual-explainer narration, version 3",
-  "description": "The spoken text of the video, one entry for each scene. render-video.mjs also checks that each scene is a scene of the mode, appears once, follows the scene order of the mode (plan: intro, tldr, done-when, phases, architecture, decisions, rabbit-holes, outro; ship: intro, tldr, done-when, changes, findings, hand-test, rollback, outro), that intro is present, that each text has 10 to 90 words and all texts 80 to 450 words, and that the props have data for each scene. A scene that the narration omits is not in the video.",
+  "description": "The commentary of the report walkthrough, one entry for each step. render.mjs --narration also checks that each scene is a scene of the mode, appears once, follows the scene order of the mode (plan: intro, tldr, done-when, phases, architecture, decisions, rabbit-holes, outro; ship: intro, tldr, done-when, changes, findings, hand-test, rollback, outro), that intro is present, that each text has 10 to 90 words and all texts 80 to 450 words, and that the props have data for each scene. A scene that the narration omits is not in the walkthrough.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "mode", "scenes"],
@@ -20,9 +20,9 @@
         "properties": {
           "scene": {
             "enum": ["intro", "tldr", "done-when", "phases", "architecture", "decisions", "rabbit-holes", "changes", "findings", "hand-test", "rollback", "outro"],
-            "description": "The scene id. The mode limits the ids: see the description of the schema."
+            "description": "The scene id: the section that the step focuses. intro focuses the header, outro no section. The mode limits the ids: see the description of the schema."
           },
-          "text": { "type": "string", "minLength": 1, "maxLength": 900, "description": "The spoken text: 10 to 90 words." }
+          "text": { "type": "string", "minLength": 1, "maxLength": 900, "description": "The commentary of the step: 10 to 90 words." }
         }
       }
     }

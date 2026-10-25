@@ -219,7 +219,7 @@ assert_contains "$SKILL" 'A runner writes explainer
 assert_contains "$PROTOCOL" '### Milestone explainers' "protocol documents milestone explainers"
 assert_contains "$PROTOCOL" '`.loop/explainers/m<n>-ship/`' "ship output directory"
 assert_contains "$PROTOCOL" '`.loop/explainers/m<N>-plan/`' "plan output directory"
-assert_contains "$PROTOCOL" '--verify-cmd '"'"'node <RUNTIME_ROOT>/.claude/skills/visual-explainer/scripts/render-video.mjs --props <abs output dir>/props.json --narration <abs output dir>/narration.json --check'"'"'' "explainer runner verifies its props and narration"
+assert_contains "$PROTOCOL" '--verify-cmd '"'"'node <RUNTIME_ROOT>/.claude/skills/visual-explainer/scripts/render.mjs --props <abs output dir>/props.json --narration <abs output dir>/narration.json --check'"'"'' "explainer runner verifies its props and narration"
 assert_contains "$PROTOCOL" 'explainers/                # visual-explainer pages (never committed)' "layout lists explainers"
 assert_contains "$PROTOCOL" '<!-- loop-explainer:m<n>-ship -->' "gate PR body marker"
 

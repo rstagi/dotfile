@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// visual-explainer GitHub media: upload the screenshots, the preview GIF and the video of one run to
-// the orphan branch `explainer-media` of a GitHub repository, then print a Markdown block for a PR
-// review or comment. It uses the gh CLI and the git data API, so it needs no local clone.
+// visual-explainer GitHub media: upload the screenshots of one run to the orphan branch
+// `explainer-media` of a GitHub repository, then print a Markdown block for a PR review or
+// comment. It uses the gh CLI and the git data API, so it needs no local clone.
 //
 //   node gh-media.mjs --repo <owner/repo> --key <key> --dir <out> [--url <page url>] [--branch <name>] [--dry-run]
 //
 // <key> names the folder on the branch, for example `pr-27` or `m4-ship`: letters, digits, ".", "_"
-// and "-". <out> is the output directory of the run: props.json, shots/*.png, preview.gif, video.mp4.
+// and "-". <out> is the output directory of the run: props.json and shots/*.png.
 // --url links the header screenshot to the published page. --dry-run uploads nothing and prints the
 // block with the URLs that an upload would give.
 //
@@ -36,7 +36,7 @@ function main(argv) {
   const props = readJson(path.join(args.dir, "props.json"));
   const mode = props.mode === "plan" ? "plan" : "ship";
   const files = collectFiles(args.dir, mode);
-  if (!files.length) fail(`gh-media: no shots, preview.gif or video.mp4 in ${args.dir}`, 2);
+  if (!files.length) fail(`gh-media: no shots in ${args.dir}`, 2);
   if (!args.dryRun) upload(args, files);
   process.stdout.write(`${markdown(args, props, mode, files)}\n`);
 }
@@ -48,10 +48,6 @@ function collectFiles(dir, mode) {
   for (const id of [...OPEN_SHOTS[mode], ...MORE_SHOTS[mode]]) {
     const abs = path.join(shots, `${id}.png`);
     if (fs.existsSync(abs)) files.push({ name: `${id}.png`, abs, shot: id });
-  }
-  for (const name of ["preview.gif", "video.mp4"]) {
-    const abs = path.join(dir, name);
-    if (fs.existsSync(abs)) files.push({ name, abs });
   }
   for (const file of files) {
     if (fs.statSync(file.abs).size > MAX_FILE_BYTES) fail(`gh-media: ${file.abs} is larger than ${MAX_FILE_BYTES} bytes`, 2);
@@ -93,12 +89,6 @@ function markdown(args, props, mode, files) {
     if (!have.has(`${id}.png`)) continue;
     const img = `![${id}](${image(`${id}.png`)})`;
     lines.push(id === "header" && args.url ? `[${img}](${args.url})` : img, "");
-  }
-  if (have.has("video.mp4")) {
-    const label = "Narrated video";
-    lines.push(have.has("preview.gif")
-      ? `**${label}** (click to play): [![video preview](${image("preview.gif")})](${blob("video.mp4")})`
-      : `**${label}:** ${blob("video.mp4")}`, "");
   }
   const more = MORE_SHOTS[mode].filter((id) => have.has(`${id}.png`));
   if (more.length) {

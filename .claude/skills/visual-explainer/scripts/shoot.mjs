@@ -6,10 +6,8 @@
 //   node shoot.mjs --page <dir>/index.html --out <dir> [--chrome <bin>] [--width 1100] [--theme light|dark] [--scale 2]
 //
 // The script forces the theme (data-theme on <html> and the prefers-color-scheme media feature)
-// and hides the video player. Each element PNG is the element box plus 16 px on each side.
-// Chrome: --chrome, else $VE_CHROME (no fallback for either), else each chrome-headless-shell in the
-// Remotion cache of the video renderer, newest first, then Google Chrome in /Applications: a
-// candidate that does not open its DevTools port gives way to the next one.
+// and hides the walkthrough button. Each element PNG is the element box plus 16 px on each side.
+// Chrome: --chrome, else $VE_CHROME, else Google Chrome in /Applications.
 // Stdout: one absolute PNG path per line.
 // Exit: 0 ok · 2 usage · 3 no browser, or a browser failure.
 import { spawn } from "node:child_process";
@@ -25,8 +23,7 @@ const VIEW_HEIGHT = 900;
 const TIMEOUT_MS = 60_000;
 const PORT_TIMEOUT_MS = 15_000;
 const SYSTEM_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const HEADLESS_SHELL = "chrome-headless-shell";
-// The page script: theme, no video, every image decoded, then the boxes of the [data-shot] elements.
+// The page script: theme, shot mode, every image decoded, then the boxes of the [data-shot] elements.
 const PREPARE = (theme) => `(async () => {
   document.documentElement.setAttribute("data-theme", ${JSON.stringify(theme)});
   document.documentElement.classList.add("shot");
@@ -149,41 +146,11 @@ function parseArgs(argv) {
   return ok ? args : null;
 }
 
-// The Chrome binaries to try, in the discovery order. An explicit --chrome or $VE_CHROME is the
-// only candidate (none when the file does not exist). Otherwise: each chrome-headless-shell in the
-// Remotion cache, newest first, then Google Chrome.
+// The Chrome binary to try: --chrome, else $VE_CHROME, else Google Chrome. None when the file
+// does not exist.
 function chromeCandidates(flag) {
-  for (const candidate of [flag, process.env.VE_CHROME]) {
-    if (candidate) return fs.existsSync(candidate) ? [candidate] : [];
-  }
-  const cache = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "visual-explainer");
-  const shells = [];
-  for (const dir of safeList(cache).filter((d) => d.startsWith("video-"))) {
-    const root = path.join(cache, dir, "node_modules", ".remotion", HEADLESS_SHELL);
-    for (const file of walk(root, 3)) {
-      if (path.basename(file) === HEADLESS_SHELL) shells.push({ file, mtime: fs.statSync(file).mtimeMs });
-    }
-  }
-  shells.sort((a, b) => b.mtime - a.mtime);
-  return [...shells.map((s) => s.file), ...(fs.existsSync(SYSTEM_CHROME) ? [SYSTEM_CHROME] : [])];
-}
-
-function walk(dir, depth) {
-  if (depth < 0) return [];
-  return safeList(dir).flatMap((name) => {
-    const file = path.join(dir, name);
-    const stat = fs.statSync(file, { throwIfNoEntry: false });
-    if (!stat) return [];
-    return stat.isDirectory() ? walk(file, depth - 1) : [file];
-  });
-}
-
-function safeList(dir) {
-  try {
-    return fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
+  const candidate = flag || process.env.VE_CHROME || SYSTEM_CHROME;
+  return fs.existsSync(candidate) ? [candidate] : [];
 }
 
 // The DevTools port: Chrome prints "DevTools listening on ws://127.0.0.1:<port>/..." on stderr.

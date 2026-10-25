@@ -623,13 +623,16 @@ test("report escaping: props text in the new fields cannot inject markup", () =>
   }
 });
 
-test("report: --video adds the player right after the TL;DR", () => {
-  const r = render(shipProps(), { args: ["--video", "video.mp4"] });
+test("report: the walkthrough bar sits right after the TL;DR, and screenshots hide it", () => {
+  const narration = path.join(fs.mkdtempSync(path.join(TMP, "narration-")), "narration.json");
+  const text = Array.from({ length: 45 }, () => "word").join(" ");
+  fs.writeFileSync(narration, JSON.stringify({ version: 3, mode: "ship", scenes: [{ scene: "intro", text }, { scene: "outro", text }] }));
+  const r = render(shipProps(), { args: ["--narration", narration] });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.report, /<\/section>\n<section class="player" aria-label="Video"><h2>Watch the explainer<\/h2><video controls preload="metadata" playsinline src="video\.mp4">/);
-  assert.ok(r.report.indexOf('data-shot="tldr"') < r.report.indexOf('class="player"'));
-  assert.match(r.report, /\.shot \.player \{ display: none; \}/, "screenshots hide the player");
-  assert.ok(!render(shipProps()).report.includes('class="player"'));
+  assert.match(r.report, /<\/section>\n<p class="wt-bar"><button type="button" class="wt-start" data-walkthrough-start>Start the walkthrough<\/button><span class="wt-hint">2 steps/);
+  assert.ok(r.report.indexOf('data-shot="tldr"') < r.report.indexOf('class="wt-bar"'));
+  assert.match(r.report, /\.shot \.wt-bar \{ display: none; \}/, "screenshots hide the walkthrough bar");
+  assert.ok(!render(shipProps()).report.includes('class="wt-bar"'));
 });
 
 for (const mode of ["plan", "ship"]) {
@@ -763,29 +766,14 @@ test("shoot: one PNG for the page and one for each data-shot section, light and 
   }
 });
 
-test("shoot: a discovered browser that fails gives way to the next one; an explicit --chrome fails fast", { skip: chrome ? false : "no Chrome binary found" }, () => {
+test("shoot: an explicit --chrome that fails exits 3 at once", () => {
   const r = render(shipProps());
   assert.equal(r.status, 0, r.stderr);
-  const cache = path.join(r.dir, "xdg", "visual-explainer");
-  const shell = (name, target) => {
-    const dir = path.join(cache, name, "node_modules", ".remotion", "chrome-headless-shell", "mac-arm64", "chrome-headless-shell-mac-arm64");
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, "chrome-headless-shell");
-    if (target) fs.symlinkSync(target, file);
-    else fs.writeFileSync(file, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-    return file;
-  };
-  const good = shell("video-old", chrome);
-  const broken = shell("video-new", null);
-  const past = new Date(Date.now() - 3600_000);
-  fs.lutimesSync(good, past, past);
-  const env = { ...process.env, XDG_CACHE_HOME: path.join(r.dir, "xdg") };
-  delete env.VE_CHROME;
-  const res = spawnSync(process.execPath, [SHOOT, "--page", r.page, "--out", path.join(r.dir, "s"), "--scale", "1"], { encoding: "utf8", env, timeout: 90_000 });
-  assert.equal(res.status, 0, res.stderr);
-  const explicit = spawnSync(process.execPath, [SHOOT, "--page", r.page, "--out", path.join(r.dir, "s"), "--chrome", broken], { encoding: "utf8", env });
-  assert.equal(explicit.status, 3);
-  assert.match(explicit.stderr, /exited \(code 1\) before it opened the DevTools port/);
+  const broken = path.join(r.dir, "broken-chrome");
+  fs.writeFileSync(broken, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const res = spawnSync(process.execPath, [SHOOT, "--page", r.page, "--out", path.join(r.dir, "s"), "--chrome", broken], { encoding: "utf8" });
+  assert.equal(res.status, 3);
+  assert.match(res.stderr, /exited \(code 1\) before it opened the DevTools port/);
 });
 
 test("shoot: Chrome uses a mock keychain, so a sandbox HOME shows no keychain dialog", () => {
@@ -810,20 +798,6 @@ test("shoot: usage errors exit 2, a missing browser exits 3", () => {
 
 // The same discovery order as shoot.mjs, without the flag.
 function findChrome() {
-  if (process.env.VE_CHROME) return fs.existsSync(process.env.VE_CHROME) ? process.env.VE_CHROME : null;
-  const cache = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "visual-explainer");
-  const found = [];
-  const walk = (dir, depth) => {
-    let names = [];
-    try { names = fs.readdirSync(dir); } catch { return; }
-    for (const name of names) {
-      const file = path.join(dir, name);
-      if (name === "chrome-headless-shell" && fs.statSync(file).isFile()) found.push(file);
-      else if (depth > 0 && fs.statSync(file, { throwIfNoEntry: false })?.isDirectory()) walk(file, depth - 1);
-    }
-  };
-  for (const dir of (fs.existsSync(cache) ? fs.readdirSync(cache) : []).filter((d) => d.startsWith("video-"))) walk(path.join(cache, dir, "node_modules", ".remotion", "chrome-headless-shell"), 3);
-  if (found.length) return found[0];
-  const system = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  return fs.existsSync(system) ? system : null;
+  const candidate = process.env.VE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  return fs.existsSync(candidate) ? candidate : null;
 }

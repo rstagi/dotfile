@@ -154,7 +154,7 @@ What makes a comment land:
 - **Quote their own docs and ADRs back.** The strongest findings are where the code contradicts a contract the author wrote.
 - Strip an em-dash out of a quoted error string rather than reproducing it; truncate with `...` instead.
 
-## Step 4: Visual checkpoint (`visual-explainer` ship page, screenshots and video)
+## Step 4: Visual checkpoint (`visual-explainer` ship page, walkthrough and screenshots)
 
 Make the visual review after the written report and before the post. The user reads this page to understand the PR: the verdict and the TL;DR, the Done when table, the changes in reading order, the findings by severity, the hand test and the rollback. Do this step also when you post nothing to GitHub. It does not change the review behavior above.
 
@@ -163,12 +163,10 @@ Make the visual review after the written report and before the post. The user re
 ```
 pr-review-output/<repo>-<pr>/
   props.json     # the ship props that you write
-  narration.json # the voiceover text that you write
-  index.html     # the report page that visual-explainer renders
+  narration.json # the walkthrough commentary that you write
+  index.html     # the report page with its walkthrough, rendered by visual-explainer
   graph.html     # the concept graph of the same props
   shots/*.png    # the screenshots of the page sections
-  video.mp4      # the narrated explainer video
-  preview.gif    # the short preview of the video
   link.txt       # the artifact URL or the absolute path of index.html
 ```
 
@@ -193,9 +191,9 @@ Run the `visual-explainer` skill in `ship` mode with this output directory. Writ
 
 Use the writing rules of the report: be concise, and use no em-dashes or en-dashes.
 
-**Video.** Write `narration.json` as the skill tells you. The narration explains what the PR does, how it does it, the findings and the hand test in 45 to 180 seconds. It does not read the page aloud. The skill renders the page, the screenshots, the video and the preview. Do not build a Remotion project by hand. When `ffprobe` is available, check that the video has an audio stream. When the video fails, keep the page without the video.
+**Walkthrough.** Write `narration.json` as the skill tells you. It is the commentary of the page walkthrough: one short text for each section. It explains what the PR does, how it does it, the findings and the hand test. It does not repeat the page. The skill renders the page with the walkthrough, and the screenshots.
 
-**Checkpoint.** Publish the page as the skill tells you. Then show the user the page link, the video result and the review preview of the next section in one message. Wait for the approval before you post. When the render fails, keep the written report, state the failure and continue to the post.
+**Checkpoint.** Publish the page as the skill tells you. Then show the user the page link, the walkthrough result and the review preview of the next section in one message. Wait for the approval before you post. When the render fails, keep the written report, state the failure and continue to the post.
 
 ## Posting to GitHub
 
@@ -210,13 +208,13 @@ The overall review body must be concise and contain:
 - the media block of Step 4, when the page rendered,
 - and `:)` as its final characters.
 
-**Media block.** Upload the screenshots, the preview and the video of Step 4 to the `explainer-media` branch of the repository, and get the Markdown block:
+**Media block.** Upload the screenshots of Step 4 to the `explainer-media` branch of the repository, and get the Markdown block:
 
 ```bash
 node <visual-explainer>/scripts/gh-media.mjs --repo <owner>/<repo> --key pr-<n> --dir pr-review-output/<repo>-<pr> --url "$(cat pr-review-output/<repo>-<pr>/link.txt)"
 ```
 
-`<visual-explainer>` is the directory of the `visual-explainer` skill. For the preview, add `--dry-run`: the command uploads nothing and prints the same block. Upload only after the approval. Put the printed block in the review body before `:)`. Omit `--url` when `link.txt` holds a local path. The block shows the header and the TL;DR screenshots, the video preview with a link to the video, and the other sections in a collapsed list. When the command fails, post the review without the block and state the failure.
+`<visual-explainer>` is the directory of the `visual-explainer` skill. For the preview, add `--dry-run`: the command uploads nothing and prints the same block. Upload only after the approval. Put the printed block in the review body before `:)`. Omit `--url` when `link.txt` holds a local path. The block shows the header and the TL;DR screenshots, and the other sections in a collapsed list. The header screenshot links to the page. When the command fails, post the review without the block and state the failure.
 
 **Always show a preview and wait for approval before posting.** Step 4 is that checkpoint. Print the review body, then each comment with its `path:line`. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
 
