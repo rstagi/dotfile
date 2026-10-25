@@ -1115,7 +1115,7 @@ no phase events.
 ```sh
 nohup "$RUNTIME_ROOT/loop-runner.sh" --worktree <integration worktree of the first participant> \
   --run-dir <abs .loop/runs/converge-p<N>-a<k>> --prompt-file <run dir>/prompt.md \
-  --chain task --timeout 900 \
+  --chain task --timeout 1800 \
   --verify-cmd 'tail -n 1 <abs .loop>/converge/p<N>.md | grep -Eq "^Verdict: (converged|gaps)$"' \
   > <run dir>/spawn.log 2>&1 &
 echo $! > <run dir>/pid; disown
