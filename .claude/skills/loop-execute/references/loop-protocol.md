@@ -1052,6 +1052,13 @@ RULES: never push; never open PRs; plan state only through the pickup/handoff au
 this worktree. Commit per logical step with descriptive messages. Follow the repo's
 CLAUDE.md conventions (TDD where it applies).
 
+TESTS: while you work, run only the tests that cover your change (one test file, one test
+target or one test filter). Before you finish, run the fast static checks of the repository
+one time (for example the formatter and the linter). Do not run the full test suite or
+`<verify cmd>`. The runner runs `<verify cmd>` one time after you finish. A failure gives a
+new attempt with the Verify log. Run each test command one time. Write its output to a file
+and read the file. Do not run the same tests again only to count results or show failures.
+
 PHASE (from the shared plan):
 <verbatim phase block: title, Depends on, Touches, Done when, Verify, Notes>
 
@@ -1067,7 +1074,7 @@ minutes, prepare a status. If unfinished, write `status.json` with outcome "ques
 `checkpoint:true`, concise progress, and one question for the orchestrator, then exit.
 The orchestrator answers in a fresh attempt without stopping other lanes.
 
-WHEN FINISHED (Done when holds and `<verify cmd>` passes locally): run
+WHEN FINISHED (Done when holds and your targeted tests pass): run
 `$loop-handoff --auto phase:<N> status:in-progress lane:<X> engine:<engine>` (comment:
 implementation complete, awaiting merge — "done" is the orchestrator's post-merge call),
 then write RUN_DIR/status.json exactly per this schema <schema> and end the session. If
@@ -1370,10 +1377,17 @@ never substituted. The PR final-post workflow does not apply to plan review.
 ## Merge policy (loop-merge.sh, serialized — one merge at a time)
 
 Entry requires the persisted merge-risk disposition described above. This adds focus and
-observability only: serialized merge and merged-tree Verify remain unconditional.
+observability only: serialized merge and the merged-tree Verify gate remain unconditional.
 
-`loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --repository <owner/repo> --verify-cmd '<repository verify>'`
+`loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --repository <owner/repo> --verify-cmd '<repository verify>' --verified-record <runDir>/verified.json`
 (the script refuses to push unverified without an explicit `--no-verify`):
+
+- A runner writes `<runDir>/verified.json` (`{tree, verify}`) when its Verify passed on a clean
+  worktree. Pass the record of the merged attempt. When the merge commit has that tree and the
+  Verify command is the same, `loop-merge.sh` does not run the Verify again: the same command
+  already passed on the same tree. This is the normal case for a lane cut from the current
+  integration tip. Any other tree or command runs the Verify. A phase-level `Verify:` differs
+  from the repository Verify, so its merge always runs the repository Verify.
 
 - **0** — merged, verified, pushed (also idempotent `{"already":true}` for a re-merge).
 - **2** — textual conflict, merge left in progress, `{"conflicts":[files]}` on stdout.
@@ -1399,7 +1413,13 @@ that integration branch); later repository merges just push. Only the orchestrat
 integration branches, with two orchestrator-delegate exceptions: the **merge-runner** finishes
 a serialized merge, and the **remediation coordinator** pushes its verified review fixes.
 Neither is a phase runner. Plain `git push` is fast-forward only, never force. Lane branches
-never get pushed. Cleanup order: switch or
+never get pushed. **Build caches.** A lane worktree keeps its build caches between phases: a lane in the same
+repository always continues in its worktree (`git -C <wt> switch -c <next-branch> <integration>`),
+never in a new directory. Before the first runner of a new lane worktree, clone each
+`Build caches:` path of the repository from the integration worktree:
+`cp -c -R <int-wt>/<path> <lane-wt>/<path>` (an APFS clone: seconds, no extra disk until a
+file changes). Skip a path that exists in the lane or is missing in the integration worktree.
+A failed clone is not an error. Cleanup order: switch or
 remove the lane worktree **first**, then `git branch -d <lane-branch>` (a branch checked out in
 a worktree can't be deleted); a lane continuing to its next phase reuses its worktree via
 `git -C <wt> switch -c <next-branch> <integration>`. Lanes launched later cut from the new
