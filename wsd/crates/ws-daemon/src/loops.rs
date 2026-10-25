@@ -21,6 +21,9 @@ use crate::{
     sessions::{Error, Result, Sessions},
 };
 
+/// The phase statuses from lowest to highest. The Loop fold never lowers a status.
+const PHASE_RANKS: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoopRequest {
@@ -207,6 +210,60 @@ impl Sessions {
         Ok(())
     }
 
+    /// Appends the `loop.phase` events that a Loop fact causes. A status never lowers.
+    /// The caller holds the store lock, so the cause and its effect share one operation.
+    pub(crate) fn derive_phase_status(&mut self, id: SessionId, entry: &LogEntry) -> Result<()> {
+        if !["loop.attempt", "loop.review", "loop.merge"].contains(&entry.event_type.as_str()) {
+            return Ok(());
+        }
+        let session = self.get_record(&id.to_string())?;
+        let state = self.loop_state(&session)?;
+        let Some((n, status)) = derived_status(&state, &entry.event_type, &entry.body) else {
+            return Ok(());
+        };
+        let attempt = entry.body["attempt"].as_u64();
+        let session_id = entry.body["session"].as_str();
+        let body = json!({"n":n,"status":status,"attempt":attempt,"session":session_id});
+        self.append_daemon_loop_event(
+            &id.to_string(),
+            "loop.phase",
+            body.as_object().unwrap().clone(),
+        )?;
+        Ok(())
+    }
+
+    /// Repairs a crash between a Loop fact and the phase status that it causes.
+    pub(crate) fn recover_phase_statuses(&mut self) -> Result<()> {
+        for session in self.registry.sessions()? {
+            if session.body["kind"] != "loop" {
+                continue;
+            }
+            let entries = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id)
+                .read()?
+                .entries;
+            for entry in entries {
+                self.derive_phase_status(session.id, &entry)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a child of a phase from a later milestone while a merge gate is open.
+    pub(crate) fn check_milestone_gate(&self, loop_id: SessionId, phase: u64) -> Result<()> {
+        let session = self.get_record(&loop_id.to_string())?;
+        let state = self.loop_state(&session)?;
+        let Some(open) = open_merge_gate(&state) else {
+            return Ok(());
+        };
+        if state["phases"][phase.to_string()]["milestone"]
+            .as_u64()
+            .is_some_and(|milestone| milestone > open)
+        {
+            return Err(Error::MilestoneGateOpen);
+        }
+        Ok(())
+    }
+
     fn loop_state(&self, session: &Session) -> Result<Value> {
         let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
         Ok(fold_loop(session, log.entries))
@@ -248,6 +305,69 @@ impl Sessions {
         )?;
         Ok((true, self.get_record(&id.to_string())?))
     }
+}
+
+/// Returns the phase and the status that a Loop fact implies, if that status is higher.
+fn derived_status(state: &Value, kind: &str, body: &Value) -> Option<(u64, &'static str)> {
+    let (n, status) = match kind {
+        "loop.attempt" => {
+            let n = body["n"].as_u64()?;
+            match body["state"].as_str()? {
+                "started" => (n, "running"),
+                "result"
+                    if body["outcome"] == "done"
+                        && ["pass", "none"].iter().any(|v| body["verify"] == *v)
+                        && state["phases"][n.to_string()]["kind"] == "work" =>
+                {
+                    (n, "done")
+                }
+                _ => return None,
+            }
+        }
+        "loop.merge" if body["verify"] == "pass" => (body["n"].as_u64()?, "merged"),
+        "loop.review" => {
+            let n = body["phase"].as_u64()?;
+            match body["state"].as_str()? {
+                "started" => (n, "running"),
+                "finished" if body["role"] == "final" && review_complete(state, n) => (n, "done"),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let rank = |status: &Value| PHASE_RANKS.iter().position(|s| status == *s).unwrap_or(0);
+    let current = rank(&state["phases"][n.to_string()]["status"]);
+    (PHASE_RANKS.iter().position(|s| *s == status)? > current).then_some((n, status))
+}
+
+/// A review phase is complete when each repository of its work phases has a final record.
+fn review_complete(state: &Value, review: u64) -> bool {
+    let phases = &state["phases"];
+    if phases[review.to_string()]["kind"] != "review" {
+        return false;
+    }
+    let repos: std::collections::BTreeSet<&str> = phases[review.to_string()]["depends_on"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .map(|dependency| &phases[dependency.to_string()])
+        .filter(|dependency| dependency["kind"] == "work")
+        .map(|dependency| dependency["repo"].as_str().unwrap_or("none"))
+        .collect();
+    !repos.is_empty()
+        && repos.iter().all(|repo| {
+            state["reviews"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|record| {
+                    record["phase"] == review
+                        && record["role"] == "final"
+                        && record["state"] == "finished"
+                        && record["repo"] == *repo
+                })
+        })
 }
 
 fn execution_event(
@@ -452,7 +572,7 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
     let mut state = json!({
         "id":session.id, "alias":session.alias, "loop_dir":session.body["loop_dir"],
         "status":"planned", "plan":null, "phases":{}, "milestone":null,
-        "attempts":[], "merges":[], "gates":[], "reviews":[], "notes":[],
+        "merge_gates":{}, "attempts":[], "merges":[], "gates":[], "reviews":[], "notes":[],
         "decisions":[], "controls":[], "guards":[], "violations":[], "finish":null
     });
     for entry in entries {
@@ -498,11 +618,30 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
                         _ => {}
                     }
                 }
+                if kind == "loop.gate"
+                    && body["kind"] == "merge"
+                    && let Some(milestone) = body["milestone"].as_u64()
+                {
+                    state["merge_gates"][milestone.to_string()] = body["state"].clone();
+                }
                 state[field].as_array_mut().unwrap().push(body);
             }
         }
     }
+    if state["status"] == "active" && open_merge_gate(&state).is_some() {
+        state["status"] = json!("awaiting-merge");
+    }
     state
+}
+
+/// Returns the lowest milestone whose merge gate is open.
+fn open_merge_gate(state: &Value) -> Option<u64> {
+    state["merge_gates"]
+        .as_object()?
+        .iter()
+        .filter(|(_, gate)| *gate == "open")
+        .filter_map(|(milestone, _)| milestone.parse().ok())
+        .min()
 }
 
 fn promote_phase(phases: &mut Value, incoming: &Value) {
@@ -510,9 +649,8 @@ fn promote_phase(phases: &mut Value, incoming: &Value) {
         return;
     };
     let key = n.to_string();
-    let ranks = ["todo", "claimed", "running", "done", "merged"];
     let rank = |phase: &Value| {
-        ranks
+        PHASE_RANKS
             .iter()
             .position(|status| phase["status"] == *status)
             .unwrap_or(0)
@@ -526,7 +664,7 @@ fn promote_phase(phases: &mut Value, incoming: &Value) {
     }
     if let Some(fields) = incoming.as_object() {
         for (name, value) in fields {
-            if name != "status" || ranks.iter().any(|status| value == status) {
+            if name != "status" || PHASE_RANKS.iter().any(|status| value == status) {
                 current[name] = value.clone();
             }
         }
@@ -647,7 +785,8 @@ mod tests {
             ("loop.plan", json!({"text":"# Plan", "sha":"abc"})),
             (
                 "loop.phases",
-                json!({"phases":[{"n":1,"title":"Build", "status":"todo"}]}),
+                json!({"phases":[{"n":1,"title":"Build","kind":"work","output":"pr","milestone":1,
+                    "gate":null,"repo":null,"branch":null,"depends_on":[],"status":"todo"}]}),
             ),
             (
                 "loop.phase",
@@ -671,7 +810,8 @@ mod tests {
             ),
             (
                 "loop.phases",
-                json!({"phases":[{"n":1,"title":"Build", "status":"todo"}]}),
+                json!({"phases":[{"n":1,"title":"Build","kind":"work","output":"pr","milestone":1,
+                    "gate":null,"repo":null,"branch":null,"depends_on":[],"status":"todo"}]}),
             ),
             ("loop.milestone", json!({"milestone":5})),
             ("loop.note", json!({"text":"Ready"})),
@@ -808,6 +948,284 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    fn phase(n: u64, kind: &str, repo: Value, milestone: u64, depends_on: Value) -> Value {
+        json!({"n":n,"title":format!("P{n}"),"kind":kind,"output":"pr","milestone":milestone,
+            "gate":null,"repo":repo,"branch":null,"depends_on":depends_on,"status":"todo"})
+    }
+
+    async fn post(app: &Router, id: &str, kind: &str, body: Value) -> StatusCode {
+        request(
+            app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":kind,"body":body}),
+        )
+        .await
+        .0
+    }
+
+    async fn loop_session(app: &Router, dir: &std::path::Path) -> (String, String) {
+        let (_, created) = request(app, "POST", "/v1/loops/create", json!({"loop_dir":dir})).await;
+        let id = created["id"].as_str().unwrap().to_owned();
+        (id.clone(), format!("/v1/loops/{id}"))
+    }
+
+    fn attempt(n: u64, state: &str, extra: Value) -> Value {
+        let mut body = json!({"n":n,"attempt":1,"session":"child","state":state});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    }
+
+    fn final_review(phase: u64, repo: &str) -> Value {
+        json!({"phase":phase,"repo":repo,"key":format!("f-{repo}"),"role":"final","round":1,
+            "state":"finished","session":"s","provider":"claude","verdict":"APPROVE"})
+    }
+
+    #[tokio::test]
+    async fn loop_phases_and_milestone_bodies_are_checked() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, _) = loop_session(&app, sandbox.path()).await;
+        let good = phase(1, "work", Value::Null, 1, json!([]));
+        assert_eq!(
+            post(&app, &id, "loop.phases", json!({"phases":[good.clone()]})).await,
+            StatusCode::CREATED
+        );
+        for (field, value) in [
+            ("n", json!("1")),
+            ("title", json!("")),
+            ("kind", json!("merge")),
+            ("output", json!("video")),
+            ("milestone", json!("1")),
+            ("gate", json!("park")),
+            ("repo", json!(7)),
+            ("branch", json!(7)),
+            ("depends_on", json!(["a"])),
+            ("status", json!("finished")),
+        ] {
+            let mut bad = good.clone();
+            bad[field] = value;
+            assert_eq!(
+                post(&app, &id, "loop.phases", json!({"phases":[bad]})).await,
+                StatusCode::BAD_REQUEST,
+                "{field}"
+            );
+        }
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove("depends_on");
+        assert_eq!(
+            post(&app, &id, "loop.phases", json!({"phases":[missing]})).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(&app, &id, "loop.milestone", json!({"milestone":"2"})).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(&app, &id, "loop.milestone", json!({"milestone":2})).await,
+            StatusCode::CREATED
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_gate_bodies_are_checked_by_kind() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, _) = loop_session(&app, sandbox.path()).await;
+        for body in [
+            json!({"kind":"merge","state":"open","milestone":1,"prs":[]}),
+            json!({"kind":"merge","state":"merged","milestone":1,"prs":[]}),
+            json!({"kind":"accept","state":"open","milestone":1,"phase":4,"artifacts":[]}),
+            json!({"kind":"accept","state":"accepted","milestone":1,"phase":4,"artifacts":[]}),
+            json!({"kind":"accept","state":"rejected","milestone":1,"phase":4,"artifacts":[]}),
+        ] {
+            assert_eq!(
+                post(&app, &id, "loop.gate", body.clone()).await,
+                StatusCode::CREATED,
+                "{body}"
+            );
+        }
+        for body in [
+            json!({"kind":"merge","state":"open","prs":[]}),
+            json!({"kind":"merge","state":"accepted","milestone":1,"prs":[]}),
+            json!({"kind":"accept","state":"merged","milestone":1,"phase":4,"artifacts":[]}),
+            json!({"kind":"accept","state":"open","milestone":1,"artifacts":[]}),
+        ] {
+            assert_eq!(
+                post(&app, &id, "loop.gate", body.clone()).await,
+                StatusCode::BAD_REQUEST,
+                "{body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_daemon_derives_phase_statuses_from_attempts_merges_and_reviews() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        let phases = json!({"phases":[
+            phase(1, "work", json!("o/a"), 1, json!([])),
+            phase(2, "work", json!("o/b"), 1, json!([])),
+            phase(3, "work", Value::Null, 1, json!([])),
+            phase(4, "review", Value::Null, 1, json!([1, 2, 3])),
+        ]});
+        post(&app, &id, "loop.phases", phases).await;
+        let status = |state: &Value, n: u64| state["phases"][n.to_string()]["status"].clone();
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 1), "todo");
+
+        // A started attempt gives running, and a failed Verify gives no done.
+        post(&app, &id, "loop.attempt", attempt(1, "started", json!({}))).await;
+        let result = |verify: &str| attempt(1, "result", json!({"outcome":"done","verify":verify}));
+        post(&app, &id, "loop.attempt", result("fail")).await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 1), "running");
+        post(&app, &id, "loop.attempt", result("pass")).await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 1), "done");
+        // An outcome other than done gives no status.
+        post(&app, &id, "loop.attempt", attempt(2, "started", json!({}))).await;
+        post(
+            &app,
+            &id,
+            "loop.attempt",
+            attempt(2, "result", json!({"outcome":"question","verify":"none"})),
+        )
+        .await;
+        // Verify none is enough for a phase without a repository.
+        post(
+            &app,
+            &id,
+            "loop.attempt",
+            attempt(3, "result", json!({"outcome":"done","verify":"none"})),
+        )
+        .await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 2), "running");
+        assert_eq!(status(&state, 3), "done");
+        // A stale started event and a later merge.
+        post(&app, &id, "loop.attempt", attempt(1, "started", json!({}))).await;
+        post(
+            &app,
+            &id,
+            "loop.merge",
+            json!({"n":1,"repo":"o/a","head":"h","verify":"fail"}),
+        )
+        .await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 1), "done");
+        post(
+            &app,
+            &id,
+            "loop.merge",
+            json!({"n":1,"repo":"o/a","head":"h","verify":"pass"}),
+        )
+        .await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 1), "merged");
+
+        // A reviewer step and an attempt result of a review phase give no done.
+        let reviewer = json!({"phase":4,"repo":"o/a","key":"r","role":"review","round":1,
+            "state":"started","session":"s","provider":"gpt"});
+        post(&app, &id, "loop.review", reviewer).await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 4), "running");
+        post(
+            &app,
+            &id,
+            "loop.attempt",
+            attempt(4, "result", json!({"outcome":"done","verify":"pass"})),
+        )
+        .await;
+        // Two repositories (and the repository none) need one final record each.
+        post(&app, &id, "loop.review", final_review(4, "o/a")).await;
+        post(&app, &id, "loop.review", final_review(4, "o/b")).await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 4), "running");
+        post(&app, &id, "loop.review", final_review(4, "none")).await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status(&state, 4), "done");
+
+        // Every derived event has the daemon as source and raises the status.
+        let (_, log) = request(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{id}/log?type=loop.phase"),
+            Value::Null,
+        )
+        .await;
+        let derived = log["entries"].as_array().unwrap();
+        assert!(!derived.is_empty());
+        let mut last = std::collections::HashMap::new();
+        let ranks = ["todo", "claimed", "running", "done", "merged"];
+        for entry in derived.iter().filter(|e| e["type"] == "loop.phase") {
+            assert_eq!(entry["body"]["source"], "daemon");
+            let rank = ranks
+                .iter()
+                .position(|r| entry["body"]["status"] == *r)
+                .unwrap();
+            let previous = last.insert(entry["body"]["n"].as_u64().unwrap(), rank);
+            assert!(previous.is_none_or(|p| rank > p), "{entry}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_open_merge_gate_gives_awaiting_merge_and_refuses_later_milestone_spawns() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        post(
+            &app,
+            &id,
+            "loop.phases",
+            json!({"phases":[
+                phase(1, "work", Value::Null, 1, json!([])),
+                phase(2, "work", Value::Null, 2, json!([])),
+            ]}),
+        )
+        .await;
+        let spawn = |phase: u64, key: &str| {
+            json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),"key":key,
+                "loop":{"loop":id,"phase":phase,"attempt":1}})
+        };
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["status"], "active");
+        post(
+            &app,
+            &id,
+            "loop.gate",
+            json!({"kind":"merge","state":"open","milestone":1,"prs":[]}),
+        )
+        .await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["status"], "awaiting-merge");
+        let (status, error) = request(&app, "POST", "/v1/sessions", spawn(2, "k2")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        let (_, sessions) = request(&app, "GET", "/v1/sessions", Value::Null).await;
+        assert_eq!(sessions.as_array().unwrap().len(), 1, "{sessions}");
+        // The same milestone and a phase without a record still start.
+        let (status, body) = request(&app, "POST", "/v1/sessions", spawn(1, "k1")).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        // A continuation of the orchestrator has no loop object and still starts.
+        let plain = json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),"parent_session_id":id});
+        let (status, body) = request(&app, "POST", "/v1/sessions", plain).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        post(
+            &app,
+            &id,
+            "loop.gate",
+            json!({"kind":"merge","state":"merged","milestone":1,"prs":[]}),
+        )
+        .await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["status"], "active");
+        let (status, body) = request(&app, "POST", "/v1/sessions", spawn(2, "k2")).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
     }
 
     async fn request(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {

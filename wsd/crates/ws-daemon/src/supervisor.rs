@@ -571,6 +571,11 @@ impl Sessions {
             Some(key) => self.find_keyed(request.parent_session_id, key)?,
             None => None,
         };
+        if let (Some(child), Some(owner), None) =
+            (&loop_child, request.parent_session_id, &reserved)
+        {
+            self.check_milestone_gate(owner, child.phase)?;
+        }
         let id = reserved
             .as_ref()
             .map_or_else(Ulid::new, |session| session.id);

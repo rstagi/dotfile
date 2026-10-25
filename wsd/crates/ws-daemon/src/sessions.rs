@@ -28,7 +28,7 @@ pub struct Sessions {
     pub(crate) state: PathBuf,
     pub(crate) device_id: DeviceId,
     pub(crate) registry: Registry,
-    needs_rebuild: bool,
+    pub(crate) needs_rebuild: bool,
     pub(crate) spans: crate::spans::SharedSpans,
     writers: HashMap<SessionId, LogWriter>,
     pub(crate) headless_hooks: HashMap<SessionId, crate::hooks::HookState>,
@@ -60,6 +60,8 @@ pub enum Error {
     DependencyCycle(Vec<SessionId>),
     SpawnLimit(crate::limits::SpawnLimit),
     PendingMessages,
+    /// A merge gate of an earlier milestone is open, so the loop starts no later phase.
+    MilestoneGateOpen,
     WaitTimeout,
     ShuttingDown,
     Json(serde_json::Error),
@@ -301,6 +303,7 @@ impl Sessions {
             self.restore_triggers()?;
             self.recover_spans()?;
             self.recover_loop_executions()?;
+            self.recover_phase_statuses()?;
             self.usage = None;
             self.needs_rebuild = false;
         }
@@ -422,6 +425,9 @@ impl fmt::Display for Error {
             }
             Self::PendingMessages => formatter
                 .write_str("The session has pending messages. Process them before completion."),
+            Self::MilestoneGateOpen => formatter.write_str(
+                "A merge gate is open. Merge it and resume before you start a later milestone.",
+            ),
             Self::DependencyCycle(cycle) => write!(
                 formatter,
                 "Dependency cycle: {}.",
