@@ -241,6 +241,9 @@ impl Sessions {
             ancestor = parent_of(&self.get_record(&id.to_string())?);
         }
         if parent_of(&session) != parent {
+            if self.spawn_scope(parent)?.is_some() {
+                self.check_spawn_limits(parent)?;
+            }
             self.append(
                 session.id,
                 "session.reparented",
@@ -321,8 +324,9 @@ impl Sessions {
         &mut self,
         id: SessionId,
         event_type: &str,
-        body: serde_json::Value,
+        mut body: serde_json::Value,
     ) -> Result<ws_core::log::LogEntry> {
+        self.tag_loop_spawn(id, event_type, &mut body)?;
         let writer = self
             .writers
             .entry(id)
