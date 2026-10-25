@@ -329,6 +329,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loop_phase_records_daemon_start_and_exit_with_one_execution_key() {
+        let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+        let app = crate::api::router(crate::sessions::Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, owner) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir": sandbox.path()}),
+        )
+        .await;
+        let (status, child) = request(
+            &app,
+            "POST",
+            "/v1/phases/spawn",
+            json!({
+                "parent_session_id": owner["id"],
+                "phase": {"command": ["/bin/sh", "-c", "exit 7"]},
+                "repo": sandbox.path(), "base": "main", "caps_required": [], "max_runtime": 3600,
+                "loop": {"loop": owner["id"], "phase": 117, "attempt": 2},
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{child}");
+        let uri = format!("/v1/loops/{}", owner["id"].as_str().unwrap());
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        let started = &state["attempts"][0];
+        assert_eq!(started["state"], "started", "{state}");
+        assert_eq!(started["n"], 117);
+        assert_eq!(started["attempt"], 2);
+        assert_eq!(started["session"], child["id"]);
+        assert_eq!(started["source"], "daemon");
+        assert!(started["key"].as_str().is_some_and(|key| !key.is_empty()));
+        assert!(started.get("verdict").is_none());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let state = loop {
+            let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+            if state["attempts"].as_array().unwrap().len() == 2 {
+                break state;
+            }
+            assert!(Instant::now() < deadline, "The loop exit event is absent.");
+            tokio::task::yield_now().await;
+        };
+        let exited = &state["attempts"][1];
+        assert_eq!(exited["state"], "exited");
+        assert_eq!(exited["exit"], 7);
+        assert_eq!(exited["key"], started["key"]);
+        assert_eq!(exited["session"], child["id"]);
+        assert_eq!(exited["source"], "daemon");
+        assert!(exited.get("verdict").is_none());
+    }
+
+    #[tokio::test]
     async fn a_phase_with_a_loop_object_is_a_child_of_the_loop_and_records_the_actor() {
         let sandbox = tempfile::tempdir_in("/tmp").unwrap();
         let app = crate::api::router(crate::sessions::Sessions::open(sandbox.path(), 1).unwrap());

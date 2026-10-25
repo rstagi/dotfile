@@ -351,6 +351,12 @@ impl Sessions {
         self.changes.send_replace(());
         self.quota_requests.observe(id, event_type);
         self.trigger_events_pending |= ["done", "exit"].contains(&event_type);
+        // The child fact and its Loop event share the serialized store operation.
+        // Keep recovery enabled if the second durable append fails.
+        if let Err(error) = self.record_loop_execution(&entry) {
+            self.needs_rebuild = true;
+            return Err(error);
+        }
         Ok(entry)
     }
 

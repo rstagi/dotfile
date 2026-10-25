@@ -646,6 +646,8 @@ impl Sessions {
                 body["parent_session_id"] = json!(request.parent_session_id);
                 body["actor"] = json!(actor);
                 body["loop"] = json!(child);
+                // Phase spawns have no caller key, so their session ID names the execution.
+                body["key"] = json!(request.key.as_deref().unwrap_or(&id.to_string()));
             }
             // The reservation is durable before the process starts.
             self.append(id, "session.created", body)?;

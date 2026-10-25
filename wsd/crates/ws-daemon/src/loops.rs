@@ -128,6 +128,69 @@ async fn create(
 }
 
 impl Sessions {
+    /// Records execution facts while the caller still holds the session store lock.
+    pub(crate) fn record_loop_execution(&mut self, entry: &LogEntry) -> Result<()> {
+        let state = match entry.event_type.as_str() {
+            "session.created" => "started",
+            "exit" | "session.finished" | "session.failed" | crate::supervisor::PROCESS_EXITED => {
+                "exited"
+            }
+            _ => return Ok(()),
+        };
+        let created = if state == "started" {
+            entry.clone()
+        } else {
+            let Some(created) = self.registry.latest_event(entry.session_id, "session.created")? else {
+                return Ok(());
+            };
+            created
+        };
+        let Some(child) = created.body.get("loop").filter(|value| value.is_object()) else {
+            return Ok(());
+        };
+        if created.body["kind"] != "headless" {
+            return Ok(());
+        }
+        let Some(owner) = created.body["parent_session_id"].as_str() else {
+            return Ok(());
+        };
+        let owner = self.get_record(owner)?;
+        let session = entry.session_id.to_string();
+        let key = created.body["key"].as_str().unwrap_or(&session);
+        let review = child["role"].is_string();
+        let kind = if review { "loop.review" } else { "loop.attempt" };
+        let entries = ws_core::log::SessionLog::new(&self.state, owner.id, self.device_id)
+            .read()?
+            .entries;
+        if entries.iter().any(|entry| {
+            entry.event_type == kind
+                && entry.body["source"] == "daemon"
+                && entry.body["key"] == key
+                && entry.body["state"] == state
+        }) {
+            return Ok(());
+        }
+        let mut body = json!({
+            "attempt":child["attempt"], "key":key, "session":session, "state":state,
+        });
+        body[if review { "phase" } else { "n" }] = child["phase"].clone();
+        for field in ["repo", "role", "provider", "round", "inner"] {
+            if let Some(value) = child.get(field) {
+                body[field] = value.clone();
+            }
+        }
+        if !review && state == "exited" {
+            // A restart or a session completion can precede a known process status.
+            body["exit"] = json!(entry.body["code"].as_i64().unwrap_or(-1));
+        }
+        self.append_daemon_loop_event(
+            &owner.id.to_string(),
+            kind,
+            body.as_object().unwrap().clone(),
+        )?;
+        Ok(())
+    }
+
     fn loop_state(&self, session: &Session) -> Result<Value> {
         let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
         Ok(fold_loop(session, log.entries))
