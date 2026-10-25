@@ -279,6 +279,10 @@ impl Control {
             stdout: request.stdout.map(|path| directory.join(path)),
             stderr: request.stderr.map(|path| directory.join(path)),
             key: request.key,
+            loop_child: request
+                .loop_child
+                .map(|child| serde_json::from_value(serde_json::to_value(child)?).map(Box::new))
+                .transpose()?,
         })?;
         self.request(Method::POST, "/v1/sessions", Some(body)).await
     }
@@ -404,7 +408,7 @@ fn tools() -> Vec<Tool> {
         ),
         tool::<Spawn>(
             "phase_spawn",
-            "Start a local phase with a maximum runtime. WS_SESSION_ID identifies its parent.",
+            "Start a local phase with a maximum runtime. WS_SESSION_ID identifies its parent. With loop, the loop session is the parent and WS_SESSION_ID is the actor.",
         ),
         tool::<Target>(
             "session_output",

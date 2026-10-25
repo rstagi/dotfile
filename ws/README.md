@@ -415,6 +415,7 @@ MCP `session_create` also accepts `scratch: true`, or `repo` with optional `bran
 `repo` with `branch` calls `POST /v1/workspaces`. A git `repo` requires `branch`. A non-git `repo` starts a directory session.
 `agent` (`claude`, `codex` or `grok`, default `claude`) and `prompt` (first message) apply to interactive starts.
 Use only one of `cwd`, `scratch`, `repo` or `workspace_id`. The caller becomes the parent. The result is the session record.
+A headless create and `phase_spawn` accept an optional `loop` object: `{loop, phase, attempt}` for a phase attempt, or `{loop, phase, repo, role, provider, round, inner, attempt}` for a review step. The CLI flags are `--loop <id> --phase <n> --attempt <n>`, plus `--repo --role --provider --round --inner` for a review step. With the object, the loop session is the parent and the key namespace. The daemon records the caller as `actor` in `session.created`. The new process gets `WS_LOOP_ID`, `WS_LOOP_PHASE` and `WS_LOOP_ATTEMPT`. Without the object, the caller is the parent.
 MCP `session_rename` takes `{"name":"<name>"}` and renames the caller session only.
 
 `ws session output <target>` reads the published `output.md` text. It prints the text without adding a newline.

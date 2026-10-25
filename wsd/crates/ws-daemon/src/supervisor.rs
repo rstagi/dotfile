@@ -28,6 +28,7 @@ use ws_core::{
 use crate::{
     agents::{self, AgentSession, Mode},
     api::{self, ApiError, Store},
+    loops::LoopChild,
     sessions::{Error, Result, Sessions},
 };
 
@@ -51,6 +52,9 @@ pub struct CreateHeadless {
     /// Names one execution under the parent. A repeated key returns the first session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Makes the loop session the parent and the key namespace. The caller becomes the actor.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_child: Option<Box<LoopChild>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -489,6 +493,28 @@ impl Sessions {
         Ok(running.is_none_or(|running| exit.seq > running.seq))
     }
 
+    fn loop_session(&self, child: &LoopChild) -> Result<SessionId> {
+        let review = [
+            child.repo.is_some(),
+            child.role.is_some(),
+            child.provider.is_some(),
+            child.round.is_some(),
+            child.inner.is_some(),
+        ];
+        if review.contains(&true) && review.contains(&false) {
+            return Err(Error::InvalidRequest(
+                "Set repo, role, provider, round and inner together, or none of them.",
+            ));
+        }
+        let session = self.get_record(&child.loop_id)?;
+        if session.body["kind"] != "loop" {
+            return Err(Error::InvalidRequest(
+                "The loop object must name a loop session.",
+            ));
+        }
+        Ok(session.id)
+    }
+
     /// Finds the session that holds a key under the parent.
     fn find_keyed(&self, parent: Option<SessionId>, key: &str) -> Result<Option<Session>> {
         let parent = parent.map(|parent| parent.to_string());
@@ -500,7 +526,7 @@ impl Sessions {
 
     fn spawn_headless(
         &mut self,
-        request: CreateHeadless,
+        mut request: CreateHeadless,
         metadata: serde_json::Value,
     ) -> Result<Launch> {
         if !request.headless || request.command.first().is_none_or(|s| s.is_empty()) {
@@ -535,6 +561,12 @@ impl Sessions {
                 "The working directory is not a directory.",
             ));
         }
+        // The caller stays the actor. The loop session becomes the parent and the key namespace.
+        let actor = request.parent_session_id;
+        let loop_child = request.loop_child.take();
+        if let Some(child) = &loop_child {
+            request.parent_session_id = Some(self.loop_session(child)?);
+        }
         let reserved = match &request.key {
             Some(key) => self.find_keyed(request.parent_session_id, key)?,
             None => None,
@@ -543,7 +575,7 @@ impl Sessions {
             .as_ref()
             .map_or_else(Ulid::new, |session| session.id);
         self.record_call(
-            request.parent_session_id,
+            actor,
             if metadata.get("phase").is_some() {
                 "phase.spawn"
             } else {
@@ -609,8 +641,20 @@ impl Sessions {
             if let Some(metadata) = metadata.as_object() {
                 body.as_object_mut().unwrap().extend(metadata.clone());
             }
+            if let Some(child) = &loop_child {
+                // The request metadata names the caller, so restore the loop as the parent.
+                body["parent_session_id"] = json!(request.parent_session_id);
+                body["actor"] = json!(actor);
+                body["loop"] = json!(child);
+            }
             // The reservation is durable before the process starts.
             self.append(id, "session.created", body)?;
+        }
+        if let Some(child) = &loop_child {
+            command
+                .env("WS_LOOP_ID", request.parent_session_id.unwrap().to_string())
+                .env("WS_LOOP_PHASE", child.phase.to_string())
+                .env("WS_LOOP_ATTEMPT", child.attempt.to_string());
         }
         command
             .current_dir(cwd)
@@ -624,11 +668,7 @@ impl Sessions {
         let child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                self.transition(
-                    &id.to_string(),
-                    SessionState::Failed,
-                    request.parent_session_id,
-                )?;
+                self.transition(&id.to_string(), SessionState::Failed, actor)?;
                 return Err(error.into());
             }
         };

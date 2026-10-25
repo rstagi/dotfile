@@ -10,7 +10,7 @@ use std::{
 use clap::{Args, Subcommand, ValueEnum};
 use hyper::Method;
 use tokio::signal::unix::{Signal, SignalKind, signal};
-use ws_daemon::supervisor::CreateHeadless;
+use ws_daemon::{loops::LoopChild, supervisor::CreateHeadless};
 
 use crate::{Result, client};
 
@@ -122,6 +122,23 @@ pub struct HeadlessArgs {
     /// Name one execution. The same key under the same parent returns the first session.
     #[arg(long)]
     key: Option<String>,
+    /// Make this loop session the parent and the key namespace. Requires --phase and --attempt.
+    #[arg(long = "loop", requires_all = ["phase", "attempt"])]
+    loop_id: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    phase: Option<u64>,
+    #[arg(long, requires = "loop_id")]
+    attempt: Option<u64>,
+    #[arg(long, requires = "loop_id")]
+    repo: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    role: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    provider: Option<String>,
+    #[arg(long, requires = "loop_id")]
+    round: Option<u64>,
+    #[arg(long, requires = "loop_id")]
+    inner: Option<u64>,
     #[arg(last = true)]
     command: Vec<String>,
 }
@@ -337,6 +354,19 @@ async fn create(
         stdout: arguments.stdout.map(absolute),
         stderr: arguments.stderr.map(absolute),
         key: arguments.key,
+        loop_child: match arguments.loop_id {
+            Some(loop_id) => Some(Box::new(LoopChild {
+                loop_id: client::session(socket, &loop_id).await?.id.to_string(),
+                phase: arguments.phase.ok_or("Set --phase with --loop.")?,
+                attempt: arguments.attempt.ok_or("Set --attempt with --loop.")?,
+                repo: arguments.repo,
+                role: arguments.role,
+                provider: arguments.provider,
+                round: arguments.round,
+                inner: arguments.inner,
+            })),
+            None => None,
+        },
     };
     let bytes = client::request(
         socket,
