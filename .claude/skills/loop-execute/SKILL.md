@@ -231,8 +231,12 @@ no phase running, and fewer runners are live than the concurrency cap (plan's
 **Concurrency**, else `LOOP_MAX_PARALLEL`). For each READY phase:
 
 1. Lane worktree on the Suggested branch, cut from the phase repository's **integration
-   tip**. Reuse it only when the prior lane phase used the same repository. On a repository
-   hop, remove the old worktree and create the next from the target repository tip.
+   tip**. When the prior lane phase used the same repository, always reuse its worktree
+   (`git -C <wt> switch -c <branch> <integration tip>`), never a new directory: the worktree
+   keeps its build caches. On a repository hop, remove the old worktree and create the next
+   from the target repository tip. Before the first runner of a new lane worktree, clone the
+   repository's `Build caches:` paths from the integration worktree with `cp -c -R`
+   (protocol § Merge policy → Build caches).
 2. Generate `runs/<phase-slug>-a<K>/prompt.md` from the protocol's skeleton — it opens
    with `loop-pickup --auto` (the runner claims its own phase) and closes with `loop-handoff --auto ... status:in-progress` +
    status.json. Include the verbatim phase block + plan Goal/decisions +
@@ -320,7 +324,8 @@ permit. Low risk, fallback, policy error, or low confidence cannot skip merge se
 
 Serialize merges globally (one at a time), targeting the phase repository.
 `loop-merge.sh --worktree <repo-int-wt> --lane-branch <b> --run-id <runId> --phase <N>
---repository <owner/repo> --verify-cmd '<repository verify>'` (inherits `LOOP_DAEMON_URL`;
+--repository <owner/repo> --verify-cmd '<repository verify>' --verified-record <runDir>/verified.json`
+(the merged attempt's record; the script does not run the same Verify again on the same tree) (inherits `LOOP_DAEMON_URL`;
 it emits `phase.merged` on rc 0, `merge.conflict` on a conflict and `merge.verify-fail` on exit 4):
 
 - **0** → run `loop-handoff --auto phase:<N> status:done lane:<X> engine:<engine>`

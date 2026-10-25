@@ -134,10 +134,15 @@ Author the plan in the **canonical plan format** (see
   label it low confidence and state the risk. A verification command that alone exceeds
   30 minutes, or work that cannot be split coherently, is an explicit exception to report,
   not a phase to label "30 min". Queue waits, retries, and the terminal review pipeline are
-  outside work-phase estimates and can make elapsed wall time longer.
+  outside work-phase estimates and can make elapsed wall time longer. A runner runs only
+  targeted tests while it works, and the runner Verify runs the full repository Verify one
+  time. Count that one full Verify in the estimate. A repository Verify that takes more than
+  about 10 minutes leaves too little time for the work: report it as a risk and propose a
+  faster Verify or `Build caches:`.
 - **Repositories** — resolve every touched checkout to its GitHub `owner/repo` slug from
   its `origin`; declare it under `## Repositories`, give it a mandatory repository-wide
-  `Verify:` command, and put `Repository:` on every work phase. One work phase belongs to one
+  `Verify:` command, and put `Repository:` on every work phase. Declare `Build caches:` for a
+  repository with a slow cold build (plan-format → Repositories). One work phase belongs to one
   repository; a lane may hop repositories. Store no checkout paths in the plan. Default the
   shared integration branch to the current checkout's branch when it is not the repository's
   default branch (loop-execute adopts it), else `<type>/<effort-slug>`; override per
