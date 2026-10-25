@@ -316,6 +316,52 @@ fn top_prefers_the_orchestrator_session_over_the_child_worktree() {
 }
 
 #[test]
+fn top_finds_the_loop_session_in_wsd_before_the_store_scan() {
+    let sandbox = Sandbox::new();
+    sandbox.dashboard();
+    let created = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let other = sandbox.home.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    let child = sandbox.request(
+        "/v1/sessions",
+        json!({"headless":true,"command":["/usr/bin/true"],"cwd":other,"parent_session_id":created["id"]}),
+    );
+    // A store record and a state.json link name a different loop. wsd wins.
+    fs::write(
+        sandbox.loop_dir.join("state.json"),
+        json!({"runId":"scanned-loop","wsSession":child["id"]}).to_string(),
+    )
+    .unwrap();
+    let store = sandbox.home.path().join(".loop/loops");
+    fs::create_dir_all(&store).unwrap();
+    fs::write(
+        store.join("scanned-loop.json"),
+        json!({"loopDir":sandbox.loop_dir}).to_string(),
+    )
+    .unwrap();
+    let output = common::ws(sandbox.home.path(), &sandbox.socket)
+        .current_dir(&other)
+        .args(["top", "--once"])
+        .env("WS_SESSION_ID", child["id"].as_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["args"], json!([created["id"], "--once"]));
+    assert_eq!(
+        result["cwd"],
+        sandbox
+            .loop_dir
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+}
+
+#[test]
 fn top_uses_the_session_worktree_and_preserves_the_dashboard_exit_code() {
     let sandbox = Sandbox::new();
     sandbox.dashboard();
