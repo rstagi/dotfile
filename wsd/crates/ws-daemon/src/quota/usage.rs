@@ -20,6 +20,7 @@ use crate::{
 };
 
 type WindowKey = (String, String, Option<String>, String);
+type BucketKey = (String, String, Option<String>);
 
 /// Account labels can change at a new login. A snapshot reads the login files at most this often.
 const LABEL_TTL_MS: u64 = 60_000;
@@ -28,6 +29,8 @@ const LABEL_TTL_MS: u64 = 60_000;
 #[derive(Debug, Default)]
 pub(crate) struct UsageIndex {
     windows: BTreeMap<WindowKey, Vec<LogEntry>>,
+    /// The newest observation time of a reported value per bucket. A pruned reading still counts.
+    reported: BTreeMap<BucketKey, u64>,
     labels: Option<(u64, Labels)>,
 }
 
@@ -159,10 +162,9 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
     Ok(Usage { windows })
 }
 
-/// Removes rows that only repeat or predate what the provider reports.
+/// Removes rows that only repeat what the provider reports.
 /// A row without a bucket is a fallback (a failed read or an old rollout). It goes when the
-/// provider names a bucket for the same account. An unknown row goes when a later report of the
-/// same account and bucket omits its window: the plan has no such window.
+/// provider names a bucket for the same account.
 fn collapse(windows: Vec<Window>) -> Vec<Window> {
     let account = |w: &Window| (w.runner.clone(), w.account_id.clone());
     let bucketed: std::collections::HashSet<_> = windows
@@ -170,25 +172,9 @@ fn collapse(windows: Vec<Window>) -> Vec<Window> {
         .filter(|w| w.bucket.is_some())
         .map(account)
         .collect();
-    let mut reported = BTreeMap::new();
-    for w in windows
-        .iter()
-        .filter(|w| w.remaining_ratio.is_some() && w.source == Some(Source::Reported))
-    {
-        let at = reported
-            .entry((account(w), w.bucket.clone()))
-            .or_insert(0_u64);
-        *at = (*at).max(w.observed_at_ms.unwrap_or(0));
-    }
     windows
         .into_iter()
         .filter(|w| w.bucket.is_some() || !bucketed.contains(&account(w)))
-        .filter(|w| {
-            w.status != "unknown"
-                || reported
-                    .get(&(account(w), w.bucket.clone()))
-                    .is_none_or(|at| *at <= w.observed_at_ms.unwrap_or(0))
-        })
         .collect()
 }
 
@@ -220,16 +206,23 @@ impl UsageIndex {
         ) else {
             return;
         };
-        let key = (
-            runner.into(),
-            account.into(),
+        let bucket = (
+            runner.to_owned(),
+            account.to_owned(),
             body[sc::RUNNER_USAGE_BUCKET].as_str().map(str::to_owned),
-            window.into(),
         );
+        if reports_value(entry) {
+            let at = self.reported.entry(bucket.clone()).or_default();
+            *at = (*at).max(order(entry).0);
+        }
+        let key = (bucket.0, bucket.1, bucket.2, window.into());
         self.windows.entry(key).or_default().push(entry.clone());
     }
 
     /// Selects the reading of each window. Drops readings that can never win again.
+    /// A window goes when a newer reported value of its bucket arrives without it: the provider
+    /// no longer lists that window. A live reported value stays, because the collector does not
+    /// repeat an unchanged reading.
     fn select(&mut self, now: u64) -> BTreeMap<WindowKey, LogEntry> {
         let mut latest = BTreeMap::new();
         for (key, entries) in &mut self.windows {
@@ -248,7 +241,14 @@ impl UsageIndex {
                     }
                 })
                 .unwrap();
-            latest.insert(key.clone(), entries[best].clone());
+            let (runner, account, bucket, _) = key;
+            let omitted = self
+                .reported
+                .get(&(runner.clone(), account.clone(), bucket.clone()))
+                .is_some_and(|at| *at > order(&entries[newest]).0);
+            if !omitted || (live_report(&entries[best], now) && reports_value(&entries[best])) {
+                latest.insert(key.clone(), entries[best].clone());
+            }
             // A report stops being live at its reset and never becomes live again.
             let mut index = 0;
             entries.retain(|entry| {
@@ -277,6 +277,11 @@ fn live_report(entry: &LogEntry, now: u64) -> bool {
         && entry.body[sc::RUNNER_USAGE_WINDOW_RESET]
             .as_u64()
             .is_none_or(|reset| reset > now)
+}
+
+fn reports_value(entry: &LogEntry) -> bool {
+    entry.body[sc::RUNNER_USAGE_SOURCE] == "reported"
+        && entry.body[sc::RUNNER_USAGE_REMAINING_RATIO].is_number()
 }
 
 fn order(entry: &LogEntry) -> (u64, bool, u64, u64) {
@@ -414,26 +419,44 @@ mod tests {
         assert_eq!(keys(&collapse(windows)), [(Some("codex"), "weekly")]);
     }
 
-    #[test]
-    fn collapse_drops_an_unknown_window_that_a_later_report_omits() {
-        let windows = vec![
-            window(Some("codex"), "five_hour", None, Source::Estimated, 10),
-            window(Some("codex"), "weekly", Some(0.92), Source::Reported, 20),
-            window(Some("review"), "weekly", None, Source::Estimated, 30),
-        ];
-        assert_eq!(
-            keys(&collapse(windows)),
-            [(Some("codex"), "weekly"), (Some("review"), "weekly")]
-        );
+    fn codex(name: &str, source: &str, at: u64, remaining: Option<f64>) -> LogEntry {
+        let mut entry = entry(json!({
+            (sc::RUNNER): "codex",
+            (sc::RUNNER_ACCOUNT_ID): "account-a",
+            (sc::RUNNER_USAGE_BUCKET): "codex",
+            (sc::RUNNER_USAGE_WINDOW): name,
+            (sc::RUNNER_USAGE_SOURCE): source,
+            (sc::RUNNER_USAGE_OBSERVED_AT): at,
+            (sc::RUNNER_USAGE_WINDOW_RESET): NOW + 60_000,
+        }));
+        if let Some(remaining) = remaining {
+            entry.body[sc::RUNNER_USAGE_REMAINING_RATIO] = remaining.into();
+        }
+        entry
+    }
+
+    fn selected(index: &mut UsageIndex) -> Vec<String> {
+        index.select(NOW).into_keys().map(|key| key.3).collect()
     }
 
     #[test]
-    fn collapse_keeps_unknown_windows_of_the_same_report() {
-        let windows = vec![
-            window(None, "five_hour", Some(0.75), Source::Reported, 10),
-            window(None, "other", None, Source::Estimated, 10),
-        ];
-        assert_eq!(collapse(windows).len(), 2);
+    fn select_drops_a_window_that_a_newer_report_of_the_bucket_omits() {
+        let mut index = UsageIndex::default();
+        // One collection lists both windows. The five-hour value is an estimate.
+        index.observe(&codex("weekly", "reported", 10, Some(0.9)));
+        index.observe(&codex("five_hour", "estimated", 11, None));
+        assert_eq!(selected(&mut index), ["five_hour", "weekly"]);
+        // The next collection lists only the weekly window.
+        index.observe(&codex("weekly", "reported", 20, Some(0.8)));
+        assert_eq!(selected(&mut index), ["weekly"]);
+    }
+
+    #[test]
+    fn select_keeps_an_unchanged_live_report_that_the_collector_did_not_repeat() {
+        let mut index = UsageIndex::default();
+        index.observe(&codex("five_hour", "reported", 10, Some(0.5)));
+        index.observe(&codex("weekly", "reported", 20, Some(0.8)));
+        assert_eq!(selected(&mut index), ["five_hour", "weekly"]);
     }
 
     #[test]
