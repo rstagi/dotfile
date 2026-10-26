@@ -789,6 +789,9 @@ async fn start(
     State(store): State<Store>,
     Json(request): Json<LoopRequest>,
 ) -> std::result::Result<(axum::http::StatusCode, Json<SessionResponse>), ApiError> {
+    if skills_engine(&request.loop_dir).map_err(ApiError)? {
+        return start_skills(store, request).await;
+    }
     let caller = request.parent_session_id;
     let (directory, run_id, script, _lock) = api::call(store.clone(), move |sessions| {
         sessions.record_call(caller, "loop.start", request.loop_dir.to_str())?;
@@ -884,6 +887,98 @@ async fn start(
         let _ = crate::supervisor::stop(store, id.to_string(), caller).await;
         return Err(error);
     }
+    Ok((axum::http::StatusCode::CREATED, Json(session.into())))
+}
+
+/// Reads the engine only from the canonical plan header.
+fn skills_engine(directory: &Path) -> Result<bool> {
+    if !directory.is_absolute() {
+        return Ok(false);
+    }
+    let plan = match fs::read_to_string(directory.join("plan.md")) {
+        Ok(plan) => plan,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut lines = plan.lines();
+    if lines.next().map(str::trim) != Some("<!-- loop-plan") {
+        return Ok(false);
+    }
+    Ok(lines
+        .take_while(|line| line.trim() != "-->")
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, value)| key.trim() == "engine" && value.trim() == "skills"))
+}
+
+async fn start_skills(
+    store: Store,
+    request: LoopRequest,
+) -> std::result::Result<(axum::http::StatusCode, Json<SessionResponse>), ApiError> {
+    let (directory, owner, _lock) = api::call(store.clone(), move |sessions| {
+        sessions.record_call(
+            request.parent_session_id,
+            "loop.start",
+            request.loop_dir.to_str(),
+        )?;
+        let directory = request.loop_dir.canonicalize()?;
+        let sub = directory.join("sub");
+        fs::create_dir_all(&sub)?;
+        let lock = ws_core::lockfile::open_lock_file(&sub.join("start.lock"))?;
+        lock.try_lock()
+            .map_err(|_| Error::InvalidRequest("Another caller is starting this loop."))?;
+        let (_, owner) =
+            sessions.create_loop_session(&directory, request.parent_session_id)?;
+        Ok((directory, owner.id, lock))
+    })
+    .await?;
+    let prompt = format!(
+        "Use the loop skill. The loop directory is {}. The loop session is {owner}. Continue until the loop reaches a gate or finishes.",
+        directory.display()
+    );
+    // Preparation runs after the supervisor records the child and its loop parent.
+    // Pass data as arguments so paths and prompts cannot become shell commands.
+    let wrapper = r#"set -eu
+prepared=$("$1" agent prepare --agent claude --mode headless --session "$WS_SESSION_ID" --format sh)
+prompt=$2
+eval "$prepared"
+print_flag=$1
+shift
+exec "$WS_AGENT_PROGRAM" "$print_flag" "$prompt" "$@"
+"#;
+    let sub = directory.join("sub");
+    let session = crate::supervisor::launch(
+        store,
+        crate::supervisor::CreateHeadless {
+            headless: true,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                wrapper.into(),
+                "ws-loop".into(),
+                std::env::current_exe()
+                    .map_err(Error::Io)
+                    .map_err(ApiError)?
+                    .to_string_lossy()
+                    .into_owned(),
+                prompt,
+            ],
+            cwd: directory
+                .parent()
+                .ok_or(ApiError(Error::InvalidRequest(
+                    "The loop directory has no parent.",
+                )))?
+                .into(),
+            parent_session_id: Some(owner),
+            env: BTreeMap::new(),
+            stdin: None,
+            stdout: Some(sub.join("orchestrator.stdout.log")),
+            stderr: Some(sub.join("orchestrator.stderr.log")),
+            key: None,
+            loop_child: None,
+        },
+        json!({"loop_dir":directory,"loop_role":"orchestrator"}),
+    )
+    .await?;
     Ok((axum::http::StatusCode::CREATED, Json(session.into())))
 }
 
