@@ -73,6 +73,22 @@ abs_path() {
 # planId from the `<!-- loop-plan ... -->` header of a plan file (first match), or empty.
 header_plan_id() { [[ -f "$1" ]] && sed -n 's/^planId:[[:space:]]*//p' "$1" | head -1 || true; }
 
+# Read the engine only from the canonical header.
+header_engine() {
+  [[ -f "$1" ]] || return 0
+  awk 'NR == 1 && $0 != "<!-- loop-plan" {exit}
+    /^-->$/ {exit}
+    /^engine:/ {sub(/^engine:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit}' "$1"
+}
+
+# Append the exact file text. The SHA includes every final newline.
+append_ws_plan() {
+  local target="$1" plan="$2" sha body
+  sha="$(shasum -a 256 < "$plan" | cut -d' ' -f1)" || return 3
+  body="$(jq -n --rawfile text "$plan" --arg sha "$sha" '{text: $text, sha: $sha}')" || return 3
+  "${WS_BIN:-ws}" event loop.plan --target "$target" --source tool --body "$body" >/dev/null || return 3
+}
+
 # Mint a runId-scheme planId: loop-<effort-slug>-<date>-<HHMMSS>.
 mint_plan_id() {
   local slug
@@ -105,6 +121,13 @@ do_register() {
   if [[ -n "$PLAN_FILE" ]]; then plan_abs="$(abs_path "$PLAN_FILE")"; else plan_abs="$loop_abs/plan.md"; PLAN_FILE="$plan_abs"; fi
   pid="$(resolve_plan_id)"
   [[ -n "$pid" ]] || die "could not resolve a planId"
+  if [[ "$(header_engine "$plan_abs")" == skills ]]; then
+    local session
+    session="$("${WS_BIN:-ws}" loop create --dir "$loop_abs" --plan-id "$pid")" || return 3
+    append_ws_plan "$session" "$plan_abs" || return 3
+    printf '%s\n' "$pid"
+    return 0
+  fi
   loop_ensure_daemon
   jq -cn --arg loopDir "$loop_abs" --arg planFile "$plan_abs" --arg effort "$EFFORT" \
     --arg started "$(now_iso)" \
