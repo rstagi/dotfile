@@ -27,6 +27,12 @@ Each `runs/review-p<N>-<owner--repo>.ledger.tsv` row contains `a<k>`, stage, rol
 
 The plan tools require Node >= 22.18. `node loop-plan-parse.mjs --plan .loop/plan.md` prints normalized plan JSON. Use `--plan -` to read standard input. The parser and `loop-plan.sh archive` use `loop-plan-model/` and need no `loop-web/` files. The daemon keeps its own parser until it retires.
 
+For the skills engine, `WS_LOOP_ID=<loop-session-id> ./loop-milestone.sh open --dir .loop`
+starts from `plan.md` alone or adopts an advanced `state.json`. It prepares missing integration
+worktrees and records the current milestone, phases and merged gates in the loop session.
+A second call changes nothing. Without `WS_LOOP_ID`, it exits 1. A parked loop exits 3 and
+requires `loop-milestone.sh resume`. The `check` and `advance` commands retain their existing behavior.
+
 ## Loop dashboard (`loop-top`)
 
 `loop-top` shows the phases of a Loop run in the terminal, live from the central daemon (`:7717`). Run it anywhere: it infers the loop from cwd (coordinator worktree, phase worktree, or git branch + origin) and otherwise opens an fzf picker over active + finished loops. HIL questions are still answered through the orchestrating agent.

@@ -1,7 +1,10 @@
 #!/bin/zsh
 set -u -o pipefail
 
-# Milestone merge-gate seam (human resume only; loop-execute applies the printed patch).
+# Milestone tools for skills loops and the old engine.
+#   open --dir <loop dir>
+#     Requires WS_LOOP_ID. Prepares repositories and writes fresh state or adopts saved state.
+#     Appends keyed tool events. A second open changes nothing. A parked loop exits 3.
 #   check   --state <state.json>
 #     one "slug<TAB>url<TAB>open|merged|closed" row per state.awaitingMerge.prs entry.
 #     exit 0 all merged, 3 any open, 4 any closed-unmerged (wins over open), 1 gh/state error.
@@ -53,17 +56,31 @@ main() {
 open_milestone() {
   [[ -n "${WS_LOOP_ID:-}" ]] || die "open requires WS_LOOP_ID"
   STATE="$DIR/state.json"
-  local plan state run_id milestone slug branch out rc phases
+  local plan state run_id milestone slug branch out rc phases fresh=true history signature gate revision
+  if [[ -f "$STATE" ]]; then
+    load_state
+    jq -e '.awaitingMerge != null' "$STATE" >/dev/null && die "loop is parked. Use loop-milestone.sh resume" 3
+    state="$(jq -c . "$STATE")"
+    fresh=false
+  fi
   plan="$(node "$HERE/loop-plan-parse.mjs" --plan "$DIR/plan.md")" || die "cannot parse $DIR/plan.md"
-  run_id="$(sed -n '/^<!-- loop-plan$/,/^-->$/s/^planId:[[:space:]]*//p' "$DIR/plan.md" | head -1)"
-  [[ -n "$run_id" ]] || die "plan header has no planId"
-  state="$(jq -cn --arg run "$run_id" '{runId:$run,milestone:1,phases:{},repositories:{},awaitingMerge:null}')"
-  state="$(jq -c --argjson plan "$plan" '
-    reduce $plan.phases[] as $p (.; .phases[$p.phase] = {
-      kind:$p.kind, milestone:$p.milestone, gate:$p.gate, repository:$p.repository,
-      dependsOn:$p.dependsOn, branch:$p.suggestedBranch, status:"todo"})' <<< "$state")" || die "cannot build phase state"
-  milestone="$(jq -r .milestone <<< "$state")"
+  if $fresh; then
+    run_id="$(sed -n '/^<!-- loop-plan$/,/^-->$/s/^planId:[[:space:]]*//p' "$DIR/plan.md" | head -1)"
+    [[ -n "$run_id" ]] || die "plan header has no planId"
+    state="$(jq -cn --arg run "$run_id" '{runId:$run,milestone:1,phases:{},repositories:{},awaitingMerge:null}')"
+  fi
+  run_id="$(jq -er '.runId | select(type=="string" and length>0)' <<< "$state")" || die "state has no runId"
+  milestone="$(jq -er '.milestone | select(type=="number" and .>=1 and floor==.)' <<< "$state")" || die "state has no milestone"
+  state="$(jq -c --argjson plan "$plan" --argjson fresh "$fresh" '
+    .phases //= {} | .repositories //= {} |
+    reduce $plan.phases[] as $p (.;
+      if .phases | has($p.phase) then . else .phases[$p.phase] = {
+        kind:$p.kind, milestone:$p.milestone, gate:$p.gate, repository:$p.repository,
+        dependsOn:$p.dependsOn, branch:$p.suggestedBranch,
+        status:(if ($fresh|not) and $p.archived then "done" else "todo" end)} end)' <<< "$state")" \
+    || die "cannot build phase state"
   for slug in ${(f)"$(jq -r --argjson n "$milestone" '.milestones[] | select(.number==$n) | .participants[]' <<< "$plan")"}; do
+    jq -e --arg slug "$slug" '.repositories | has($slug)' <<< "$state" >/dev/null && continue
     branch="$(jq -er --argjson n "$milestone" --arg slug "$slug" '.milestones[] | select(.number==$n) | .integrationBranches[$slug]' <<< "$plan")" \
       || die "milestone $milestone has no integration branch for $slug"
     out="$("$LOOP_REPO" prepare --repo "$slug" --run-id "$run_id" \
@@ -73,11 +90,30 @@ open_milestone() {
     state="$(jq -c --arg slug "$slug" --argjson repo "$out" '.repositories[$slug]=$repo' <<< "$state")" \
       || die "cannot record repository $slug"
   done
-  mkdir -p "$DIR/runs" "$DIR/answers" "$DIR/hil" "$DIR/notes" || die "cannot create loop directories"
-  write_open_state "$state"
   phases="$(phases_event_body "$plan" "$state")" || die "cannot build loop.phases"
-  append_tool_event loop.phases "$phases" || return $?
-  append_tool_event loop.milestone "$(jq -cn --argjson n "$milestone" '{milestone:$n}')"
+  history="$(jq -c '[.milestones // {} | to_entries | sort_by(.key|tonumber)[] |
+    {kind:"merge",state:"merged",milestone:(.key|tonumber),prs:(.value.prs // {})}]' <<< "$state")" \
+    || die "cannot read milestone history"
+  signature="$(jq -cn --arg session "$WS_LOOP_ID" --argjson phases "$phases" \
+    --argjson milestone "$milestone" --argjson history "$history" \
+    '{session:$session,phases:$phases,milestone:$milestone,history:$history}' | shasum -a 256 | cut -d' ' -f1)"
+  revision="$(jq -r '.skillsOpen.revision // 0' <<< "$state")"
+  if [[ "$(jq -r '.skillsOpen.signature // ""' <<< "$state")" != "$signature" ]]; then
+    (( revision += 1 ))
+    append_tool_event loop.phases "$phases" "open:$revision" || return $?
+    append_tool_event loop.milestone "$(jq -cn --argjson n "$milestone" '{milestone:$n}')" || return $?
+    for gate in ${(f)"$(jq -c '.[]' <<< "$history")"}; do
+      append_tool_event loop.gate "$gate" || return $?
+    done
+  fi
+  state="$(jq -c --arg signature "$signature" --argjson revision "$revision" '
+    .skillsOpen={signature:$signature,revision:$revision} |
+    if .resumePending==.milestone then .resumePending=null else . end' <<< "$state")" \
+    || die "cannot record open completion"
+  mkdir -p "$DIR/runs" "$DIR/answers" "$DIR/hil" "$DIR/notes" || die "cannot create loop directories"
+  if [[ ! -f "$STATE" || "$(jq -c . "$STATE")" != "$state" ]]; then
+    write_open_state "$state"
+  fi
 }
 
 # Convert parser phases and saved statuses to the public ws event body. Resume uses this seam too.
@@ -91,9 +127,9 @@ phases_event_body() {
     {phases:[$plan.phases[] | . as $p | {
       n:($p.phase|tonumber), title:$p.title,
       kind:(if $p.kind=="pr-review" then "review" else "work" end),
-      output:(if $p.output=="doc" then "document" else ($p.output // "pr") end),
+      output:($p.output // "pr"),
       milestone:$p.milestone, gate:$p.gate,
-      repo:(if $p.kind=="pr-review" then null
+      repo:(if $p.kind=="pr-review" or ($p.repository // "")=="" then null
         elif $p.repository=="primary" then
           (if ($plan.repositories|length)==1 and $plan.repositories[0].slug!="primary"
            then $plan.repositories[0].slug else null end)
@@ -106,7 +142,7 @@ append_tool_event() {
   local type="$1" body="$2" digest
   digest="$(print -rn -- "$body" | shasum -a 256 | cut -d' ' -f1)"
   "${WS_BIN:-ws}" event "$type" --body "$body" --source tool --target "$WS_LOOP_ID" \
-    --key "$type:$digest" >/dev/null || die "cannot append $type"
+    --key "$type:${3:-fact}:$digest" >/dev/null || die "cannot append $type"
 }
 
 write_open_state() {

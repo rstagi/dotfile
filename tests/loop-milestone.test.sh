@@ -7,7 +7,15 @@ source "$HERE/home-guard.sh"
 
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+WS_TEST_DAEMON_PID=""
+cleanup() {
+  if [[ -n "$WS_TEST_DAEMON_PID" ]]; then
+    kill "$WS_TEST_DAEMON_PID" 2>/dev/null
+    wait "$WS_TEST_DAEMON_PID" 2>/dev/null
+  fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
@@ -99,7 +107,139 @@ for dir in runs answers hil notes; do
 done
 assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 2 "open emits phases and milestone"
 assert_eq "$(jq -c 'select(.[1]=="loop.phases") | .[3] | fromjson | .phases[1]' "$FAKE_WS_LOG")" '{"n":2,"title":"Review API","kind":"review","output":"pr","milestone":1,"gate":"merge","repo":null,"branch":null,"depends_on":[1],"status":"todo"}' "review phase uses the event schema"
+echo "loop-milestone: open repeats without changes"
+cp "$OPEN/state.json" "$TMP/open-before.json"
+open_identity="$(stat -f "%i:%m" "$OPEN/state.json")"
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$OPEN" > "$TMP/repeat.out" 2> "$TMP/repeat.err"
+assert_exit "$?" 0 "a second open succeeds"
+assert_eq "$(cat "$OPEN/state.json")" "$(cat "$TMP/open-before.json")" "a second open preserves every state byte"
+assert_eq "$(stat -f "%i:%m" "$OPEN/state.json")" "$open_identity" "a second open does not replace state"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 2 "a second open calls no event append"
+assert_eq "$(jq -s 'all(.[]; .[4:8]==["--source","tool","--target","LOOP1"] and .[8]=="--key" and (.[9]|length)>0)' "$FAKE_WS_LOG")" true "each append has tool provenance and a key"
+
+# A later snapshot can return to earlier metadata. Its key must still be new.
+sed 's/Build API/Build service/' "$OPEN/plan.md" > "$TMP/replan.md"
+cp "$OPEN/plan.md" "$TMP/original-plan.md"
+cp "$TMP/replan.md" "$OPEN/plan.md"
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$OPEN" > "$TMP/replan.out" 2> "$TMP/replan.err"
+assert_exit "$?" 0 "open emits changed plan metadata"
+cp "$TMP/original-plan.md" "$OPEN/plan.md"
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$OPEN" > "$TMP/restore.out" 2> "$TMP/restore.err"
+assert_exit "$?" 0 "open accepts restored plan metadata"
+assert_eq "$(jq -s '[.[]|select(.[1]=="loop.phases")|.[9]]|unique|length' "$FAKE_WS_LOG")" 3 "each successive snapshot has a separate key"
+
+cat >> "$OPEN/plan.md" <<'PLAN'
+### Phase 3 — Publish notes `[output: doc]` `[status: todo]`
+### Phase 4 — Write a file `[output: file]` `[status: todo]`
+### Phase 5 — Report results `[output: output.md]` `[status: todo]`
+PLAN
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$OPEN" > "$TMP/outputs.out" 2> "$TMP/outputs.err"
+assert_exit "$?" 0 "open adds phases with non-PR outputs"
+assert_eq "$(jq -sc '[.[]|select(.[1]=="loop.phases")|.[3]|fromjson][-1].phases[2:]|map([.output,.repo,.branch])' "$FAKE_WS_LOG")" '[["doc",null,null],["file",null,null],["output.md",null,null]]' "non-PR phases use canonical outputs and no repository"
+
+cp "$OPEN/state.json" "$TMP/no-loop-before.json"
+"$ROOT/loop-milestone.sh" open --dir "$OPEN" > "$TMP/no-loop.out" 2> "$TMP/no-loop.err"
+assert_exit "$?" 1 "open requires WS_LOOP_ID"
+assert_eq "$(cat "$OPEN/state.json")" "$(cat "$TMP/no-loop-before.json")" "missing loop identity preserves state"
+WS_LOOP_ID=LOOP1 "$ROOT/loop-milestone.sh" open --dir "$TMP/no-plan" > "$TMP/no-plan.out" 2>&1
+assert_exit "$?" 1 "open requires a plan"
+assert_eq "$([[ -e "$TMP/no-plan" ]] && print yes || print no)" no "a missing plan creates no directory"
+
+PARKED="$TMP/parked-open"
+mkdir -p "$PARKED"
+print -r -- '{"runId":"parked","milestone":6,"awaitingMerge":{"milestone":6,"prs":{"acme/api":"https://example.test/1"}}}' > "$PARKED/state.json"
+parked_before="$(cat "$PARKED/state.json")"
+WS_LOOP_ID=LOOP1 "$ROOT/loop-milestone.sh" open --dir "$PARKED" > "$TMP/parked.out" 2> "$TMP/parked.err"
+assert_exit "$?" 3 "a parked loop refuses open before parsing"
+assert_contains "$(cat "$TMP/parked.err")" 'loop-milestone.sh resume' "a parked loop names resume"
+assert_eq "$(cat "$PARKED/state.json")" "$parked_before" "a parked loop preserves state"
+echo "loop-milestone: open retries a partial prepare"
+TWO="$TMP/two/.loop"
+mkdir -p "$TWO"
+sed 's/loop-archive-fixture-2026-10-01-000000/skills-two/' "$HERE/fixtures/milestones/plan.md" > "$TWO/plan.md"
+git -C "$TMP/web" worktree add -q -b feat/m1-web "$TMP/open-stolen" main
+print dirty > "$TMP/open-stolen/dirty"
+WS_LOOP_ID=LOOP2 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$TWO" > "$TMP/two.out" 2> "$TMP/two.err"
+assert_exit "$?" 4 "the second repository prepare failure surfaces"
+assert_eq "$([[ -e "$TWO/state.json" ]] && print yes || print no)" no "a partial prepare writes no state"
+FIRST_WT="$LOOP_WORKTREE_ROOT/skills-two/acme--api/integration"
+first_head="$(git -C "$FIRST_WT" rev-parse HEAD)"
+first_record="$(cat "$(git -C "$FIRST_WT" rev-parse --absolute-git-dir)/loop-repo-prepare.json")"
+assert_eq "$([[ -d "$FIRST_WT" ]] && print yes)" yes "the first prepare keeps its worktree"
+rm "$TMP/open-stolen/dirty"
+git -C "$TMP/web" worktree remove "$TMP/open-stolen"
+git -C "$TMP/web" branch -D feat/m1-web > /dev/null
+WS_LOOP_ID=LOOP2 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$TWO" > "$TMP/two-retry.out" 2> "$TMP/two-retry.err"
+assert_exit "$?" 0 "a rerun prepares both repositories"
+assert_eq "$(jq '.repositories|length' "$TWO/state.json")" 2 "the rerun records both repositories"
+assert_eq "$(git -C "$FIRST_WT" rev-parse HEAD)" "$first_head" "the rerun reuses the first worktree"
+assert_eq "$(cat "$(git -C "$FIRST_WT" rev-parse --absolute-git-dir)/loop-repo-prepare.json")" "$first_record" "the rerun keeps the first prepare record"
+assert_eq "$(jq -c '[.phases[]|.status]|unique' "$TWO/state.json")" '["todo"]' "a fresh start ignores plan progress"
+
+# Leave the legacy milestone tests free to prepare their own branches.
+for repo in api web; do
+  "$ROOT/loop-repo.sh" retire --repo "acme/$repo" --run-id skills-two \
+    --worktree "$LOOP_WORKTREE_ROOT/skills-two/acme--$repo/integration" --adopted false >/dev/null
+  git -C "$TMP/$repo" branch -D "feat/m1-$repo" >/dev/null
+done
+
+echo "loop-milestone: adopt milestone seven with six merged gates"
+make_repo rstagi/dotfile
+ADOPT="$TMP/adopt/.loop"
+mkdir -p "$ADOPT"
+cp "$HERE/fake/loop-skills-plan.md" "$ADOPT/plan.md"
+jq -n '{runId:"skills-adopt",milestone:7,resumePending:7,awaitingMerge:null,
+  custom:{keep:true},repositories:{"acme/retained":{integrationBranch:"keep",adopted:true}},
+  phases:{"137":{status:"merged",attempt:2},"121":{status:"in-progress"},"122":{status:"blocked"}},
+  milestones:([range(1;7)|{key:tostring,value:{prs:{"rstagi/dotfile":("https://example.test/pr/"+tostring)}}}]|from_entries)}' > "$ADOPT/state.json"
+cp "$ADOPT/state.json" "$TMP/adopt-before.json"
+export FAKE_WS_LOG="$TMP/adopt-events.jsonl"
+: > "$FAKE_WS_LOG"
+FAKE_WS_EXIT=1 WS_LOOP_ID=ADOPT1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$ADOPT" > "$TMP/adopt-failed.out" 2> "$TMP/adopt-failed.err"
+assert_exit "$?" 1 "an event failure refuses adoption completion"
+assert_eq "$(cat "$ADOPT/state.json")" "$(cat "$TMP/adopt-before.json")" "an event failure keeps resumePending and all saved state"
+: > "$FAKE_WS_LOG"
+WS_LOOP_ID=ADOPT1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$ADOPT" > "$TMP/adopt.out" 2> "$TMP/adopt.err"
+assert_exit "$?" 0 "an advanced old-engine loop is adopted"
+assert_eq "$(jq -c '[.milestone,.resumePending,.custom,.phases["137"],.phases["1"].status,.phases["138"].status]' "$ADOPT/state.json")" '[7,null,{"keep":true},{"status":"merged","attempt":2},"done","todo"]' "adoption preserves state and adds archived and new phases"
+assert_eq "$(jq '.repositories|length' "$ADOPT/state.json")" 2 "adoption retains old repositories and prepares missing participants"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 8 "adoption emits phases, milestone and six gates"
+assert_eq "$(jq -c 'select(.[1]=="loop.milestone")|.[3]|fromjson' "$FAKE_WS_LOG")" '{"milestone":7}' "adoption starts at the saved milestone"
+assert_eq "$(jq -sc '[.[]|select(.[1]=="loop.gate")|.[3]|fromjson|.milestone]' "$FAKE_WS_LOG")" '[1,2,3,4,5,6]' "history emits each merged gate in order"
+assert_eq "$(jq -s 'all(.[]|select(.[1]=="loop.gate")|.[3]|fromjson; .kind=="merge" and .state=="merged" and (.prs["rstagi/dotfile"]|startswith("https://example.test/pr/")))' "$FAKE_WS_LOG")" true "history carries merged PR links"
+body="$(jq -r 'select(.[1]=="loop.phases")|.[3]' "$FAKE_WS_LOG")"
+assert_eq "$(jq -c '[.phases[]|select(.n==121 or .n==122)|.status]' <<< "$body")" '["running","todo"]' "event statuses map in-progress and blocked"
+assert_eq "$(jq '.phases|length' <<< "$body")" 132 "the full WS v6 plan emits every phase"
+cp "$ADOPT/state.json" "$TMP/adopt-opened.json"
+WS_LOOP_ID=ADOPT1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$ADOPT" > "$TMP/adopt-repeat.out" 2> "$TMP/adopt-repeat.err"
+assert_exit "$?" 0 "a second adoption succeeds"
+assert_eq "$(cat "$ADOPT/state.json")" "$(cat "$TMP/adopt-opened.json")" "a second adoption preserves state"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 8 "a second adoption emits nothing"
 [[ "${1:-}" == --open-only ]] && test_summary
+echo "loop-milestone: a sandbox wsd accepts the full plan phase body"
+WS_RUST_BIN="${WS_MILESTONE_TEST_BIN:-$ROOT/wsd/target/debug/ws}"
+[[ -x "$WS_RUST_BIN" ]] || { print -u2 "Build the ws test binary first."; exit 1; }
+"$WS_RUST_BIN" daemon > "$TMP/ws-daemon.log" 2>&1 &
+WS_TEST_DAEMON_PID=$!
+deadline=$(( SECONDS + 30 ))
+until [[ -S "$WS_SOCK" ]] && "$WS_RUST_BIN" ping >/dev/null 2>&1; do
+  if ! kill -0 "$WS_TEST_DAEMON_PID" 2>/dev/null || (( SECONDS >= deadline )); then
+    cat "$TMP/ws-daemon.log" >&2
+    exit 1
+  fi
+  sleep 0.05
+done
+mkdir -p "$TMP/contract-loop"
+contract_id="$("$WS_RUST_BIN" loop create --dir "$TMP/contract-loop" --json | jq -r .id)"
+"$WS_RUST_BIN" event loop.phases --body "$body" --source tool --target "$contract_id" \
+  --key full-plan > "$TMP/body-check.out" 2> "$TMP/body-check.err"
+assert_exit "$?" 0 "the daemon accepts all phase fields for the full plan"
+assert_eq "$("$WS_RUST_BIN" log "$contract_id" --type loop.phases | jq '.entries[0].body.phases|length')" 132 "the daemon records every plan phase"
+kill "$WS_TEST_DAEMON_PID"
+wait "$WS_TEST_DAEMON_PID"
+WS_TEST_DAEMON_PID=""
+
+export FAKE_WS_LOG="$TMP/ws.log"
 
 API_PR=https://github.com/acme/api/pull/1
 WEB_PR=https://github.com/acme/web/pull/2
