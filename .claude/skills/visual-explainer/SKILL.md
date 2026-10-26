@@ -14,6 +14,8 @@ description: >-
   architecture, a flow, a data model, dependencies) as one interactive page. The reader hovers a node
   to see what it touches, clicks it for details, drags nodes, turns the layout and steps through a
   walkthrough. Use it when a picture explains better than prose and there is no plan or ship report.
+  The run graph shows one Loop milestone as it ran: the plan lanes, what happened to each phase,
+  the review and a time bar with the checkpoints. Use it at a Loop milestone merge gate.
 argument-hint: "plan|ship <output-dir>"
 ---
 
@@ -37,6 +39,9 @@ screenshots of the report sections. A third script puts the screenshots on GitHu
 | `template/page.html` | The concept graph page |
 | `template/explore.html` | The explore page: ELK layout in the browser, hover, details, drag, minimap, walkthrough |
 | `scripts/explore.mjs`, `scripts/explore-spec.mjs` | Explore mode: the graph check and the page writer |
+| `scripts/timeline.mjs` | The check of the optional time bar data of an explore page |
+| `scripts/run-graph.mjs` | The run graph: one Loop milestone as it ran, as an explore page with a time bar |
+| `scripts/run-facts.mjs`, `scripts/run-model.mjs` | The run graph facts of both Loop engines, and the graph and timeline from those facts |
 | `vendor/elk.bundled.js` | elkjs 0.11.0, inlined into the explore page (EPL-2.0, see `vendor/NOTICE`) |
 | `examples/explore-login.graph.json` | One valid example of an explore graph |
 | `scripts/render.mjs` | Checks the props and the narration, then writes `index.html` and `graph.html` (Node 20.11 or later) |
@@ -235,8 +240,9 @@ node <skill>/scripts/shoot.mjs --page <output-dir>/index.html --out <output-dir>
 ### 7. Publish
 
 - When the session has the Artifact tool, publish `index.html` as a private artifact. Pass the
-  Artifact `files` map `{"graph.html": "<output-dir>/graph.html"}`. Write the artifact URL to
-  `<output-dir>/link.txt`.
+  Artifact `files` map `{"graph.html": "<output-dir>/graph.html"}`. When `run.html` is in the
+  output directory, also put `"run.html": "<output-dir>/run.html"` in the map. Write the artifact
+  URL to `<output-dir>/link.txt`.
 - When the session has no Artifact tool, write the absolute path of `index.html` to
   `<output-dir>/link.txt`.
 - A later run with the same output directory publishes to the same artifact. Pass the URL
@@ -289,6 +295,9 @@ node <skill>/scripts/explore.mjs --graph <output-dir>/graph.json --out <output-d
 - Exit 2: a usage error or an I/O error.
 - `--out` prints the absolute path of `explore.html`. Publish it as an Artifact with the `files`
   map, or give the path to the person.
+- `--timeline <file>` adds a time bar to the page. The format is in `scripts/timeline.mjs`. Each
+  stderr line `warning: timeline: ...` names one item that the bar does not use. Without
+  `--timeline`, the page has no time bar.
 
 ### The format
 
@@ -356,6 +365,41 @@ node <skill>/scripts/explore.mjs --graph <output-dir>/graph.json --out <output-d
 
 The page follows the Artifact page contract of the report (see `## The page`). It has one
 exception: it inlines elkjs (about 1.6 MB) as its only script.
+
+## Run graph
+
+The run graph shows one Loop milestone as it ran. Its base is the plan of the milestone: one box
+for each lane, one node for each work phase, the dependency lines and the gate node at the end.
+Each phase node shows its attempts, its setbacks, its merge commit and its converge rows. The gate
+node shows the review rounds, the verdict, the converge result, the deviations, the hand test,
+the rollback and the links to the PR, the ship page and each checkpoint page.
+
+The time bar has a slider, a play button and one mark for each event: the start, each progress
+checkpoint, the review and the ship. At a time, each phase shows its status: `todo` is faded,
+`active` has a blue ring, `failed` is red and `done` is green. A checkpoint mark links to its
+page. Each walkthrough step moves the slider to its time.
+
+```bash
+node <skill>/scripts/run-graph.mjs --loop <.loop dir> --milestone <n> [--notes <file>] [--ws-log <file>] --out <dir>
+```
+
+- It writes `run.html`, `run.graph.json` and `run.timeline.json` in `<dir>`. It prints the
+  absolute path of `run.html`. It writes nothing in the Loop dir.
+- The phases come from `milestones/m<n>.md` when the milestone is archived. Else they come from
+  `plan.md`.
+- A skills loop: the facts come from the saved output of `ws log <loop> --type loop.`. The default
+  file is `explainers/m<n>-ship/loop-log.json`. Use `--ws-log` for another file.
+- An old-engine loop: the facts come from `events.jsonl`, the retro facts, `state.json`, the
+  review ledger, `converge/p<gate>.md` and the git commit times of the merges.
+- Both engines: the checkpoints come from `explainers/m<n>-cp<k>/`. The verdict, the hand test
+  and the rollback come from `explainers/m<n>-ship/props.json`.
+- When no fact has a time, the page has no time bar. It still shows the graph with the outcomes.
+  A stderr line `warning: no timestamps ...` tells this.
+- `--notes` adds text that the facts do not have: `{title, summary, story, lanes: {<lane>:
+  {what, why}}, joins: {<phase>: text}, findings: {<phase>: text}, gate: text}`. Each key is
+  optional. A finding puts a ring on its phase and adds a walkthrough step.
+- Exit 0: the page is written. Exit 1: the milestone has no phases, or the plan cannot be
+  parsed. Exit 2: a usage error or an I/O error.
 
 ## The page
 
