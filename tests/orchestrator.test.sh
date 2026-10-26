@@ -9,6 +9,12 @@ FAKE="$HERE/fake"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+export HOME="$TMP/home" WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/wsd.sock"
+unset WS_LOOP_ID WS_SESSION_ID LOOP_DAEMON_URL
+mkdir -p "$HOME"
 DIR="$TMP/.loop"
 SUB="$DIR/sub"
 mkdir -p "$SUB"
@@ -25,6 +31,38 @@ export FAKE_ENGINE_ARGS_LOG="$TMP/engine-args.log"
 reset() { rm -rf "$SUB"; mkdir -p "$SUB"; : > "$EMIT_LOG"; : > "$NOTIFY_LOG"; : > "$FAKE_ENGINE_ARGS_LOG"; }
 orch() { zsh "$ROOT/loop-orchestrator.sh" --dir "$DIR" --run-id "test-run" > "$TMP/orch.out" 2>&1; RC=$?; }
 count_transcripts() { ls "$SUB"/transcript-*.jsonl 2>/dev/null | wc -l | tr -d ' '; }
+
+echo "orchestrator: skills plan refuses the old engine before any SUB starts"
+reset
+cat > "$DIR/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: test-run
+engine: skills
+-->
+# Skills plan
+PLAN
+FAKE_OUTCOMES="complete" orch
+assert_exit "$RC" "1" "skills plan exits 1"
+assert_contains "$(cat "$TMP/orch.out")" "ws loop start $DIR" "refusal names the skills-engine command"
+assert_eq "$(wc -l < "$TMP/orch.out" | tr -d ' ')" "1" "refusal prints one line"
+assert_eq "$(cat "$FAKE_ENGINE_ARGS_LOG")" "" "skills plan starts no SUB"
+assert_eq "$(cat "$EMIT_LOG")" "" "skills plan emits no old-engine events"
+assert_eq "$([[ -f "$DIR/state.json" ]] && echo yes || echo no)" "no" "refusal writes no state"
+rm -f "$DIR/plan.md"
+
+echo "orchestrator: a plan without the skills header uses the old engine"
+reset
+cat > "$DIR/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: test-run
+-->
+# Old-engine plan
+engine: skills
+PLAN
+FAKE_OUTCOMES="complete" orch
+assert_exit "$RC" "0" "old-engine header exits 0"
+assert_eq "$([[ -f "$SUB/PHASES_DONE" ]] && echo yes)" "yes" "old-engine plan runs its SUB"
+rm -f "$DIR/plan.md"
 
 echo "orchestrator: recycle → respawn → complete"
 reset
