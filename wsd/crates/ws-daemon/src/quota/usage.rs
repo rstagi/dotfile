@@ -211,7 +211,8 @@ impl UsageIndex {
             account.to_owned(),
             body[sc::RUNNER_USAGE_BUCKET].as_str().map(str::to_owned),
         );
-        if reports_value(entry) {
+        // Only a valid value counts: a ratio in range, observed before the log wrote it.
+        if reports_value(entry) && order(entry).0 <= entry.ts_ms {
             let at = self.reported.entry(bucket.clone()).or_default();
             *at = (*at).max(order(entry).0);
         }
@@ -281,7 +282,9 @@ fn live_report(entry: &LogEntry, now: u64) -> bool {
 
 fn reports_value(entry: &LogEntry) -> bool {
     entry.body[sc::RUNNER_USAGE_SOURCE] == "reported"
-        && entry.body[sc::RUNNER_USAGE_REMAINING_RATIO].is_number()
+        && entry.body[sc::RUNNER_USAGE_REMAINING_RATIO]
+            .as_f64()
+            .is_some_and(|ratio| (0.0..=1.0).contains(&ratio))
 }
 
 fn order(entry: &LogEntry) -> (u64, bool, u64, u64) {
@@ -310,7 +313,7 @@ mod tests {
             epoch: 0,
             seq: 0,
             prev_hash: String::new(),
-            ts_ms: 0,
+            ts_ms: NOW,
             event_type: "runner.usage.updated".into(),
             body,
             device_id: Ulid::nil(),
