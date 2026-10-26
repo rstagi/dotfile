@@ -345,8 +345,8 @@ The final milestone ends with the ordinary terminal review (no `[gate: merge]`).
 
 ## `.loop/plan.md` header
 
-The first lines of `.loop/plan.md` are always a `loop-plan` HTML comment carrying the plan's
-coordinates so the other skills can act on it without re-searching:
+The first lines of `.loop/plan.md` contain a `loop-plan` HTML comment.
+Every plan has a `planId`. An old-engine plan also has a `daemon` URL:
 
 ```markdown
 <!-- loop-plan
@@ -355,9 +355,38 @@ daemon: http://localhost:7717
 -->
 ```
 
-Keep this comment as the first lines of `.loop/plan.md`. `planId` and `daemon` are **always**
-present. `loop-handoff` reads this header to push to the daemon; `loop-pickup` writes it after
-fetching.
+Keep this comment at the start of `.loop/plan.md`.
+A skills plan uses `wsd` as its backend. Its header has no `daemon` line:
+
+```markdown
+<!-- loop-plan
+planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
+engine: skills
+-->
+```
+
+A reader ignores `daemon:` when the header has `engine: skills`.
+`loop-plan.sh register` and `push` store that plan as a `loop.plan` event in its loop session.
+The event has the exact file text and its SHA-256, including final newlines.
+`get` reads the active engine's backend. `list` shows each plan id once.
+For rollback, remove `engine: skills`, then run `loop-plan.sh push`.
+The push updates loop-web and clears the engine of the existing wsd copy.
+
+The optional `engine` field selects the Loop engine:
+
+- Without `engine`, `ws loop start` starts `loop-orchestrator.sh` with the existing state and prompt behavior.
+- With `engine: skills`, `ws loop start` starts the `loop` skill in a headless agent session.
+  Its parent is the loop session. The prompt names the loop directory and the loop session.
+  A fresh loop needs only `.loop/plan.md`. It needs no `state.json` or `sub/prompt-seed.md`.
+- The skills engine accepts an existing `state.json` with a milestone and no `awaitingMerge`.
+  For a parked merge, run `loop-milestone.sh resume --dir <loop dir>` before `ws loop start`.
+  A running orchestrator prevents a second start.
+
+Add `engine: skills` inside the header comment to select the skills engine.
+The field applies to milestones that did not start.
+The human changes the engine only while the loop is parked at a merge gate.
+Remove the field at a parked gate to select the old engine again.
+The field is the engine switch. Its removal is a separate change after the old engine retires.
 
 ## Rules
 
@@ -405,8 +434,8 @@ fetching.
 - **Loop mode ships one PR per repository.** Per-phase Suggested branches are short-lived
   lane branches cut from that repository's integration tip and merged back; no per-phase
   PRs; `[status: done]` = merged into the phase repository's integration branch.
-- **Status is kept in lockstep:** the `[status: …]` marker in the doc and the daemon
-  (`loop-handoff` mirrors it there via `loop-plan.sh push`).
+- **Status agrees across copies:** the document and its engine's backend have the same `[status: …]` marker.
+  `loop-handoff` uses `loop-plan.sh push` to update the backend.
 - **Naming: describe the work, never the index.** Phase titles, `Suggested branch`,
   worktrees, commits, and PRs must say *what the change does* — never `phase-4`,
   `product-split-phase-4`, `<effort>-phase-N`, or a bare number. The phase↔branch link is

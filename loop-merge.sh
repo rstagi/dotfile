@@ -8,11 +8,15 @@ set -u -o pipefail
 #   loop-merge.sh --worktree <int-wt> --lane-branch <b> --verify-cmd <c> [--verified-record <f>] [--no-push]
 #   loop-merge.sh --worktree <int-wt> --finish --verify-cmd <c> [--no-push]
 #   loop-merge.sh --worktree <int-wt> --abort
+#   loop-merge.sh --worktree <int-wt> --undo  (requires WS_LOOP_ID)
 #
 # A push without a verify gate needs an explicit --no-verify — never silently.
 # --verified-record names the runner's verified.json ({tree, verify}). When the merged tree and
 # the Verify command equal the record, the Verify already passed on this exact tree and does not
 # run again. Any other record, or no record, runs the Verify.
+# With WS_LOOP_ID set, an unpushed ancestor merge runs Verify and pushes on retry.
+# --no-push records no successful merge event. --undo removes only a clean, unpushed
+# merge whose subject is "merge: <lane>". It preserves the lane branch.
 #
 # Exit codes:
 #   0  merged (verified, pushed)   — also for an already-merged lane ({"already":true})
@@ -45,6 +49,9 @@ while [[ $# -gt 0 ]]; do
   --verified-record) VERIFIED_RECORD="$2"; shift 2 ;;
   --finish) MODE="finish"; shift ;;
   --abort) MODE="abort"; shift ;;
+  --undo)
+    [[ -n "${WS_LOOP_ID:-}" ]] || { echo "loop-merge: --undo requires WS_LOOP_ID" >&2; exit 1; }
+    MODE="undo"; shift ;;
   --no-push) PUSH=0; shift ;;
   --no-verify) NOVERIFY=1; shift ;;
   --run-id) RUN_ID="$2"; shift 2 ;;
@@ -59,7 +66,8 @@ done
 loop_merge_finish() {
   local rc="$1"
   [[ -n "$VERIFY_LOG" ]] && rm -f "$VERIFY_LOG"
-  [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" && "$MODE" != "abort" && "$rc" -eq 0 ]] || return 0
+  [[ -n "${RUN_ID:-}" && -n "${PHASE:-}" && "$MODE" != "abort" && "$MODE" != "undo" && "$rc" -eq 0 ]] || return 0
+  [[ -z "${WS_LOOP_ID:-}" || "$PUSH" -eq 1 ]] || return 0
   jq -cn --arg event phase.merged --arg phase "$PHASE" --arg repository "$REPOSITORY" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{event:$event, phase:$phase, repository:(if ($repository|length)>0 then $repository else null end), ts:$ts}' | loop_emit "$RUN_ID" event
@@ -107,7 +115,7 @@ trap 'loop_merge_finish $?' EXIT
 
 [[ -d "$WT" ]] || { echo "loop-merge: worktree '$WT' not found" >&2; exit 1; }
 cd "$WT" || exit 1
-if [[ "$MODE" != "abort" && -z "$VERIFY" && $NOVERIFY -eq 0 ]]; then
+if [[ "$MODE" != "abort" && "$MODE" != "undo" && -z "$VERIFY" && $NOVERIFY -eq 0 ]]; then
   echo "loop-merge: refusing to merge without --verify-cmd (pass --no-verify to override)" >&2
   exit 1
 fi
@@ -131,10 +139,53 @@ verify_and_push() {
   fi
   if [[ "$PUSH" -eq 1 ]]; then
     git push origin HEAD || return 1
+    # Record success only after the push. A local-only merge is not published.
+    ws_loop_merge_event "$([[ -n "$VERIFY" ]] && print pass || print none)"
   fi
-  # After the push: a lost push must not leave a loop.merge that says merged.
-  ws_loop_merge_event "$([[ -n "$VERIFY" ]] && print pass || print none)"
   return 0
+}
+
+# Return 0 when the remote branch contains HEAD, 1 when it does not, or 2 on a read error.
+# Read the remote branch directly. A local tracking ref can be stale after a failed push.
+remote_contains_head() {
+  local branch remote_line remote_head rc
+  branch="$(git symbolic-ref -q HEAD)" || return 2
+  remote_line="$(git ls-remote --exit-code origin "$branch")"
+  rc=$?
+  (( rc == 2 )) && return 1
+  (( rc == 0 )) || return 2
+  remote_head="${remote_line%%$'\t'*}"
+  [[ -n "$remote_head" ]] || return 2
+  if ! git cat-file -e "$remote_head^{commit}" 2>/dev/null; then
+    git fetch --no-tags --no-write-fetch-head origin "$remote_head" || return 2
+  fi
+  git merge-base --is-ancestor HEAD "$remote_head"
+  rc=$?
+  (( rc <= 1 )) && return "$rc"
+  return 2
+}
+
+# Undo only a clean, unpublished merge made by this command. Preserve the lane ref.
+undo_merge() {
+  local dirty subject
+  local -a parents
+  dirty="$(git status --porcelain --untracked-files=all)" || return 1
+  if [[ -n "$dirty" || -f "$(git rev-parse --git-path MERGE_HEAD)" ]]; then
+    echo "loop-merge: undo requires a clean worktree with no merge in progress" >&2
+    return 1
+  fi
+  subject="$(git show -s --format=%s HEAD)" || return 1
+  parents=(${(s: :)$(git show -s --format=%P HEAD)})
+  if [[ ${#parents} -ne 2 || "$subject" != 'merge: '?* ]]; then
+    echo "loop-merge: HEAD is not a lane merge made by this command" >&2
+    return 1
+  fi
+  remote_contains_head
+  if [[ $? -ne 1 ]]; then
+    echo "loop-merge: cannot undo a published merge or an unreadable remote branch" >&2
+    return 1
+  fi
+  git reset --hard "$parents[1]" || return 1
 }
 
 # True when the runner record names the merged tree and this Verify command.
@@ -147,6 +198,9 @@ tree_already_verified() {
 }
 
 case "$MODE" in
+undo)
+  undo_merge; exit $?
+  ;;
 abort)
   git merge --abort 2>/dev/null
   exit 0
@@ -168,6 +222,15 @@ merge)
   [[ -n "$LANE" ]] || { echo "loop-merge: --lane-branch required" >&2; exit 1; }
   git rev-parse --verify --quiet "$LANE" >/dev/null || { echo "loop-merge: branch '$LANE' not found" >&2; exit 3; }
   if git merge-base --is-ancestor "$LANE" HEAD; then
+    if [[ -n "${WS_LOOP_ID:-}" ]]; then
+      remote_contains_head
+      remote_rc=$?
+      case "$remote_rc" in
+      0) ;;
+      1) verify_and_push; exit $? ;;
+      *) echo "loop-merge: cannot check the remote integration branch" >&2; exit 1 ;;
+      esac
+    fi
     echo '{"already":true}'
     exit 0
   fi

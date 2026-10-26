@@ -28,8 +28,8 @@ const KEY_FIELD: &str = "event_key";
 const MAX_KEY_BYTES: usize = 256;
 
 const PHASE_KINDS: [&str; 2] = ["work", "review"];
-/// The D19 output kinds of a work phase.
-const OUTPUT_KINDS: [&str; 4] = ["pr", "file", "document", "output.md"];
+/// The D19 output kinds of a work phase, as the plan format writes them.
+const OUTPUT_KINDS: [&str; 4] = ["pr", "file", "doc", "output.md"];
 const PHASE_STATUSES: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
 
 const REVIEW_ROLES: [&str; 7] = [
@@ -144,15 +144,14 @@ impl Sessions {
                 return Ok((existing, false));
             }
         }
-        let entry = self.append_loop_entry(
+        self.append_loop_entry(
             id,
             &request.event_type,
             body,
             source,
             request.parent_session_id,
             key.as_deref(),
-        )?;
-        Ok((entry, true))
+        )
     }
 
     fn find_keyed_entry(&mut self, id: &str, key: &str) -> Result<Option<LogEntry>> {
@@ -171,7 +170,9 @@ impl Sessions {
         event_type: &str,
         body: Map<String, Value>,
     ) -> Result<LogEntry> {
-        self.append_loop_entry(id, event_type, body, SOURCE_DAEMON, None, None)
+        Ok(self
+            .append_loop_entry(id, event_type, body, SOURCE_DAEMON, None, None)?
+            .0)
     }
 
     fn append_loop_entry(
@@ -182,7 +183,7 @@ impl Sessions {
         source: &str,
         caller: Option<SessionId>,
         key: Option<&str>,
-    ) -> Result<LogEntry> {
+    ) -> Result<(LogEntry, bool)> {
         let suffix = event_type.strip_prefix(CLIENT_EVENT_PREFIX);
         if suffix.is_none_or(|suffix| {
             suffix.is_empty()
@@ -196,6 +197,16 @@ impl Sessions {
         }
         check_body(event_type, &body).map_err(Error::InvalidBody)?;
         let session = self.get_record(id)?;
+        // A plan with the sha of the latest plan changes nothing, so the log stays the same size.
+        if event_type == "loop.plan" {
+            let log =
+                ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
+            if let Some(latest) = latest_plan_entry(&log.entries)
+                && latest.body["sha"] == body["sha"]
+            {
+                return Ok((latest.clone(), false));
+            }
+        }
         body.insert("caller".into(), json!(caller));
         body.insert("source".into(), json!(source));
         if let Some(key) = key {
@@ -208,7 +219,7 @@ impl Sessions {
             self.needs_rebuild = true;
             return Err(error);
         }
-        Ok(entry)
+        Ok((entry, true))
     }
 
     fn read_log(&mut self, id: &str, query: &LogQuery) -> Result<LogResponse> {
@@ -227,6 +238,20 @@ impl Sessions {
     }
 }
 
+/// The latest `loop.plan` entry of a session log.
+pub(crate) fn latest_plan_entry(entries: &[LogEntry]) -> Option<&LogEntry> {
+    entries
+        .iter()
+        .rev()
+        .find(|entry| entry.event_type == "loop.plan")
+}
+
+/// The lowercase SHA-256 hex digest of the exact UTF-8 bytes of a plan text.
+pub(crate) fn plan_sha(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
 /// Checks the body of a `loop.*` event against its type.
 pub(crate) fn check_body(
     event_type: &str,
@@ -237,10 +262,7 @@ pub(crate) fn check_body(
         .unwrap_or(event_type);
     let check = Check { event_type, body };
     match kind {
-        "plan" => {
-            check.string("text")?;
-            check.string("sha")
-        }
+        "plan" => check_plan(&check),
         "phases" => check_phases(&check),
         "phase" => {
             check.integer("n")?;
@@ -350,6 +372,19 @@ fn check_phases(check: &Check) -> std::result::Result<(), String> {
         phase.nullable_string("branch")?;
         phase.array_of_integers("depends_on")?;
         phase.one_of("status", &PHASE_STATUSES)?;
+    }
+    Ok(())
+}
+
+fn check_plan(check: &Check) -> std::result::Result<(), String> {
+    check.string("text")?;
+    check.string("sha")?;
+    let text = check.body["text"].as_str().unwrap_or_default();
+    if check.body["sha"].as_str() != Some(plan_sha(text).as_str()) {
+        return Err(format!(
+            "{}: sha must be the lowercase SHA-256 hex digest of the exact text bytes.",
+            check.event_type
+        ));
     }
     Ok(())
 }
@@ -498,7 +533,7 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use crate::sessions::Sessions;
+    use crate::{events::plan_sha, sessions::Sessions};
 
     #[tokio::test]
     async fn accepted_append_records_the_event_and_its_caller() {
@@ -618,7 +653,10 @@ mod tests {
 
     fn valid_bodies() -> Vec<(&'static str, Value)> {
         vec![
-            ("loop.plan", json!({"text":"# Plan","sha":"abc"})),
+            (
+                "loop.plan",
+                json!({"text":"# Plan","sha":plan_sha("# Plan")}),
+            ),
             (
                 "loop.phases",
                 json!({"phases":[{"n":1,"title":"A","kind":"work","output":"pr","milestone":1,
@@ -852,7 +890,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":loop_dir.path()}),
+            json!({"loop_dir":loop_dir.path(),"plan_id":format!("fixture:{}", loop_dir.path().display())}),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
@@ -861,7 +899,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":loop_dir.path()}),
+            json!({"loop_dir":loop_dir.path(),"plan_id":format!("fixture:{}", loop_dir.path().display())}),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -870,7 +908,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":"relative"}),
+            json!({"loop_dir":"relative","plan_id":"fixture-plan"}),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -891,7 +929,9 @@ mod tests {
         let note = || serde_json::from_value(json!({"text":"n"})).unwrap();
         let id = {
             let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-            let (created, session) = sessions.create_loop_session(loop_dir.path(), None).unwrap();
+            let (created, session) = sessions
+                .create_loop_session(loop_dir.path(), Some("fixture-plan"), None)
+                .unwrap();
             assert!(created);
             let id = session.id.to_string();
             sessions
@@ -900,7 +940,9 @@ mod tests {
             id
         };
         let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-        let (created, session) = sessions.create_loop_session(loop_dir.path(), None).unwrap();
+        let (created, session) = sessions
+            .create_loop_session(loop_dir.path(), Some("fixture-plan"), None)
+            .unwrap();
         assert!(!created);
         assert_eq!(session.id.to_string(), id);
         let entry = sessions

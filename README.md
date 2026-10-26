@@ -25,7 +25,27 @@ New Loop plans include an estimate and confidence for each work phase. The plann
 
 Each `runs/review-p<N>-<owner--repo>.ledger.tsv` row contains `a<k>`, stage, role, provider, verdict token, and run directory relative to `.loop/`. Roles are `review|critic|respond|confirm|disputed|fix|final`; a clean round implies skipped rounds without writing skipped rows. Old ledgers with third-provider `confirm` rows still replay. Resume recovers completed runs, reconciles the GitHub final marker, then calls `next`. Plan review uses the same shared `loop-ar.sh` core: `loop-plan-review.sh run --round r` runs one independent round; the planner verifies findings and disputes against code and edits between rounds (at most 2 via `LOOP_PLAN_REVIEW_ROUNDS`, round 2 only after a blocking fix). `multiphase-plan light <goal>` skips plan review and the plan explainer. See [the AR protocol](.claude/skills/loop-execute/references/loop-protocol.md) and [rollout steps](CLAUDE.md#architecture) before upgrading an active loop.
 
+The skills engine records review results with `loop-runner.sh --review-key <step key> --publish-output <report>` and `WS_LOOP_ID`. Keys use `review:<phase>:<repo or none>:<role>:<round>:<inner>:attempt:<k>`. Each published result appends one `loop.review` event with the key suffix `:result`. Final verdicts come from `status.json`, including `COMMENT` and `REQUEST_CHANGES`. Fixes need remote-head proof from `loop-ar.sh prove-fix`. `loop-ar.sh disputed --ledger <file> --review-key <step key>` records its sidecar without a runner session. Checkpoints and unsuccessful runs append no result. Keyed reviews append no `loop.attempt` result. Without these options, the old engine retains its behavior.
+
 The plan tools require Node >= 22.18. `node loop-plan-parse.mjs --plan .loop/plan.md` prints normalized plan JSON. Use `--plan -` to read standard input. The parser and `loop-plan.sh archive` use `loop-plan-model/` and need no `loop-web/` files. The daemon keeps its own parser until it retires.
+
+`loop-plan.sh` uses `wsd` for plans with `engine: skills` in the header. Other plans use loop-web.
+Skills writes use `ws loop create` and `ws event`. Reads and listing select the active engine's copy.
+Change the engine only while the loop is parked at a merge gate.
+For rollback, remove `engine: skills`, then run `loop-plan.sh push` to update both stores.
+
+For the skills engine, `WS_LOOP_ID=<loop-session-id> ./loop-milestone.sh open --dir .loop`
+starts from `plan.md` alone or adopts an advanced `state.json`. It prepares missing integration
+worktrees and records the current milestone, phases and merged gates in the loop session.
+A second call changes nothing. Without `WS_LOOP_ID`, it exits 1. A parked loop exits 3 and
+requires `loop-milestone.sh resume`. The `check` and `advance` commands retain their existing behavior.
+
+After the gate PRs merge, run `./loop-milestone.sh resume --dir .loop`, then `ws loop start .loop`.
+The resume command checks the PRs, archives shipped milestones, prepares the next integration
+worktrees, and applies one state patch. With `WS_LOOP_ID`, it records keyed gate, milestone and
+phase events. Without that variable, it updates the files and the plan only. A retry after the
+apply continues from `resumePending`. Open or closed PRs stop the command without changes.
+`ws loop resume` only clears a pause.
 
 ## Loop dashboard (`loop-top`)
 

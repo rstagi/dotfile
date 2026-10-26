@@ -120,8 +120,8 @@ no stacking.
   parked loop (info notification, exit 2), not a crash.
 - **Resume (human only, `LOOP_SUB` unset).** `loop-milestone.sh check` → archive → `advance`, then
   the skill applies the printed patch to state, clears `REVIEW_READY`, logs `milestone.resumed`,
-  and respawns the orchestrator. Then it starts the best-effort `plan` explainer for the new
-  milestone (§ Milestone explainers).
+  and starts the engine from the plan header (§ Engine switch and rollback).
+  Then it starts the best-effort `plan` explainer for the new milestone (§ Milestone explainers).
 - **Archive (resume, after `check` exits 0, before `advance`).** For each M from 1 to the parked
   milestone P, run `loop-plan.sh archive --milestone <M> --dir .loop`. The command moves the phase
   blocks and the progress-log entries of M to `.loop/milestones/m<M>.md`, writes the `[archived]`
@@ -131,6 +131,55 @@ no stacking.
   Grammar: plan-format → Archived milestones.
 - **Reconciliation.** Phases of a milestone whose gate PRs are merged are permanently shipped;
   crash-resume never re-checks them against a later integration tip.
+
+### Engine switch and rollback
+
+The initial `<!-- loop-plan … -->` header selects one engine for the plan.
+The field applies to milestones that did not start. A plan never runs on both engines at the same time.
+Without `engine: skills`, the old engine runs as before.
+With `engine: skills`, `loop-orchestrator.sh` exits 1 before supervision or a SUB starts.
+It prints one line that names `ws loop start <loop dir>`.
+The `/loop-execute <plan>` preflight also refuses the plan and prints that command.
+Use the resolved loop directory. Quote the path for the shell when necessary.
+
+At the milestone 6 gate, the human merges the PR and installs the milestone 6 runtime.
+The install commands are `./install.sh ws` and `install-agent-skills.sh`.
+The human runs the Phase 100 hand tests before adding `engine: skills` to the header.
+If a hand test fails, the human keeps the header unchanged. The old engine can run milestone 7.
+
+After the header change, the human runs `/loop-execute resume`.
+Milestone resume steps 1–4 keep their recovery, check, archive, advance and apply behavior.
+Step 5 keeps the plan Status push, the removal of `sub/REVIEW_READY`, the lessons and the crash marker.
+Before `ws loop start <loop dir>`, step 5 creates or reuses the session with `ws loop create --dir <absolute loop dir>`.
+It passes that session as `WS_LOOP_ID` to the installed `loop-milestone.sh open --dir <loop dir>`.
+The tool records `loop.phases`, `loop.milestone` and the earlier merged `loop.gate` events from the advanced state.
+The agent never writes those facts with `source: agent`.
+Step 5 checks the recorded milestone and merged gates with `ws loop get <loop session> --json`.
+It restores `resumePending` if `open` cleared it. A failed history check or start stops the resume.
+It logs `milestone.resumed` with detail `M<n> engine skills` and an empty phase.
+Then it runs `ws loop start <loop dir>` in place of the orchestrator respawn.
+After success, it clears `resumePending`. Step 6 still runs the best-effort plan explainer.
+The old-engine event detail stays `M<n>`.
+
+If the switch resume fails, the human runs these commands in order:
+
+1. Run `loop-milestone.sh resume --dir .loop` with `WS_LOOP_ID` unset.
+2. Run `loop-plan.sh push`.
+3. Run `ws loop start .loop`.
+
+During milestone 7, the skills engine uses the installed runtime from the milestone 6 merge in `~/dotfile`.
+It uses the installed `wsd`. It never runs a tool or skill from the milestone 7 integration worktree.
+Milestone 7 changes `wsd`, but the installed daemon has only the milestone 5 and 6 APIs.
+The human installs the milestone 7 code after its merge.
+
+For rollback, the human removes `engine: skills` from the header while the loop is parked at a merge gate.
+Then the human runs `loop-plan.sh push` and `/loop-execute resume`.
+A rollback inside a milestone is a manual rescue:
+
+1. Pause the skills loop with `ws loop pause`.
+2. Wait until no child session of the loop runs.
+3. Use `loop-handoff` to make `.loop/plan.md` and `.loop/state.json` agree with the merged work.
+4. Remove `engine: skills` from the header. Run `loop-plan.sh push` and `/loop-execute resume`.
 
 ### Milestone explainers
 
@@ -507,6 +556,7 @@ completed phase ranks remain monotone.
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
 | `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |
 | `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` |
+| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n> engine skills` |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto | phase, detail |
@@ -632,7 +682,8 @@ the PR). Create mode reports `false`/`0`.
 ## Runner spawn (how the orchestrator launches loop-runner.sh)
 
 Resolve `RUNTIME_ROOT` to the repository integration worktree when the effort changes the
-Loop runtime itself; otherwise use `~/dotfile`. The runner resolves its Jev client, model
+Loop runtime itself; otherwise use `~/dotfile`. Skills-engine milestones use the installed runtime instead (§ Engine switch and rollback).
+The runner resolves its Jev client, model
 config, and emitter from that same directory. Compose later SUB prompts from
 `$RUNTIME_ROOT/.claude/skills/loop-execute/{SKILL.md,references/loop-protocol.md}` too, so
 merged self-hosting changes run without mutating the installed checkout. At `REVIEW_READY`,

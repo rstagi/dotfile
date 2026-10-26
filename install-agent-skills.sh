@@ -9,9 +9,11 @@ SHARED_SKILLS=(
   assess
   multiphase-plan
   loop-execute
+  loop
   converge
   loop-pickup
   loop-handoff
+  loop-review
   pr-review
   pr-review-fix-all
   ws-sessions

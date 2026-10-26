@@ -4,11 +4,14 @@
 # Observatory daemon (http://localhost:7717). Every function is best-effort and NEVER
 # fails the caller — a down daemon must not affect a loop run. JSON bodies are built by the
 # callers with `jq -cn --arg` and piped in on stdin (injection-safe; no shell interpolation).
+# A skills loop (WS_LOOP_ID set) records its events through wsd: every function below is then
+# a no-op that runs no curl, launchctl or loop-web.sh.
 
 : "${LOOP_DAEMON_URL:=http://localhost:7717}"
 
 # loop_emit <runId> <action>   — POST the stdin JSON body to /api/loops/<runId>/<action>.
 loop_emit() {
+  [ -z "${WS_LOOP_ID:-}" ] || return 0
   loop_emit_run_id="$1"
   loop_emit_action="$2"
   [ -n "$loop_emit_run_id" ] || return 0
@@ -20,6 +23,7 @@ loop_emit() {
 # loop_emit_jev_decision <runId> — wrap the stdin decision record as a typed observational
 # event, preserving every decision field. Best-effort like loop_emit.
 loop_emit_jev_decision() {
+  [ -z "${WS_LOOP_ID:-}" ] || return 0
   loop_emit_jev_run_id="$1"
   [ -n "$loop_emit_jev_run_id" ] || return 0
   jq -c --arg event "jev.decision" --arg runId "$loop_emit_jev_run_id" \
@@ -31,6 +35,7 @@ loop_emit_jev_decision() {
 # loop_ensure_daemon   — make the central daemon reachable: health probe → launchctl
 # kickstart/bootstrap → nohup the installed loop-web.sh --daemon. Best-effort, returns 0.
 loop_ensure_daemon() {
+  [ -z "${WS_LOOP_ID:-}" ] || return 0
   curl -sf -m 2 "${LOOP_DAEMON_URL}/api/health" >/dev/null 2>&1 && return 0
   loop_emit_label="com.rstagi.loop-web"
   if command -v launchctl >/dev/null 2>&1; then

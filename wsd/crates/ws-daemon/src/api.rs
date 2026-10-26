@@ -254,6 +254,7 @@ impl IntoResponse for ApiError {
             Error::Registry(registry::Error::Ambiguous(_)) => {
                 (StatusCode::CONFLICT, "ambiguous_session")
             }
+            Error::NoLoopPlan => (StatusCode::NOT_FOUND, "loop_plan_not_found"),
             Error::ShuttingDown => (StatusCode::SERVICE_UNAVAILABLE, "daemon_stopping"),
             Error::WaitTimeout => (StatusCode::REQUEST_TIMEOUT, "wait_timeout"),
             Error::SpawnLimit(crate::limits::SpawnLimit::Children { .. }) => {
@@ -268,6 +269,7 @@ impl IntoResponse for ApiError {
             Error::PendingMessages => (StatusCode::CONFLICT, "pending_messages"),
             Error::LoopControlConflict(_) => (StatusCode::CONFLICT, "loop_control_conflict"),
             Error::MilestoneGateOpen => (StatusCode::CONFLICT, "milestone_gate_open"),
+            Error::AcceptGateOpen => (StatusCode::CONFLICT, "accept_gate_open"),
             Error::DependencyCycle(_) => (StatusCode::CONFLICT, "dependency_cycle"),
             Error::NameTaken(_) => (StatusCode::CONFLICT, "name_taken"),
             Error::Transition(_) => (StatusCode::CONFLICT, "invalid_transition"),

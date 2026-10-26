@@ -1,24 +1,20 @@
 #!/bin/zsh
 set -u -o pipefail
 
-# Loop Engineering — plan helper: register/push a multi-phase plan on the central Loop
-# Observatory daemon (the sole backend for EVERY plan) and post progress notes to it.
+# Loop Engineering — plan helper. Skills plans use wsd. Other plans use loop-web.
 #
 # Usage:
 #   loop-plan.sh register [--dir .loop] [--plan-file <f>] [--plan-id <id>] [--effort <name>]
-#     mkdir the loop dir, resolve/mint the planId, ensure the daemon is up, POST /register
-#     (the server reads planText from the plan file). Prints the planId. Idempotent.
+#     Resolve the planId. Create the wsd loop and append loop.plan for a skills plan.
+#     Otherwise POST /register to loop-web. Print the planId. Repeated writes are safe.
 #   loop-plan.sh push [--dir .loop] [--plan-file <f>] [--plan-id <id>] [--effort <name>]
-#     alias of register — re-POSTing /register re-reads the plan file, so the daemon copy
-#     is overwritten with the current markdown.
+#     Use register to store the current markdown in the backend of its engine.
 #   loop-plan.sh get --plan-id <id> [--out <f>]
-#     GET /api/loops/<id>/plan and print (or write) its planText — how a fresh worktree
-#     fetches the plan with no local copy.
+#     Read wsd first. Use its text only for engine: skills. Otherwise read loop-web.
 #   loop-plan.sh list
-#     GET /api/loops → a compact `runId · status · effort` table.
+#     Print skills rows first, then loop-web rows. Each plan id appears once.
 #   loop-plan.sh note --plan-id <id> [--phase <n>] --body <text>
-#     POST a progress.note event — a phase progress comment,
-#     visible cross-worktree on the loop timeline (jq-built, injection-safe).
+#     Append loop.note for a skills plan. Otherwise POST progress.note to loop-web.
 #   loop-plan.sh archive --milestone <N> [--dir .loop] [--plan-file <f>] [--outcome <text>]
 #     Move shipped milestone N out of plan.md: its section (branch/PR lines + phase blocks) and
 #     its progress-log entries go unchanged into <plan dir>/milestones/m<N>.md; plan.md keeps a
@@ -73,6 +69,29 @@ abs_path() {
 # planId from the `<!-- loop-plan ... -->` header of a plan file (first match), or empty.
 header_plan_id() { [[ -f "$1" ]] && sed -n 's/^planId:[[:space:]]*//p' "$1" | head -1 || true; }
 
+# Read the engine only from the canonical header.
+header_engine() {
+  [[ -f "$1" ]] || return 0
+  awk 'NR == 1 && $0 != "<!-- loop-plan" {exit}
+    /^-->$/ {exit}
+    /^engine:/ {sub(/^engine:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit}' "$1"
+}
+
+# Append the exact file text. The SHA includes every final newline.
+append_ws_plan() {
+  local target="$1" plan="$2" sha body
+  sha="$(shasum -a 256 < "$plan" | cut -d' ' -f1)" || return 3
+  body="$(jq -n --rawfile text "$plan" --arg sha "$sha" '{text: $text, sha: $sha}')" || return 3
+  "${WS_BIN:-ws}" event loop.plan --target "$target" --source tool --body "$body" >/dev/null || return 3
+}
+
+# Read paths fall back to loop-web when ws is unavailable or rejects the request.
+read_ws_plan() { "${WS_BIN:-ws}" loop plan "$1" --json 2>/dev/null; }
+
+# An old-engine plan can run inside a skills session. Its writes still reach loop-web.
+web_ensure_daemon() { (unset WS_LOOP_ID; loop_ensure_daemon); }
+web_emit() { (unset WS_LOOP_ID; loop_emit "$@"); }
+
 # Mint a runId-scheme planId: loop-<effort-slug>-<date>-<HHMMSS>.
 mint_plan_id() {
   local slug
@@ -97,7 +116,7 @@ resolve_plan_id() {
   printf '%s' "$pid"
 }
 
-# register + push share this: resolve id, POST /register (server reads planText from planFile).
+# Register and push select the backend from the plan header.
 do_register() {
   mkdir -p "$DIR"
   local loop_abs plan_abs pid
@@ -105,12 +124,25 @@ do_register() {
   if [[ -n "$PLAN_FILE" ]]; then plan_abs="$(abs_path "$PLAN_FILE")"; else plan_abs="$loop_abs/plan.md"; PLAN_FILE="$plan_abs"; fi
   pid="$(resolve_plan_id)"
   [[ -n "$pid" ]] || die "could not resolve a planId"
-  loop_ensure_daemon
+  if [[ "$(header_engine "$plan_abs")" == skills ]]; then
+    local session
+    session="$("${WS_BIN:-ws}" loop create --dir "$loop_abs" --plan-id "$pid")" || return 3
+    append_ws_plan "$session" "$plan_abs" || return 3
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  web_ensure_daemon
   jq -cn --arg loopDir "$loop_abs" --arg planFile "$plan_abs" --arg effort "$EFFORT" \
     --arg started "$(now_iso)" \
     '{loopDir:$loopDir, planFile:$planFile,
       effort:(if ($effort|length)>0 then $effort else null end), startedAt:$started}' \
-    | loop_emit "$pid" register
+    | web_emit "$pid" register
+  # Retire a skills snapshot after an engine rollback. Older ws versions can reject this read.
+  local known
+  if known="$("${WS_BIN:-ws}" loop get "$pid" --json 2>/dev/null)" && \
+      jq -e '.id | type == "string"' >/dev/null 2>&1 <<< "$known"; then
+    append_ws_plan "$(jq -r '.id' <<< "$known")" "$plan_abs" || return 3
+  fi
   printf '%s\n' "$pid"
 }
 
@@ -211,24 +243,47 @@ archive)
   ;;
 get)
   [[ -n "$PLAN_ID" ]] || die "get requires --plan-id <id>"
-  loop_ensure_daemon
+  if body="$(read_ws_plan "$PLAN_ID")" && jq -e '.engine == "skills" and (.text | type == "string")' >/dev/null 2>&1 <<< "$body"; then
+    if [[ -n "$OUT" ]]; then jq -j '.text' <<< "$body" > "$OUT"; else jq -j '.text' <<< "$body"; fi
+    exit $?
+  fi
+  web_ensure_daemon
   body="$(curl -sf -m 5 "${LOOP_DAEMON_URL}/api/loops/${PLAN_ID}/plan")" \
     || die "get: daemon unreachable or unknown plan '$PLAN_ID'" 3
   text="$(printf '%s' "$body" | jq -r '.planText // empty')"
   if [[ -n "$OUT" ]]; then printf '%s' "$text" > "$OUT"; else printf '%s' "$text"; fi
   ;;
 list)
-  loop_ensure_daemon
-  body="$(curl -sf -m 5 "${LOOP_DAEMON_URL}/api/loops")" || die "list: daemon unreachable" 3
-  printf '%s' "$body" | jq -r '.[] | "\(.runId)  ·  \(.status)  ·  \(.effort // "-")"'
+  skills="$("${WS_BIN:-ws}" loop list --json 2>/dev/null)" || skills='[]'
+  skills="$(jq -ce '[.[] | select(.engine == "skills") | {
+    runId:(.plan_id // .id), status:.status,
+    effort:(.effort // (.plan.text // "" | split("\n") | map(select(startswith("# "))) | .[0] // ""
+      | ltrimstr("# ") | sub(" — Multi-Phase Plan$"; "") | if length > 0 then . else "-" end))
+    }]' <<< "$skills" 2>/dev/null)" || skills='[]'
+  web_ensure_daemon
+  if ! body="$(curl -sf -m 5 "${LOOP_DAEMON_URL}/api/loops")"; then
+    [[ "$skills" != '[]' ]] || die "list: daemon unreachable" 3
+    body='[]'
+  fi
+  printf '%s' "$body" | jq -r --argjson skills "$skills" '
+    reduce ($skills + .)[] as $row ([]; if any(.[]; .runId == $row.runId) then . else . + [$row] end)
+    | .[] | "\(.runId)  ·  \(.status)  ·  \(.effort // "-")"'
   ;;
 note)
   [[ -n "$PLAN_ID" ]] || die "note requires --plan-id <id>"
   [[ -n "$BODY" ]] || die "note requires --body <text>"
-  loop_ensure_daemon
+  if plan="$(read_ws_plan "$PLAN_ID")" && jq -e '.engine == "skills"' >/dev/null 2>&1 <<< "$plan"; then
+    session="$("${WS_BIN:-ws}" loop get "$PLAN_ID" --json)" || exit 3
+    target="$(jq -er '.id' <<< "$session")" || exit 3
+    body="$(jq -cn --arg phase "$PHASE" --arg text "$BODY" \
+      '{phase:(if $phase == "" then null else ($phase | tonumber) end), text:$text}')" || exit 1
+    "${WS_BIN:-ws}" event loop.note --target "$target" --source tool --body "$body" >/dev/null || exit 3
+    exit 0
+  fi
+  web_ensure_daemon
   printf '%s' "$(jq -cn --arg event progress.note --arg phase "$PHASE" --arg detail "$BODY" \
     --arg ts "$(now_iso)" '{event:$event, phase:$phase, detail:$detail, ts:$ts}')" \
-    | loop_emit "$PLAN_ID" event
+    | web_emit "$PLAN_ID" event
   ;;
 *)
   die "unknown command '${CMD}' (register|push|get|list|note|archive)"

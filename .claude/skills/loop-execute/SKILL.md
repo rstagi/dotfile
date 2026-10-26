@@ -77,8 +77,15 @@ the Mac; do not manage power yourself.
 
 Resolve the plan LOCAL → daemon: `.loop/plan.md` header → the daemon
 (`loop-plan.sh get --plan-id <id>`, else `loop-plan.sh list`; argument → ask, like
-`loop-pickup` step 1). Parse phases, kinds, lanes, repositories, `Depends on` edges,
-statuses, and per-phase `Verify`. Validate: DAG acyclic;
+`loop-pickup` step 1). Read `engine` only from the initial `<!-- loop-plan … -->` header.
+For `engine: skills`, stop before repository checks, the lock or init. Print one line:
+`REFUSED: engine: skills requires ws loop start <loop dir>`.
+Replace `<loop dir>` with the resolved loop directory. Quote the path for the shell when necessary.
+Do not start the old engine. This preflight refusal applies to `/loop-execute <plan>`.
+The parked milestone resume below can switch engines.
+
+Parse phases, kinds, lanes, repositories, `Depends on` edges, statuses, and per-phase `Verify`.
+Validate: DAG acyclic;
 every phase has *Done when*; every work phase has exactly one known repository; the final
 document phase is `[kind: pr-review]`. Legacy plans without explicit kinds retain their
 synthetic terminal review. A phase that an `[archived]` stub lists is an existing phase with status `done`.
@@ -607,6 +614,12 @@ milestone of a plan, or the final review of a plan with no milestones.
 
 ### 9. `resume` / `status` / `abort`
 
+Before `resume`, read the local plan header. With `engine: skills`, allow only the parked milestone resume below.
+This includes park recovery in step 1.
+Also allow its step 5 when `state.resumePending` equals `state.milestone` after a crash.
+For any other skills-plan resume, print the preflight refusal and stop before old-engine scheduling.
+For a skills plan, a SUB writes `status.json{outcome:"blocked"}` and exits.
+
 - **resume** — re-lock with the state's run id, then reconcile per protocol (git >
   plan/daemon > state): finish/abort any in-progress merge first;
   re-attach or fail dead attempts;
@@ -643,6 +656,7 @@ never rerun a live pid, repeat a remediation push, or duplicate the final review
 
 **Milestone resume** *(human only, `LOOP_SUB` unset; the loop is parked — `state.awaitingMerge`
 set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll for merges.
+Steps 1–4 stay the same for both engines. Select the restart engine in step 5 from the local plan header.
 
 1. **Recover the park.** If `awaitingMerge` is unset but the current milestone's gate review is
    `done` with every participant's gate PR recorded (crash between aggregation and step 8.1),
@@ -684,11 +698,31 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    runtime itself (`runtimeRepo` set), `runtimeRoot` is the host repository's new integration
    worktree (or its retained old one when the host sits the milestone out):
    switch `RUNTIME_ROOT` to it before composing any later prompt; patch `runtimeRoot` null (no host) → keep the installed runtime.
-5. **Restart.** Set plan Status back to `in progress` + `loop-plan.sh push`; remove
+5. **Restart.** Read `engine` from the local plan header. Without `engine: skills`, keep the old-engine sequence:
+   Set plan Status back to `in progress` + `loop-plan.sh push`; remove
    `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); seed the lessons (below); respawn the
    orchestrator for the new milestone (the SUB then schedules only its phases); last,
    `loop-state.sh set '.resumePending = null'` (every restart item above is idempotent).
-   **Lessons in the seed.** Before the respawn, add the `### Lessons` of the most recent
+   - With `engine: skills`, set plan Status back to `in progress`. Run `loop-plan.sh push`.
+     Remove `sub/REVIEW_READY`. Seed the lessons below.
+     Use the installed runtime in `~/dotfile` for all Loop tools and skills.
+     Do not use tools or skills from the new integration worktree. Set `RUNTIME_ROOT` to the installed runtime.
+     Before `ws loop start <loop dir>`, create or reuse the loop session:
+     `LOOP_SESSION="$(ws loop create --dir <absolute loop dir>)"`.
+     Run `WS_LOOP_ID="$LOOP_SESSION" "$RUNTIME_ROOT/loop-milestone.sh" open --dir <loop dir>`.
+     Stop on failure. The tool records `loop.phases`, `loop.milestone` and earlier merged `loop.gate` events.
+     It reads the current milestone and the earlier gate PRs from the advanced state.
+     Never write these facts with `source: agent`.
+     The open tool can clear `resumePending`. Restore it with `loop-state.sh set '.resumePending = .milestone'` before the start.
+     Read `ws loop get "$LOOP_SESSION" --json`.
+     Check the current milestone and every earlier milestone's `merged` entry in `merge_gates` before the start.
+     If a fact is absent, stop. Correct the saved history before another resume.
+     Log `milestone.resumed` with an empty phase and detail `M<n> engine skills`.
+     Run `ws loop start <loop dir>` in place of the orchestrator respawn. Stop on failure.
+     Use the resolved loop directory in each command. Quote its path for the shell when necessary.
+   After a successful start, run `loop-state.sh set '.resumePending = null'` last.
+   Every restart item is idempotent. A failed start keeps the marker for another resume.
+   **Lessons in the seed.** Before either engine starts, add the `### Lessons` of the most recent
    archive file `.loop/milestones/m<M>.md` to `.loop/sub/prompt-seed.md`, at most 15 lines.
    M is the highest archived milestone.
    - Put the lessons between the lines `<!-- loop-lessons -->` and `<!-- /loop-lessons -->`.
@@ -699,12 +733,13 @@ set, or unset after a crash and recovered in step 1)*. Never auto-resume or poll
    mode (protocol § Milestone explainers). The output directory is
    `.loop/explainers/m<N>-plan/`, where N is the new milestone.
    - Skip this step when `link.txt` already exists there.
-   - Spawn one detached explainer runner after the respawn. Do not wait for it here.
+   - Spawn one detached explainer runner after the selected engine starts. Do not wait for it here.
    - At each later poll or tick, look for its `meta.json`. Then render the page with
      `--narration`, publish and write `link.txt`, as the skill tells you.
    - Notify once (`loop-notify.sh --level info --title "M<N> plan explainer"`) with the link
      (`--url`) or the failure.
    - A failed explainer never stops the resume or the orchestrator.
+     This also applies to the skills engine.
 
 ### Sub recycle *(mode: `sub` only)*
 

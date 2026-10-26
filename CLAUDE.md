@@ -27,7 +27,7 @@ macOS dotfile repo w/ automated dev environment setup. Installs shell config, CL
 shellcheck install.sh
 
 # Syntax-check zsh scripts
-zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh
+zsh -n loop-emit.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-state.sh loop-orchestrator.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh tests/loop-e2e/*.sh
 
 # Loop shell tests and picker smoke test, including zsh syntax checks
 zsh tests/run.sh
@@ -40,6 +40,16 @@ zsh tests/plan-review.test.sh
 
 # converge + assess skill contracts and their Loop wiring
 zsh tests/converge-assess-skills.test.sh
+
+# loop-review skill contract + step tool (fake ws)
+zsh tests/loop-review-skill.test.sh
+
+# loop skill prose contract
+zsh tests/loop-skill.test.sh
+
+# Skills engine end to end in a sandbox (fake orchestrator; --model <id> runs the loop skill on that model)
+zsh tests/loop-e2e/run.sh --scenario happy|verify-fail|crash|broken
+zsh tests/loop-e2e/run.sh --all
 
 # loop-top only
 node --test tests/loop-top.test.mjs
@@ -68,17 +78,18 @@ python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-install-agent-skills.sh Shares Loop (incl. assess + converge), ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
+install-agent-skills.sh Shares Loop (incl. loop + assess + converge + loop-review), ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
 loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
 loop-notify.sh          Loop engineering: notification fan-out (osascript, opt-in Telegram)
 loop-state.sh           Loop engineering: state/lock/journal/daemon + note/notes steering ops
-loop-plan.sh            Loop engineering: register/push a plan on the daemon + progress notes (the only plan backend) + archive a shipped milestone
+loop-plan.sh            Loop engineering: plan reads, writes, notes and archive. Skills plans use wsd. Other plans use loop-web
 loop-plan-archive.mjs   Loop engineering: pure milestone-archive transform for `loop-plan.sh archive` (imports loop-web's TS parser, Node ≥22.18); puts a pending `milestones/m<N>.retro.md` first
 loop-retro.mjs          Loop engineering: milestone retrospective facts collector (attempts, setback candidates, totals; facts only, zero-dep, Node ≥20)
-loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap (or adopt existing branch)
-loop-milestone.sh       Loop engineering: milestone merge gate — check gate PR states, advance (prepare next milestone, print state patch)
+loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap (or adopt existing branch); `lane` gives a PR phase its own branch + worktree
+loop-milestone.sh       Loop engineering: milestone merge gate — open (skills loop), park (skills loop at the gate), check gate PR states, advance (prepare next milestone, print state patch)
+loop-plan-park.mjs      Loop engineering: pure plan transform for `loop-milestone.sh park` (done statuses, PR lines, Status `awaiting merge`; imports `loop-plan-model/park-milestone.ts`, Node ≥22.18)
 loop-ar.sh              Loop engineering: shared AR verdicts, rotation, state machine, prompts, disputed reports, fix proof (sourced, or run as `verdict|prompt|disputed|prove-fix`)
 loop-review.sh          Loop engineering: ledger-driven PR review — next/record/recover/prompt (a<k>, stage, role, chain)
 loop-plan-review.sh     Loop engineering: one rotating AR reviewer ↔ critic round on a frozen draft plan
@@ -96,6 +107,8 @@ wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 .claude/skills/ws-sessions/ Agent guide to ws session discovery, messaging, completion and handoffs
 .claude/skills/ws-orchestrate/ Repo-less orchestrator: one child session per repo, ws-message coordination, PR URL summary, no repo edits
 .claude/skills/assess/ Idea gate before multiphase-plan: evidence → go|clarify|kill → .loop/assessments/<slug>.md with a Handoff goal
+.claude/skills/loop-review/ AR review of a PR, plan, document or file on ws tools: keyed headless steps via loop-runner.sh --review-key, step.sh picks the attempt from the loop log
+.claude/skills/loop/ Skills-engine orchestrator: open → spawn phases (lane worktree per pr phase) → merge by loop-merge.sh exit → loop-review → park at merge/accept gates; recycles with `ws on me exit --spawn`. Prose contract: `tests/loop-skill.test.sh`
 .claude/skills/converge/ Read-only Done-when check vs built code (met|partial|missing) → .loop/converge/p<N>.md. loop-execute §8 runs it once per review phase and inserts one gap phase per missing criterion
 .claude/skills/visual-explainer/ Props JSON → concept graph (graph.mjs: nodes, edges, fixed layout) → one self-contained surfable HTML page (plan|ship), zero-dep render.mjs + schemas. Narration JSON (one commentary text per report section) → report walkthrough that spotlights each section (template/walkthrough.js)
 .zshrc                  Main shell config, sources extensions
@@ -134,7 +147,7 @@ Cargo tests cover the CLI and daemon. `zsh ws/tests/run.sh` tests the embedded p
 
 `loop-ar.sh` is the shared protocol core; `loop-review.sh next/record/recover/prompt` drives a per-repository `runs/review-p<N>-<owner--repo>.ledger.tsv`. Each completed run has six TSV columns: `a<k>`, stage, role, provider, verdict token, and run directory relative to `.loop/`. Roles are `review|critic|respond|confirm|disputed|fix|final`; no skipped rows are written. Resume recovers finished-but-unrecorded runs, reconciles the GitHub final marker, then asks for `next`. Effort and provider chains are in `loop-models.conf`. `multiphase-plan` uses the same AR protocol before registering: `loop-plan-review.sh run --round r` runs one independent round; the planner verifies the converged review and disputed items, edits the plan between rounds, and stops early on clean. `LOOP_PLAN_REVIEW_ROUNDS` is a maximum (default 2). Round 2 runs only when a blocking finding changed the plan. `light <goal>` skips plan review.
 
-GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. The central **Loop daemon** + `.loop/plan.md` are the only plan backend. On-disk coordinator state stays in flattened `.loop/`; review notes use `notes/<reviewPhase>.md` (legacy `notes/pr-review.*` aliases remain accepted). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`; vendored prompts: `references/ar-prompts.md` beside it. Two-tier mode keeps scheduling/merges in recyclable SUBs and review-phase pipelines in detached runners. Runners run only targeted tests while they work. The runner Verify runs the full repository Verify one time, and `loop-merge.sh --verified-record` does not run it again on the same tree. A new lane worktree gets an APFS clone (`cp -c -R`) of the repository `Build caches:` from the integration worktree. A lane in the same repository keeps its worktree. Shell tests live in `tests/` (`zsh tests/run.sh`).
+GitHub slugs stay in plans; reusable checkout mappings live in `~/.loop/repos.json` through `loop-repo.sh`. Plans with `engine: skills` use **wsd**. All other plans use the central **loop-web daemon**. `.loop/plan.md` is the local copy. A reader ignores the header's `daemon:` URL for a skills plan. Change the engine only while the loop is parked at a merge gate. On-disk coordinator state stays in flattened `.loop/`; review notes use `notes/<reviewPhase>.md` (legacy `notes/pr-review.*` aliases remain accepted). Contract: `.claude/skills/loop-execute/references/loop-protocol.md`; vendored prompts: `references/ar-prompts.md` beside it. Two-tier mode keeps scheduling/merges in recyclable SUBs and review-phase pipelines in detached runners. Runners run only targeted tests while they work. The runner Verify runs the full repository Verify one time, and `loop-merge.sh --verified-record` does not run it again on the same tree. A new lane worktree gets an APFS clone (`cp -c -R`) of the repository `Build caches:` from the integration worktree. A lane in the same repository keeps its worktree. Shell tests live in `tests/` (`zsh tests/run.sh`). `tests/loop-e2e/` runs a 3-phase, 2-lane test plan with 1 AR review and 1 merge gate on the skills engine in a sandbox (private `wsd`, `tmux -L`, bare origin, fake engines); results of real-model runs go to `tests/loop-e2e/RESULTS.md`.
 
 **Milestones:** one Loop plan may carry several `## Milestone N — <outcome>` sections (plain `## Phases` = one implicit milestone 1). Each ships as its own PR per participating repository and ends with a `[kind: pr-review]` `[gate: merge]` phase. After that review's verdict is posted the loop parks in `awaiting-merge` (plan Status `awaiting merge`, typed `milestone.awaiting-merge` event, notification with the PR URLs); it never finishes or respawns. The human assesses and merges, then runs `/loop-execute resume`: `loop-milestone.sh check` confirms the gate PRs merged, `advance` prepares the next milestone's worktrees from a freshly fetched default branch, and the orchestrator respawns. Between `check` and `advance`, `loop-plan.sh archive --milestone M --dir .loop` (M = 1 up to the parked milestone) moves each shipped milestone's phase blocks and progress-log entries to `.loop/milestones/m<M>.md` and leaves an `[archived]` stub in `plan.md`, so the plan holds full blocks only for unshipped milestones. Every plan reader treats a stub-listed phase as an existing `done` phase; the daemon parser must be restarted to read stubs. Milestone ≥2 integration branches are declared in the plan; worktrees live at `…/<owner--repo>/integration-<branch-slug>-<hash8>` (8-char sha1 of the exact branch). `loop-pickup`/`loop-handoff` never touch phases of a later milestone than `state.milestone`. Format: `.claude/skills/multiphase-plan/references/plan-format.md` → Milestones. After pulling these changes, restart the Loop daemon (`awaiting-merge` status + milestone events are new): `launchctl kickstart -k gui/$(id -u)/com.rstagi.loop-web`; run `./loop-web.sh --daemon` only when no LaunchAgent is bound to :7717.
 

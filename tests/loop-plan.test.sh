@@ -9,6 +9,16 @@ source "$HERE/lib.sh"
 FAKE="$HERE/fake"
 
 TMP="$(mktemp -d)"
+unset WS_LOOP_ID WS_SESSION_ID WS_SESSION LOOP_DAEMON_URL TMUX TMUX_PANE
+export HOME="$TMP/home" WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock"
+export WS_TMUX_SOCKET="$TMP/tmux.sock" WS_NOTIFY=0
+# These old-engine cases do not use ws. Never probe the installed daemon.
+export WS_BIN="$TMP/missing-ws"
+mkdir -p "$HOME" "$TMP/bin"
+print -r -- $'#!/bin/sh\nexit 1' > "$TMP/bin/launchctl"
+print -r -- $'#!/bin/sh\nexit 1' > "$TMP/bin/ws"
+chmod +x "$TMP/bin/launchctl" "$TMP/bin/ws"
+export PATH="$TMP/bin:$PATH"
 DAEMON_PID=""
 STORE=""
 cleanup() {

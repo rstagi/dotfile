@@ -28,6 +28,17 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$RUN_ID" ]] || { echo "loop-orchestrator: --run-id required" >&2; exit 1; }
 
+# The plan header selects one engine. Refuse before ws supervision or any SUB starts.
+if [[ -f "$DIR/plan.md" ]] && awk '
+  NR == 1 { if ($0 !~ /^[[:space:]]*<!-- loop-plan[[:space:]]*$/) exit; next }
+  /^[[:space:]]*-->[[:space:]]*$/ { exit }
+  /^[[:space:]]*engine[[:space:]]*:[[:space:]]*skills[[:space:]]*$/ { skills = 1 }
+  END { exit !skills }
+' "$DIR/plan.md"; then
+  print -u2 -r -- "loop-orchestrator: engine: skills requires ws loop start ${(q)DIR}"
+  exit 1
+fi
+
 mkdir -p "$DIR/sub"
 
 # wsd supervises the respawner. Its SUBs inherit the orchestrator session id.

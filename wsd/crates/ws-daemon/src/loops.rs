@@ -18,6 +18,7 @@ use ws_core::{ids::SessionId, log::LogEntry, registry::Session};
 
 use crate::{
     api::{self, ApiError, SessionResponse, Store},
+    events::{latest_plan_entry, plan_sha},
     sessions::{Error, Result, Sessions},
 };
 
@@ -25,11 +26,23 @@ pub(crate) mod guard;
 
 /// The phase statuses from lowest to highest. The Loop fold never lowers a status.
 const PHASE_RANKS: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
+/// The phase fields that the latest `loop.phases` snapshot defines.
+const PHASE_DEFINITION_FIELDS: [&str; 8] = [
+    "title",
+    "kind",
+    "output",
+    "milestone",
+    "gate",
+    "repo",
+    "branch",
+    "depends_on",
+];
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoopRequest {
     pub loop_dir: PathBuf,
+    pub plan_id: Option<String>,
     pub parent_session_id: Option<SessionId>,
 }
 
@@ -87,6 +100,7 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/loops", get(list))
         .route("/v1/loops/{id}", get(fetch))
         .route("/v1/loops/{id}/check", get(check))
+        .route("/v1/loops/{id}/plan", get(plan))
         .route("/v1/loops/create", post(create))
         .route("/v1/loops/guard", post(guard::run))
         .route("/v1/loops/ack", post(ack))
@@ -143,7 +157,7 @@ async fn fetch(
     Ok(Json(
         api::call(store, move |sessions| {
             sessions.record_call(context.parent_session_id, "loop.get", Some(&id))?;
-            let session = sessions.get_record(&id)?;
+            let session = sessions.resolve_loop(&id)?;
             if session.body["kind"] != "loop" {
                 return Err(Error::InvalidRequest("The session is not a loop."));
             }
@@ -161,7 +175,7 @@ async fn check(
     Ok(Json(
         api::call(store, move |sessions| {
             sessions.record_call(context.parent_session_id, "loop.check", Some(&id))?;
-            let session = sessions.get_record(&id)?;
+            let session = sessions.resolve_loop(&id)?;
             if session.body["kind"] != "loop" {
                 return Err(Error::InvalidRequest("The session is not a loop."));
             }
@@ -171,6 +185,24 @@ async fn check(
             let mut result = crate::loop_check::check_entries(&log.entries);
             result["id"] = json!(session.id);
             Ok(result)
+        })
+        .await?,
+    ))
+}
+
+async fn plan(
+    State(store): State<Store>,
+    RoutePath(id): RoutePath<String>,
+    Query(context): Query<api::CallContext>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| {
+            sessions.record_call(context.parent_session_id, "loop.plan", Some(&id))?;
+            let session = sessions.resolve_loop(&id)?;
+            if session.body["kind"] != "loop" {
+                return Err(Error::InvalidRequest("The session is not a loop."));
+            }
+            sessions.loop_plan(&session)
         })
         .await?,
     ))
@@ -197,7 +229,11 @@ async fn create(
             "loop.create",
             request.loop_dir.to_str(),
         )?;
-        sessions.create_loop_session(&request.loop_dir, request.parent_session_id)
+        sessions.create_loop_session(
+            &request.loop_dir,
+            request.plan_id.as_deref(),
+            request.parent_session_id,
+        )
     })
     .await?;
     let status = if created {
@@ -288,7 +324,7 @@ impl Sessions {
             &format!("loop.{action}"),
             Some(id),
         )?;
-        let session = self.get_record(id)?;
+        let session = self.resolve_loop(id)?;
         if session.body["kind"] != "loop" {
             return Err(Error::InvalidRequest("The session is not a loop."));
         }
@@ -456,7 +492,11 @@ impl Sessions {
                 return Err(Error::Io(error));
             }
         }
-        let entry = self.append_daemon_loop_event(id, kind, body.as_object().unwrap().clone())?;
+        let entry = self.append_daemon_loop_event(
+            &session.id.to_string(),
+            kind,
+            body.as_object().unwrap().clone(),
+        )?;
         serde_json::to_value(entry).map_err(Error::Json)
     }
 
@@ -569,10 +609,14 @@ impl Sessions {
         Ok(())
     }
 
-    /// Refuses a child of a phase from a later milestone while a merge gate is open.
+    /// Refuses a child of a phase that waits for an accept gate, or of a later milestone while a
+    /// merge gate is open.
     pub(crate) fn check_milestone_gate(&self, loop_id: SessionId, phase: u64) -> Result<()> {
         let session = self.get_record(&loop_id.to_string())?;
         let state = self.loop_state(&session)?;
+        if blocked_by_accept_gate(&state, phase) {
+            return Err(Error::AcceptGateOpen);
+        }
         let Some(open) = open_merge_gate(&state) else {
             return Ok(());
         };
@@ -619,14 +663,75 @@ impl Sessions {
 
     fn loop_state(&self, session: &Session) -> Result<Value> {
         let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
-        Ok(fold_loop(session, log.entries))
+        let plan_id = loop_plan_id(session, &log.entries);
+        let engine = latest_plan_entry(&log.entries).and_then(plan_engine);
+        let mut state = fold_loop(session, log.entries);
+        state["plan_id"] = json!(plan_id);
+        state["engine"] = json!(engine);
+        Ok(state)
+    }
+
+    /// The latest plan of a loop with its engine and current milestone.
+    fn loop_plan(&self, session: &Session) -> Result<Value> {
+        let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
+        let plan_id = loop_plan_id(session, &log.entries);
+        let entry = latest_plan_entry(&log.entries).ok_or(Error::NoLoopPlan)?;
+        let engine = plan_engine(entry);
+        let (seq, body) = (entry.seq, entry.body.clone());
+        let milestone = fold_loop(session, log.entries)["milestone"].clone();
+        Ok(json!({
+            "plan_id":plan_id, "engine":engine, "sha":body["sha"], "text":body["text"],
+            "seq":seq, "milestone":milestone,
+        }))
+    }
+
+    /// Appends the first `loop.plan` of a loop from the `plan.md` file of its directory.
+    fn seed_loop_plan(&mut self, session: &Session, directory: &Path) -> Result<()> {
+        let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
+        if latest_plan_entry(&log.entries).is_some() {
+            return Ok(());
+        }
+        let Ok(text) = fs::read_to_string(directory.join("plan.md")) else {
+            return Ok(());
+        };
+        let body = json!({"sha":plan_sha(&text), "text":text});
+        self.append_daemon_loop_event(
+            &session.id.to_string(),
+            "loop.plan",
+            body.as_object().unwrap().clone(),
+        )?;
+        Ok(())
+    }
+
+    /// Resolves the session identity or the plan identity of a loop.
+    pub(crate) fn resolve_loop(&self, input: &str) -> Result<Session> {
+        match self.get_record(input) {
+            Ok(session) => return Ok(session),
+            Err(Error::Registry(ws_core::registry::Error::NotFound(_))) => {}
+            Err(error) => return Err(error),
+        }
+        for session in self.registry.sessions()? {
+            if session.body["kind"] == "loop" {
+                let entries =
+                    ws_core::log::SessionLog::new(&self.state, session.id, self.device_id)
+                        .read()?
+                        .entries;
+                if loop_plan_id(&session, &entries).as_deref() == Some(input) {
+                    return Ok(session);
+                }
+            }
+        }
+        Err(Error::Registry(ws_core::registry::Error::NotFound(
+            input.into(),
+        )))
     }
 
     /// Returns `(true, session)` for a new loop session and `(false, session)` for the session
-    /// that already holds this canonical loop directory.
+    /// that already holds this plan id or canonical loop directory.
     pub fn create_loop_session(
         &mut self,
         loop_dir: &Path,
+        plan_id: Option<&str>,
         parent_session_id: Option<SessionId>,
     ) -> Result<(bool, Session)> {
         if !loop_dir.is_absolute() {
@@ -640,12 +745,39 @@ impl Sessions {
                 "The loop directory is not a directory.",
             ));
         }
+        let plan_id = match plan_id {
+            Some(id) => Some(id.trim().to_owned()).filter(|id| !id.is_empty()),
+            None => fs::read_to_string(directory.join("plan.md"))
+                .ok()
+                .and_then(|text| plan_header_value(&text, "planId")),
+        }
+        .ok_or(Error::InvalidRequest(
+            "Specify a plan id in the plan header or with --plan-id.",
+        ))?;
+        let mut directory_match = None;
         for session in self.registry.sessions()? {
-            if session.body["kind"] == "loop"
-                && session.body["loop_dir"].as_str() == directory.to_str()
-            {
-                return Ok((false, self.get_record(&session.id.to_string())?));
+            if session.body["kind"] != "loop" {
+                continue;
             }
+            let entries = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id)
+                .read()?
+                .entries;
+            let same_directory = session.body["loop_dir"].as_str().is_some_and(|path| {
+                Path::new(path)
+                    .canonicalize()
+                    .is_ok_and(|path| path == directory)
+            });
+            if loop_plan_id(&session, &entries).as_deref() == Some(&plan_id) {
+                self.seed_loop_plan(&session, &directory)?;
+                return Ok((false, session));
+            }
+            if same_directory {
+                directory_match = Some(session);
+            }
+        }
+        if let Some(session) = directory_match {
+            self.seed_loop_plan(&session, &directory)?;
+            return Ok((false, session));
         }
         self.check_spawn_limits(parent_session_id)?;
         let id = ws_core::ids::Ulid::new();
@@ -654,10 +786,52 @@ impl Sessions {
             id,
             "session.created",
             json!({"alias":alias,"name":null,"workspace_id":null,
-                "parent_session_id":parent_session_id,"kind":"loop","loop_dir":directory}),
+                "parent_session_id":parent_session_id,"kind":"loop","loop_dir":directory,"plan_id":plan_id}),
         )?;
-        Ok((true, self.get_record(&id.to_string())?))
+        let session = self.get_record(&id.to_string())?;
+        self.seed_loop_plan(&session, &directory)?;
+        Ok((true, session))
     }
+}
+
+/// Older sessions obtain their plan identity from the latest plan event, then the file.
+fn loop_plan_id(session: &Session, entries: &[LogEntry]) -> Option<String> {
+    session.body["plan_id"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            entries
+                .iter()
+                .rev()
+                .find(|entry| entry.event_type == "loop.plan")
+                .and_then(|entry| entry.body["text"].as_str())
+                .and_then(|text| plan_header_value(text, "planId"))
+        })
+        .or_else(|| {
+            session.body["loop_dir"]
+                .as_str()
+                .and_then(|path| fs::read_to_string(Path::new(path).join("plan.md")).ok())
+                .and_then(|text| plan_header_value(&text, "planId"))
+        })
+}
+
+/// The `engine:` value in the header of a plan event, or null.
+fn plan_engine(entry: &LogEntry) -> Option<String> {
+    plan_header_value(entry.body["text"].as_str()?, "engine")
+}
+
+/// Reads a nonempty field from the canonical plan header.
+fn plan_header_value(text: &str, field: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim() != "<!-- loop-plan" {
+        return None;
+    }
+    lines
+        .take_while(|line| line.trim() != "-->")
+        .filter_map(|line| line.split_once(':'))
+        .find(|(key, value)| key.trim() == field && !value.trim().is_empty())
+        .map(|(_, value)| value.trim().to_owned())
 }
 
 fn valid_model(model: &str) -> bool {
@@ -778,6 +952,9 @@ async fn start(
     State(store): State<Store>,
     Json(request): Json<LoopRequest>,
 ) -> std::result::Result<(axum::http::StatusCode, Json<SessionResponse>), ApiError> {
+    if skills_engine(&request.loop_dir).map_err(ApiError)? {
+        return start_skills(store, request).await;
+    }
     let caller = request.parent_session_id;
     let (directory, run_id, script, _lock) = api::call(store.clone(), move |sessions| {
         sessions.record_call(caller, "loop.start", request.loop_dir.to_str())?;
@@ -876,6 +1053,129 @@ async fn start(
     Ok((axum::http::StatusCode::CREATED, Json(session.into())))
 }
 
+/// Reads the engine only from the canonical plan header.
+fn skills_engine(directory: &Path) -> Result<bool> {
+    if !directory.is_absolute() {
+        return Ok(false);
+    }
+    let plan = match fs::read_to_string(directory.join("plan.md")) {
+        Ok(plan) => plan,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut lines = plan.lines();
+    if lines.next().map(str::trim) != Some("<!-- loop-plan") {
+        return Ok(false);
+    }
+    Ok(lines
+        .take_while(|line| line.trim() != "-->")
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, value)| key.trim() == "engine" && value.trim() == "skills"))
+}
+
+async fn start_skills(
+    store: Store,
+    request: LoopRequest,
+) -> std::result::Result<(axum::http::StatusCode, Json<SessionResponse>), ApiError> {
+    let (directory, owner, _lock) = api::call(store.clone(), move |sessions| {
+        sessions.record_call(
+            request.parent_session_id,
+            "loop.start",
+            request.loop_dir.to_str(),
+        )?;
+        let directory = request.loop_dir.canonicalize()?;
+        let sub = directory.join("sub");
+        fs::create_dir_all(&sub)?;
+        let lock = ws_core::lockfile::open_lock_file(&sub.join("start.lock"))?;
+        lock.try_lock()
+            .map_err(|_| Error::InvalidRequest("Another caller is starting this loop."))?;
+        let state = match fs::read(directory.join("state.json")) {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(Error::Json)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+            Err(error) => return Err(error.into()),
+        };
+        if state
+            .get("awaitingMerge")
+            .is_some_and(|value| !value.is_null() && value != false)
+        {
+            return Err(Error::InvalidBody(format!(
+                "The loop awaits a milestone merge. Run loop-milestone.sh resume --dir {}.",
+                shell_words::quote(&directory.to_string_lossy())
+            )));
+        }
+        let (_, owner) = sessions.create_loop_session(
+            &directory,
+            request.plan_id.as_deref(),
+            request.parent_session_id,
+        )?;
+        for session in sessions.registry.sessions()? {
+            let orchestrator_child = session.body["parent_session_id"] == json!(owner.id)
+                && session.body["loop"].is_null();
+            if session.body["kind"] == "headless"
+                && (session.body["loop_dir"].as_str() == directory.to_str()
+                    || orchestrator_child
+                    || state["wsSession"].as_str() == Some(session.id.to_string().as_str()))
+                && !sessions.process_exited(session.id)?
+            {
+                return Err(Error::InvalidRequest(
+                    "The loop already has a running orchestrator.",
+                ));
+            }
+        }
+        Ok((directory, owner.id, lock))
+    })
+    .await?;
+    let prompt = format!(
+        "Use the loop skill. The loop directory is {}. The loop session is {owner}. Continue until the loop reaches a gate or finishes.",
+        directory.display()
+    );
+    // Preparation runs after the supervisor records the child and its loop parent.
+    // Pass data as arguments so paths and prompts cannot become shell commands.
+    let wrapper = r#"set -eu
+prepared=$("$1" agent prepare --agent claude --mode headless --session "$WS_SESSION_ID" --format sh)
+prompt=$2
+eval "$prepared"
+print_flag=$1
+shift
+exec "$WS_AGENT_PROGRAM" "$print_flag" "$prompt" "$@"
+"#;
+    let sub = directory.join("sub");
+    let session = crate::supervisor::launch(
+        store,
+        crate::supervisor::CreateHeadless {
+            headless: true,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                wrapper.into(),
+                "ws-loop".into(),
+                std::env::current_exe()
+                    .map_err(Error::Io)
+                    .map_err(ApiError)?
+                    .to_string_lossy()
+                    .into_owned(),
+                prompt,
+            ],
+            cwd: directory
+                .parent()
+                .ok_or(ApiError(Error::InvalidRequest(
+                    "The loop directory has no parent.",
+                )))?
+                .into(),
+            parent_session_id: Some(owner),
+            env: BTreeMap::new(),
+            stdin: None,
+            stdout: Some(sub.join("orchestrator.stdout.log")),
+            stderr: Some(sub.join("orchestrator.stderr.log")),
+            key: None,
+            loop_child: None,
+        },
+        json!({"loop_dir":directory,"loop_role":"orchestrator"}),
+    )
+    .await?;
+    Ok((axum::http::StatusCode::CREATED, Json(session.into())))
+}
+
 async fn stop(
     State(store): State<Store>,
     Json(request): Json<LoopRequest>,
@@ -946,6 +1246,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
     let mut state = json!({
         "id":session.id, "alias":session.alias, "loop_dir":session.body["loop_dir"],
+        "plan_id":session.body["plan_id"],
         "status":"planned", "plan":null, "phases":{}, "milestone":null,
         "merge_gates":{}, "attempts":[], "merges":[], "gates":[], "reviews":[], "notes":[],
         "decisions":[], "controls":[], "pauses":{}, "guards":[], "violations":[], "finish":null
@@ -962,9 +1263,7 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
             "loop.plan" => state["plan"] = body,
             "loop.phases" => {
                 if let Some(phases) = body["phases"].as_array() {
-                    for phase in phases {
-                        promote_phase(&mut state["phases"], phase);
-                    }
+                    replace_phases(&mut state["phases"], phases);
                 }
             }
             "loop.phase" => promote_phase(&mut state["phases"], &body),
@@ -1022,6 +1321,22 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
     state
 }
 
+/// Tells whether the phase depends on a review phase whose latest accept gate is open or rejected.
+fn blocked_by_accept_gate(state: &Value, phase: u64) -> bool {
+    let Some(dependencies) = state["phases"][phase.to_string()]["depends_on"].as_array() else {
+        return false;
+    };
+    dependencies.iter().filter_map(Value::as_u64).any(|n| {
+        state["gates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .find(|gate| gate["kind"] == "accept" && gate["phase"] == n)
+            .is_some_and(|gate| gate["state"] == "open" || gate["state"] == "rejected")
+    })
+}
+
 /// Returns the lowest milestone whose merge gate is open.
 fn open_merge_gate(state: &Value) -> Option<u64> {
     state["merge_gates"]
@@ -1032,19 +1347,45 @@ fn open_merge_gate(state: &Value) -> Option<u64> {
         .min()
 }
 
+/// Applies a `loop.phases` snapshot. The snapshot owns the phase list and the definitions.
+/// A phase keeps its progress records and its highest status.
+fn replace_phases(phases: &mut Value, snapshot: &[Value]) {
+    let previous = std::mem::replace(phases, json!({}));
+    for incoming in snapshot {
+        let Some(n) = incoming["n"].as_u64() else {
+            continue;
+        };
+        let key = n.to_string();
+        let mut definition = incoming.clone();
+        if let Some(old) = previous[&key].as_object() {
+            let fields = definition.as_object_mut().unwrap();
+            for (name, value) in old {
+                if !PHASE_DEFINITION_FIELDS.contains(&name.as_str()) && name != "status" {
+                    fields.entry(name.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            if phase_rank(&previous[&key]) > phase_rank(incoming) {
+                fields.insert("status".into(), previous[&key]["status"].clone());
+            }
+        }
+        phases[&key] = definition;
+    }
+}
+
+fn phase_rank(phase: &Value) -> usize {
+    PHASE_RANKS
+        .iter()
+        .position(|status| phase["status"] == *status)
+        .unwrap_or(0)
+}
+
 fn promote_phase(phases: &mut Value, incoming: &Value) {
     let Some(n) = incoming["n"].as_u64() else {
         return;
     };
     let key = n.to_string();
-    let rank = |phase: &Value| {
-        PHASE_RANKS
-            .iter()
-            .position(|status| phase["status"] == *status)
-            .unwrap_or(0)
-    };
     let current = &mut phases[&key];
-    if rank(incoming) < rank(current) {
+    if phase_rank(incoming) < phase_rank(current) {
         return;
     }
     if !current.is_object() {
@@ -1070,7 +1411,7 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use crate::sessions::Sessions;
+    use crate::{events::plan_sha, sessions::Sessions};
 
     #[tokio::test]
     async fn enforcement_blocks_hard_violations_until_the_human_acknowledges() {
@@ -1200,7 +1541,9 @@ mod tests {
     async fn enforcement_recovers_a_missing_violation_before_a_spawn() {
         let sandbox = tempfile::tempdir().unwrap();
         let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-        let (_, owner) = sessions.create_loop_session(sandbox.path(), None).unwrap();
+        let (_, owner) = sessions
+            .create_loop_session(sandbox.path(), Some("fixture-plan"), None)
+            .unwrap();
         // Model a durable fact whose derived violation append failed.
         ws_core::log::SessionLog::new(sandbox.path(), owner.id, owner.device_id)
             .append(
@@ -1374,7 +1717,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":sandbox.path()}),
+            json!({"loop_dir":sandbox.path(),"plan_id":format!("fixture:{}", sandbox.path().display())}),
         )
         .await;
         let (status, _) = request(
@@ -1400,7 +1743,9 @@ mod tests {
     async fn recovery_repairs_interrupted_loop_appends_once_and_preserves_later_writes() {
         let sandbox = tempfile::tempdir().unwrap();
         let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-        let (_, owner) = sessions.create_loop_session(sandbox.path(), None).unwrap();
+        let (_, owner) = sessions
+            .create_loop_session(sandbox.path(), Some("fixture-plan"), None)
+            .unwrap();
         drop(sessions);
         // Model a crash after each child fact, before the corresponding Loop append.
         let child = ws_core::ids::Ulid::new();
@@ -1454,7 +1799,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":directory}),
+            json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
         )
         .await;
         let id = created["id"].as_str().unwrap();
@@ -1464,7 +1809,10 @@ mod tests {
         assert_eq!(initial["status"], "planned");
         assert_eq!(initial["phases"], json!({}));
         let events = [
-            ("loop.plan", json!({"text":"# Plan", "sha":"abc"})),
+            (
+                "loop.plan",
+                json!({"text":"# Plan", "sha":plan_sha("# Plan")}),
+            ),
             (
                 "loop.phases",
                 json!({"phases":[{"n":1,"title":"Build","kind":"work","output":"pr","milestone":1,
@@ -1517,7 +1865,7 @@ mod tests {
         let (_, state) = request(&app, "GET", &uri, Value::Null).await;
         assert_eq!(state["id"], created["id"]);
         assert_eq!(state["loop_dir"], json!(directory.canonicalize().unwrap()));
-        assert_eq!(state["plan"]["sha"], "abc");
+        assert_eq!(state["plan"]["sha"], plan_sha("# Plan"));
         assert_eq!(state["phases"]["1"]["status"], "merged");
         assert_eq!(state["phases"]["1"]["title"], "Build");
         assert_eq!(state["milestone"], 5);
@@ -1540,6 +1888,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_phases_snapshot_replaces_definitions_and_keeps_the_highest_status() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        let old = |n: u64| phase(n, "work", Value::Null, 1, json!([]));
+        let first = json!({"phases":[old(1), old(2)]});
+        assert_eq!(
+            post(&app, &id, "loop.phases", first).await,
+            StatusCode::CREATED
+        );
+        let running = json!({"n":1,"status":"running","attempt":2,"session":"child"});
+        assert_eq!(
+            post(&app, &id, "loop.phase", running).await,
+            StatusCode::CREATED
+        );
+        let mut replanned = old(2);
+        replanned["title"] = json!("Renamed");
+        replanned["depends_on"] = json!([3]);
+        replanned["milestone"] = json!(2);
+        let mut third = old(3);
+        third["status"] = json!("done");
+        let snapshot = json!({"phases":[replanned, third, old(1)]});
+        assert_eq!(
+            post(&app, &id, "loop.phases", snapshot).await,
+            StatusCode::CREATED
+        );
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["phases"]["1"]["status"], "running");
+        assert_eq!(state["phases"]["1"]["attempt"], 2);
+        assert_eq!(state["phases"]["2"]["title"], "Renamed");
+        assert_eq!(state["phases"]["2"]["depends_on"], json!([3]));
+        assert_eq!(state["phases"]["2"]["milestone"], 2);
+        assert_eq!(state["phases"]["3"]["status"], "done");
+
+        let mut retitled = old(1);
+        retitled["title"] = json!("New title");
+        retitled["depends_on"] = json!([2]);
+        let snapshot = json!({"phases":[retitled]});
+        assert_eq!(
+            post(&app, &id, "loop.phases", snapshot).await,
+            StatusCode::CREATED
+        );
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["phases"]["1"]["title"], "New title");
+        assert_eq!(state["phases"]["1"]["depends_on"], json!([2]));
+        assert_eq!(state["phases"]["1"]["status"], "running");
+        assert_eq!(state["phases"].as_object().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn loop_phases_accept_each_plan_output_kind_and_refuse_document() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, _) = loop_session(&app, sandbox.path()).await;
+        for output in ["pr", "file", "doc", "output.md"] {
+            let mut work = phase(1, "work", Value::Null, 1, json!([]));
+            work["output"] = json!(output);
+            assert_eq!(
+                post(&app, &id, "loop.phases", json!({"phases":[work]})).await,
+                StatusCode::CREATED,
+                "{output}"
+            );
+        }
+        let mut work = phase(1, "work", Value::Null, 1, json!([]));
+        work["output"] = json!("document");
+        assert_eq!(
+            post(&app, &id, "loop.phases", json!({"phases":[work]})).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
     async fn loop_reads_keep_work_records_and_a_terminal_finish() {
         let sandbox = tempfile::tempdir().unwrap();
         let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
@@ -1549,7 +1969,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":sandbox.path()}),
+            json!({"loop_dir":sandbox.path(),"plan_id":format!("fixture:{}", sandbox.path().display())}),
         )
         .await;
         let id = created["id"].as_str().unwrap();
@@ -1653,7 +2073,13 @@ mod tests {
     }
 
     async fn loop_session(app: &Router, dir: &std::path::Path) -> (String, String) {
-        let (_, created) = request(app, "POST", "/v1/loops/create", json!({"loop_dir":dir})).await;
+        let (_, created) = request(
+            app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":dir,"plan_id":format!("fixture:{}", dir.display())}),
+        )
+        .await;
         let id = created["id"].as_str().unwrap().to_owned();
         (id.clone(), format!("/v1/loops/{id}"))
     }
@@ -1912,6 +2338,187 @@ mod tests {
         assert_eq!(state["status"], "active");
         let (status, body) = request(&app, "POST", "/v1/sessions", spawn(2, "k2")).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    #[tokio::test]
+    async fn an_open_or_rejected_accept_gate_refuses_spawns_of_dependent_phases() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        post(
+            &app,
+            &id,
+            "loop.phases",
+            json!({"phases":[
+                phase(1, "work", Value::Null, 1, json!([])),
+                phase(2, "review", Value::Null, 1, json!([1])),
+                phase(3, "work", Value::Null, 1, json!([2])),
+                phase(4, "work", Value::Null, 1, json!([1])),
+            ]}),
+        )
+        .await;
+        let spawn = |phase: u64, key: &str| {
+            json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),"key":key,
+                "loop":{"loop":id,"phase":phase,"attempt":1}})
+        };
+        let gate = |state: &str, artifacts: Value| json!({"kind":"accept","state":state,"milestone":1,"phase":2,"artifacts":artifacts});
+        post(&app, &id, "loop.gate", gate("open", json!(["a.md"]))).await;
+        let (status, error) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        assert_eq!(error["error"]["code"], "accept_gate_open", "{error}");
+        // The gate phase and phases that do not depend on it still start.
+        let (status, body) = request(&app, "POST", "/v1/sessions", spawn(4, "k4")).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, _) = request(&app, "POST", &format!("{uri}/reject"), json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, error) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        post(&app, &id, "loop.gate", gate("open", json!(["b.md"]))).await;
+        let (status, _) = request(&app, "POST", &format!("{uri}/accept"), json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    fn plan_text(plan_id: &str, engine: Option<&str>, body: &str) -> String {
+        let engine = engine.map_or(String::new(), |engine| format!("engine: {engine}\n"));
+        format!("<!-- loop-plan\nplanId: {plan_id}\n{engine}-->\n{body}\n")
+    }
+
+    async fn plan_append(app: &Router, id: &str, text: &str, sha: &str) -> (StatusCode, Value) {
+        request(
+            app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":"loop.plan","source":"tool","body":{"text":text,"sha":sha}}),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn the_plan_read_follows_create_and_later_appends() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let directory = sandbox.path().join("loop");
+        std::fs::create_dir(&directory).unwrap();
+        let first = plan_text("plan-read", Some("skills"), "# First");
+        std::fs::write(directory.join("plan.md"), &first).unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, created) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":directory}),
+        )
+        .await;
+        let id = created["id"].as_str().unwrap().to_owned();
+
+        let (status, plan) =
+            request(&app, "GET", &format!("/v1/loops/{id}/plan"), Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(plan["plan_id"], "plan-read");
+        assert_eq!(plan["engine"], "skills");
+        assert_eq!(plan["sha"], plan_sha(&first));
+        assert_eq!(plan["text"], first);
+        assert_eq!(plan["milestone"], Value::Null);
+        let created_seq = plan["seq"].as_u64().unwrap();
+        let (_, log) = request(&app, "GET", &format!("/v1/sessions/{id}/log"), Value::Null).await;
+        let entry = log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["type"] == "loop.plan")
+            .unwrap();
+        assert_eq!(entry["seq"], created_seq);
+        assert_eq!(entry["body"]["source"], "daemon");
+
+        // A second create appends nothing.
+        request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":directory}),
+        )
+        .await;
+        let (_, again) = request(&app, "GET", &format!("/v1/loops/{id}/plan"), Value::Null).await;
+        assert_eq!(again["seq"], created_seq);
+
+        let second = plan_text("plan-read", None, "# Second");
+        let third = plan_text("plan-read", Some("old"), "# Third");
+        for text in [&second, &third] {
+            let (status, _) = plan_append(&app, &id, text, &plan_sha(text)).await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        assert_eq!(
+            post(&app, &id, "loop.milestone", json!({"milestone":4})).await,
+            StatusCode::CREATED
+        );
+        // The plan id resolves the same loop.
+        let (status, plan) = request(&app, "GET", "/v1/loops/plan-read/plan", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(plan["text"], third);
+        assert_eq!(plan["sha"], plan_sha(&third));
+        assert_eq!(plan["engine"], "old");
+        assert_eq!(plan["milestone"], 4);
+        assert!(plan["seq"].as_u64().unwrap() > created_seq);
+
+        let (_, state) = request(&app, "GET", &format!("/v1/loops/{id}"), Value::Null).await;
+        assert_eq!(state["engine"], "old");
+        let (_, list) = request(&app, "GET", "/v1/loops", Value::Null).await;
+        assert_eq!(list[0]["engine"], "old");
+    }
+
+    #[tokio::test]
+    async fn a_plan_append_checks_the_sha_and_ignores_an_unchanged_plan() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        let text = plan_text("fixture", None, "# Body\r\nline");
+
+        for sha in [
+            "wrong".to_owned(),
+            plan_sha(&text).to_uppercase(),
+            plan_sha(text.trim_end()),
+        ] {
+            let (status, _) = plan_append(&app, &id, &text, &sha).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{sha}");
+        }
+        let (status, _) = request(&app, "GET", &format!("{uri}/plan"), Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, first) = plan_append(&app, &id, &text, &plan_sha(&text)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, repeat) = plan_append(&app, &id, &text, &plan_sha(&text)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(repeat["seq"], first["seq"]);
+        let (_, log) = request(&app, "GET", &format!("/v1/sessions/{id}/log"), Value::Null).await;
+        let plans = log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["type"] == "loop.plan")
+            .count();
+        assert_eq!(plans, 1);
+
+        let changed = plan_text("fixture", None, "# Changed");
+        let (status, _) = plan_append(&app, &id, &changed, &plan_sha(&changed)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        // The old text is a change again, not a repeat of the first event.
+        let (status, _) = plan_append(&app, &id, &text, &plan_sha(&text)).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn the_plan_read_refuses_a_loop_without_a_plan_and_an_unknown_id() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, uri) = loop_session(&app, sandbox.path()).await;
+        let (status, body) = request(&app, "GET", &format!("{uri}/plan"), Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "loop_plan_not_found");
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["engine"], Value::Null);
+        let (status, _) = request(&app, "GET", "/v1/loops/unknown/plan", Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     async fn request(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {

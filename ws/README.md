@@ -29,7 +29,7 @@ The [Rust command reference](#rust-commands) describes state, migration and auto
 - `ws done [--output <file>|-]` publishes completion output. Unread messages refuse completion.
 - `ws wait <target> --for done|exit|state=<state>|event=<type> [--timeout <seconds>]` waits through the daemon.
 - `ws event <type> [--body <json-object>] [--source tool|agent] [--key <key>] [--target <target>]` appends a `loop.*` event to a session log. The default target is the current session. With `--key`, a session that already has an event with that key gets no new entry. The daemon returns the existing event with HTTP 200, and a new key gives HTTP 201. The key is stored in the entry body as `event_key`, so the rule also holds after a restart. A body cannot set `event_key`. Other event types, unknown `loop.*` types and a body that does not match its type get HTTP 400. The checked types are `loop.plan`, `loop.phases`, `loop.phase`, `loop.attempt`, `loop.merge`, `loop.milestone`, `loop.gate`, `loop.review`, `loop.note`, `loop.decision`, `loop.control`, `loop.guard`, `loop.violation` and `loop.finish`. `loop.attempt` and `loop.review` fields depend on `state`. The entry body records the caller in `caller` and the producer in `source`: `tool` with `--source tool`, `agent` otherwise, and `daemon` for events that the daemon appends itself. `loop.phases` lists `{n, title, kind, output, milestone, gate, repo, branch, depends_on, status}` per phase. `loop.gate` needs `milestone`. The daemon appends `loop.phase` (`source: daemon`) in the same operation as the attempt, review or merge event that raises a phase status. A merge gate that stays open gives the loop status `awaiting-merge`. Then a keyed create or a phase spawn with a `loop` object for a later milestone gets HTTP 409 (`milestone_gate_open`).
-- `ws loop create --dir <loop dir> [--json]` creates the session of kind `loop` for a loop directory. The session has no process. A second call for the same directory returns the same session.
+- `ws loop create --dir <loop dir> [--plan-id <id>] [--json]` creates a loop session with no process. The daemon reads `planId` from the `<!-- loop-plan` header in `plan.md`. `--plan-id` overrides that value. A missing plan id gives HTTP 400. Repeated creates for the same plan id or canonical directory return the existing session, including after a restart.
 - With a `loop` object, the daemon records execution events in the loop session. Phase attempts use `loop.attempt`, and review steps use `loop.review`. Each execution key gets one `started` and one `exited` event, both with `source: daemon`. An attempt uses `exit: -1` when its process status is unknown. Recovery repairs interrupted appends and suppresses duplicates.
 - Agent preparation finds the loop through session parents and exports `WS_LOOP_ID`. It adds `ws hook guard` to `PreToolUse`. Sessions outside a loop receive neither.
 - The guard records bypasses as `loop.guard {session, rule, command}` with `source: daemon`. Claude and Codex deny direct merges, integration pushes, PR merges and direct agent starts. Use `loop-merge.sh`, `phase_spawn` or `ws session create`. Grok records the same events without a denial. A review step with role `fix` can push to the integration branch.
@@ -405,6 +405,7 @@ The tools return the daemon JSON in both text and structured content.
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
 | `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
 | `loop_get` | `ws loop get <id> --json` |
+| `loop_plan` | `ws loop plan <id> [--json] [--out <file>]` |
 | `loop_check` | `ws loop check <id> --json` |
 | `loop_ack` | `ws loop ack <violation id> --reason <text> --json` |
 | `loop_list` | `ws loop list --json` |
@@ -450,6 +451,9 @@ Run `cd wsd && cargo test -p ws --test mcp` to test every tool against a sandbox
 
 `GET /v1/loops` returns the loop states. `GET /v1/loops/{id}` returns one loop state.
 Both routes rebuild the state from the loop session's `loop.*` events and accept `parent_session_id` for caller audit.
+Loop routes, MCP `loop_get`, and CLI loop controls accept a session ULID, a `#N` alias or a plan id.
+The state includes `plan_id`. Older sessions use the header in their latest `loop.plan` text, then the header in `plan.md`.
+Creation preserves these older sessions and their children and events.
 The state contains the plan, phases, milestone, and records for attempts, merges, gates, reviews, notes, decisions, controls, guards and violations.
 Phase status only increases: `todo < claimed < running < done < merged`. A stale phase event cannot lower the status.
 The daemon checks Loop rules after each Loop event. It records each new result as a
@@ -460,6 +464,15 @@ An orchestrator continuation can still start. Each new hard result sends one des
 to record an acknowledgment as a `loop.control` event. An agent cannot acknowledge a hard
 violation. MCP `loop_ack` takes `{"id":"<violation id>","reason":"<text>"}`.
 `POST /v1/loops/ack` accepts the same fields and optional `parent_session_id` for the caller.
+
+`GET /v1/loops/{id}/plan`, MCP `loop_plan` and `ws loop plan <id>` return the latest `loop.plan` event as
+`{plan_id, engine, sha, text, seq, milestone}`. `engine` is the `engine:` value in the plan header, or null.
+The loop states show the same `engine`. `ws loop plan` prints the text, or the object with `--json`, or
+writes it to the `--out` file. An unknown loop or a loop with no plan gives HTTP 404 and exit code 3.
+`ws loop create` appends the first `loop.plan` from `<loop dir>/plan.md` with `source: daemon`.
+The `sha` of a `loop.plan` body is the lowercase SHA-256 hex digest of the exact UTF-8 bytes of `text`.
+A wrong `sha` gives HTTP 400. A plan with the `sha` of the latest plan appends nothing and returns
+that latest event (HTTP 200 on the event route).
 
 MCP `loop_get` takes `{"id":"<loop session>"}`. MCP `loop_list` takes `{}`.
 The CLI read commands print formatted JSON by default. `--json` prints compact JSON.

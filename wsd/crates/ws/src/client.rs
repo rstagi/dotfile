@@ -112,6 +112,13 @@ pub(crate) fn error_json(
         .unwrap_or_else(|| serde_json::json!({"error":{"message":error.to_string()}}))
 }
 
+/// The daemon error code of an API failure, if the error is one.
+pub fn error_code<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a str> {
+    error
+        .downcast_ref::<ApiError>()
+        .map(|error| error.code.as_str())
+}
+
 pub fn is_missing(error: &(dyn std::error::Error + 'static)) -> bool {
     error
         .downcast_ref::<ApiError>()

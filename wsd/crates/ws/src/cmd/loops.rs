@@ -1,9 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use clap::Subcommand;
 use serde_json::json;
 
-use crate::{Result, mcp::Control};
+use crate::{Result, client, mcp::Control};
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -12,6 +15,15 @@ pub enum Command {
         id: String,
         #[arg(long)]
         json: bool,
+    },
+    /// Read the current plan text of one loop. Print the text, or the full object with --json.
+    Plan {
+        id: String,
+        #[arg(long)]
+        json: bool,
+        /// Write the output to this file instead of standard output.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Check the events of one loop against the Loop rules.
     Check {
@@ -36,6 +48,8 @@ pub enum Command {
     Create {
         #[arg(long)]
         dir: PathBuf,
+        #[arg(long)]
+        plan_id: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -106,13 +120,21 @@ pub enum Command {
     },
 }
 
-pub async fn run(socket: &Path, command: Command) -> Result<()> {
+pub async fn run(socket: &Path, command: Command) -> Result<ExitCode> {
+    if let Command::Plan { id, json, out } = command {
+        return plan(socket, id, json, out).await;
+    }
     let (tool, arguments, json_output) = match command {
+        Command::Plan { .. } => unreachable!("handled before the match"),
         Command::Get { id, json } => ("loop_get", json!({"id":id}), json),
         Command::Check { id, json } => ("loop_check", json!({"id":id}), json),
         Command::Ack { id, reason, json } => ("loop_ack", json!({"id":id,"reason":reason}), json),
         Command::List { json } => ("loop_list", json!({}), json),
-        Command::Create { dir, json } => ("loop_create", json!({"loop_dir":dir}), json),
+        Command::Create { dir, plan_id, json } => (
+            "loop_create",
+            json!({"loop_dir":dir,"plan_id":plan_id}),
+            json,
+        ),
         Command::Start { loop_dir, json } => ("loop_start", json!({"loop_dir":loop_dir}), json),
         Command::Pause { id, phase, json } => ("loop_pause", json!({"id":id,"phase":phase}), json),
         Command::Resume { id, phase, json } => {
@@ -187,7 +209,40 @@ pub async fn run(socket: &Path, command: Command) -> Result<()> {
                 .ok_or("The daemon did not return a run id.")?
         );
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Prints the plan of a loop. An unknown loop or a loop with no plan exits 3.
+async fn plan(socket: &Path, id: String, json: bool, out: Option<PathBuf>) -> Result<ExitCode> {
+    let response = match Control::from_env(socket)?
+        .call("loop_plan", json!({"id":id}))
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            if !matches!(
+                client::error_code(error.as_ref()),
+                Some("session_not_found" | "loop_plan_not_found")
+            ) {
+                return Err(error);
+            }
+            eprintln!("ws: {error}");
+            return Ok(ExitCode::from(3));
+        }
+    };
+    let output = if json {
+        format!("{response}\n")
+    } else {
+        response["text"]
+            .as_str()
+            .ok_or("The daemon did not return the plan text.")?
+            .to_owned()
+    };
+    match out {
+        Some(path) => std::fs::write(path, output)?,
+        None => print!("{output}"),
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn print_check(result: &serde_json::Value) {

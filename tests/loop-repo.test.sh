@@ -342,6 +342,96 @@ assert_exit "$?" "1" "invalid adopted flag refused"
 $ROOT/loop-repo.sh retire --repo acme/api --run-id run-1 --worktree "$TMP/missing" --adopted false >/dev/null 2>&1
 assert_exit "$?" "4" "missing path outside run root still refused"
 
+echo "loop-repo: lane creates a branch and worktree from the integration tip"
+LANE_OUT="$($ROOT/loop-repo.sh prepare --repo acme/api --run-id run-lane --integration-branch feat/lane-int)"
+INT_WT="$(print "$LANE_OUT" | jq -r .integrationWorktree)"
+INT_HEAD="$(git -C "$INT_WT" rev-parse HEAD)"
+LANE_WT="$LOOP_WORKTREE_ROOT/run-lane/acme--api/feat-lane-one"
+out="$($ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/Lane_One --from "$INT_WT")"
+assert_exit "$?" "0" "first lane call succeeds"
+assert_eq "$(print "$out" | jq -r .worktree)" "$LANE_WT" "lane path uses the lowercase branch slug"
+assert_eq "$(print "$out" | jq -r .branch)" "feat/Lane_One" "lane prints the branch"
+assert_eq "$(print "$out" | jq -r .base)" "$INT_HEAD" "base is the integration HEAD"
+assert_eq "$(git -C "$LANE_WT" branch --show-current)" "feat/Lane_One" "lane worktree has the branch checked out"
+assert_eq "$(git -C "$LANE_WT" rev-parse HEAD)" "$INT_HEAD" "lane branch starts at the integration HEAD"
+LANE_RECORD="$(git -C "$LANE_WT" rev-parse --absolute-git-dir)/loop-repo-lane.json"
+assert_eq "$(jq -r .baseSha "$LANE_RECORD")" "$INT_HEAD" "base is stored in the git dir of the lane worktree"
+
+echo "loop-repo: lane retry reuses the worktree, its commits and its base"
+print lane > "$LANE_WT/lane.txt"
+git -C "$LANE_WT" add lane.txt
+git -C "$LANE_WT" -c user.email=test@example.com -c user.name=Test commit -qm lane-commit
+LANE_HEAD="$(git -C "$LANE_WT" rev-parse HEAD)"
+print int > "$INT_WT/int.txt"
+git -C "$INT_WT" add int.txt
+git -C "$INT_WT" -c user.email=test@example.com -c user.name=Test commit -qm int-advance
+retry="$($ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/Lane_One --from "$INT_WT")"
+assert_exit "$?" "0" "lane retry succeeds"
+assert_eq "$(print "$retry" | jq -r .worktree)" "$LANE_WT" "retry prints the same worktree"
+assert_eq "$(print "$retry" | jq -r .base)" "$INT_HEAD" "retry prints the same base after the integration branch moved"
+assert_eq "$(git -C "$LANE_WT" rev-parse HEAD)" "$LANE_HEAD" "retry keeps the lane commits"
+
+echo "loop-repo: lane adds a worktree for a branch that has none"
+git -C "$CHECKOUT" branch feat/lane-two "$INT_HEAD"
+out="$($ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/lane-two --from "$INT_WT")"
+assert_exit "$?" "0" "lane accepts an existing branch without a worktree"
+assert_eq "$(git -C "$(print "$out" | jq -r .worktree)" branch --show-current)" "feat/lane-two" "existing branch is checked out in the new worktree"
+assert_eq "$(print "$out" | jq -r .base)" "$INT_HEAD" "base of an existing branch is its merge base with the integration HEAD"
+
+echo "loop-repo: lane refuses conflicts with exit 4 and changes nothing"
+BEFORE_STATE="$(git -C "$CHECKOUT" worktree list --porcelain; git -C "$CHECKOUT" for-each-ref refs/heads)"
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/lane/one --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "4" "a path that holds another branch is refused"
+git -C "$LANE_WT" switch -q --detach
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/Lane_One --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "4" "a path with a detached HEAD is refused"
+git -C "$LANE_WT" switch -q feat/Lane_One
+mkdir -p "$LOOP_WORKTREE_ROOT/run-lane/acme--api/feat-plain"
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/plain --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "4" "a path that is not a worktree is refused"
+rmdir "$LOOP_WORKTREE_ROOT/run-lane/acme--api/feat-plain"
+git -C "$CHECKOUT" worktree add -q "$TMP/lane-elsewhere" -b feat/elsewhere "$INT_HEAD"
+AFTER_SETUP="$(git -C "$CHECKOUT" worktree list --porcelain; git -C "$CHECKOUT" for-each-ref refs/heads)"
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/elsewhere --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "4" "a branch checked out in another worktree is refused"
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/lane-int --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "4" "the integration branch is refused as a lane branch"
+assert_eq "$(git -C "$CHECKOUT" worktree list --porcelain; git -C "$CHECKOUT" for-each-ref refs/heads)" "$AFTER_SETUP" "refused calls change no worktree and no branch"
+[[ "$BEFORE_STATE" != "$AFTER_SETUP" && -d "$LANE_WT" ]]
+assert_exit "$?" "0" "the lane worktree survives the refusals"
+git -C "$CHECKOUT" worktree remove "$TMP/lane-elsewhere"
+git -C "$CHECKOUT" branch -q -D feat/elsewhere
+
+echo "loop-repo: lane validates its arguments and checkout"
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/x >/dev/null 2>&1
+assert_exit "$?" "1" "lane requires --from"
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "1" "lane requires --branch"
+$ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch 'bad..name' --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "1" "lane refuses an invalid branch name"
+$ROOT/loop-repo.sh lane --repo acme/web --run-id run-lane --branch feat/x --from "$INT_WT" >/dev/null 2>&1
+assert_exit "$?" "3" "lane refuses an integration worktree of another repository"
+
+echo "loop-repo: loop-merge merges the lane branch and retire keeps it"
+MERGE_OUT="$($ROOT/loop-repo.sh lane --repo acme/api --run-id run-lane --branch feat/merge-me --from "$INT_WT")"
+MERGE_WT="$(print "$MERGE_OUT" | jq -r .worktree)"
+print merged > "$MERGE_WT/merged.txt"
+git -C "$MERGE_WT" add merged.txt
+git -C "$MERGE_WT" -c user.email=test@example.com -c user.name=Test commit -qm lane-work
+(cd "$INT_WT" && zsh "$ROOT/loop-merge.sh" --worktree "$INT_WT" --lane-branch feat/merge-me --verify-cmd true --no-push >/dev/null 2>&1)
+assert_exit "$?" "0" "loop-merge merges the lane branch into the integration worktree"
+[[ "$(cat "$INT_WT/merged.txt" 2>/dev/null)" == merged ]]
+assert_exit "$?" "0" "the lane commit is in the integration worktree"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-lane --worktree "$MERGE_WT" --adopted false
+assert_exit "$?" "0" "retire removes the clean lane worktree"
+[[ ! -e "$MERGE_WT" ]]
+assert_exit "$?" "0" "the lane worktree directory is gone"
+git -C "$CHECKOUT" show-ref --verify --quiet refs/heads/feat/merge-me
+assert_exit "$?" "0" "retire keeps the lane branch"
+print dirty > "$LANE_WT/dirty.txt"
+$ROOT/loop-repo.sh retire --repo acme/api --run-id run-lane --worktree "$LANE_WT" --adopted false >/dev/null 2>&1
+assert_exit "$?" "4" "retire refuses a dirty lane worktree"
+
 echo "loop-repo: pr-state reports GitHub state through the gh boundary"
 PR_URL=https://github.com/acme/api/pull/123
 for state_pair in OPEN:open MERGED:merged CLOSED:closed; do
