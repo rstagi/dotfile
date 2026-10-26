@@ -100,6 +100,7 @@ scenario_broken() {
 setup_sandbox() {
   TMP="$(mktemp -d /tmp/loop-e2e.XXXXXX)"; TMP="${TMP:A}"
   home_guard_sandbox "$TMP/home"
+  REAL_HOME="$TESTS_REAL_HOME"
   unset WS_SESSION_ID WS_SESSION WS_LOOP_ID WS_LOOP_PHASE WS_LOOP_ATTEMPT LOOP_DAEMON_URL TMUX TMUX_PANE E2E_BROKEN E2E_SCENARIO
   export LOOP_DAEMON_URL="http://127.0.0.1:9" # no Loop daemon; skills loops never use it
   export WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock" WS_TMUX_SOCKET="$TMP/tmux.sock" WS_NOTIFY=0
@@ -144,6 +145,7 @@ teardown() {
   DAEMON_PID=""
   [[ -n "$TMP" && -S "$TMP/tmux.sock" ]] && tmux -S "$TMP/tmux.sock" kill-server 2>/dev/null
   if [[ -n "$TMP" ]]; then
+    rm -f "$TMP/home/.claude/.credentials.json" # the copy of the login never outlives the run
     [[ -z "${E2E_KEEP:-}" ]] || print -u2 "loop-e2e: kept sandbox $TMP"
     [[ -n "${E2E_KEEP:-}" ]] || rm -rf "$TMP"
   fi
@@ -158,9 +160,35 @@ start_orchestrator() {
 }
 
 run_orchestrator() {
-  if [[ -n "$MODEL" ]]; then print -u2 "loop-e2e: --model runs are not wired yet"; return 1; fi
+  if [[ -n "$MODEL" ]]; then run_model_orchestrator; return $?; fi
   start_orchestrator || return 1
   "$WS_BIN" wait "$ORCH_ID" --for exit > "$E2E_DIR/wait.out" 2>&1
+}
+
+# The loop skill on a real model is the orchestrator. Only this process sees a credential: the sandbox HOME
+# gets a copy of the credential file when the real login has one. teardown deletes the copy.
+run_model_orchestrator() {
+  local claude_bin; claude_bin="$(whence -p claude)" || { print -u2 "loop-e2e: no claude binary"; return 1; }
+  local prompt="Run the loop skill on the plan in $E2E_DIR/work/.loop (WS_LOOP_ID is set). Phase runners and reviewers are fakes. Stop when the loop parks at the merge gate."
+  mkdir -p "$E2E_DIR/work/.claude"
+  ln -s "$ROOT/.claude/skills" "$E2E_DIR/work/.claude/skills"
+  if [[ -f "$REAL_HOME/.claude/.credentials.json" ]]; then
+    mkdir -p "$HOME/.claude"
+    cp "$REAL_HOME/.claude/.credentials.json" "$HOME/.claude/.credentials.json"
+    chmod 600 "$HOME/.claude/.credentials.json"
+  fi
+  local auth; auth="$(cd "$E2E_DIR/work" && "$claude_bin" -p --model "$MODEL" 'Reply with the word ok.' 2>&1 < /dev/null | head -c 300)"
+  if [[ "$auth" != *ok* ]]; then
+    print -u2 "loop-e2e: the model cannot authenticate in the sandbox: $auth"
+    return 1
+  fi
+  start_orchestrator_command "$claude_bin" -p --model "$MODEL" --permission-mode bypassPermissions "$prompt" || return 1
+  "$WS_BIN" wait "$ORCH_ID" --for exit > "$E2E_DIR/wait.out" 2>&1
+}
+
+start_orchestrator_command() {
+  ORCH_ID="$("$WS_BIN" session create --headless --json --inherit-env --parent "$WS_LOOP_ID" \
+    --cwd "$E2E_DIR/work" --stdout "$E2E_DIR/orchestrator.out" --stderr "$E2E_DIR/orchestrator.err" -- "$@" | jq -er .id)"
 }
 
 wait_for_file() {
