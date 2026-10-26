@@ -1004,7 +1004,10 @@ async fn loop_reads_match_http_and_json_cli_and_reject_a_forged_caller() {
     let directory = server.home.path().join("loop");
     std::fs::create_dir(&directory).unwrap();
     let created = server
-        .call("loop_create", json!({"loop_dir":directory}))
+        .call(
+            "loop_create",
+            json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
+        )
         .await;
     let id = created["id"].as_str().unwrap();
     server
@@ -1016,6 +1019,14 @@ async fn loop_reads_match_http_and_json_cli_and_reject_a_forged_caller() {
         .await;
     let fetched = server.call("loop_get", json!({"id":id})).await;
     assert_eq!(fetched["phases"]["109"]["status"], "done");
+    let by_plan = server
+        .call("loop_get", json!({"id":created["body"]["plan_id"]}))
+        .await;
+    assert_eq!(by_plan, fetched);
+    let by_alias = server
+        .call("loop_get", json!({"id":format!("#{}", created["alias"])}))
+        .await;
+    assert_eq!(by_alias, fetched);
     assert_eq!(fetched, server.cli(&["loop", "get", id, "--json"]));
     let listed = server.call("loop_list", json!({})).await;
     assert_eq!(listed, json!([fetched]));
@@ -1049,7 +1060,10 @@ async fn loop_check_matches_http_and_json_cli_and_names_the_proving_events() {
     let directory = server.home.path().join("loop");
     std::fs::create_dir(&directory).unwrap();
     let created = server
-        .call("loop_create", json!({"loop_dir":directory}))
+        .call(
+            "loop_create",
+            json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
+        )
         .await;
     let id = created["id"].as_str().unwrap();
     let clean = server.call("loop_check", json!({"id":id})).await;
@@ -1097,7 +1111,10 @@ async fn skills_loop_controls_use_the_same_routes_and_reject_a_forged_caller() {
     let directory = server.home.path().join("loop");
     std::fs::create_dir(&directory).unwrap();
     let created = server
-        .call("loop_create", json!({"loop_dir":directory}))
+        .call(
+            "loop_create",
+            json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
+        )
         .await;
     let id = created["id"].as_str().unwrap();
     for (tool, args, operation) in [

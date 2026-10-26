@@ -322,7 +322,10 @@ impl Sandbox {
     fn loop_session(&self) -> String {
         let directory = self.home.path().join("loop");
         fs::create_dir(&directory).unwrap();
-        self.post("/v1/loops/create", json!({"loop_dir":directory}))["id"]
+        self.post(
+            "/v1/loops/create",
+            json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
+        )["id"]
             .as_str()
             .unwrap()
             .to_owned()

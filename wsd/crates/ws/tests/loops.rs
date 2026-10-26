@@ -13,9 +13,217 @@ struct Sandbox {
 }
 
 #[test]
+fn loop_plan_identity_survives_restart() {
+    let mut sandbox = Sandbox::new();
+    fs::write(
+        sandbox.loop_dir.join("plan.md"),
+        "<!-- loop-plan\nplanId: durable-plan\n-->\n# Plan\n",
+    )
+    .unwrap();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    assert_eq!(owner["body"]["plan_id"], "durable-plan");
+    let id = owner["id"].as_str().unwrap();
+    let again = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    assert_eq!(again["id"], owner["id"]);
+    sandbox._daemon.child.kill().unwrap();
+    sandbox._daemon.child.wait().unwrap();
+    let mut command = common::ws(sandbox.home.path(), &sandbox.socket);
+    command
+        .env_remove("WS_LOOP_ID")
+        .env_remove("LOOP_DAEMON_URL");
+    sandbox._daemon = common::Daemon::spawn(command);
+    sandbox
+        ._daemon
+        .wait_ready_for(&sandbox.socket, std::time::Duration::from_secs(30));
+    let again = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    assert_eq!(again["id"], owner["id"]);
+    for target in [
+        id.to_owned(),
+        format!("#{}", owner["alias"]),
+        "durable-plan".into(),
+    ] {
+        let output = common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(["loop", "get", &target, "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let state: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(state["id"], owner["id"]);
+        assert_eq!(state["plan_id"], "durable-plan");
+    }
+    let output = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args(["loop", "list", "--json"])
+        .output()
+        .unwrap();
+    let loops: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(loops.as_array().unwrap().len(), 1);
+    assert_eq!(loops[0]["plan_id"], "durable-plan");
+}
+
+#[test]
+fn loop_create_requires_a_header_id_and_accepts_an_explicit_override() {
+    let sandbox = Sandbox::new();
+    for text in [
+        "# Plan\n",
+        "# Plan\n<!-- loop-plan\nplanId: outside-header\n-->\n",
+        "<!-- loop-plan\nplanId:  \n-->\n",
+    ] {
+        fs::write(sandbox.loop_dir.join("plan.md"), text).unwrap();
+        let response = common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/loops/create",
+            &json!({"loop_dir":sandbox.loop_dir}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    }
+    fs::write(
+        sandbox.loop_dir.join("plan.md"),
+        "<!-- loop-plan\nplanId: header-plan\n-->\n",
+    )
+    .unwrap();
+    let output = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args([
+            "loop",
+            "create",
+            "--dir",
+            sandbox.loop_dir.to_str().unwrap(),
+            "--plan-id",
+            "explicit-plan",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let owner: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(owner["body"]["plan_id"], "explicit-plan");
+    let other = sandbox.home.path().join("other-loop");
+    fs::create_dir(&other).unwrap();
+    std::thread::scope(|scope| {
+        let creates: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    sandbox.request(
+                        "/v1/loops/create",
+                        json!({"loop_dir":other,"plan_id":"explicit-plan"}),
+                    )
+                })
+            })
+            .collect();
+        for create in creates {
+            assert_eq!(create.join().unwrap()["id"], owner["id"]);
+        }
+    });
+    let response = common::get(&sandbox.socket, "/v1/loops");
+    let loops: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(loops.as_array().unwrap().len(), 1);
+    let paused = sandbox.request("/v1/loops/explicit-plan/pause", json!({}));
+    assert_eq!(paused["session_id"], owner["id"]);
+    let response = common::get(&sandbox.socket, "/v1/loops/explicit-plan/check");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+}
+
+#[test]
+fn existing_plan_identity_takes_precedence_over_the_directory() {
+    let sandbox = Sandbox::new();
+    let first = sandbox.request(
+        "/v1/loops/create",
+        json!({"loop_dir":sandbox.loop_dir,"plan_id":"first-plan"}),
+    );
+    let other = sandbox.home.path().join("second-loop");
+    fs::create_dir(&other).unwrap();
+    let second = sandbox.request(
+        "/v1/loops/create",
+        json!({"loop_dir":other,"plan_id":"second-plan"}),
+    );
+    assert_ne!(first["id"], second["id"]);
+    // Either registry ordering must choose the plan match over a directory match.
+    for (directory, plan_id, expected) in [
+        (&other, "first-plan", &first["id"]),
+        (&sandbox.loop_dir, "second-plan", &second["id"]),
+    ] {
+        let again = sandbox.request(
+            "/v1/loops/create",
+            json!({"loop_dir":directory,"plan_id":plan_id}),
+        );
+        assert_eq!(&again["id"], expected);
+    }
+}
+
+#[test]
+fn legacy_loop_plan_event_preserves_children_and_history() {
+    let mut sandbox = Sandbox::new();
+    fs::write(
+        sandbox.loop_dir.join("plan.md"),
+        "<!-- loop-plan\nplanId: file-plan\n-->\n",
+    )
+    .unwrap();
+    let id = sandbox.seed_legacy_loop(Some("<!-- loop-plan\nplanId: event-plan\n-->\n"));
+    let child = sandbox.request("/v1/sessions", json!({"parent_session_id":id}));
+    sandbox.request(
+        &format!("/v1/sessions/{id}/events"),
+        json!({"type":"loop.note","body":{"text":"Keep the existing history."}}),
+    );
+    let response = common::get(&sandbox.socket, "/v1/loops/event-plan");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let state: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["id"], id);
+    assert_eq!(state["plan_id"], "event-plan");
+    assert_eq!(state["notes"][0]["text"], "Keep the existing history.");
+    let other = sandbox.home.path().join("moved-loop");
+    fs::create_dir(&other).unwrap();
+    let owner = sandbox.request(
+        "/v1/loops/create",
+        json!({"loop_dir":other,"plan_id":"event-plan"}),
+    );
+    assert_eq!(owner["id"], id);
+    let response = common::get(
+        &sandbox.socket,
+        &format!("/v1/sessions/{}", child["id"].as_str().unwrap()),
+    );
+    let fetched: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(fetched["parent_session_id"], id);
+    let response = common::get(&sandbox.socket, &format!("/v1/sessions/{id}/log"));
+    let log: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(
+        log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["type"] == "session.created")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn legacy_loop_uses_the_file_header_and_canonical_directory() {
+    let mut sandbox = Sandbox::new();
+    fs::write(
+        sandbox.loop_dir.join("plan.md"),
+        "<!-- loop-plan\nplanId: file-plan\n-->\n",
+    )
+    .unwrap();
+    let id = sandbox.seed_legacy_loop(None);
+    let response = common::get(&sandbox.socket, "/v1/loops/file-plan");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let link = sandbox.home.path().join("linked-loop");
+    std::os::unix::fs::symlink(&sandbox.loop_dir, &link).unwrap();
+    let owner = sandbox.request(
+        "/v1/loops/create",
+        json!({"loop_dir":link,"plan_id":"new-header-plan"}),
+    );
+    assert_eq!(owner["id"], id);
+    let response = common::get(&sandbox.socket, "/v1/loops");
+    let loops: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(loops.as_array().unwrap().len(), 1);
+    assert_eq!(loops[0]["plan_id"], "file-plan");
+}
+
+#[test]
 fn loop_ack_cli_records_the_human_reason_and_refuses_an_agent() {
     let sandbox = Sandbox::new();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let id = owner["id"].as_str().unwrap();
     sandbox.request(
         &format!("/v1/sessions/{id}/events"),
@@ -67,7 +275,7 @@ fn loop_ack_cli_records_the_human_reason_and_refuses_an_agent() {
 async fn loop_ack_mcp_uses_the_caller_identity() {
     use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
     let sandbox = Sandbox::new();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let id = owner["id"].as_str().unwrap();
     sandbox.request(
         &format!("/v1/sessions/{id}/events"),
@@ -130,7 +338,7 @@ async fn loop_ack_mcp_uses_the_caller_identity() {
 #[test]
 fn loop_enforcement_sends_one_notification_for_a_new_hard_result() {
     let sandbox = Sandbox::with_notifications(true);
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let id = owner["id"].as_str().unwrap();
     let event = |kind: &str, body: Value| {
         sandbox.request(
@@ -181,7 +389,7 @@ fn skills_tier_changes_the_plan_and_refuses_a_review_that_started() {
     let sandbox = Sandbox::new();
     let plan = sandbox.loop_dir.join("plan.md");
     fs::write(&plan, "# Plan\n## Phases\n### Phase 9 — Review `[kind: pr-review]` `[status: todo]` `[review: standard]` `[rounds: 2]`\n").unwrap();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let id = owner["id"].as_str().unwrap();
     let run = || {
         common::ws(sandbox.home.path(), &sandbox.socket)
@@ -229,7 +437,7 @@ fn skills_tier_changes_the_plan_and_refuses_a_review_that_started() {
 #[test]
 fn skills_cli_controls_record_events_and_bridge_runner_files() {
     let sandbox = Sandbox::new();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let id = owner["id"].as_str().unwrap();
     let run = |args: &[&str]| {
         let output = common::ws(sandbox.home.path(), &sandbox.socket)
@@ -360,6 +568,11 @@ fn cli_create_makes_a_loop_session_without_a_process_and_events_record_their_sou
         assert!(output.status.success(), "{output:?}");
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
+    fs::write(
+        sandbox.loop_dir.join("plan.md"),
+        "<!-- loop-plan\nplanId: cli-plan\n-->\n",
+    )
+    .unwrap();
     let dir = sandbox.loop_dir.to_str().unwrap();
     let created = ws(&["loop", "create", "--dir", dir, "--json"]);
     let id = created["id"].as_str().unwrap();
@@ -488,7 +701,7 @@ fn top_prefers_the_orchestrator_session_over_the_child_worktree() {
 fn top_finds_the_loop_session_in_wsd_before_the_store_scan() {
     let sandbox = Sandbox::new();
     sandbox.dashboard();
-    let created = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let created = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let other = sandbox.home.path().join("other");
     fs::create_dir_all(&other).unwrap();
     let child = sandbox.request(
@@ -572,6 +785,21 @@ fn skills_start_from_plan_only_prepares_an_agent_under_the_loop_session() {
     let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
     assert_eq!(child["parent_session_id"], owner["id"]);
     assert_eq!(owner["parent_session_id"], caller["id"]);
+    assert_eq!(owner["body"]["plan_id"], "loop-test");
+    let other = sandbox.home.path().join("other-skills-loop");
+    fs::create_dir(&other).unwrap();
+    fs::copy(sandbox.loop_dir.join("plan.md"), other.join("plan.md")).unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/loops/start",
+        &json!({"loop_dir":other}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    assert!(response.contains("running orchestrator"), "{response}");
+    let response = common::get(&sandbox.socket, "/v1/loops");
+    let loops: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(loops.as_array().unwrap().len(), 1);
     let captured = sandbox.agent_capture();
     assert_eq!(captured["session"], child["id"]);
     assert_eq!(captured["loop"], owner["id"]);
@@ -600,7 +828,7 @@ fn skills_start_reuses_an_advanced_loop_and_refuses_a_second_orchestrator() {
     let state = r#"{"runId":"legacy-loop","milestone":7}"#;
     fs::write(sandbox.loop_dir.join("state.json"), state).unwrap();
     fs::remove_file(sandbox.loop_dir.join("sub/prompt-seed.md")).unwrap();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let output = common::ws(sandbox.home.path(), &sandbox.socket)
         .args([
             "loop",
@@ -717,7 +945,7 @@ async fn mcp_start_runs_the_same_headless_orchestrator() {
         std::time::Duration::from_secs(30),
         client.call_tool(
             CallToolRequestParams::new("loop_start").with_arguments(
-                json!({"loop_dir":sandbox.loop_dir})
+                json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -739,9 +967,9 @@ async fn mcp_start_runs_the_same_headless_orchestrator() {
 fn loop_controls_reject_missing_state_and_a_parked_milestone() {
     let sandbox = Sandbox::new();
     for body in [
-        json!({"loop_dir":"relative"}),
-        json!({"loop_dir":sandbox.home.path()}),
-        json!({"loop_dir":sandbox.loop_dir,"unknown":true}),
+        json!({"loop_dir":"relative","plan_id":"fixture-plan"}),
+        json!({"loop_dir":sandbox.home.path(),"plan_id":format!("fixture:{}", sandbox.home.path().display())}),
+        json!({"loop_dir":sandbox.loop_dir,"unknown":true,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}),
     ] {
         for operation in ["start", "stop"] {
             let response = common::request(
@@ -775,7 +1003,10 @@ fn loop_phases_body_check_takes_the_plan_output_kinds() {
     let sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("output-loop");
     fs::create_dir_all(&directory).unwrap();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":directory}));
+    let owner = sandbox.request(
+        "/v1/loops/create",
+        json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
+    );
     let id = owner["id"].as_str().unwrap();
     let post = |output: &str| {
         let phase = json!({"n":1,"title":"T","kind":"work","output":output,"milestone":1,
@@ -800,7 +1031,10 @@ fn a_started_child_marks_its_phase_running_and_an_open_merge_gate_refuses_the_ne
     let sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("gate-loop");
     fs::create_dir_all(&directory).unwrap();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":directory}));
+    let owner = sandbox.request(
+        "/v1/loops/create",
+        json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
+    );
     let id = owner["id"].as_str().unwrap();
     let phase = |n: u64, milestone: u64| {
         json!({"n":n,"title":format!("P{n}"),"kind":"work","output":"pr","milestone":milestone,
@@ -847,7 +1081,7 @@ fn a_started_child_marks_its_phase_running_and_an_open_merge_gate_refuses_the_ne
 #[test]
 fn a_tool_opens_an_accept_gate_that_holds_dependent_spawns_until_accept() {
     let sandbox = Sandbox::new();
-    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir,"plan_id":format!("fixture:{}", sandbox.loop_dir.display())}));
     let id = owner["id"].as_str().unwrap();
     let phase = |n: u64, kind: &str, gate: Value, depends_on: Value| {
         json!({"n":n,"title":format!("P{n}"),"kind":kind,"output":"doc","milestone":1,
@@ -1028,6 +1262,36 @@ printf '{"outcome":"complete"}' > "$LOOP_SUB_DIR/status.json"
             socket,
             loop_dir,
         }
+    }
+
+    fn seed_legacy_loop(&mut self, plan: Option<&str>) -> String {
+        self._daemon.child.kill().unwrap();
+        self._daemon.child.wait().unwrap();
+        let id = ws_core::ids::Ulid::new();
+        let log = ws_core::log::SessionLog::new(
+            &self.home.path().join("state"),
+            id,
+            ws_core::ids::Ulid::nil(),
+        );
+        log.append(0, "session.created", json!({"alias":100,"name":null,"workspace_id":null,
+            "parent_session_id":null,"kind":"loop","loop_dir":self.loop_dir.canonicalize().unwrap()})).unwrap();
+        if let Some(text) = plan {
+            log.append(0, "loop.plan", json!({"text":"<!-- loop-plan\nplanId: obsolete-plan\n-->\n","sha":"old","source":"daemon"})).unwrap();
+            log.append(
+                0,
+                "loop.plan",
+                json!({"text":text,"sha":"current","source":"daemon"}),
+            )
+            .unwrap();
+        }
+        let mut command = common::ws(self.home.path(), &self.socket);
+        command
+            .env_remove("WS_LOOP_ID")
+            .env_remove("LOOP_DAEMON_URL");
+        self._daemon = common::Daemon::spawn(command);
+        self._daemon
+            .wait_ready_for(&self.socket, std::time::Duration::from_secs(30));
+        id.to_string()
     }
 
     fn skills_plan(&self) {

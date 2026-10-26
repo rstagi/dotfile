@@ -852,7 +852,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":loop_dir.path()}),
+            json!({"loop_dir":loop_dir.path(),"plan_id":format!("fixture:{}", loop_dir.path().display())}),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
@@ -861,7 +861,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":loop_dir.path()}),
+            json!({"loop_dir":loop_dir.path(),"plan_id":format!("fixture:{}", loop_dir.path().display())}),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -870,7 +870,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":"relative"}),
+            json!({"loop_dir":"relative","plan_id":"fixture-plan"}),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -891,7 +891,9 @@ mod tests {
         let note = || serde_json::from_value(json!({"text":"n"})).unwrap();
         let id = {
             let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-            let (created, session) = sessions.create_loop_session(loop_dir.path(), None).unwrap();
+            let (created, session) = sessions
+                .create_loop_session(loop_dir.path(), Some("fixture-plan"), None)
+                .unwrap();
             assert!(created);
             let id = session.id.to_string();
             sessions
@@ -900,7 +902,9 @@ mod tests {
             id
         };
         let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-        let (created, session) = sessions.create_loop_session(loop_dir.path(), None).unwrap();
+        let (created, session) = sessions
+            .create_loop_session(loop_dir.path(), Some("fixture-plan"), None)
+            .unwrap();
         assert!(!created);
         assert_eq!(session.id.to_string(), id);
         let entry = sessions

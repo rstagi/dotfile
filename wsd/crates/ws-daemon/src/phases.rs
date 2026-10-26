@@ -336,7 +336,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir": sandbox.path()}),
+            json!({"loop_dir":sandbox.path(),"plan_id":format!("fixture:{}", sandbox.path().display())}),
         )
         .await;
         let (status, child) = request(
@@ -390,7 +390,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir": directory, "parent_session_id": null}),
+            json!({"loop_dir":directory, "parent_session_id": null,"plan_id":format!("fixture:{}", directory.display())}),
         )
         .await;
         let (_, caller) = request(&app, "POST", "/v1/sessions", json!({})).await;

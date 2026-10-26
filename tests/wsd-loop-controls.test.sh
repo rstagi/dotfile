@@ -37,7 +37,7 @@ mkdir -p "$TMP/worktree/.loop/runs/p7-a1"
 LOOP_DIR="$TMP/worktree/.loop"
 print -r -- 'Use the public API.' > "$TMP/prompt.md"
 start_ws_test_daemon || exit 1
-LOOP_ID="$("$WS_RUST_BIN" loop create --dir "$LOOP_DIR" --json | jq -r .id)"
+LOOP_ID="$("$WS_RUST_BIN" loop create --dir "$LOOP_DIR" --plan-id controls-plan --json | jq -er .id)" || exit 1
 export FAKE_RUN_DIR="$LOOP_DIR/runs/p7-a1" FAKE_ENGINE_LOG="$TMP/engines.log"
 export FAKE_CODEX_OUTCOME=done FAKE_CODEX_SLEEP=120 FAKE_CODEX_SESSION=controls
 python3 -c 'import os,sys; os.setsid(); os.execvp("zsh", ["zsh", *sys.argv[1:]])' \

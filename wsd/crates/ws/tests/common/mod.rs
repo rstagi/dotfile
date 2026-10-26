@@ -148,6 +148,8 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
     command
         .env_remove("WS_SESSION_ID")
         .env_remove("WS_SESSION")
+        .env_remove("WS_LOOP_ID")
+        .env_remove("LOOP_DAEMON_URL")
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .env("HOME", home)

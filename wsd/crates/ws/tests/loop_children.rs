@@ -361,7 +361,8 @@ impl Sandbox {
             &self.socket,
             "POST",
             "/v1/loops/create",
-            &json!({"loop_dir": directory}).to_string(),
+            &json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())})
+                .to_string(),
         );
         assert!(response.starts_with("HTTP/1.1 201"), "{response}");
         let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
