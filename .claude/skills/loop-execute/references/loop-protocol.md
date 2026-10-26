@@ -555,7 +555,8 @@ completed phase ranks remain monotone.
 | `review.finish` | orchestrator | phase, repository, outcome, summary |
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
 | `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |
-| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` or `M<n> engine skills` |
+| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` |
+| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n> engine skills` |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto | phase, detail |

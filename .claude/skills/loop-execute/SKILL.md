@@ -698,11 +698,14 @@ Steps 1–4 stay the same for both engines. Select the restart engine in step 5 
    runtime itself (`runtimeRepo` set), `runtimeRoot` is the host repository's new integration
    worktree (or its retained old one when the host sits the milestone out):
    switch `RUNTIME_ROOT` to it before composing any later prompt; patch `runtimeRoot` null (no host) → keep the installed runtime.
-5. **Restart.** Set plan Status back to `in progress`. Run `loop-plan.sh push`.
-   Remove `sub/REVIEW_READY`. Seed the lessons below. Read `engine` from the local plan header.
-   - Without `engine: skills`, log `milestone.resumed` with an empty phase and detail `M<n>`.
-     Respawn the orchestrator for the new milestone. The SUB schedules only that milestone's phases.
-   - With `engine: skills`, use the installed runtime in `~/dotfile` for all Loop tools and skills.
+5. **Restart.** Read `engine` from the local plan header. Without `engine: skills`, keep the old-engine sequence:
+   Set plan Status back to `in progress` + `loop-plan.sh push`; remove
+   `sub/REVIEW_READY`; `loop-state.sh log milestone.resumed` with empty phase and `detail` `M<n>` (the new milestone); seed the lessons (below); respawn the
+   orchestrator for the new milestone (the SUB then schedules only its phases); last,
+   `loop-state.sh set '.resumePending = null'` (every restart item above is idempotent).
+   - With `engine: skills`, set plan Status back to `in progress`. Run `loop-plan.sh push`.
+     Remove `sub/REVIEW_READY`. Seed the lessons below.
+     Use the installed runtime in `~/dotfile` for all Loop tools and skills.
      Do not use tools or skills from the new integration worktree. Set `RUNTIME_ROOT` to the installed runtime.
      Before `ws loop start <loop dir>`, create or reuse the loop session:
      `LOOP_SESSION="$(ws loop create --dir <absolute loop dir>)"`.
@@ -735,7 +738,8 @@ Steps 1–4 stay the same for both engines. Select the restart engine in step 5 
      `--narration`, publish and write `link.txt`, as the skill tells you.
    - Notify once (`loop-notify.sh --level info --title "M<N> plan explainer"`) with the link
      (`--url`) or the failure.
-   - A failed explainer never stops the resume or either engine.
+   - A failed explainer never stops the resume or the orchestrator.
+     This also applies to the skills engine.
 
 ### Sub recycle *(mode: `sub` only)*
 

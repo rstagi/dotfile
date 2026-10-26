@@ -62,7 +62,8 @@ assert_contains "$HANDOFF" 'never change the status of a phase of an earlier (sh
 
 echo "milestone skills: loop-protocol milestone events carry their payload in detail"
 assert_contains "$PROTOCOL" '| `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |' "awaiting-merge detail"
-assert_contains "$PROTOCOL" '| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` or `M<n> engine skills` |' "resumed detail"
+assert_contains "$PROTOCOL" '| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` |' "old-engine resumed detail"
+assert_contains "$PROTOCOL" '| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n> engine skills` |' "skills-engine resumed detail"
 assert_lacks "$PROTOCOL" '| milestone, prs |' "no unsupported milestone/prs fields"
 
 echo "milestone skills: shipped milestones are archived to stubs"
