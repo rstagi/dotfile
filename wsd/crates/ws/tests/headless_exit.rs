@@ -154,7 +154,47 @@ fn restart_keeps_supervising_a_group_whose_leader_exited() {
         .unwrap();
     assert!(stop.status.success(), "{stop:?}");
     assert!(!alive(child));
-    assert_eq!(sandbox.get(&id)["state"], "failed");
+    assert_eq!(sandbox.get(&id)["state"], "finished");
+}
+
+#[test]
+fn a_requested_stop_finishes_the_session_and_an_unrequested_signal_fails_it() {
+    let sandbox = Sandbox::new();
+    let stopped = sandbox.create(&["--", "/bin/sh", "-c", "exec sleep 120"]);
+    sandbox.wait_for(|_| (sandbox.get(&stopped)["state"] == "running").then_some(()));
+    let stop = sandbox
+        .command()
+        .args(["session", "stop", &stopped])
+        .output()
+        .unwrap();
+    assert!(stop.status.success(), "{stop:?}");
+    let session = sandbox.get(&stopped);
+    assert_eq!(session["state"], "finished", "{session}");
+    assert_eq!(session["exit_code"], 143, "{session}");
+    let killed = sandbox.create(&["--", "/bin/sh", "-c", "kill -TERM $$; sleep 120"]);
+    sandbox.wait_for(|_| (sandbox.get(&killed)["state"] == "failed").then_some(()));
+    assert_eq!(sandbox.get(&killed)["exit_code"], 143);
+}
+
+#[test]
+fn a_session_that_published_done_stays_finished_after_a_stop() {
+    let sandbox = Sandbox::new();
+    let script = "\"$WS_BIN\" done >/dev/null; exec sleep 120";
+    let id = sandbox.create(&[
+        &format!("--env=WS_BIN={}", env!("CARGO_BIN_EXE_ws")),
+        "--",
+        "/bin/sh",
+        "-c",
+        script,
+    ]);
+    sandbox.wait_for(|_| (sandbox.get(&id)["state"] == "finished").then_some(()));
+    let stop = sandbox
+        .command()
+        .args(["session", "stop", &id])
+        .output()
+        .unwrap();
+    assert!(stop.status.success(), "{stop:?}");
+    assert_eq!(sandbox.get(&id)["state"], "finished");
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {

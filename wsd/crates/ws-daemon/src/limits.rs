@@ -30,9 +30,7 @@ impl Sessions {
         let count = sessions
             .iter()
             .filter(|session| session.body["parent_session_id"].as_str() == Some(&parent_id))
-            .filter(|session| {
-                scope.is_none() || !["finished", "failed"].contains(&session.state.as_str())
-            })
+            .filter(|session| !["finished", "failed"].contains(&session.state.as_str()))
             .count();
         if count >= limit {
             return Err(Error::SpawnLimit(SpawnLimit::Children { parent, limit }));
@@ -472,7 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_non_loop_limit_still_counts_finished_children() {
+    async fn default_non_loop_limit_counts_only_live_children() {
         let sandbox = tempfile::tempdir().unwrap();
         let app = api::router(Sessions::open(sandbox.path(), 1).unwrap());
         let (_, root) = post(&app, "/v1/sessions", json!({})).await;
@@ -494,6 +492,15 @@ mod tests {
                 .0,
                 StatusCode::OK
             );
+        }
+        for _ in 0..8 {
+            let (status, error) = post(
+                &app,
+                "/v1/sessions",
+                json!({"parent_session_id":root["id"]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{error}");
         }
         let (status, error) = post(
             &app,
@@ -549,19 +556,8 @@ mod tests {
             .unwrap();
         let app = api::router(sessions);
         for _ in 0..8 {
-            let (status, child) =
-                post(&app, "/v1/sessions", json!({"parent_session_id":root})).await;
+            let (status, _) = post(&app, "/v1/sessions", json!({"parent_session_id":root})).await;
             assert_eq!(status, StatusCode::CREATED);
-            assert_eq!(
-                post(
-                    &app,
-                    &format!("/v1/sessions/{}/done", child["id"].as_str().unwrap()),
-                    json!({})
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
         }
         let (status, error) = post(&app, "/v1/sessions", json!({"parent_session_id":root})).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{error}");

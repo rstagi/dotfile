@@ -36,6 +36,9 @@ const TERM_GRACE: Duration = Duration::from_secs(10);
 const TIMEOUT_REASON: &str = "The phase exceeded its maximum runtime.";
 /// The supervisor appends this event after the process group of a headless session disappears.
 pub const PROCESS_EXITED: &str = "process.exited";
+const ADOPTED_EXIT_REASON: &str = "The adopted process exited. Its exit status is unavailable.";
+/// `stop` appends this event before it signals the process group.
+const STOP_REQUESTED: &str = "session.stop_requested";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +119,8 @@ pub(crate) async fn stop(
             .ok_or(Error::InvalidRequest(
                 "The headless session has no process record.",
             ))?;
+        // Record the request before the signal, so the exit maps to a stop.
+        sessions.append(session.id, STOP_REQUESTED, json!({}))?;
         Ok((session, Some(process)))
     })
     .await?;
@@ -389,7 +394,7 @@ fn monitor_adopted(store: Store, id: SessionId, parent: Option<SessionId>, proce
                     Some(if timed_out {
                         TIMEOUT_REASON
                     } else {
-                        "The adopted process exited. Its exit status is unavailable."
+                        ADOPTED_EXIT_REASON
                     }),
                 )?;
                 Ok(false)
@@ -426,7 +431,9 @@ fn finish(
     if sessions.process_exited(id)? {
         return Ok(());
     }
-    let state = if code == Some(0) && reason.is_none() {
+    let stopped =
+        reason.is_none_or(|reason| reason == ADOPTED_EXIT_REASON) && sessions.stop_requested(id)?;
+    let state = if (code == Some(0) && reason.is_none()) || stopped {
         SessionState::Finished
     } else {
         SessionState::Failed
@@ -485,6 +492,15 @@ impl Process {
 }
 
 impl Sessions {
+    /// Reports whether `stop` asked for the exit of the current process.
+    fn stop_requested(&self, id: SessionId) -> Result<bool> {
+        let Some(request) = self.registry.latest_event(id, STOP_REQUESTED)? else {
+            return Ok(false);
+        };
+        let running = self.registry.latest_event(id, "session.running")?;
+        Ok(running.is_none_or(|running| request.seq > running.seq))
+    }
+
     pub(crate) fn process_exited(&self, id: SessionId) -> Result<bool> {
         let Some(exit) = self.registry.latest_process_exit(id)? else {
             return Ok(false);

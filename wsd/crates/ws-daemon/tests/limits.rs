@@ -47,7 +47,7 @@ async fn default_child_limit_rejects_the_ninth_child_and_survives_restart() {
 }
 
 #[tokio::test]
-async fn configured_child_limit_counts_finished_children_and_keeps_roots_independent() {
+async fn configured_child_limit_counts_live_children_and_keeps_roots_independent() {
     let sandbox = tempfile::tempdir().unwrap();
     std::fs::write(
         sandbox.path().join("config.toml"),
@@ -64,10 +64,13 @@ async fn configured_child_limit_counts_finished_children_and_keeps_roots_indepen
         .unwrap();
     sessions.stop(&child.id.to_string(), None).unwrap();
     let app = api::router(sessions);
+    let (status, live) = post(&app, "/v1/sessions", json!({"parent_session_id":root.id})).await;
+    assert_eq!(status, StatusCode::CREATED);
     let (status, error) = post(&app, "/v1/sessions", json!({"parent_session_id":root.id})).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(error["error"]["code"], "max_children_exceeded");
     assert_eq!(error["error"]["limit"], 1);
+    assert!(live["id"].is_string());
     let (status, other) = post(&app, "/v1/sessions", json!({})).await;
     assert_eq!(status, StatusCode::CREATED);
     let (status, _) = post(
