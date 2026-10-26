@@ -926,8 +926,35 @@ async fn start_skills(
         let lock = ws_core::lockfile::open_lock_file(&sub.join("start.lock"))?;
         lock.try_lock()
             .map_err(|_| Error::InvalidRequest("Another caller is starting this loop."))?;
-        let (_, owner) =
-            sessions.create_loop_session(&directory, request.parent_session_id)?;
+        let state = match fs::read(directory.join("state.json")) {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(Error::Json)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+            Err(error) => return Err(error.into()),
+        };
+        if state
+            .get("awaitingMerge")
+            .is_some_and(|value| !value.is_null() && value != false)
+        {
+            return Err(Error::InvalidBody(format!(
+                "The loop awaits a milestone merge. Run loop-milestone.sh resume --dir {}.",
+                shell_words::quote(&directory.to_string_lossy())
+            )));
+        }
+        let (_, owner) = sessions.create_loop_session(&directory, request.parent_session_id)?;
+        for session in sessions.registry.sessions()? {
+            let orchestrator_child = session.body["parent_session_id"] == json!(owner.id)
+                && session.body["loop"].is_null();
+            if session.body["kind"] == "headless"
+                && (session.body["loop_dir"].as_str() == directory.to_str()
+                    || orchestrator_child
+                    || state["wsSession"].as_str() == Some(session.id.to_string().as_str()))
+                && !sessions.process_exited(session.id)?
+            {
+                return Err(Error::InvalidRequest(
+                    "The loop already has a running orchestrator.",
+                ));
+            }
+        }
         Ok((directory, owner.id, lock))
     })
     .await?;

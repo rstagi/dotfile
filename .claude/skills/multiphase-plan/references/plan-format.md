@@ -359,6 +359,21 @@ Keep this comment as the first lines of `.loop/plan.md`. `planId` and `daemon` a
 present. `loop-handoff` reads this header to push to the daemon; `loop-pickup` writes it after
 fetching.
 
+The optional `engine` field selects the Loop engine:
+
+- Without `engine`, `ws loop start` starts `loop-orchestrator.sh` with the existing state and prompt behavior.
+- With `engine: skills`, `ws loop start` starts the `loop` skill in a headless agent session.
+  Its parent is the loop session. The prompt names the loop directory and the loop session.
+  A fresh loop needs only `.loop/plan.md`. It needs no `state.json` or `sub/prompt-seed.md`.
+- The skills engine accepts an existing `state.json` with a milestone and no `awaitingMerge`.
+  For a parked merge, run `loop-milestone.sh resume --dir <loop dir>` before `ws loop start`.
+  A running orchestrator prevents a second start.
+
+Add `engine: skills` inside the header comment to select the skills engine.
+The field applies to milestones that did not start. The human changes it at a milestone gate.
+Remove the field at a parked gate to select the old engine again.
+The field is the engine switch. Its removal is a separate change after the old engine retires.
+
 ## Rules
 
 - **The plan is editable for its whole lifetime.** Re-read it at every orchestration boundary;

@@ -408,6 +408,11 @@ fn cli_create_makes_a_loop_session_without_a_process_and_events_record_their_sou
 #[test]
 fn cli_start_and_stop_use_the_loop_api() {
     let sandbox = Sandbox::new();
+    fs::write(
+        sandbox.loop_dir.join("plan.md"),
+        "<!-- loop-plan\nplanId: loop-test\ndaemon: http://localhost:7717\n-->\n# Plan\nengine: skills\n",
+    )
+    .unwrap();
     let output = common::ws(sandbox.home.path(), &sandbox.socket)
         .args([
             "loop",
@@ -557,6 +562,7 @@ fn skills_start_from_plan_only_prepares_an_agent_under_the_loop_session() {
     sandbox.skills_plan();
     fs::remove_file(sandbox.loop_dir.join("state.json")).unwrap();
     fs::remove_file(sandbox.loop_dir.join("sub/prompt-seed.md")).unwrap();
+    fs::remove_file(sandbox.home.path().join("dotfile/loop-orchestrator.sh")).unwrap();
     let caller = sandbox.request("/v1/sessions", json!({}));
     let child = sandbox.request(
         "/v1/loops/start",
@@ -574,7 +580,10 @@ fn skills_start_from_plan_only_prepares_an_agent_under_the_loop_session() {
     let prompt = argv[1].as_str().unwrap();
     assert!(prompt.contains("loop skill"), "{prompt}");
     assert!(prompt.contains(owner["id"].as_str().unwrap()), "{prompt}");
-    assert!(prompt.contains(sandbox.loop_dir.to_str().unwrap()), "{prompt}");
+    assert!(
+        prompt.contains(sandbox.loop_dir.to_str().unwrap()),
+        "{prompt}"
+    );
     for flag in ["--mcp-config", "--settings"] {
         let index = argv.iter().position(|arg| arg == flag).unwrap();
         assert!(PathBuf::from(argv[index + 1].as_str().unwrap()).is_file());
@@ -582,6 +591,71 @@ fn skills_start_from_plan_only_prepares_an_agent_under_the_loop_session() {
     assert!(!sandbox.loop_dir.join("state.json").exists());
     assert!(!sandbox.loop_dir.join("sub/prompt-seed.md").exists());
     assert!(!sandbox.loop_dir.join("sub/engine-ready").exists());
+}
+
+#[test]
+fn skills_start_reuses_an_advanced_loop_and_refuses_a_second_orchestrator() {
+    let sandbox = Sandbox::new();
+    sandbox.skills_plan();
+    let state = r#"{"runId":"legacy-loop","milestone":7}"#;
+    fs::write(sandbox.loop_dir.join("state.json"), state).unwrap();
+    fs::remove_file(sandbox.loop_dir.join("sub/prompt-seed.md")).unwrap();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let output = common::ws(sandbox.home.path(), &sandbox.socket)
+        .args([
+            "loop",
+            "start",
+            sandbox.loop_dir.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let child: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(child["parent_session_id"], owner["id"]);
+    assert_eq!(sandbox.agent_capture()["session"], child["id"]);
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/loops/start",
+        &json!({"loop_dir":sandbox.loop_dir}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    assert!(response.contains("running orchestrator"), "{response}");
+    assert_eq!(
+        fs::read_to_string(sandbox.loop_dir.join("state.json")).unwrap(),
+        state
+    );
+}
+
+#[test]
+fn skills_start_refuses_a_parked_loop_with_the_milestone_resume_command() {
+    let sandbox = Sandbox::new();
+    sandbox.skills_plan();
+    let state = r#"{"runId":"legacy-loop","milestone":6,"awaitingMerge":{"milestone":6,"prs":[]}}"#;
+    fs::write(sandbox.loop_dir.join("state.json"), state).unwrap();
+    let response = common::request(
+        &sandbox.socket,
+        "POST",
+        "/v1/loops/start",
+        &json!({"loop_dir":sandbox.loop_dir}).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("loop-milestone.sh resume --dir"),
+        "{message}"
+    );
+    assert!(
+        message.contains(sandbox.loop_dir.to_str().unwrap()),
+        "{message}"
+    );
+    assert_eq!(
+        fs::read_to_string(sandbox.loop_dir.join("state.json")).unwrap(),
+        state
+    );
+    assert!(!sandbox.home.path().join("agent-capture.json").exists());
 }
 
 #[test]
@@ -896,7 +970,10 @@ with (root / 'coordinator/.loop/sub/release').open() as release:
             if let Ok(bytes) = fs::read(&path) {
                 return serde_json::from_slice(&bytes).unwrap();
             }
-            assert!(std::time::Instant::now() < deadline, "The agent did not start.");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "The agent did not start."
+            );
             std::thread::yield_now();
         }
     }
