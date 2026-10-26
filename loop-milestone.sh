@@ -13,6 +13,12 @@ set -u -o pipefail
 #     loop-state.sh set writes awaitingMerge {milestone, prs} and repositories[slug].prUrl, and a
 #     keyed loop.gate {kind:merge, state:open, milestone, prs} event follows. A repeat with the
 #     same PRs changes nothing. Other PRs for a parked milestone exit 1 and change nothing.
+#   resume --dir <loop dir>
+#     Checks the parked gate, archives milestones 1 through N, and advances to N+1.
+#     Applies the advance patch once. With WS_LOOP_ID, appends keyed gate, milestone and phase
+#     events. Restores plan Status to "in progress" and pushes the plan. Clears resumePending
+#     last. A retry with resumePending == milestone runs only the steps after the apply.
+#     Without WS_LOOP_ID, appends no event. Start the skill with `ws loop start <loop dir>`.
 #   check   --state <state.json>
 #     one "slug<TAB>url<TAB>open|merged|closed" row per state.awaitingMerge.prs entry.
 #     exit 0 all merged, 3 any open, 4 any closed-unmerged (wins over open), 1 gh/state error.
@@ -59,9 +65,10 @@ main() {
   case "$cmd" in
   open) open_milestone ;;
   park) park_milestone ;;
+  resume) resume_milestone ;;
   check) check_gate ;;
   advance) advance_milestone ;;
-  *) die "unknown command '$cmd' (open|park|check|advance)" ;;
+  *) die "unknown command '$cmd' (open|park|resume|check|advance)" ;;
   esac
 }
 
@@ -175,6 +182,58 @@ park_milestone() {
     append_tool_event loop.gate "$(jq -cn --argjson n "$MILESTONE" --argjson prs "$prs" \
       '{kind:"merge",state:"open",milestone:$n,prs:$prs}')" "park:$MILESTONE" || return $?
   fi
+}
+
+# Resume owns the transition from a merged gate to the next milestone.
+# The advance patch records resumePending, so a retry skips every step before the apply.
+resume_milestone() {
+  STATE="$DIR/state.json"
+  load_state
+  local old m plan patch state prs phases tmp
+  if jq -e '.resumePending != null and .resumePending == .milestone' "$STATE" >/dev/null; then
+    NEXT="$(jq -er '.milestone | select(type=="number" and .>=2 and floor==.)' "$STATE")" \
+      || die "invalid pending milestone"
+    old=$(( NEXT - 1 ))
+  else
+    check_gate || return $?
+    old="$(jq -er '.awaitingMerge.milestone // .milestone // 1 | select(type=="number" and .>=1 and floor==.)' "$STATE")" \
+      || die "invalid parked milestone"
+    for (( m=1; m<=old; m++ )); do
+      "$LOOP_PLAN" archive --milestone "$m" --dir "$DIR" || return $?
+    done
+    NEXT=$(( old + 1 ))
+    plan="$(node "$HERE/loop-plan-parse.mjs" --plan "$DIR/plan.md")" || die "cannot parse $DIR/plan.md"
+    BRANCHES="$(jq -ce --argjson n "$NEXT" '.milestones[] | select(.number==$n) |
+      . as $m | [.participants[] | {key:.,value:$m.integrationBranches[.]}] | from_entries' <<< "$plan")" \
+      || die "plan has no milestone $NEXT"
+    patch="$(advance_milestone)" || return $?
+    "$LOOP_STATE" set --dir "$DIR" ". + $patch" >/dev/null || die "cannot apply milestone $NEXT"
+  fi
+
+  if [[ -n "${WS_LOOP_ID:-}" ]]; then
+    state="$(jq -c . "$STATE")" || die "cannot read $STATE"
+    prs="$(jq -ce --arg n "$old" '.milestones[$n].prs | select(type=="object" and length>0)' <<< "$state")" \
+      || die "milestone $old has no merged PR history"
+    plan="$(node "$HERE/loop-plan-parse.mjs" --plan "$DIR/plan.md")" || die "cannot parse $DIR/plan.md"
+    phases="$(phases_event_body "$plan" "$state")" || die "cannot build loop.phases"
+    append_tool_event loop.gate "$(jq -cn --argjson n "$old" --argjson prs "$prs" \
+      '{kind:"merge",state:"merged",milestone:$n,prs:$prs}')" || return $?
+    append_tool_event loop.milestone "$(jq -cn --argjson n "$NEXT" '{milestone:$n}')" || return $?
+    append_tool_event loop.phases "$phases" "resume:$NEXT" || return $?
+  fi
+
+  tmp="$(mktemp "$DIR/.plan.XXXXXX")" || die "cannot create temporary plan"
+  if ! sed 's/^\*\*Status:\*\*.*/**Status:** in progress/' "$DIR/plan.md" > "$tmp"; then
+    rm -f "$tmp"
+    die "cannot read $DIR/plan.md"
+  fi
+  if cmp -s "$tmp" "$DIR/plan.md"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$DIR/plan.md" || { rm -f "$tmp"; die "cannot write $DIR/plan.md"; }
+  fi
+  "$LOOP_PLAN" push --dir "$DIR" || return $?
+  "$LOOP_STATE" set --dir "$DIR" '.resumePending = null' >/dev/null || die "cannot complete milestone resume"
 }
 
 # Convert parser phases and saved statuses to the public ws event body. Resume uses this seam too.
