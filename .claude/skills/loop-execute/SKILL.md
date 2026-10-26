@@ -78,11 +78,15 @@ the Mac; do not manage power yourself.
 Resolve the plan LOCAL → daemon: `.loop/plan.md` header → the daemon
 (`loop-plan.sh get --plan-id <id>`, else `loop-plan.sh list`; argument → ask, like
 `loop-pickup` step 1). Read `engine` only from the initial `<!-- loop-plan … -->` header.
-For `engine: skills`, stop before repository checks, the lock or init. Print one line:
-`REFUSED: engine: skills requires ws loop start <loop dir>`.
-Replace `<loop dir>` with the resolved loop directory. Quote the path for the shell when necessary.
-Do not start the old engine. This preflight refusal applies to `/loop-execute <plan>`.
-The parked milestone resume below can switch engines.
+For `engine: skills`, stop before repository checks, the lock or init. Do not start the old engine.
+Start the skills engine yourself. The human runs no command:
+1. Show one confirm gate: the plan id, the loop directory and the engine `skills`. Continue after the go of the human.
+2. Run `ws loop start <loop dir>`. Replace `<loop dir>` with the resolved loop directory. Quote the path for the shell when necessary.
+3. Print the loop session id from the output, and `ws top` as the view of the loop. Then stop.
+   The `loop` skill runs the plan in its own session.
+When `ws loop start` fails, print its error and stop. Never use the old engine as a fallback.
+`ws loop start` refuses a loop that has a running orchestrator, so a second start changes nothing.
+This start applies to `/loop-execute <plan>`. The parked milestone resume below can switch engines.
 
 Parse phases, kinds, lanes, repositories, `Depends on` edges, statuses, and per-phase `Verify`.
 Validate: DAG acyclic;
@@ -617,7 +621,7 @@ milestone of a plan, or the final review of a plan with no milestones.
 Before `resume`, read the local plan header. With `engine: skills`, allow only the parked milestone resume below.
 This includes park recovery in step 1.
 Also allow its step 5 when `state.resumePending` equals `state.milestone` after a crash.
-For any other skills-plan resume, print the preflight refusal and stop before old-engine scheduling.
+For any other skills-plan resume, use the skills start of step 1 and stop before old-engine scheduling.
 For a skills plan, a SUB writes `status.json{outcome:"blocked"}` and exits.
 
 - **resume** — re-lock with the state's run id, then reconcile per protocol (git >
