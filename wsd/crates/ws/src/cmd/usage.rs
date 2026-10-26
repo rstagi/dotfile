@@ -49,7 +49,11 @@ pub async fn run(socket: &Path, json: bool) -> Result<()> {
             println!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 window.runner,
-                window.account_id.as_deref().unwrap_or("unknown"),
+                window
+                    .account_label
+                    .as_deref()
+                    .or(window.account_id.as_deref())
+                    .unwrap_or("unknown"),
                 window.bucket.as_deref().unwrap_or("-"),
                 window.window,
                 remaining,

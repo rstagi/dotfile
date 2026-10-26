@@ -361,25 +361,29 @@ fn parse_bucket(
             coverage: None,
         });
     }
-    for (window, seconds) in [("five_hour", 18000), ("weekly", 604800)] {
-        if !readings.iter().any(|reading| reading.window == window) {
-            readings.push(Reading {
-                runner: "codex".into(),
-                account_id: account.into(),
-                bucket: bucket_id.clone(),
-                window: window.into(),
-                duration_secs: Some(seconds),
-                start_ms: None,
-                reset_ms: None,
-                source: Source::Reported,
-                source_name: source.into(),
-                observed_at_ms: observed,
-                received_at_ms: received,
-                used_ratio: None,
-                tokens: None,
-                coverage: None,
-            });
-        }
+    // A bucket without any window keeps both standard windows as unknown values. A bucket that
+    // reports a window lists all of its windows: a plan with a weekly limit only has no five-hour
+    // window, and an invented one would show as unknown next to the real limit.
+    if !readings.is_empty() {
+        return readings;
     }
-    readings
+    [("five_hour", 18000), ("weekly", 604800)]
+        .into_iter()
+        .map(|(window, seconds)| Reading {
+            runner: "codex".into(),
+            account_id: account.into(),
+            bucket: bucket_id.clone(),
+            window: window.into(),
+            duration_secs: Some(seconds),
+            start_ms: None,
+            reset_ms: None,
+            source: Source::Reported,
+            source_name: source.into(),
+            observed_at_ms: observed,
+            received_at_ms: received,
+            used_ratio: None,
+            tokens: None,
+            coverage: None,
+        })
+        .collect()
 }

@@ -455,6 +455,7 @@ Loop routes, MCP `loop_get`, and CLI loop controls accept a session ULID, a `#N`
 The state includes `plan_id`. Older sessions use the header in their latest `loop.plan` text, then the header in `plan.md`.
 Creation preserves these older sessions and their children and events.
 The state contains the plan, phases, milestone, and records for attempts, merges, gates, reviews, notes, decisions, controls, guards and violations.
+Each record has `at_ms`, the time of its event.
 Phase status only increases: `todo < claimed < running < done < merged`. A stale phase event cannot lower the status.
 The daemon checks Loop rules after each Loop event. It records each new result as a
 `loop.violation` event with `source: daemon`. A hard violation blocks phase spawns and
@@ -679,19 +680,27 @@ An estimate has source `estimated`. Without a calibrated denominator, both quota
 The collector writes durable `runner.usage.updated` events through the existing session writer and OTLP emitter.
 Each reading retains its account, bucket, window duration, reset time and `reported` or `estimated` source.
 Window duration selects the window: 300 minutes means five hours, and 10080 minutes means one week.
-Other durations remain separate. Missing windows and invalid or expired values remain unknown.
+Other durations remain separate. Invalid or expired values remain unknown.
+A Codex bucket that reports no window keeps both standard windows as unknown. A bucket that reports
+a window lists only its own windows: a plan with a weekly limit only has no five-hour window.
 Unknown values produce no numeric quota attribute.
 
 `ws usage` shows each runner's quota windows with the account, bucket, remaining percentage, source and reading age.
 `ws usage --json` returns a `windows` array from the daemon's read-only `GET /v1/usage` endpoint.
 Each window has `runner`, `account_id`, `bucket`, `window`, `remaining_ratio`, `source`, `observed_at_ms`, `age_secs` and `status`.
+`account_id` is the opaque key. `account_label` is a readable name: the email of the current Claude
+or Codex login, or the email and team of the current Grok login. Other accounts have no label.
+The daemon reads the label from the login files at most once a minute. It never stores the label and never reads a token value.
 The response also retains `reset_ms`, `tokens` and telemetry `coverage` when present.
 The daemon selects the latest observation per runner, account, bucket and window across session logs.
 Receipt time does not replace observation time. Reported values take priority when observation times match.
 A missing ratio has status `unknown` and a null `remaining_ratio`. An expired window has status `unavailable` and a null ratio.
 A runner without readings has an explicit unavailable row with unknown age and source.
+A row without a bucket is a fallback. It disappears when the provider names a bucket for the same account.
+An unknown row disappears when a later report of the same account and bucket omits its window.
 
 `loop-top` and `ws top` show the same quota in a panel. The CLI request has a 1.5-second timeout.
+The panel shows `account_label`, else a short account id such as `…e7fe2cf30`, else the team or user of a Grok identity.
 The panel disappears when `ws` is absent, fails, times out or does not support `usage`.
 
 `POST /v1/phases/spawn` starts a local phase as a headless child:

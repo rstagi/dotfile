@@ -175,6 +175,25 @@ svg.graph.grabbing { cursor: grabbing; }
   .e.moving { stroke-dasharray: 7 5; animation: flow 1.2s linear infinite; }
 }
 @keyframes flow { to { stroke-dashoffset: -12; } }
+
+/* The time bar (only with a timeline): the status of each node at the chosen time. */
+.timed:not(.dim) .n.s-todo { opacity: 0.45; }
+.timed .n.s-active .box { stroke: var(--accent); stroke-width: 2.5; }
+.timed .n.s-review .box { stroke: var(--info); stroke-width: 2.5; stroke-dasharray: 6 3; }
+.timed .n.s-failed .box { stroke: var(--bad); stroke-width: 3; fill: color-mix(in srgb, var(--bad) 10%, var(--surface)); }
+.timed .n.s-done .box { fill: color-mix(in srgb, var(--ok) 12%, var(--surface)); stroke: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.timed .n.s-active .dot, .timed .n.s-review .dot { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .timed .n .dot { animation: none !important; } }
+.tl { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 16px 18px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.tl-track { position: relative; flex: 1 1 auto; min-width: 0; }
+.tl-track input { width: 100%; margin: 0; accent-color: var(--accent); }
+.tl-marks { position: absolute; left: 8px; right: 8px; top: 22px; height: 14px; }
+.tl-mark { position: absolute; transform: translateX(-50%); font: 600 0.68rem/1 var(--sans); padding: 2px 5px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.tl-mark.on { border-color: var(--accent); color: var(--accent); }
+.tl-label { flex: none; font-size: 0.82rem; color: var(--ink-2); min-width: 15ch; text-align: right; }
+.tl-label a { color: var(--accent); }
+@media (max-width: 640px) { .tl { flex-wrap: wrap; } .tl-label { min-width: 0; } .tl-mark { font-size: 0.6rem; } }
 </style>
 </head>
 <body>
@@ -185,6 +204,9 @@ svg.graph.grabbing { cursor: grabbing; }
 <button type="button" class="btn primary" id="walk" hidden>Walk me through it</button>
 </div>
 </header>
+<div class="tl needs-js" id="tl" hidden><button type="button" class="btn" id="tl-play" aria-label="Play the timeline">▶</button>
+<div class="tl-track"><input type="range" id="tl-range" min="0" max="1000" value="1000" aria-label="Time"><div class="tl-marks" id="tl-marks"></div></div>
+<span class="tl-label" id="tl-label" aria-live="polite"></span></div>
 <main class="stage needs-js" id="stage">
 <svg class="graph" id="svg" role="group" aria-label="Graph. Drag to pan, scroll to move, pinch or press plus to zoom."><defs id="defs"></defs><g id="world"><g id="l-groups"></g><g id="l-edges"></g><g id="l-nodes"></g></g></svg>
 <div class="state" id="state">Drawing the graph…</div>
@@ -203,6 +225,7 @@ svg.graph.grabbing { cursor: grabbing; }
 </main>
 <div class="outline needs-nojs">{{OUTLINE}}</div>
 <script type="application/json" id="data">{{DATA}}</script>
+<script type="application/json" id="timeline">{{TIMELINE}}</script>
 <script>{{ELK}}</script>
 <script>
 (function () {
@@ -691,6 +714,7 @@ svg.graph.grabbing { cursor: grabbing; }
     tour.querySelector("[data-tour-prev]").disabled = stopIndex === 0;
     tour.querySelector("[data-tour-next]").textContent = stopIndex === stops.length - 1 ? "Done" : "Next";
     light();
+    if (TL && TL.stepsAt && TL.stepsAt[stopIndex]) { stopPlay(); setTime(Date.parse(TL.stepsAt[stopIndex])); }
     var ids = Array.from(stopSet(s)).filter(function (id) { return byId[id]; });
     if (ids.length) frameIds(ids);
   }
@@ -707,7 +731,7 @@ svg.graph.grabbing { cursor: grabbing; }
 
   // ---- direction ----
   function relayout() {
-    return layout().then(function () { build(); light(); fit(); });
+    return layout().then(function () { build(); setTime(now); light(); fit(); });
   }
   $("dir").addEventListener("click", function () {
     dirKey = dirKey === "right" || dirKey === "left" ? "down" : "right";
@@ -715,6 +739,54 @@ svg.graph.grabbing { cursor: grabbing; }
     $("dir").setAttribute("aria-pressed", String(dirKey === "down"));
     relayout();
   });
+
+  // ---- the time bar: each node's status at a moment, one mark per checkpoint ----
+  var TL = JSON.parse($("timeline").textContent), playing = null, t0 = 0, t1 = 1, now = 1;
+  var range = $("tl-range"), marksEl = $("tl-marks");
+  function statusAt(id, t) { var s = "todo"; (TL.nodes[id] || []).forEach(function (x) { if (Date.parse(x.at) <= t) s = x.status; }); return s; }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function clock(t) {
+    var d = new Date(t), day = new Date(t0).toISOString().slice(0, 10) !== new Date(t1).toISOString().slice(0, 10);
+    return (day ? pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()) + " " : "") + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + " UTC";
+  }
+  function setTime(t) {
+    if (!TL) return;
+    now = Math.max(t0, Math.min(t1, t));
+    Object.keys(TL.nodes).forEach(function (id) {
+      var n = byId[id]; if (!n) return;
+      var s = statusAt(id, now); n.status = s;
+      var g = els.n[id]; if (!g) return;
+      var cls = g.getAttribute("class").replace(/\s*\bs-\w+/g, "");
+      g.setAttribute("class", cls + " s-" + s);
+      var tip = g.querySelector(".dot title"); if (tip) tip.textContent = s;
+    });
+    range.value = String(Math.round((now - t0) / (t1 - t0) * 1000));
+    var mark = null;
+    TL.marks.forEach(function (m, i) { var on = Math.abs(Date.parse(m.at) - now) < 60000; marksEl.children[i].classList.toggle("on", on); if (on) mark = m; });
+    var label = $("tl-label");
+    label.textContent = clock(now);
+    if (TL.total !== undefined) label.textContent += " · " + (TL.merges || []).filter(function (m) { return Date.parse(m) <= now; }).length + " of " + TL.total + " merged";
+    if (mark && mark.href) { label.appendChild(document.createTextNode(" · ")); var a = document.createElement("a"); a.href = mark.href; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = mark.label + " page ↗"; label.appendChild(a); }
+  }
+  function stopPlay() { if (playing) { clearInterval(playing); playing = null; $("tl-play").textContent = "▶"; } }
+  if (TL) {
+    t0 = Date.parse(TL.start); t1 = Date.parse(TL.end); now = t1;
+    $("tl").hidden = false;
+    svg.classList.add("timed");
+    TL.marks.forEach(function (m) {
+      var b = document.createElement("button"); b.type = "button"; b.className = "tl-mark"; b.textContent = m.label; if (m.text) b.title = m.text;
+      b.style.left = ((Date.parse(m.at) - t0) / (t1 - t0) * 100) + "%";
+      b.addEventListener("click", function () { stopPlay(); setTime(Date.parse(m.at)); });
+      marksEl.appendChild(b);
+    });
+    range.addEventListener("input", function () { stopPlay(); setTime(t0 + (t1 - t0) * Number(range.value) / 1000); });
+    $("tl-play").addEventListener("click", function () {
+      if (playing) return stopPlay();
+      if (now >= t1) setTime(t0);
+      $("tl-play").textContent = "❚❚";
+      playing = setInterval(function () { if (now >= t1) return stopPlay(); setTime(now + (t1 - t0) / 240); }, 60);
+    });
+  }
 
   stops = data.steps;
   if (stops.length) $("walk").hidden = false;
@@ -736,6 +808,7 @@ svg.graph.grabbing { cursor: grabbing; }
     $("dir").setAttribute("aria-pressed", String(dirKey === "down"));
     $("state").hidden = true;
     build();
+    setTime(now);
     fit();
     window.addEventListener("resize", function () { if (stopIndex < 0) fit(); else drawMiniView(); });
   }, function (err) { $("state").textContent = "The graph could not be drawn: " + err.message; });

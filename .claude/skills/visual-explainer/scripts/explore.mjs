@@ -4,22 +4,25 @@
 //
 //   node explore.mjs --graph <file> --out <dir>   validate, write <dir>/explore.html, print its path
 //   node explore.mjs --graph <file> --check       validate only, print the warnings
+//   --timeline <file>   add the time bar: each node's status over time (timeline.mjs)
 //
 // Format: SKILL.md, section "Explore mode". Warnings (dropped items) go to stderr.
 // Exit: 0 valid · 1 invalid graph, one line on stderr · 2 usage or I/O error.
 import fs from "node:fs";
 import path from "node:path";
 import { parseExplore } from "./explore-spec.mjs";
+import { parseTimeline } from "./timeline.mjs";
 
 const SKILL_DIR = path.join(import.meta.dirname, "..");
 const TEMPLATE = path.join(SKILL_DIR, "template", "explore.html");
 const ELK = path.join(SKILL_DIR, "vendor", "elk.bundled.js");
-const USAGE = "usage: explore.mjs --graph <file> (--out <dir> | --check)";
+const USAGE = "usage: explore.mjs --graph <file> [--timeline <file>] (--out <dir> | --check)";
 
 if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
 
-// renderExplore(graph, { template, elk }) -> the page HTML.
-export function renderExplore(graph, { template, elk }) {
+// renderExplore(graph, { template, elk, timeline }) -> the page HTML. Without a timeline, the
+// page has no time bar.
+export function renderExplore(graph, { template, elk, timeline = null }) {
   const title = graph.title ?? "Graph";
   const summary = graph.summary ? `<p>${escapeHtml(graph.summary)}</p>` : "";
   const values = {
@@ -28,11 +31,12 @@ export function renderExplore(graph, { template, elk }) {
     HEADING: escapeHtml(title),
     SUMMARY: summary,
     OUTLINE: outline(graph),
-    DATA: JSON.stringify(graph).replace(/</g, "\\u003c").replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`),
+    DATA: scriptJson(graph),
+    TIMELINE: scriptJson(timeline),
     ELK: elk,
   };
   // One pass with a function, so "$&" in the data is never read as a replacement pattern.
-  return template.replace(/\{\{(TITLE|DESCRIPTION|HEADING|SUMMARY|OUTLINE|DATA|ELK)\}\}/g, (_, key) => values[key]);
+  return template.replace(/\{\{(TITLE|DESCRIPTION|HEADING|SUMMARY|OUTLINE|DATA|TIMELINE|ELK)\}\}/g, (_, key) => values[key]);
 }
 
 function main(argv) {
@@ -43,9 +47,10 @@ function main(argv) {
     process.stderr.write(`${parsed.error}\n`);
     process.exit(1);
   }
-  for (const w of parsed.warnings) process.stderr.write(`warning: ${w}\n`);
+  const timeline = args.timeline ? readTimeline(args.timeline, parsed.graph) : { timeline: null, warnings: [] };
+  for (const w of [...parsed.warnings, ...timeline.warnings]) process.stderr.write(`warning: ${w}\n`);
   if (args.check) return;
-  const html = renderExplore(parsed.graph, { template: read(TEMPLATE), elk: read(ELK) });
+  const html = renderExplore(parsed.graph, { template: read(TEMPLATE), elk: read(ELK), timeline: timeline.timeline });
   const file = path.join(path.resolve(args.out), "explore.html");
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -77,10 +82,24 @@ function parseArgs(argv) {
   const args = { check: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--check") args.check = true;
-    else if (["--graph", "--out"].includes(argv[i]) && argv[i + 1]) args[argv[i].slice(2)] = argv[++i];
+    else if (["--graph", "--out", "--timeline"].includes(argv[i]) && argv[i + 1]) args[argv[i].slice(2)] = argv[++i];
     else return null;
   }
   return args.graph && args.check !== Boolean(args.out) ? args : null;
+}
+
+// JSON that is safe inside a <script> element: no "</script>" and no line separators.
+function scriptJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
+}
+
+function readTimeline(file, graph) {
+  try {
+    return parseTimeline(JSON.parse(read(file)), new Set(graph.nodes.map((n) => n.id)));
+  } catch (err) {
+    process.stderr.write(`explore.mjs: ${file} is not valid JSON (${err.message})\n`);
+    return process.exit(1);
+  }
 }
 
 function read(file) {

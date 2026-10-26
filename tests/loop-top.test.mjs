@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { fitRows, gateText, inferLoop, loopControl, milestoneTitles, phaseRows, pickerRows, pipelineSummary, renderDetails, tierChoices, wsControlArgs, wsdSnapshot } from "../loop-top.mjs";
+import { accountLabel, archivedMilestones, fitRows, gateText, inferLoop, loopControl, milestoneTitles, phaseRows, pickerRows, pipelineSummary, renderDetails, tierChoices, wsControlArgs, wsdSnapshot } from "../loop-top.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "loop-top.mjs");
 
@@ -88,6 +88,7 @@ test("phaseRows: phases in natural order (2a < 2b < 10), plan node dropped, work
   assert.deepEqual(rows[0], {
     id: "2a", label: "2a", title: "Two a", lane: "A", model: "codex", modelOverride: null, planned: null, paused: false, noted: false, review: null, stages: [], started: true, deps: [],
     icon: "✓", milestone: null, gate: null, state: "done", branch: "feat/two-a", worktree: "/wt/lane-a",
+    startedAt: null, doneAt: null,
   });
   assert.equal(rows[1].icon, "·");
   assert.equal(rows[1].state, "todo");
@@ -751,7 +752,7 @@ test("--once: a single-milestone plan renders unchanged (no headers, no M<n> in 
   assert.doesNotMatch(out.stdout, /M1 — |M\d\/\d/);
 });
 
-test("--once: an archived milestone stub renders its phases as done under an archived heading", async (t) => {
+test("--once: an archived milestone is one completed line; its phases are hidden", async (t) => {
   const { parsePlan } = await import("../loop-web/src/model/parse-plan.ts");
   const { buildGraph } = await import("../loop-web/src/model/build-graph.ts");
   const text = fs.readFileSync(path.join(import.meta.dirname, "fixtures", "milestones", "archived-m1", "plan.md"), "utf8");
@@ -760,10 +761,106 @@ test("--once: an archived milestone stub renders its phases as done under an arc
   t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
   const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store, COLUMNS: "160", LINES: "80" } });
   assert.equal(out.code, 0, out.stderr);
-  assert.match(out.stdout, /^ +M1 — Core API and web shell ship · archived$/m);
+  assert.match(out.stdout, /^ +M1 — Core API and web shell ship ✓ completed$/m);
   assert.match(out.stdout, /^ +M2 — The web shell calls the API$/m);
-  for (const id of ["1", "2", "9", "3"]) assert.match(out.stdout, new RegExp(`✓ ${id} +\\(archived\\) .*done`));
+  assert.doesNotMatch(out.stdout, /\(archived\)/);
   assert.match(out.stdout, / 4 +Call the API from the web shell /);
+});
+
+// ---- archived milestones, phase timing ----
+
+const at = (month, day, hour, minute) => new Date(2026, month - 1, day, hour, minute).getTime();
+const iso = (ms) => new Date(ms).toISOString();
+
+const timedSnapshot = () => ({
+  effort: { milestone: 2, milestoneTotal: 2 },
+  events: [
+    { ts: iso(at(10, 26, 11, 5)), event: "milestone.awaiting-merge", phase: "", detail: "M1 at the merge gate" },
+    { ts: iso(at(10, 26, 11, 2)), event: "milestone.awaiting-merge", phase: "", detail: "M1 acme/api=https://github.com/acme/api/pull/1" },
+    { ts: iso(at(10, 26, 10, 50)), event: "phase.merged", phase: "2", detail: "" },
+    { ts: iso(at(10, 26, 10, 0)), event: "phase.spawn", phase: "1", detail: "attempt a1" },
+    { ts: iso(at(10, 26, 10, 8)), event: "phase.spawn", phase: "2", detail: "attempt a1" },
+    { ts: iso(at(10, 26, 10, 30)), event: "phase.attempt.start", phase: "3", detail: "task" },
+    { ts: iso(at(10, 26, 10, 42)), event: "phase.merged", phase: "3", detail: "" },
+    { ts: iso(at(10, 26, 10, 1)), event: "phase.spawn", phase: "1", detail: "attempt a2" },
+  ],
+  graph: {
+    milestones: [{ number: 1, title: "Core", archived: true }, { number: 2, title: "Polish" }],
+    nodes: [
+      node({ id: "1", phase: "1", title: "(archived)", ui: "done", milestone: 1 }),
+      node({ id: "2", phase: "2", title: "(archived)", ui: "done", milestone: 1 }),
+      node({ id: "3", phase: "3", title: "Work", ui: "done", milestone: 2 }),
+      node({ id: "4", phase: "4", title: "Running", ui: "running", milestone: 2, runtime: rt({ attempts: [{ k: 1, endedAt: at(10, 26, 12, 0) }] }) }),
+      node({ id: "5", phase: "5", title: "Ended", ui: "done", milestone: 2, runtime: rt({ attempts: [{ k: 1, endedAt: at(10, 26, 12, 30) }] }) }),
+    ],
+    edges: [],
+  },
+});
+
+test("archivedMilestones: the latest gate event of an archived milestone is its completion time", () => {
+  assert.deepEqual(archivedMilestones(timedSnapshot()), [{ number: 1, title: "Core", completedAt: at(10, 26, 11, 5) }]);
+  const quiet = timedSnapshot();
+  quiet.events = quiet.events.filter((e) => !e.event.startsWith("milestone."));
+  assert.equal(archivedMilestones(quiet)[0].completedAt, at(10, 26, 10, 50), "fallback: the last phase completion");
+  const bare = timedSnapshot();
+  bare.events = [];
+  assert.equal(archivedMilestones(bare)[0].completedAt, null);
+  assert.deepEqual(archivedMilestones({ graph: { nodes: [] } }), []);
+});
+
+test("phaseRows: phases of archived milestones are hidden; a done phase shows its duration and completion", () => {
+  const rows = phaseRows(timedSnapshot(), null);
+  assert.deepEqual(rows.map((r) => r.label), ["3", "4", "5"]);
+  const [work, running, ended] = rows;
+  assert.deepEqual([work.startedAt, work.doneAt], [at(10, 26, 10, 30), at(10, 26, 10, 42)]);
+  assert.equal(work.state, "12m · 10-26 10:42");
+  assert.equal(running.doneAt, null);
+  assert.match(running.state, /^running/);
+  assert.deepEqual([ended.startedAt, ended.doneAt, ended.state], [null, at(10, 26, 12, 30), "10-26 12:30"]);
+});
+
+test("wsdSnapshot: record times give phase durations; a merged gate archives its milestone", () => {
+  const fx = { root: "/r" };
+  const state = wsdState(fx, {
+    plan: { sha: "x", text: [
+      "## Milestone 1 — First `[archived]`", "### Phase 1 — Wsd first `[lane: A]`",
+      "## Milestone 2 — Second", "### Phase 3 — Wsd review `[kind: pr-review]`",
+    ].join("\n") },
+    phases: {
+      1: { ...wsdState(fx).phases[1], status: "merged" },
+      2: { ...wsdState(fx).phases[2], milestone: 2, status: "merged" },
+      3: { ...wsdState(fx).phases[3], status: "todo" },
+    },
+    attempts: [
+      { n: 2, attempt: 1, state: "started", at_ms: at(10, 26, 9, 0) },
+      { n: 2, attempt: 1, state: "exited", exit: 0, at_ms: at(10, 26, 9, 40) },
+    ],
+    merges: [{ n: 2, repo: "acme/api", verify: "pass", at_ms: at(10, 26, 9, 45) }],
+    gates: [
+      { kind: "merge", state: "open", milestone: 1, at_ms: at(10, 25, 18, 0) },
+      { kind: "merge", state: "merged", milestone: 1, at_ms: at(10, 25, 20, 15) },
+    ],
+    merge_gates: { 1: "merged" },
+  });
+  const snapshot = wsdSnapshot(state);
+  assert.deepEqual(archivedMilestones(snapshot), [{ number: 1, title: "First", completedAt: at(10, 25, 20, 15) }]);
+  const rows = phaseRows(snapshot, null);
+  assert.deepEqual(rows.map((r) => r.label), ["2", "3"]);
+  assert.equal(rows[0].state, "45m · 10-26 09:45");
+  // An older wsd has no record times: the milestone still collapses, without a time.
+  const old = wsdSnapshot({ ...state, gates: state.gates.map(({ at_ms, ...g }) => g), merges: [], attempts: [] });
+  assert.equal(archivedMilestones(old)[0].completedAt, null);
+  assert.equal(phaseRows(old, null)[0].state, "done");
+});
+
+test("--once: an archived milestone line shows its local completion time", async (t) => {
+  const fx = fixture({ snapshot: timedSnapshot() });
+  t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
+  const out = await runCli(["--once", "loop-demo"], { cwd: fx.root, env: { LOOP_DAEMON_URL: "http://127.0.0.1:9", LOOP_STORE_DIR: fx.store } });
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /^ +M1 — Core ✓ completed 2026-10-26 11:05$/m);
+  assert.match(out.stdout, /✓ 3 +Work .* 12m · 10-26 10:42$/m);
+  assert.ok(out.stdout.split("\n").every((l) => l.length <= 120), "fits 120 columns");
 });
 
 test("pickerRows: awaiting-merge sits after active, before finished; the runId stays the 2nd field", () => {
@@ -838,6 +935,7 @@ test("loop-top --once: shows quota windows from ws with source and age", async (
     { runner: "claude", account_id: "account-b", bucket: null, window: "weekly", remaining_ratio: null, source: "estimated", age_secs: 120, status: "unknown" },
     { runner: "grok", account_id: null, bucket: null, window: "unknown", remaining_ratio: null, source: null, age_secs: null, status: "unavailable" },
     { runner: "codex", account_id: "account-a", window: "expired", remaining_ratio: 1, source: "reported", age_secs: 60, status: "unavailable" },
+    { runner: "codex", account_id: "7ac061ce-9e60-4c1d-8f0a-0123e7fe2cf30", account_label: "person@example.com", bucket: "codex", window: "weekly", remaining_ratio: 0.92, source: "reported", age_secs: 60, status: "available" },
   ];
   fs.writeFileSync(path.join(fx.root, "quota.json"), JSON.stringify({ windows }));
   fs.writeFileSync(path.join(fx.root, "bin", "ws"), `#!/bin/sh
@@ -853,6 +951,18 @@ test("loop-top --once: shows quota windows from ws with source and age", async (
   assert.match(out.stdout, /grok.*unavailable/);
   assert.match(out.stdout, /expired.*unavailable/);
   assert.doesNotMatch(out.stdout, /100\.0%/);
+  assert.match(out.stdout, /^ +codex · person@example\.com · weekly · 92\.0% remaining/m, "the label replaces the id; a bucket named like the runner is not repeated");
+
+});
+
+test("accountLabel: the daemon label, else a short id, else the team or user of a Grok identity", () => {
+  assert.equal(accountLabel({ account_id: "f5ac8faa-a17c-4c1d-8f0a-0123e7fe2cf30", account_label: "a@example.com" }), "a@example.com");
+  assert.equal(accountLabel({ account_id: "f5ac8faa-a17c-4c1d-8f0a-0123e7fe2cf30" }), "…e7fe2cf30");
+  assert.equal(accountLabel({ account_id: "account-a" }), "account-a");
+  const team = JSON.stringify({ user_id: "dd80aaaa-0000-1111-2222-333344445555", principal_type: "Team", principal_id: "173baaaa-0000-1111-2222-999988887777", team_id: "173baaaa-0000-1111-2222-999988887777" });
+  assert.equal(accountLabel({ account_id: team }), "team …988887777");
+  assert.equal(accountLabel({ account_id: JSON.stringify({ user_id: "dd80aaaa-0000-1111-2222-333344445555", principal_type: null }) }), "user …344445555");
+  assert.equal(accountLabel({ account_id: null }), null);
 });
 
 for (const [name, script] of [
