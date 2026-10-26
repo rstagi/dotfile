@@ -77,6 +77,11 @@ The daemon records `milestone.awaiting-merge` and `state.awaitingMerge`, with on
 A human merges and runs `/loop-execute resume`.
 The `milestone.resumed` event changes `state.milestone` and the branch, PR and review fields.
 
+A plan header with `engine: skills` selects the skills engine.
+The old orchestrator and `/loop-execute <plan>` refuse it and name `ws loop start <loop dir>`.
+At a merge gate, `/loop-execute resume` keeps steps 1–4 and starts the selected engine in step 5.
+See [Engine switch and rollback](../.claude/skills/loop-execute/references/loop-protocol.md#engine-switch-and-rollback) for the switch and recovery commands.
+
 At resume, `loop-plan.sh archive` moves each shipped milestone into `milestones/m<N>.md`.
 It leaves a stub section whose heading ends with `` `[archived]` ``.
 The parser reads the stub's `Phases (all done)` list as existing `done` phases.
