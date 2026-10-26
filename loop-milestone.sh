@@ -5,6 +5,14 @@ set -u -o pipefail
 #   open --dir <loop dir>
 #     Requires WS_LOOP_ID. Prepares repositories and writes fresh state or adopts saved state.
 #     Appends keyed tool events. A second open changes nothing. A parked loop exits 3.
+#   park --dir <loop dir> --milestone <N> --prs '<json slug→url>'
+#     Requires WS_LOOP_ID. Parks the loop at the merge gate of milestone N (the state milestone).
+#     Exit 3 and no change while a phase of N is not done or merged in `ws loop get`. Sets
+#     [status: done] on each phase of N, the PR lines of N and plan Status "awaiting merge" in
+#     <dir>/plan.md, then runs loop-plan.sh push (a failed push warns once). Then one
+#     loop-state.sh set writes awaitingMerge {milestone, prs} and repositories[slug].prUrl, and a
+#     keyed loop.gate {kind:merge, state:open, milestone, prs} event follows. A repeat with the
+#     same PRs changes nothing. Other PRs for a parked milestone exit 1 and change nothing.
 #   check   --state <state.json>
 #     one "slug<TAB>url<TAB>open|merged|closed" row per state.awaitingMerge.prs entry.
 #     exit 0 all merged, 3 any open, 4 any closed-unmerged (wins over open), 1 gh/state error.
@@ -25,20 +33,24 @@ set -u -o pipefail
 
 HERE="${0:A:h}"
 LOOP_REPO="$HERE/loop-repo.sh"
-STATE="" NEXT="" BRANCHES="" DIR=".loop"
+STATE="" NEXT="" BRANCHES="" DIR=".loop" MILESTONE="" PRS=""
+LOOP_PLAN="$HERE/loop-plan.sh"
+LOOP_STATE="$HERE/loop-state.sh"
 
 main() {
   local cmd="${1:-}"
   [[ -n "$cmd" ]] && shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --state | --next | --branches | --dir)
+    --state | --next | --branches | --dir | --milestone | --prs)
       [[ $# -ge 2 && "$2" != --* ]] || die "$1 requires a value"
       case "$1" in
       --state) STATE="$2" ;;
       --dir) DIR="$2" ;;
       --next) NEXT="$2" ;;
       --branches) BRANCHES="$2" ;;
+      --milestone) MILESTONE="$2" ;;
+      --prs) PRS="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown argument '$1'" ;;
@@ -46,9 +58,10 @@ main() {
   done
   case "$cmd" in
   open) open_milestone ;;
+  park) park_milestone ;;
   check) check_gate ;;
   advance) advance_milestone ;;
-  *) die "unknown command '$cmd' (open|check|advance)" ;;
+  *) die "unknown command '$cmd' (open|park|check|advance)" ;;
   esac
 }
 
@@ -113,6 +126,54 @@ open_milestone() {
   mkdir -p "$DIR/runs" "$DIR/answers" "$DIR/hil" "$DIR/notes" || die "cannot create loop directories"
   if [[ ! -f "$STATE" || "$(jq -c . "$STATE")" != "$state" ]]; then
     write_open_state "$state"
+  fi
+}
+
+# Park is the skills-engine twin of loop-execute step 8: plan lines, state, then the gate event.
+park_milestone() {
+  [[ -n "${WS_LOOP_ID:-}" ]] || die "park requires WS_LOOP_ID"
+  local milestone_re='^[1-9][0-9]*$' live open parked plan_file tmp prs rc
+  [[ "$MILESTONE" =~ $milestone_re ]] || die "park requires --milestone <N>"
+  prs="$(jq -cS 'if type == "object" and length > 0 and all(.[]; type == "string" and length > 0) then . else error("bad") end' <<< "${PRS:-null}" 2>/dev/null)" \
+    || die "park requires --prs '{\"owner/repo\":\"url\"}' (non-empty)"
+  STATE="$DIR/state.json"
+  load_state
+  [[ "$(jq -r '.milestone // ""' "$STATE")" == "$MILESTONE" ]] || die "milestone $MILESTONE is not the state milestone"
+  parked="$(jq -c '.awaitingMerge // null' "$STATE")"
+  if [[ "$parked" != null ]]; then
+    [[ "$(jq -r '.milestone // ""' <<< "$parked")" == "$MILESTONE" ]] || die "loop is parked at another milestone"
+    [[ "$(jq -cS '.prs // {}' <<< "$parked")" == "$prs" ]] || die "milestone $MILESTONE is parked with other PRs"
+  fi
+  live="$("${WS_BIN:-ws}" loop get "$WS_LOOP_ID" --json)" && jq -e 'type == "object"' <<< "$live" >/dev/null 2>&1 \
+    || die "cannot read loop $WS_LOOP_ID"
+  jq -e --argjson n "$MILESTONE" '(.milestone == null or .milestone == $n) and ([.phases // {} | .[] | select(.milestone == $n)] | length > 0)' <<< "$live" >/dev/null \
+    || die "loop $WS_LOOP_ID has no phases for milestone $MILESTONE"
+  open="$(jq -r --argjson n "$MILESTONE" '[.phases | .[] | select(.milestone == $n and (.status | IN("done", "merged") | not)) | "\(.n):\(.status)"] | join(" ")' <<< "$live")"
+  [[ -z "$open" ]] || die "milestone $MILESTONE has phases that are not done: $open" 3
+
+  plan_file="$DIR/plan.md"
+  tmp="$(mktemp "$DIR/.plan.XXXXXX")" || die "cannot create temporary plan"
+  node "$HERE/loop-plan-park.mjs" --plan "$plan_file" --milestone "$MILESTONE" --prs "$prs" > "$tmp"
+  rc=$?
+  if (( rc != 0 )); then
+    rm -f "$tmp"
+    die "cannot park $plan_file" "$rc"
+  fi
+  if cmp -s "$tmp" "$plan_file"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$plan_file" || { rm -f "$tmp"; die "cannot write $plan_file"; }
+    "$LOOP_PLAN" push --dir "$DIR" >/dev/null 2>&1 \
+      || print -u2 "loop-milestone: Warning: plan push failed. Run loop-plan.sh push --dir $DIR."
+  fi
+  if [[ "$parked" == null ]]; then
+    "$LOOP_STATE" set --dir "$DIR" ". + {awaitingMerge: {milestone: $MILESTONE, prs: $prs}} |
+      reduce ($prs | to_entries[]) as \$e (.; .repositories[\$e.key].prUrl = \$e.value)" >/dev/null \
+      || die "cannot write awaitingMerge"
+  fi
+  if [[ "$(jq -r --arg n "$MILESTONE" '.merge_gates[$n] // ""' <<< "$live")" != open ]]; then
+    append_tool_event loop.gate "$(jq -cn --argjson n "$MILESTONE" --argjson prs "$prs" \
+      '{kind:"merge",state:"open",milestone:$n,prs:$prs}')" "park:$MILESTONE" || return $?
   fi
 }
 
