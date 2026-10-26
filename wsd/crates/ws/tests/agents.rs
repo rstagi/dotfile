@@ -317,6 +317,31 @@ fn new_passes_name_and_prompt_to_workspace_and_directory_starts() {
     assert!(!sandbox.home.path().join("worktrees/api/other").exists());
 }
 
+#[test]
+fn a_new_tmux_session_keeps_the_agent_identity_out_of_its_environment() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let output = sandbox.output(&[
+        "new",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "feature",
+        "--detach",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let (agent, _running) = sandbox.capture();
+    let window = sandbox.window(agent["id"].as_str().unwrap());
+    let session = sandbox.tmux(&["display-message", "-p", "-t", &window, "#{session_name}"]);
+    let environment = sandbox.tmux(&["show-environment", "-t", session.trim()]);
+    assert!(
+        !environment
+            .lines()
+            .any(|line| line.starts_with("WS_SESSION_ID=")),
+        "{environment}"
+    );
+}
+
 #[tokio::test]
 async fn mcp_session_create_starts_workspace_and_scratch_agents_with_prompts() {
     use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
