@@ -213,7 +213,8 @@ echo $! > <run dir>/pid; disown
 - Exit 0: supervise renders the page with `--narration`, publishes and writes `link.txt`, as
   the skill tells it. For a `ship` page, supervise first also renders the run graph in the same
   output directory, and the publish includes `run.html` (skill § Run graph). Add
-  `--notes <output dir>/run-notes.json` when the runner wrote it. A run graph failure goes to
+  `--notes <output dir>/run-notes.json`. When the file is missing, write `notes-error.txt` and
+  render without `--notes`. A run graph failure goes to
   `run-error.txt` and never blocks the park, the finish or the resume:
   `node "$RUNTIME_ROOT/.claude/skills/visual-explainer/scripts/run-graph.mjs" --loop <abs .loop> --milestone <n> --out <abs output dir>`
 - Exit 12: one relaunch in `-a<k+1>` with the `verify.log` tail in the prompt.
@@ -266,8 +267,8 @@ the interactions changed.
 Ship only: check every hand-test command against the code at the reviewed head (skill
 step 3). When the code contradicts the plan, follow the code and add a deviations entry.
 
-Ship only: you can also write <abs output dir>/run-notes.json for the run graph: lane what
-and why, and findings by phase (visual-explainer § Run graph).
+Ship only: also write <abs output dir>/run-notes.json for the run graph: lane what and why,
+and findings by phase (visual-explainer § Run graph).
 
 Ship only: write the props `process` and `setbacks` and the retro file from the same facts.
 Write the retro file `<abs .loop>/milestones/m<n>.retro.md` in the format of loop-protocol.md
