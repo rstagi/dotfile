@@ -844,6 +844,101 @@ fn a_started_child_marks_its_phase_running_and_an_open_merge_gate_refuses_the_ne
     assert!(spawn(2).starts_with("HTTP/1.1 201"));
 }
 
+#[test]
+fn a_tool_opens_an_accept_gate_that_holds_dependent_spawns_until_accept() {
+    let sandbox = Sandbox::new();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = owner["id"].as_str().unwrap();
+    let phase = |n: u64, kind: &str, gate: Value, depends_on: Value| {
+        json!({"n":n,"title":format!("P{n}"),"kind":kind,"output":"doc","milestone":1,
+            "gate":gate,"repo":null,"branch":null,"depends_on":depends_on,"status":"todo"})
+    };
+    let event = |kind: &str, body: Value| {
+        sandbox.request(
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":kind,"body":body}),
+        )
+    };
+    event(
+        "loop.phases",
+        json!({"phases":[
+            phase(1, "work", Value::Null, json!([])),
+            phase(2, "review", json!("accept"), json!([1])),
+            phase(3, "work", Value::Null, json!([2])),
+        ]}),
+    );
+    let park = || {
+        let base = common::ws(sandbox.home.path(), &sandbox.socket);
+        let mut command = std::process::Command::new("zsh");
+        command.env_remove("WS_SESSION").env_remove("WS_SESSION_ID");
+        for (key, value) in base.get_envs() {
+            if let Some(value) = value {
+                command.env(key, value);
+            }
+        }
+        command
+            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../loop-milestone.sh"))
+            .args([
+                "park",
+                "--kind",
+                "accept",
+                "--phase",
+                "2",
+                "--artifacts",
+                "[\"notes.md\"]",
+            ])
+            .env("WS_BIN", env!("CARGO_BIN_EXE_ws"))
+            .env("WS_LOOP_ID", id)
+            .output()
+            .unwrap()
+    };
+    let spawn = |n: u64| {
+        common::request(
+            &sandbox.socket,
+            "POST",
+            "/v1/sessions",
+            &json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.home.path(),
+                "key":format!("p{n}"),"loop":{"loop":id,"phase":n,"attempt":1}})
+            .to_string(),
+        )
+    };
+    // The doc phase and its review (final record for the repository none) reach done.
+    event(
+        "loop.attempt",
+        json!({"n":1,"attempt":1,"session":"child","state":"result",
+            "outcome":"done","verify":"none"}),
+    );
+    let early = park();
+    assert_eq!(early.status.code(), Some(3), "{early:?}");
+    event(
+        "loop.review",
+        json!({"phase":2,"repo":"none","key":"f","role":"final","round":1,
+            "state":"finished","session":"s","provider":"claude","verdict":"APPROVE"}),
+    );
+    let opened = park();
+    assert!(opened.status.success(), "{opened:?}");
+    let repeated = park();
+    assert!(repeated.status.success(), "{repeated:?}");
+    let state = |sandbox: &Sandbox| {
+        let response = common::get(&sandbox.socket, &format!("/v1/loops/{id}"));
+        serde_json::from_str::<Value>(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    assert_eq!(state(&sandbox)["phases"]["2"]["status"], "done");
+    assert_eq!(state(&sandbox)["gates"].as_array().unwrap().len(), 1);
+    assert_eq!(state(&sandbox)["gates"][0]["state"], "open");
+    let refused = spawn(3);
+    assert!(refused.starts_with("HTTP/1.1 409"), "{refused}");
+    assert!(refused.contains("accept_gate_open"), "{refused}");
+    let accepted = common::ws(sandbox.home.path(), &sandbox.socket)
+        .env_remove("WS_SESSION")
+        .env_remove("WS_SESSION_ID")
+        .args(["loop", "accept", id])
+        .output()
+        .unwrap();
+    assert!(accepted.status.success(), "{accepted:?}");
+    assert!(spawn(3).starts_with("HTTP/1.1 201"));
+}
+
 impl Sandbox {
     fn new() -> Self {
         Self::with_notifications(false)

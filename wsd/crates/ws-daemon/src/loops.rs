@@ -2184,9 +2184,7 @@ mod tests {
             json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),"key":key,
                 "loop":{"loop":id,"phase":phase,"attempt":1}})
         };
-        let gate = |state: &str, artifacts: Value| {
-            json!({"kind":"accept","state":state,"milestone":1,"phase":2,"artifacts":artifacts})
-        };
+        let gate = |state: &str, artifacts: Value| json!({"kind":"accept","state":state,"milestone":1,"phase":2,"artifacts":artifacts});
         post(&app, &id, "loop.gate", gate("open", json!(["a.md"]))).await;
         let (status, error) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
         assert_eq!(status, StatusCode::CONFLICT, "{error}");
