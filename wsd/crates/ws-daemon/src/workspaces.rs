@@ -1073,7 +1073,6 @@ impl Sessions {
         if let Some(name) = name {
             args.extend(["-e".into(), format!("WS_WORKSPACE={name}")]);
         }
-        args.extend(["-e".into(), format!("WS_SESSION_ID={id}")]);
         for key in [
             "HOME",
             "WS_HOME",
@@ -1098,6 +1097,10 @@ impl Sessions {
             "-c".into(),
             "exec \"$@\"".into(),
             "sh".into(),
+            // `new-session -e` writes to the tmux session environment, so every later tab
+            // would inherit this identity. The command sets it for this agent only.
+            "env".into(),
+            format!("WS_SESSION_ID={id}"),
             ws_bin.to_string_lossy().into_owned(),
             "_agent".into(),
             id.to_string(),
