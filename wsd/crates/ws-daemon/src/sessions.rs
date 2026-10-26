@@ -65,6 +65,8 @@ pub enum Error {
     /// An accept gate of a dependency review phase is open or rejected.
     AcceptGateOpen,
     LoopControlConflict(&'static str),
+    /// The loop has no `loop.plan` event.
+    NoLoopPlan,
     WaitTimeout,
     ShuttingDown,
     Json(serde_json::Error),
@@ -459,6 +461,7 @@ impl fmt::Display for Error {
             Self::InvalidBody(message) => formatter.write_str(message),
             Self::Transition(error) => error.fmt(formatter),
             Self::Json(error) => error.fmt(formatter),
+            Self::NoLoopPlan => write!(formatter, "The loop has no plan event."),
             Self::NameTaken(name) => write!(formatter, "name already in use: {name}"),
         }
     }

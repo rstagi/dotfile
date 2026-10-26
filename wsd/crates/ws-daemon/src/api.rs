@@ -254,6 +254,7 @@ impl IntoResponse for ApiError {
             Error::Registry(registry::Error::Ambiguous(_)) => {
                 (StatusCode::CONFLICT, "ambiguous_session")
             }
+            Error::NoLoopPlan => (StatusCode::NOT_FOUND, "loop_plan_not_found"),
             Error::ShuttingDown => (StatusCode::SERVICE_UNAVAILABLE, "daemon_stopping"),
             Error::WaitTimeout => (StatusCode::REQUEST_TIMEOUT, "wait_timeout"),
             Error::SpawnLimit(crate::limits::SpawnLimit::Children { .. }) => {
