@@ -14,8 +14,8 @@ description: >-
   architecture, a flow, a data model, dependencies) as one interactive page. The reader hovers a node
   to see what it touches, clicks it for details, drags nodes, turns the layout and steps through a
   walkthrough. Use it when a picture explains better than prose and there is no plan or ship report.
-  The run graph shows one Loop milestone as it ran: the plan lanes, what happened to each phase,
-  the review and a time bar with the checkpoints. Use it at a Loop milestone merge gate.
+  The run graph shows one Loop milestone as it ran. It shows the plan lanes, the events of each
+  phase, the review and a time bar with the checkpoints. Use it at a Loop milestone merge gate.
 argument-hint: "plan|ship <output-dir>"
 ---
 
@@ -368,11 +368,12 @@ exception: it inlines elkjs (about 1.6 MB) as its only script.
 
 ## Run graph
 
-The run graph shows one Loop milestone as it ran. Its base is the plan of the milestone: one box
-for each lane, one node for each work phase, the dependency lines and the gate node at the end.
+The run graph shows one Loop milestone as it ran. Its base is the plan of the milestone. It has
+one box for each lane and one node for each work phase. It has the dependency lines and the gate
+node at the end.
 Each phase node shows its attempts, its setbacks, its merge commit and its converge rows. The gate
-node shows the review rounds, the verdict, the converge result, the deviations, the hand test,
-the rollback and the links to the PR, the ship page and each checkpoint page.
+node shows the review rounds, the verdict, the converge result and the deviations. It also shows
+the hand test, the rollback and the links to the PR, the ship page and each checkpoint page.
 
 The time bar has a slider, a play button and one mark for each event: the start, each progress
 checkpoint, the review and the ship. At a time, each phase shows its status: `todo` is faded,
