@@ -664,6 +664,31 @@ fn loop_controls_reject_missing_state_and_a_parked_milestone() {
 }
 
 #[test]
+fn loop_phases_body_check_takes_the_plan_output_kinds() {
+    let sandbox = Sandbox::new();
+    let directory = sandbox.home.path().join("output-loop");
+    fs::create_dir_all(&directory).unwrap();
+    let owner = sandbox.request("/v1/loops/create", json!({"loop_dir":directory}));
+    let id = owner["id"].as_str().unwrap();
+    let post = |output: &str| {
+        let phase = json!({"n":1,"title":"T","kind":"work","output":output,"milestone":1,
+            "gate":null,"repo":null,"branch":null,"depends_on":[],"status":"todo"});
+        common::request(
+            &sandbox.socket,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            &json!({"type":"loop.phases","body":{"phases":[phase]}}).to_string(),
+        )
+    };
+    for output in ["pr", "file", "doc", "output.md"] {
+        let response = post(output);
+        assert!(response.starts_with("HTTP/1.1 201"), "{output}: {response}");
+    }
+    let response = post("document");
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+}
+
+#[test]
 fn a_started_child_marks_its_phase_running_and_an_open_merge_gate_refuses_the_next_milestone() {
     let sandbox = Sandbox::new();
     let directory = sandbox.home.path().join("gate-loop");
