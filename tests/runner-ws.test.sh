@@ -188,7 +188,7 @@ assert_eq "$(grep -c warning "$FAKE_RUN_DIR/runner.log")" 0 "no warning is print
 
 echo "runner: loop.attempt and loop.review reach a sandbox daemon"
 mkdir -p "$TMP/loop-events"
-LOOP_SID="$(ws loop create --dir "$TMP/loop-events" --json | jq -r .id)"
+LOOP_SID="$(ws loop create --dir "$TMP/loop-events" --plan-id runner-events --json | jq -er .id)" || exit 1
 export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
 WS_LOOP_ID="$LOOP_SID" WS_LOOP_PHASE=4 WS_LOOP_ATTEMPT=1 WS_SESSION_ID="$PARENT_SID" PATH="$TMP/reviewer-bin:$PATH" \
   run_attempt ev-daemon --chain review-gpt --repository acme/api --publish-output "$TMP/ev-daemon/report.md" --verify-cmd true

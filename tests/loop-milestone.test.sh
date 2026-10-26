@@ -393,7 +393,7 @@ until [[ -S "$WS_SOCK" ]] && "$WS_RUST_BIN" ping >/dev/null 2>&1; do
   sleep 0.05
 done
 mkdir -p "$TMP/contract-loop"
-contract_id="$("$WS_RUST_BIN" loop create --dir "$TMP/contract-loop" --json | jq -r .id)"
+contract_id="$("$WS_RUST_BIN" loop create --dir "$TMP/contract-loop" --plan-id contract-plan --json | jq -er .id)" || exit 1
 "$WS_RUST_BIN" event loop.phases --body "$body" --source tool --target "$contract_id" \
   --key full-plan > "$TMP/body-check.out" 2> "$TMP/body-check.err"
 assert_exit "$?" 0 "the daemon accepts all phase fields for the full plan"
