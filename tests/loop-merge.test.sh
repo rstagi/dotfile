@@ -52,7 +52,28 @@ emitted() {
   sed -n 's/^run-1 event //p' "$EMIT_LOG" | jq -c --arg e "$1" 'select(.event == $e)'
 }
 
-if [[ $# -eq 0 ]]; then
+# new_origin <name> creates a private origin and publishes the integration base.
+new_origin() {
+  WT="$(new_repo "$1")"
+  ORIGIN="$TMP/$1-origin.git"
+  git init -q --bare "$ORIGIN"
+  git -C "$WT" remote add origin "$ORIGIN"
+  git -C "$WT" push -q origin HEAD
+  export EMIT_LOG="$TMP/$1-emit.log" FAKE_WS_LOG="$TMP/$1-ws.log"
+  : > "$EMIT_LOG"
+  : > "$FAKE_WS_LOG"
+}
+
+# skills_merge <args...> runs the public CLI with private event sinks.
+skills_merge() {
+  WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" zsh "$ROOT/loop-merge.sh" --worktree "$WT" \
+    --run-id run-1 --phase 7 --repository acme/api "$@" > "$TMP/out" 2> "$TMP/err"
+  RC=$?
+  OUT="$(cat "$TMP/out")"
+  ERR="$(cat "$TMP/err")"
+}
+
+if [[ "${1:-all}" == all ]]; then
 echo "loop-merge: a merged-tree Verify failure emits merge.verify-fail"
 export EMIT_LOG="$TMP/emit-fail.log"; : > "$EMIT_LOG"
 WT="$(new_repo fail)"
@@ -96,8 +117,8 @@ echo "loop-merge: WS_LOOP_ID appends loop.merge with the merged head"
 make_fake_ws "$TMP/fakews"
 export FAKE_WS_LOG="$TMP/ws-pass.log"; : > "$FAKE_WS_LOG"
 export EMIT_LOG="$TMP/emit-ws-pass.log"; : > "$EMIT_LOG"
-WT="$(new_repo wspass)"
-WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" merge "$WT" 'test "$(cat result.txt)" = lane'
+new_origin wspass
+skills_merge --lane-branch feat/lane --verify-cmd 'test "$(cat result.txt)" = lane'
 assert_exit "$RC" "0" "a passed Verify exits 0 with WS_LOOP_ID"
 assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" "1" "one ws call is made"
 call="$(head -1 "$FAKE_WS_LOG")"
@@ -129,10 +150,10 @@ assert_eq "$(cat "$FAKE_WS_LOG")" "" "a failed push appends no loop.merge"
 echo "loop-merge: a failed append warns once and keeps the exit code"
 for case in pass fail; do
   export FAKE_WS_LOG="$TMP/ws-warn-$case.log"; : > "$FAKE_WS_LOG"
-  WT="$(new_repo warn$case)"
+  new_origin "warn$case"
   verify=true expected=0
   [[ "$case" == fail ]] && verify=false expected=4
-  WS_LOOP_ID=LOOP1 FAKE_WS_EXIT=1 PATH="$TMP/fakews:$PATH" merge "$WT" "$verify"
+  FAKE_WS_EXIT=1 skills_merge --lane-branch feat/lane --verify-cmd "$verify"
   assert_exit "$RC" "$expected" "$case keeps its exit code when the append fails"
   assert_eq "$(print -r -- "$ERR" | grep -c 'warning: cannot append loop.merge')" "1" "$case prints one warning"
 done
@@ -193,25 +214,6 @@ assert_eq "$([[ -e "$TMP/verify-ran" ]] && print ran)" "ran" "a missing record r
 
 fi
 
-# new_origin <name> creates a private origin and publishes the integration base.
-new_origin() {
-  WT="$(new_repo "$1")"
-  ORIGIN="$TMP/$1-origin.git"
-  git init -q --bare "$ORIGIN"
-  git -C "$WT" remote add origin "$ORIGIN"
-  git -C "$WT" push -q origin HEAD
-  export EMIT_LOG="$TMP/$1-emit.log" FAKE_WS_LOG="$TMP/$1-ws.log"
-  : > "$EMIT_LOG"
-  : > "$FAKE_WS_LOG"
-}
-
-# skills_merge <args...> runs the public CLI with private event sinks.
-skills_merge() {
-  WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" zsh "$ROOT/loop-merge.sh" --worktree "$WT" \
-    --run-id run-1 --phase 7 --repository acme/api "$@" > "$TMP/out" 2> "$TMP/err"
-  RC=$?
-}
-
 make_fake_ws "$TMP/fakews"
 if [[ "${1:-all}" == (all|retry) ]]; then
   echo "loop-merge: a failed push retries Verify and publishes the merge once"
@@ -242,6 +244,180 @@ HOOK
   assert_exit "$RC" 0 "a published merge stays complete"
   assert_eq "$(wc -l < "$TMP/retry-verify.log" | tr -d ' ')" 2 "a published merge needs no Verify"
   assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" 1 "a published merge adds no second result"
+fi
+
+if [[ "${1:-all}" == (all|undo) ]]; then
+  echo "loop-merge: undo removes a failed merge before the fixed lane merges"
+  new_origin undo
+  base="$(git -C "$WT" rev-parse HEAD)"
+  lane="$(git -C "$WT" rev-parse feat/lane)"
+  skills_merge --lane-branch feat/lane --verify-cmd false
+  assert_exit "$RC" 4 "a merged-tree Verify failure exits 4"
+  assert_eq "$(jq -r '.[3] | fromjson | .verify' "$FAKE_WS_LOG")" fail "Verify failure records no pass"
+  skills_merge --undo
+  assert_exit "$RC" 0 "undo needs no Verify command"
+  assert_eq "$(git -C "$WT" rev-parse HEAD)" "$base" "undo restores the first parent"
+  assert_eq "$(git -C "$WT" rev-parse feat/lane)" "$lane" "undo preserves the lane branch"
+  assert_eq "$(git -C "$WT" status --porcelain)" "" "undo leaves the integration tree clean"
+  assert_eq "$(emitted phase.merged)" "" "undo emits no phase.merged"
+  assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" 1 "undo appends no loop.merge"
+  git -C "$TMP/undo" switch -q feat/lane
+  print fixed > "$TMP/undo/fixed.txt"
+  git -C "$TMP/undo" add fixed.txt
+  git -C "$TMP/undo" commit -qm fix
+  skills_merge --lane-branch feat/lane --verify-cmd 'test "$(cat result.txt)" = lane && test "$(cat fixed.txt)" = fixed'
+  assert_exit "$RC" 0 "the fixed lane merges and passes Verify"
+  assert_eq "$(git --git-dir="$ORIGIN" show feat/int:result.txt)" lane "the remote keeps the first lane change"
+  assert_eq "$(git --git-dir="$ORIGIN" show feat/int:fixed.txt)" fixed "the remote includes the fix"
+  assert_eq "$(jq -r '.[3] | fromjson | .verify' "$FAKE_WS_LOG" | tr '\n' ' ')" 'fail pass ' "only the published fixed merge records pass"
+fi
+
+if [[ "${1:-all}" == (all|no-push) ]]; then
+  echo "loop-merge: a local-only skills merge records no published result"
+  new_origin nopush
+  base="$(git -C "$WT" rev-parse HEAD)"
+  skills_merge --lane-branch feat/lane --verify-cmd true --no-push
+  assert_exit "$RC" 0 "an explicit local-only merge succeeds"
+  assert_eq "$(cat "$FAKE_WS_LOG")" "" "a local-only merge appends no loop.merge"
+  assert_eq "$(emitted phase.merged)" "" "a local-only skills merge emits no phase.merged"
+  assert_eq "$(git --git-dir="$ORIGIN" rev-parse refs/heads/feat/int)" "$base" "the origin stays at the base"
+fi
+
+if [[ "${1:-all}" == (all|safety) ]]; then
+  echo "loop-merge: undo refuses an ordinary commit and a foreign merge"
+  for kind in ordinary foreign; do
+    new_origin "$kind"
+    if [[ "$kind" == foreign ]]; then
+      git -C "$WT" merge -q --no-ff -m 'manual merge' feat/lane
+    fi
+    before="$(git -C "$WT" rev-parse HEAD)"
+    skills_merge --undo
+    assert_exit "$RC" 1 "undo refuses the $kind commit"
+    assert_eq "$(git -C "$WT" rev-parse HEAD)" "$before" "the $kind HEAD stays unchanged"
+    assert_eq "$(git -C "$WT" status --porcelain)" "" "the $kind tree stays clean"
+    assert_eq "$(cat "$FAKE_WS_LOG")" "" "the refused $kind undo records no merge"
+  done
+
+  echo "loop-merge: undo preserves tracked, staged and untracked changes"
+  for kind in tracked staged untracked; do
+    new_origin "dirty-$kind"
+    skills_merge --lane-branch feat/lane --verify-cmd false
+    before="$(git -C "$WT" rev-parse HEAD)"
+    if [[ "$kind" == untracked ]]; then
+      print keep > "$WT/keep.txt"
+    else
+      print keep > "$WT/result.txt"
+      [[ "$kind" == staged ]] && git -C "$WT" add result.txt
+    fi
+    dirty="$(git -C "$WT" status --porcelain)"
+    skills_merge --undo
+    assert_exit "$RC" 1 "undo refuses $kind changes"
+    assert_eq "$(git -C "$WT" rev-parse HEAD)" "$before" "undo keeps HEAD with $kind changes"
+    assert_eq "$(git -C "$WT" status --porcelain)" "$dirty" "undo keeps the $kind status"
+    if [[ "$kind" == untracked ]]; then
+      assert_eq "$(cat "$WT/keep.txt")" keep "undo preserves the untracked content"
+    else
+      assert_eq "$(cat "$WT/result.txt")" keep "undo preserves the $kind content"
+    fi
+    assert_eq "$(git -C "$WT" rev-parse feat/lane)" "$(git -C "$WT" rev-parse HEAD^2)" "undo preserves the lane ref"
+  done
+
+  echo "loop-merge: undo refuses a published merge"
+  new_origin published
+  skills_merge --lane-branch feat/lane --verify-cmd true
+  assert_exit "$RC" 0 "the merge publishes successfully"
+  before="$(git -C "$WT" rev-parse HEAD)"
+  skills_merge --undo
+  assert_exit "$RC" 1 "undo refuses the published merge"
+  assert_eq "$(git -C "$WT" rev-parse HEAD)" "$before" "the published HEAD stays unchanged"
+  assert_eq "$(git --git-dir="$ORIGIN" rev-parse refs/heads/feat/int)" "$before" "the remote stays unchanged"
+  assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" 1 "undo adds no merge result"
+
+  echo "loop-merge: undo reads the remote when its tracking ref is stale"
+  new_origin stale
+  base="$(git -C "$WT" rev-parse HEAD)"
+  skills_merge --lane-branch feat/lane --verify-cmd false
+  before="$(git -C "$WT" rev-parse HEAD)"
+  git clone -q --branch feat/int "$ORIGIN" "$TMP/publisher"
+  git -C "$TMP/publisher" config user.email test@example.com
+  git -C "$TMP/publisher" config user.name Test
+  git -C "$TMP/publisher" fetch -q "$WT" feat/int
+  git -C "$TMP/publisher" merge -q --ff-only FETCH_HEAD
+  print remote > "$TMP/publisher/remote.txt"
+  git -C "$TMP/publisher" add remote.txt
+  git -C "$TMP/publisher" commit -qm 'remote change'
+  git -C "$TMP/publisher" push -q origin HEAD
+  assert_eq "$(git -C "$WT" rev-parse origin/feat/int)" "$base" "the local tracking ref still names the base"
+  skills_merge --undo
+  assert_exit "$RC" 1 "undo refuses a merge contained in the newer remote tip"
+  assert_eq "$(git -C "$WT" rev-parse HEAD)" "$before" "the stale local HEAD stays unchanged"
+  skills_merge --lane-branch feat/lane --verify-cmd false
+  assert_exit "$RC" 0 "a remote descendant proves the lane is already published"
+  assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" 1 "the ancestor check adds no merge result"
+
+  echo "loop-merge: undo refuses an unreadable remote"
+  new_origin unreadable
+  skills_merge --lane-branch feat/lane --verify-cmd false
+  before="$(git -C "$WT" rev-parse HEAD)"
+  git -C "$WT" remote set-url origin "$TMP/no-origin"
+  skills_merge --undo
+  assert_exit "$RC" 1 "undo refuses when it cannot read the remote"
+  assert_eq "$(git -C "$WT" rev-parse HEAD)" "$before" "the unreadable remote causes no reset"
+  skills_merge --lane-branch feat/lane --verify-cmd true
+  assert_exit "$RC" 1 "a retry also refuses an unreadable remote"
+  assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" 1 "the retry appends no success result"
+
+  echo "loop-merge: undo permits a merge whose remote branch does not exist"
+  new_origin absent
+  base="$(git -C "$WT" rev-parse HEAD)"
+  skills_merge --lane-branch feat/lane --verify-cmd false
+  git --git-dir="$ORIGIN" update-ref -d refs/heads/feat/int
+  skills_merge --undo
+  assert_exit "$RC" 0 "undo permits the unpublished branch"
+  assert_eq "$(git -C "$WT" rev-parse HEAD)" "$base" "the unpublished branch returns to its base"
+fi
+
+if [[ "${1:-all}" == (all|conflict) ]]; then
+  echo "loop-merge: a conflict finishes with one published merge"
+  new_origin conflict
+  print integration > "$WT/result.txt"
+  git -C "$WT" commit -qam integration
+  git -C "$WT" push -q origin HEAD
+  base="$(git -C "$WT" rev-parse HEAD)"
+  skills_merge --lane-branch feat/lane --verify-cmd true
+  assert_exit "$RC" 2 "a conflicting merge exits 2"
+  assert_eq "$(cat "$FAKE_WS_LOG")" "" "the conflict appends no loop.merge"
+  assert_eq "$(emitted phase.merged)" "" "the conflict emits no phase.merged"
+  skills_merge --finish --verify-cmd true
+  assert_exit "$RC" 2 "finish refuses unresolved conflicts"
+  skills_merge --undo
+  assert_exit "$RC" 1 "undo refuses a merge in progress"
+  print -l integration lane > "$WT/result.txt"
+  git -C "$WT" add result.txt
+  skills_merge --finish --verify-cmd 'test "$(head -1 result.txt)" = integration && test "$(tail -1 result.txt)" = lane'
+  assert_exit "$RC" 0 "finish commits, verifies and pushes the resolution"
+  assert_eq "$(git -C "$WT" rev-parse HEAD^1)" "$base" "the merge keeps the integration parent"
+  assert_eq "$(git -C "$WT" rev-parse HEAD^2)" "$(git -C "$WT" rev-parse feat/lane)" "the merge keeps the lane parent"
+  assert_eq "$(git --git-dir="$ORIGIN" rev-parse refs/heads/feat/int)" "$(git -C "$WT" rev-parse HEAD)" "finish publishes the merge"
+  assert_eq "$(git --git-dir="$ORIGIN" show feat/int:result.txt)" $'integration\nlane' "the remote tree keeps both changes"
+  assert_eq "$(git --git-dir="$ORIGIN" rev-list --count --min-parents=2 feat/int)" 1 "the remote has one merge commit"
+  assert_eq "$(jq -r '.[3] | fromjson | .verify' "$FAKE_WS_LOG")" pass "finish appends one passed result"
+fi
+
+if [[ "${1:-all}" == (all|legacy) ]]; then
+  echo "loop-merge: the old engine keeps its ancestor fast path"
+  new_origin legacy
+  base="$(git -C "$WT" rev-parse HEAD)"
+  merge "$WT" true
+  assert_exit "$RC" 0 "the old engine still permits a local merge"
+  before="$(git -C "$WT" rev-parse HEAD)"
+  merge "$WT" false
+  assert_exit "$RC" 0 "the old engine skips Verify on its ancestor path"
+  assert_eq "$OUT" '{"already":true}' "the ancestor output stays unchanged"
+  assert_eq "$(git --git-dir="$ORIGIN" rev-parse refs/heads/feat/int)" "$base" "the old engine does not push the ancestor"
+  env -u WS_LOOP_ID zsh "$ROOT/loop-merge.sh" --worktree "$WT" --undo > "$TMP/out" 2> "$TMP/err"
+  assert_exit "$?" 1 "undo requires the skills engine"
+  assert_eq "$(git -C "$WT" rev-parse HEAD)" "$before" "the old engine undo changes nothing"
 fi
 
 test_summary
