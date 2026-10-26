@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File},
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,11 @@ impl Device {
             .map_err(|error| error.error)?;
         File::open(state)?.sync_all()?;
         Ok(device)
+    }
+
+    /// Returns the directory of the device key and certificate request.
+    pub fn key_directory(state: &Path) -> PathBuf {
+        state.join("device")
     }
 
     pub fn load(state: &Path) -> io::Result<Self> {
