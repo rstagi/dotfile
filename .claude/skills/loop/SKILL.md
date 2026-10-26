@@ -121,7 +121,7 @@ When all three exist, skip the runner steps and continue to rendering and public
 3. Tell the runner to write `props.json` and `narration.json` with the `visual-explainer` skill.
    Also require `.loop/milestones/m<N>.retro.md` (see Milestone retrospective).
    Use the same facts for the page and the retrospective.
-   The runner can also write `run-notes.json` for the run graph: lane what and why, and findings by phase.
+   Also require `run-notes.json` for the run graph: lane what and why, and findings by phase.
    Check each hand-test command against the code at the reviewed head. Require a `path:line` reference for each command.
    The narration uses version 3. It supplies the commentary for the page walkthrough of PR #46.
    Do not make a video. The runner must not render, publish, commit, push or edit the plan.
@@ -144,7 +144,8 @@ node "$RUNTIME_ROOT/.claude/skills/visual-explainer/scripts/render.mjs" --props 
 node "$RUNTIME_ROOT/.claude/skills/visual-explainer/scripts/shoot.mjs" --page <output dir>/index.html --out <output dir>/shots
 ```
 
-Then render the run graph in the same output directory. Add `--notes <output dir>/run-notes.json` when the file exists:
+Then render the run graph in the same output directory. Add `--notes <output dir>/run-notes.json`.
+When the file is missing, write `notes-error.txt` and render without `--notes`:
 
 ```sh
 node "$RUNTIME_ROOT/.claude/skills/visual-explainer/scripts/run-graph.mjs" --loop <loop dir> --milestone <N> --out <output dir>

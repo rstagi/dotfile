@@ -33,6 +33,21 @@ fn s3_weekly_only_plans_report_only_the_weekly_window_with_provenance() {
 }
 
 #[test]
+fn estimates_never_restore_a_window_that_the_provider_omits() {
+    let sandbox = tempfile::tempdir().unwrap();
+    ws_core::device::Device::init(sandbox.path(), "test-host").unwrap();
+    let fixture = sample();
+    let rpc = &fixture["app_server_responses"][1]["response"]["result"];
+    let readings = codex::parse_app_server(rpc, "<redacted-account>", 1_792_186_317_783).unwrap();
+    // After the reset, the weekly value is not usable and the estimator replaces it.
+    let estimated =
+        estimator::estimate_missing(sandbox.path(), readings, 1_792_653_579_000).unwrap();
+    assert_eq!(estimated.len(), 1);
+    assert_eq!(estimated[0].window, "weekly");
+    assert_eq!(estimated[0].source, Source::Estimated);
+}
+
+#[test]
 fn durations_buckets_and_expired_values_are_independent_of_window_position() {
     let response = json!({"accountId": "a", "rateLimitsByLimitId": {
         "codex": {"primary": {"windowDurationMins": 10080, "usedPercent": 20, "resetsAt": 5000},

@@ -628,20 +628,24 @@ function wsdRef(state) {
   };
 }
 
-/** wsd loop state → the graph snapshot shape that phaseRows and the headers read. */
+/** wsd loop state → the graph snapshot shape that phaseRows and the headers read. wsd fills
+ * `state.phases` only from orchestrator events, so plan phases that wsd does not know yet come
+ * from the plan text; wsd data wins for the same phase number. */
 export function wsdSnapshot(state) {
-  const phases = Object.values(state.phases ?? {}).sort((a, b) => a.n - b.n);
-  const list = (key) => (Array.isArray(state[key]) ? state[key] : []);
   const planText = state.plan?.text ?? "";
+  const outline = planOutline(planText);
+  const known = new Set(Object.values(state.phases ?? {}).map((p) => p.n));
+  const phases = [...Object.values(state.phases ?? {}), ...outline.phases.filter((p) => !known.has(p.n))].sort((a, b) => a.n - b.n);
+  const list = (key) => (Array.isArray(state[key]) ? state[key] : []);
+  const shippedPhases = new Set(outline.milestones.flatMap((m) => m.phases));
   const finished = (p) => p.status === "done" || p.status === "merged";
   const byId = new Map(phases.map((p) => [p.n, p]));
   const openGate = Object.entries(state.merge_gates ?? {}).filter(([, v]) => v === "open").map(([m]) => Number(m)).sort((a, b) => a - b)[0];
   const mergeGate = openGate == null ? null : [...list("gates")].reverse().find((g) => g.kind === "merge" && g.state === "open" && g.milestone === openGate);
   const acceptGate = [...list("gates")].reverse().find((g) => g.kind === "accept");
-  const numbers = [...new Set(phases.map((p) => p.milestone).filter((m) => m != null))].sort((a, b) => a - b);
-  const headers = [...planText.matchAll(/^## Milestone (\d+) — (.+)$/gm)].map((m) => ({ number: Number(m[1]), text: m[2].trim() }));
-  const titles = new Map(headers.map((h) => [h.number, h.text.replace(/\s*`?\[archived\]`?$/, "")]));
-  const stubs = new Set(headers.filter((h) => /\[archived\]`?$/.test(h.text)).map((h) => h.number));
+  const numbers = [...new Set([...phases.map((p) => p.milestone), ...outline.milestones.map((m) => m.number)].filter((m) => m != null))].sort((a, b) => a - b);
+  const titles = new Map(outline.milestones.map((m) => [m.number, m.title]));
+  const stubs = new Set(outline.milestones.filter((m) => m.archived).map((m) => m.number));
   const times = (key, n) => list(key).filter((r) => r.n === n && Number.isFinite(r.at_ms)).map((r) => r.at_ms);
   const mergedAt = (m) => [...list("gates")].reverse().find((g) => g.kind === "merge" && g.state === "merged" && g.milestone === m && Number.isFinite(g.at_ms))?.at_ms ?? null;
 
@@ -655,6 +659,7 @@ export function wsdSnapshot(state) {
       : result?.outcome === "question" ? "awaiting"
       : result?.outcome === "blocked" ? "blocked"
       : result?.verify === "fail" ? "problem"
+      : p.status === "blocked" ? "blocked"
       : p.status === "running" || p.status === "claimed" ? "running" : "todo";
     const header = planText.split("\n").find((l) => new RegExp(`^### Phase ${p.n}\\b`).test(l)) ?? "";
     const review = p.kind === "review"
@@ -664,7 +669,7 @@ export function wsdSnapshot(state) {
     const notes = list("notes").filter((n) => n.phase === p.n).map((n) => n.text).join("\n\n");
     return {
       id: String(p.n), kind: p.kind === "review" ? "pr-review" : "phase", phase: String(p.n), title: p.title,
-      lane: p.output ?? null, repository: p.repo ?? null, status: p.status, ui,
+      lane: p.lane ?? p.output ?? null, repository: p.repo ?? null, status: p.status, ui,
       paused: state.pauses?.[p.n] === true, noteMarkdown: notes, modelOverride: override, review, reviewStages: [],
       milestone: p.milestone ?? null, awaitingMerge: parked, prs: parked ? mergeGate?.prs ?? {} : undefined,
       startedAtMs: times("attempts", p.n).length ? Math.min(...times("attempts", p.n)) : null,
@@ -678,16 +683,56 @@ export function wsdSnapshot(state) {
     };
   });
   const edges = phases.flatMap((p) => (p.depends_on ?? []).map((d) => ({
-    source: String(d), target: String(p.n), kind: "depends", blocking: !(byId.has(d) && finished(byId.get(d))),
+    source: String(d), target: String(p.n), kind: "depends", blocking: !(shippedPhases.has(d) || (byId.has(d) && finished(byId.get(d)))),
   })));
   return {
     paused: state.pauses?.all === true,
-    effort: { milestone: state.milestone, milestoneTotal: numbers.length, integrationBranch: null },
+    effort: { milestone: state.milestone ?? numbers.find((m) => !stubs.has(m)) ?? null, milestoneTotal: numbers.length, integrationBranch: null },
     graph: { nodes, edges, milestones: numbers.map((number) => ({
       number, title: titles.get(number) ?? "",
       ...(stubs.has(number) || state.merge_gates?.[number] === "merged" ? { archived: true, completedAtMs: mergedAt(number) } : {}),
     })) },
   };
+}
+
+/** Plan text → `{ milestones: [{ number, title, archived, phases }], phases }`. Phases are
+ * wsd-shaped records (`n`, `kind`, `lane`, `milestone`, `depends_on`, `status`); a stub's
+ * `Phases (all done):` list fills `phases` of an archived milestone. Grammar:
+ * multiphase-plan/references/plan-format.md. */
+function planOutline(text) {
+  const milestones = [];
+  const phases = [];
+  let milestone = null;
+  let phase = null;
+  for (const line of text.split("\n")) {
+    const header = /^## Milestone (\d+) — (.+)$/.exec(line);
+    if (header) {
+      const title = header[2].trim();
+      milestone = { number: Number(header[1]), title: title.replace(/\s*`?\[archived\]`?$/, ""), archived: /\[archived\]`?$/.test(title), phases: [] };
+      milestones.push(milestone);
+      phase = null;
+      continue;
+    }
+    if (/^## /.test(line)) { milestone = null; phase = null; continue; }
+    const block = /^### Phase (\d+) — (.+)$/.exec(line);
+    if (block) {
+      const marker = (key) => block[2].match(new RegExp(`\\[${key}: ([^\\]]+)\\]`))?.[1].trim() ?? null;
+      const status = marker("status");
+      phase = {
+        n: Number(block[1]), title: block[2].replace(/\s*`\[[^\]]*\]`/g, "").trim(),
+        kind: marker("kind") === "pr-review" ? "review" : "work", lane: marker("lane"), milestone: milestone?.number ?? null,
+        depends_on: [], status: status === "in-progress" ? "running" : (status ?? "todo"),
+      };
+      phases.push(phase);
+      continue;
+    }
+    if (/^#{1,3} /.test(line)) { phase = null; continue; }
+    const depends = /^- \*\*Depends on:\*\*(.*)$/.exec(line);
+    if (depends && phase) phase.depends_on = [...depends[1].matchAll(/Phase (\d+)/g)].map((m) => Number(m[1]));
+    const shipped = /^- \*\*Phases \(all done\):\*\*(.*)$/.exec(line);
+    if (shipped && milestone?.archived && !phase) milestone.phases = [...shipped[1].matchAll(/\d+/g)].map((m) => Number(m[0]));
+  }
+  return { milestones, phases };
 }
 
 /** Steer a loop. A wsd loop goes through `ws loop …`; any other loop through the loop-web daemon.
@@ -1048,7 +1093,9 @@ function renderQuota(windows, width, paint) {
     const remaining = known ? `${(w.remaining_ratio * 100).toFixed(1)}% remaining` : w.status === "unavailable" ? "unavailable" : "unknown";
     const age = Number.isFinite(w.age_secs) && w.age_secs >= 0 ? `${formatAge(w.age_secs)} ago` : "age unknown";
     const identity = [w.runner, accountLabel(w), w.bucket !== w.runner ? w.bucket : null, w.window].filter(Boolean).join(" · ");
-    return truncate(`  ${identity} · ${remaining} · ${w.source ?? "source unknown"} · ${age}`, width);
+    const left = Number.isFinite(w.reset_ms) ? (w.reset_ms - Date.now()) / 1000 : null;
+    const reset = left == null ? "" : left > 0 ? ` · resets in ${formatAge(left)}` : " · reset passed";
+    return truncate(`  ${identity} · ${remaining} · ${w.source ?? "source unknown"} · ${age}${reset}`, width);
   })];
 }
 
