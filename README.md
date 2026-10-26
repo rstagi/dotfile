@@ -29,6 +29,11 @@ The skills engine records review results with `loop-runner.sh --review-key <step
 
 The plan tools require Node >= 22.18. `node loop-plan-parse.mjs --plan .loop/plan.md` prints normalized plan JSON. Use `--plan -` to read standard input. The parser and `loop-plan.sh archive` use `loop-plan-model/` and need no `loop-web/` files. The daemon keeps its own parser until it retires.
 
+`loop-plan.sh` uses `wsd` for plans with `engine: skills` in the header. Other plans use loop-web.
+Skills writes use `ws loop create` and `ws event`. Reads and listing select the active engine's copy.
+Change the engine only while the loop is parked at a merge gate.
+For rollback, remove `engine: skills`, then run `loop-plan.sh push` to update both stores.
+
 For the skills engine, `WS_LOOP_ID=<loop-session-id> ./loop-milestone.sh open --dir .loop`
 starts from `plan.md` alone or adopts an advanced `state.json`. It prepares missing integration
 worktrees and records the current milestone, phases and merged gates in the loop session.

@@ -25,12 +25,16 @@ if (args[0] === 'loop' && args[1] === 'create') {
   console.log(args.includes('--json') ? JSON.stringify(row) : row.id);
 } else if (args[0] === 'loop' && args[1] === 'list') {
   console.log(JSON.stringify(store));
+} else if (args[0] === 'loop' && args[1] === 'get') {
+  const row = store.find(row => row.id === args[2] || row.plan_id === args[2]);
+  if (!row) fail('ws: unknown loop');
+  console.log(JSON.stringify(row));
 } else if (args[0] === 'loop' && args[1] === 'plan') {
   const row = store.find(row => row.id === args[2] || row.plan_id === args[2]);
   if (!row?.plan) fail('ws: no plan');
   console.log(JSON.stringify({ ...row.plan, plan_id: row.plan_id, engine: row.engine }));
 } else if (args[0] === 'event') {
-  const row = store.find(row => row.id === flag('--target') || row.plan_id === flag('--target'));
+  const row = store.find(row => row.id === flag('--target'));
   if (!row) fail('ws: unknown loop');
   const body = JSON.parse(flag('--body'));
   if (args[1] === 'loop.plan') {
