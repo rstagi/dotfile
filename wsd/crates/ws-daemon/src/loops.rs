@@ -25,6 +25,17 @@ pub(crate) mod guard;
 
 /// The phase statuses from lowest to highest. The Loop fold never lowers a status.
 const PHASE_RANKS: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
+/// The phase fields that the latest `loop.phases` snapshot defines.
+const PHASE_DEFINITION_FIELDS: [&str; 8] = [
+    "title",
+    "kind",
+    "output",
+    "milestone",
+    "gate",
+    "repo",
+    "branch",
+    "depends_on",
+];
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -962,9 +973,7 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
             "loop.plan" => state["plan"] = body,
             "loop.phases" => {
                 if let Some(phases) = body["phases"].as_array() {
-                    for phase in phases {
-                        promote_phase(&mut state["phases"], phase);
-                    }
+                    replace_phases(&mut state["phases"], phases);
                 }
             }
             "loop.phase" => promote_phase(&mut state["phases"], &body),
@@ -1032,19 +1041,45 @@ fn open_merge_gate(state: &Value) -> Option<u64> {
         .min()
 }
 
+/// Applies a `loop.phases` snapshot. The snapshot owns the phase list and the definitions.
+/// A phase keeps its progress records and its highest status.
+fn replace_phases(phases: &mut Value, snapshot: &[Value]) {
+    let previous = std::mem::replace(phases, json!({}));
+    for incoming in snapshot {
+        let Some(n) = incoming["n"].as_u64() else {
+            continue;
+        };
+        let key = n.to_string();
+        let mut definition = incoming.clone();
+        if let Some(old) = previous[&key].as_object() {
+            let fields = definition.as_object_mut().unwrap();
+            for (name, value) in old {
+                if !PHASE_DEFINITION_FIELDS.contains(&name.as_str()) && name != "status" {
+                    fields.entry(name.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            if phase_rank(&previous[&key]) > phase_rank(incoming) {
+                fields.insert("status".into(), previous[&key]["status"].clone());
+            }
+        }
+        phases[&key] = definition;
+    }
+}
+
+fn phase_rank(phase: &Value) -> usize {
+    PHASE_RANKS
+        .iter()
+        .position(|status| phase["status"] == *status)
+        .unwrap_or(0)
+}
+
 fn promote_phase(phases: &mut Value, incoming: &Value) {
     let Some(n) = incoming["n"].as_u64() else {
         return;
     };
     let key = n.to_string();
-    let rank = |phase: &Value| {
-        PHASE_RANKS
-            .iter()
-            .position(|status| phase["status"] == *status)
-            .unwrap_or(0)
-    };
     let current = &mut phases[&key];
-    if rank(incoming) < rank(current) {
+    if phase_rank(incoming) < phase_rank(current) {
         return;
     }
     if !current.is_object() {
@@ -1537,6 +1572,78 @@ mod tests {
         let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
         let (_, recovered) = request(&app, "GET", &uri, Value::Null).await;
         assert_eq!(recovered, state);
+    }
+
+    #[tokio::test]
+    async fn a_new_phases_snapshot_replaces_definitions_and_keeps_the_highest_status() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        let old = |n: u64| phase(n, "work", Value::Null, 1, json!([]));
+        let first = json!({"phases":[old(1), old(2)]});
+        assert_eq!(
+            post(&app, &id, "loop.phases", first).await,
+            StatusCode::CREATED
+        );
+        let running = json!({"n":1,"status":"running","attempt":2,"session":"child"});
+        assert_eq!(
+            post(&app, &id, "loop.phase", running).await,
+            StatusCode::CREATED
+        );
+        let mut replanned = old(2);
+        replanned["title"] = json!("Renamed");
+        replanned["depends_on"] = json!([3]);
+        replanned["milestone"] = json!(2);
+        let mut third = old(3);
+        third["status"] = json!("done");
+        let snapshot = json!({"phases":[replanned, third, old(1)]});
+        assert_eq!(
+            post(&app, &id, "loop.phases", snapshot).await,
+            StatusCode::CREATED
+        );
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["phases"]["1"]["status"], "running");
+        assert_eq!(state["phases"]["1"]["attempt"], 2);
+        assert_eq!(state["phases"]["2"]["title"], "Renamed");
+        assert_eq!(state["phases"]["2"]["depends_on"], json!([3]));
+        assert_eq!(state["phases"]["2"]["milestone"], 2);
+        assert_eq!(state["phases"]["3"]["status"], "done");
+
+        let mut retitled = old(1);
+        retitled["title"] = json!("New title");
+        retitled["depends_on"] = json!([2]);
+        let snapshot = json!({"phases":[retitled]});
+        assert_eq!(
+            post(&app, &id, "loop.phases", snapshot).await,
+            StatusCode::CREATED
+        );
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["phases"]["1"]["title"], "New title");
+        assert_eq!(state["phases"]["1"]["depends_on"], json!([2]));
+        assert_eq!(state["phases"]["1"]["status"], "running");
+        assert_eq!(state["phases"].as_object().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn loop_phases_accept_each_plan_output_kind_and_refuse_document() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, _) = loop_session(&app, sandbox.path()).await;
+        for output in ["pr", "file", "doc", "output.md"] {
+            let mut work = phase(1, "work", Value::Null, 1, json!([]));
+            work["output"] = json!(output);
+            assert_eq!(
+                post(&app, &id, "loop.phases", json!({"phases":[work]})).await,
+                StatusCode::CREATED,
+                "{output}"
+            );
+        }
+        let mut work = phase(1, "work", Value::Null, 1, json!([]));
+        work["output"] = json!("document");
+        assert_eq!(
+            post(&app, &id, "loop.phases", json!({"phases":[work]})).await,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]

@@ -28,8 +28,8 @@ const KEY_FIELD: &str = "event_key";
 const MAX_KEY_BYTES: usize = 256;
 
 const PHASE_KINDS: [&str; 2] = ["work", "review"];
-/// The D19 output kinds of a work phase.
-const OUTPUT_KINDS: [&str; 4] = ["pr", "file", "document", "output.md"];
+/// The D19 output kinds of a work phase, as the plan format writes them.
+const OUTPUT_KINDS: [&str; 4] = ["pr", "file", "doc", "output.md"];
 const PHASE_STATUSES: [&str; 5] = ["todo", "claimed", "running", "done", "merged"];
 
 const REVIEW_ROLES: [&str; 7] = [
