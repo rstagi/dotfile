@@ -41,7 +41,8 @@ HERE="${0:A:h}"
 LOOP_REPO="$HERE/loop-repo.sh"
 STATE="" NEXT="" BRANCHES="" DIR=".loop" MILESTONE="" PRS=""
 LOOP_PLAN="$HERE/loop-plan.sh"
-LOOP_STATE="$HERE/loop-state.sh"
+# LOOP_STATE_SH is a test seam like LOOP_EMIT_SH in loop-plan.sh: a wrapper can observe each `set`.
+LOOP_STATE="${LOOP_STATE_SH:-$HERE/loop-state.sh}"
 
 main() {
   local cmd="${1:-}"

@@ -122,18 +122,29 @@ if ! jq -es --arg key "$key" 'any(.[]; .[9]==$key)' "$FAKE_WS_LOG" >/dev/null; t
 fi
 WS
 chmod +x "$TMP/resume-bin/ws"
+# A skills loop (WS_LOOP_ID set) sends nothing to the loop-web daemon, so the applies are
+# observed through a loop-state.sh wrapper: it runs the real script, then logs the state.json
+# that each successful `set` wrote.
 cat > "$TMP/bin/curl" <<'CURL'
 #!/bin/sh
-case "$*" in
-  */state)
-    if [ -n "${FAKE_RESUME_STATE_LOG:-}" ]; then
-      jq -c . >> "$FAKE_RESUME_STATE_LOG"
-      printf 'apply\n' >> "$FAKE_RESUME_STEPS"
-      exit 0
-    fi ;;
-esac
 exit 99
 CURL
+chmod +x "$TMP/bin/curl"
+cat > "$TMP/resume-bin/loop-state.sh" <<WRAP
+#!/bin/zsh
+set -u
+"$ROOT/loop-state.sh" "\$@" || exit \$?
+[[ "\${1:-}" == set && -n "\${FAKE_RESUME_STATE_LOG:-}" ]] || exit 0
+dir=.loop
+while [[ \$# -gt 0 ]]; do
+  [[ "\$1" == --dir ]] && dir="\$2"
+  shift
+done
+jq -c . "\$dir/state.json" >> "\$FAKE_RESUME_STATE_LOG"
+printf 'apply\n' >> "\$FAKE_RESUME_STEPS"
+WRAP
+chmod +x "$TMP/resume-bin/loop-state.sh"
+export LOOP_STATE_SH="$TMP/resume-bin/loop-state.sh"
 export FAKE_PR_STATES="https://github.com/acme/api/pull/1=MERGED
 https://github.com/acme/web/pull/2=MERGED"
 resume_fixture resume-merged
@@ -235,7 +246,7 @@ assert_exit "$?" 0 "resume advances from milestone two"
 assert_eq "$([[ -f "$RESUME/milestones/m1.md" && -f "$RESUME/milestones/m2.md" ]] && print yes || print no)" yes "resume archives milestones one and two"
 assert_eq "$(jq -c '[.milestone,.resumePending,.repositories["acme/api"].integrationBranch]' "$RESUME/state.json")" '[3,null,"feat/resume-multi-m3-api"]' "resume prepares the branch of milestone three"
 assert_eq "$(jq -c 'select(.[1]=="loop.gate")|.[3]|fromjson|[.milestone,.prs]' "$FAKE_WS_LOG")" '[2,{"acme/web":"https://github.com/acme/web/pull/3"}]' "the gate event uses the parked milestone"
-unset FAKE_RESUME_STATE_LOG FAKE_RESUME_STEPS
+unset FAKE_RESUME_STATE_LOG FAKE_RESUME_STEPS LOOP_STATE_SH
 [[ "${1:-}" == --resume-only ]] && test_summary
 
 echo "loop-milestone: open a fresh plan"
