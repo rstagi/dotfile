@@ -864,4 +864,80 @@ assert_exit "$?" 0 "park accepts a plan with one implicit milestone"
 parsed="$(node "$ROOT/loop-plan-parse.mjs" --plan "$IMPLICIT/plan.md")"
 assert_eq "$(jq -c '[.phases[0].status, .repositories[0].pr, .status]' <<< "$parsed")" '["done","https://github.com/acme/api/pull/5","awaiting merge"]' "the implicit milestone keeps its PR on the repository"
 
+echo "loop-milestone: park an accept gate"
+ACCEPT="$TMP/accept/.loop"
+mkdir -p "$ACCEPT"
+cat > "$ACCEPT/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: skills-accept
+-->
+# Accept fixture — Multi-Phase Plan
+
+**Status:** in progress
+
+## Milestone 1 — Write notes
+### Phase 1 — Write notes `[output: doc]` `[status: todo]`
+### Phase 2 — Review notes `[kind: pr-review]` `[gate: accept]` `[status: todo]`
+- **Depends on:** Phase 1
+PLAN
+cp "$ACCEPT/plan.md" "$TMP/accept-plan-before.md"
+accept_loop() { # <phase 2 status> <gates json>
+  jq -n --arg s "$1" --argjson gates "${2:-[]}" '{milestone:1,gates:$gates,merge_gates:{},phases:{
+    "1":{n:1,kind:"work",milestone:1,output:"doc",status:"done"},
+    "2":{n:2,kind:"review",milestone:1,gate:"accept",status:$s}}}' > "$FAKE_LOOP_GET"
+}
+accept() { WS_LOOP_ID=LOOP1 WS_BIN="$TMP/park-bin/ws" "$ROOT/loop-milestone.sh" park --dir "$ACCEPT" --kind accept --phase "${1:-2}" --artifacts "${2:-[\"notes.md\"]}" 2> "$TMP/accept.err"; }
+: > "$FAKE_WS_LOG"
+accept_loop running
+accept >/dev/null
+assert_exit "$?" 3 "an accept park exits 3 while the review phase is not done"
+assert_eq "$(wc -c < "$FAKE_WS_LOG" | tr -d ' ')" 0 "an unfinished review phase appends no event"
+accept_loop done
+accept 1 >/dev/null
+assert_exit "$?" 1 "an accept park refuses a phase that is not a review with an accept gate"
+WS_BIN="$TMP/park-bin/ws" "$ROOT/loop-milestone.sh" park --dir "$ACCEPT" --kind accept --phase 2 --artifacts '["notes.md"]' >/dev/null 2>&1
+assert_exit "$?" 1 "an accept park needs WS_LOOP_ID"
+accept 2 'notes.md' >/dev/null
+assert_exit "$?" 1 "an accept park needs a JSON list of artifacts"
+accept >/dev/null
+assert_exit "$?" 0 "an accept park opens the gate for a done review phase"
+assert_eq "$(jq -c 'select(.[1]=="loop.gate")|.[3]|fromjson' "$FAKE_WS_LOG")" '{"kind":"accept","state":"open","milestone":1,"phase":2,"artifacts":["notes.md"]}' "the gate event records the phase and artifacts"
+assert_eq "$(jq -s 'all(.[]; .[4:8]==["--source","tool","--target","LOOP1"] and .[8]=="--key" and (.[9]|length)>0)' "$FAKE_WS_LOG")" true "the gate event has tool provenance and a key"
+assert_eq "$(cat "$ACCEPT/plan.md")" "$(cat "$TMP/accept-plan-before.md")" "an accept park leaves the plan unchanged"
+assert_eq "$([[ -e "$ACCEPT/state.json" ]] && print yes || print no)" no "an accept park writes no state"
+accept_loop done '[{"kind":"accept","state":"open","milestone":1,"phase":2,"artifacts":["notes.md"]}]'
+accept >/dev/null
+assert_exit "$?" 0 "a second accept park succeeds"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 1 "a second accept park appends nothing"
+accept_loop done '[{"kind":"accept","state":"rejected","milestone":1,"phase":2,"artifacts":["notes.md"]}]'
+accept >/dev/null
+assert_eq "$(jq -s '[.[]|.[9]]|unique|length' "$FAKE_WS_LOG")" 2 "a reopened gate has a new key"
+
+echo "loop-milestone: open refuses an accept gate before the last milestone"
+ACCEPT2="$TMP/accept2/.loop"
+mkdir -p "$ACCEPT2"
+cat > "$ACCEPT2/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: skills-accept-two
+-->
+# Accept fixture two — Multi-Phase Plan
+
+**Status:** in progress
+
+## Milestone 1 — Write notes
+### Phase 1 — Write notes `[output: doc]` `[status: todo]`
+### Phase 2 — Review notes `[kind: pr-review]` `[gate: accept]` `[status: todo]`
+- **Depends on:** Phase 1
+
+## Milestone 2 — Later
+### Phase 3 — Later work `[output: doc]` `[status: todo]`
+- **Depends on:** Phase 2
+### Phase 4 — Review later `[kind: pr-review]` `[gate: accept]` `[status: todo]`
+- **Depends on:** Phase 3
+PLAN
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/park-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$ACCEPT2" > "$TMP/accept2.out" 2> "$TMP/accept2.err"
+assert_exit "$?" 1 "open refuses an accept gate at the end of milestone 1 of 2"
+assert_contains "$(cat "$TMP/accept2.err")" 'accept' "the open message names the accept gate"
+assert_eq "$([[ -e "$ACCEPT2/state.json" ]] && print yes || print no)" no "a refused open writes no state"
+
 test_summary

@@ -5,6 +5,8 @@ set -u -o pipefail
 #   open --dir <loop dir>
 #     Requires WS_LOOP_ID. Prepares repositories and writes fresh state or adopts saved state.
 #     Appends keyed tool events. A second open changes nothing. A parked loop exits 3.
+#     A plan whose non-final milestone has a [gate: accept] phase exits 1 (resume advances only
+#     from a merge gate).
 #   park --dir <loop dir> --milestone <N> --prs '<json slug→url>'
 #     Requires WS_LOOP_ID. Parks the loop at the merge gate of milestone N (the state milestone).
 #     Exit 3 and no change while a phase of N is not done or merged in `ws loop get`. Sets
@@ -13,6 +15,12 @@ set -u -o pipefail
 #     loop-state.sh set writes awaitingMerge {milestone, prs} and repositories[slug].prUrl, and a
 #     keyed loop.gate {kind:merge, state:open, milestone, prs} event follows. A repeat with the
 #     same PRs changes nothing. Other PRs for a parked milestone exit 1 and change nothing.
+#   park --kind accept --phase <n> --artifacts '<json list of paths>'
+#     Requires WS_LOOP_ID. Opens the accept gate of review phase n (kind pr-review, [gate: accept]).
+#     Exit 3 and no change while phase n is not done in `ws loop get`. Then one keyed
+#     loop.gate {kind:accept, state:open, milestone, phase, artifacts} event follows. It writes no
+#     awaitingMerge and does not change the plan. A repeat with an open gate of the same
+#     artifacts appends nothing. `ws loop accept|reject` close the gate.
 #   resume --dir <loop dir>
 #     Checks the parked gate, archives milestones 1 through N, and advances to N+1.
 #     Applies the advance patch once. With WS_LOOP_ID, appends keyed gate, milestone and phase
@@ -39,7 +47,7 @@ set -u -o pipefail
 
 HERE="${0:A:h}"
 LOOP_REPO="$HERE/loop-repo.sh"
-STATE="" NEXT="" BRANCHES="" DIR=".loop" MILESTONE="" PRS=""
+STATE="" NEXT="" BRANCHES="" DIR=".loop" MILESTONE="" PRS="" KIND="" PHASE="" ARTIFACTS=""
 LOOP_PLAN="$HERE/loop-plan.sh"
 LOOP_STATE="$HERE/loop-state.sh"
 
@@ -48,7 +56,7 @@ main() {
   [[ -n "$cmd" ]] && shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --state | --next | --branches | --dir | --milestone | --prs)
+    --state | --next | --branches | --dir | --milestone | --prs | --kind | --phase | --artifacts)
       [[ $# -ge 2 && "$2" != --* ]] || die "$1 requires a value"
       case "$1" in
       --state) STATE="$2" ;;
@@ -57,6 +65,9 @@ main() {
       --branches) BRANCHES="$2" ;;
       --milestone) MILESTONE="$2" ;;
       --prs) PRS="$2" ;;
+      --kind) KIND="$2" ;;
+      --phase) PHASE="$2" ;;
+      --artifacts) ARTIFACTS="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown argument '$1'" ;;
@@ -84,6 +95,9 @@ open_milestone() {
     fresh=false
   fi
   plan="$(node "$HERE/loop-plan-parse.mjs" --plan "$DIR/plan.md")" || die "cannot parse $DIR/plan.md"
+  jq -e '([.phases[].milestone | tonumber] | max) as $last |
+    [.phases[] | select(.gate == "accept" and (.milestone | tonumber) < $last)] | length == 0' <<< "$plan" >/dev/null \
+    || die "a [gate: accept] phase ends a non-final milestone. Resume advances only from a merge gate. End the milestone with a [gate: merge] phase or move the accept gate to the last milestone"
   if $fresh; then
     run_id="$(sed -n '/^<!-- loop-plan$/,/^-->$/s/^planId:[[:space:]]*//p' "$DIR/plan.md" | head -1)"
     [[ -n "$run_id" ]] || die "plan header has no planId"
@@ -139,6 +153,11 @@ open_milestone() {
 # Park is the skills-engine twin of loop-execute step 8: plan lines, state, then the gate event.
 park_milestone() {
   [[ -n "${WS_LOOP_ID:-}" ]] || die "park requires WS_LOOP_ID"
+  case "${KIND:-merge}" in
+  merge) ;;
+  accept) park_accept_gate; return $? ;;
+  *) die "park --kind must be merge or accept" ;;
+  esac
   local milestone_re='^[1-9][0-9]*$' live open parked plan_file tmp prs rc
   [[ "$MILESTONE" =~ $milestone_re ]] || die "park requires --milestone <N>"
   prs="$(jq -cS 'if type == "object" and length > 0 and all(.[]; type == "string" and length > 0) then . else error("bad") end' <<< "${PRS:-null}" 2>/dev/null)" \
@@ -182,6 +201,29 @@ park_milestone() {
     append_tool_event loop.gate "$(jq -cn --argjson n "$MILESTONE" --argjson prs "$prs" \
       '{kind:"merge",state:"open",milestone:$n,prs:$prs}')" "park:$MILESTONE" || return $?
   fi
+}
+
+# An accept gate holds a non-PR output for the human. It changes no plan line and no state file.
+park_accept_gate() {
+  local phase_re='^[1-9][0-9]*$' live artifacts milestone revision
+  [[ "$PHASE" =~ $phase_re ]] || die "park --kind accept requires --phase <n>"
+  artifacts="$(jq -c 'if type == "array" and all(.[]; type == "string" and length > 0) then . else error("bad") end' <<< "${ARTIFACTS:-null}" 2>/dev/null)" \
+    || die "park --kind accept requires --artifacts '[\"path\"]' (a JSON list of paths)"
+  live="$("${WS_BIN:-ws}" loop get "$WS_LOOP_ID" --json)" && jq -e 'type == "object"' <<< "$live" >/dev/null 2>&1 \
+    || die "cannot read loop $WS_LOOP_ID"
+  jq -e --arg n "$PHASE" '.phases[$n] | type == "object" and .kind == "review" and .gate == "accept"' <<< "$live" >/dev/null \
+    || die "phase $PHASE is not a review phase with [gate: accept]"
+  jq -e --arg n "$PHASE" '.phases[$n].status | IN("done", "merged")' <<< "$live" >/dev/null \
+    || die "phase $PHASE is not done: $(jq -r --arg n "$PHASE" '.phases[$n].status' <<< "$live")" 3
+  milestone="$(jq -r --arg n "$PHASE" '.phases[$n].milestone' <<< "$live")"
+  if jq -e --argjson n "$PHASE" --argjson a "$artifacts" '
+      [.gates // [] | .[] | select(.kind == "accept" and .phase == $n)] | last |
+      . != null and .state == "open" and .artifacts == $a' <<< "$live" >/dev/null; then
+    return 0
+  fi
+  revision="$(jq -r --argjson n "$PHASE" '[.gates // [] | .[] | select(.kind == "accept" and .phase == $n)] | length' <<< "$live")"
+  append_tool_event loop.gate "$(jq -cn --argjson m "$milestone" --argjson n "$PHASE" --argjson a "$artifacts" \
+    '{kind:"accept",state:"open",milestone:$m,phase:$n,artifacts:$a}')" "park-accept:$PHASE:$revision" || return $?
 }
 
 # Resume owns the transition from a merged gate to the next milestone.
