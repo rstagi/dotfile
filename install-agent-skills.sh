@@ -12,6 +12,7 @@ SHARED_SKILLS=(
   converge
   loop-pickup
   loop-handoff
+  loop-review
   pr-review
   pr-review-fix-all
   ws-sessions
