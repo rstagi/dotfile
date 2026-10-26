@@ -8,13 +8,15 @@ set -u -o pipefail
 # prepare --milestone N defaults to 1; later milestones create branch-scoped worktrees,
 # reusing only their own path on retry. retire removes clean, non-adopted run worktrees;
 # pr-state --pr <url> prints open|merged|closed.
+# lane --repo --run-id --branch --from <integration worktree> gives a PR phase its own branch
+# and worktree under the run root; a retry reuses both, the branch is never deleted.
 
 CMD="${1:-}"
 [[ -n "$CMD" ]] && shift
 
 REGISTRY="${LOOP_REPO_REGISTRY:-${HOME}/.loop/repos.json}"
 WORKTREE_ROOT="${LOOP_WORKTREE_ROOT:-${HOME}/.loop/worktrees}"
-REPO="" RUN_ID="" INTEGRATION_BRANCH="" MILESTONE=1 WORKTREE="" ADOPTED="" PR="" POSITIONAL=()
+REPO="" RUN_ID="" INTEGRATION_BRANCH="" BRANCH="" FROM="" MILESTONE=1 WORKTREE="" ADOPTED="" PR="" POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -25,6 +27,8 @@ while [[ $# -gt 0 ]]; do
   --worktree) WORKTREE="$2"; shift 2 ;;
   --adopted) ADOPTED="$2"; shift 2 ;;
   --pr) PR="$2"; shift 2 ;;
+  --branch) BRANCH="$2"; shift 2 ;;
+  --from) FROM="$2"; shift 2 ;;
   *) POSITIONAL+=("$1"); shift ;;
   esac
 done
@@ -191,10 +195,14 @@ new_integration_worktree() {
     || die "could not create integration worktree for $REPO" 4
 }
 
+branch_slug() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+}
+
 integration_path() {
   local suffix="" slug
   if (( MILESTONE > 1 )); then
-    slug="$(printf '%s' "$INTEGRATION_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+    slug="$(branch_slug "$INTEGRATION_BRANCH")"
     [[ -n "$slug" ]] || die "integration branch has no usable path slug" 4
     # Hash of the exact branch keeps distinct same-slug branches (feat/m2, feat-m2) apart.
     suffix="-$slug-$(printf '%s' "$INTEGRATION_BRANCH" | shasum | cut -c1-8)"
@@ -227,6 +235,70 @@ retire_worktree() {
   [[ -z "$(git -C "$target" status --porcelain --untracked-files=all)" ]] \
     || die "cannot retire dirty worktree: $target" 4
   git -C "$checkout" worktree remove -- "$target" || die "could not retire worktree: $target" 4
+}
+
+# Lane worktree for one PR phase: <root>/<runId>/<owner--repo>/<branch slug>. The first call cuts
+# BRANCH from the HEAD of the integration worktree FROM and stores that HEAD as the base in the
+# git dir of the lane worktree. A retry prints the stored base. A branch with no worktree gets
+# one, with its merge base as base. Any conflict exits 4 before a ref or a directory changes.
+lane_worktree() {
+  validate_slug "$REPO"
+  validate_run_id
+  [[ -n "$BRANCH" ]] || die "lane requires --branch"
+  [[ -n "$FROM" ]] || die "lane requires --from"
+  git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch '$BRANCH'"
+  local from slug target origin base head holder record existing
+  from="$(normalize_checkout "$FROM")" || exit $?
+  origin="$(git -C "$from" config --get remote.origin.url 2>/dev/null)" \
+    || die "$REPO integration worktree has no origin remote" 3
+  [[ "$(origin_slug "$origin")" == "$REPO" ]] \
+    || die "$from does not belong to $REPO" 3
+  head="$(git -C "$from" rev-parse HEAD)" || die "integration worktree has no HEAD: $from" 3
+  slug="$(branch_slug "$BRANCH")"
+  [[ -n "$slug" ]] || die "lane branch has no usable path slug" 4
+  target="$WORKTREE_ROOT/$RUN_ID/${REPO//\//--}/$slug"
+
+  # Another worktree on the branch wins over every other case, and so does a foreign path.
+  holder="$(branch_worktree "$from" "$BRANCH")" || exit $?
+  if [[ -e "$target" ]]; then
+    target="${target:A}"
+    [[ -f "$target/.git" && "$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" == "$target" ]] \
+      || die "lane path is not a worktree: $target" 4
+    [[ "$(git -C "$target" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+      == "$(git -C "$from" rev-parse --path-format=absolute --git-common-dir)" ]] \
+      || die "lane path belongs to another repository: $target" 4
+    existing="$(git -C "$target" branch --show-current)"
+    [[ "$existing" == "$BRANCH" ]] || die "lane path holds ${existing:-a detached HEAD}, not $BRANCH: $target" 4
+    record="$(git -C "$target" rev-parse --absolute-git-dir)/loop-repo-lane.json"
+    if [[ -f "$record" ]]; then
+      base="$(jq -er .baseSha "$record")" || die "invalid lane record: $record" 4
+    else
+      base="$(git -C "$from" merge-base "$head" "$BRANCH")" || die "no merge base for $BRANCH" 4
+      save_lane_record "$record" "$base"
+    fi
+  else
+    target="${target:A}"
+    [[ -z "$holder" ]] || die "branch $BRANCH is already checked out: $holder" 4
+    mkdir -p "${target:h}"
+    if git -C "$from" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      base="$(git -C "$from" merge-base "$head" "refs/heads/$BRANCH")" || die "no merge base for $BRANCH" 4
+      git -C "$from" worktree add -q "$target" "$BRANCH" >&2 || die "could not create lane worktree: $target" 4
+    else
+      base="$head"
+      git -C "$from" worktree add -q -b "$BRANCH" "$target" "$base" >&2 \
+        || die "could not create lane worktree: $target" 4
+    fi
+    save_lane_record "$(git -C "$target" rev-parse --absolute-git-dir)/loop-repo-lane.json" "$base"
+  fi
+  jq -cn --arg worktree "$target" --arg branch "$BRANCH" --arg base "$base" \
+    '{worktree:$worktree, branch:$branch, base:$base}'
+}
+
+save_lane_record() {
+  local record="$1" base="$2" tmp
+  tmp="$(mktemp "$record.XXXXXX")" || die "cannot create lane record" 4
+  jq -cn --arg baseSha "$base" '{baseSha:$baseSha}' > "$tmp" && mv "$tmp" "$record" \
+    || { rm -f "$tmp"; die "cannot save lane record" 4; }
 }
 
 validate_run_id() {
@@ -315,6 +387,9 @@ prepare)
       integrationWorktree:$integrationWorktree, adopted:$adopted, aheadCount:$aheadCount,
       prUrl:null, review:null}'
   ;;
+lane)
+  lane_worktree
+  ;;
 retire)
   retire_worktree
   ;;
@@ -325,6 +400,6 @@ pr-state)
     || die "GitHub returned an invalid PR state: $PR" 3
   ;;
 *)
-  die "unknown command '$CMD' (map|get|list|unmap|check|prepare|retire|pr-state)"
+  die "unknown command '$CMD' (map|get|list|unmap|check|prepare|lane|retire|pr-state)"
   ;;
 esac
