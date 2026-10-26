@@ -35,6 +35,13 @@ worktrees and records the current milestone, phases and merged gates in the loop
 A second call changes nothing. Without `WS_LOOP_ID`, it exits 1. A parked loop exits 3 and
 requires `loop-milestone.sh resume`. The `check` and `advance` commands retain their existing behavior.
 
+After the gate PRs merge, run `./loop-milestone.sh resume --dir .loop`, then `ws loop start .loop`.
+The resume command checks the PRs, archives shipped milestones, prepares the next integration
+worktrees, and applies one state patch. With `WS_LOOP_ID`, it records keyed gate, milestone and
+phase events. Without that variable, it updates the files and the plan only. A retry after the
+apply continues from `resumePending`. Open or closed PRs stop the command without changes.
+`ws loop resume` only clears a pause.
+
 ## Loop dashboard (`loop-top`)
 
 `loop-top` shows the phases of a Loop run in the terminal, live from the central daemon (`:7717`). Run it anywhere: it infers the loop from cwd (coordinator worktree, phase worktree, or git branch + origin) and otherwise opens an fzf picker over active + finished loops. HIL questions are still answered through the orchestrating agent.
