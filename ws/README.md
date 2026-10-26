@@ -143,11 +143,17 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 ## Layout
 
 `ws/ws.sh` executes `${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}`. It ignores old backend selectors.
-The Cargo workspace in `wsd/` contains three crates:
+The Cargo workspace in `wsd/` contains four crates:
 
 - `ws-core` stores durable data.
 - `ws-daemon` provides the runtime.
+- `ws-hub` holds the device identity code (and later the hub server and sync types).
 - `ws` provides the CLI and embeds `wsd/crates/ws/src/cmd/picker.zsh` for the fzf UI.
+
+Device identity: `ws ca init --out <dir>` writes the Ed25519 root key (0600) and a 10-year root certificate.
+`ws device init` writes `$WS_STATE/device/key.pem` (0600) and `csr.pem` for the id in `$WS_STATE/device.json`.
+`ws device sign --csr <file> --root-cert <file> [--root-key-cmd '<cmd>'] [--days 90]` prints the device certificate.
+It reads the root key from the stdout of the command (default `op read op://ws/root-ca/key`).
 
 Rust owns sessions, messages, logs, dependency edges and the local MCP server.
 Run `cd wsd && cargo test` to test the CLI and daemon.

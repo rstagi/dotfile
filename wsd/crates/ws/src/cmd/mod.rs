@@ -6,6 +6,7 @@ pub mod backend;
 pub mod build_notifier;
 pub mod claude;
 pub mod codex;
+pub mod device;
 pub mod dismiss;
 pub mod done;
 pub mod events;

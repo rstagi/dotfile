@@ -233,7 +233,10 @@ mod tests {
             / 86_400;
         assert!((ROOT_VALIDITY_DAYS..=ROOT_VALIDITY_DAYS + 1).contains(&days));
         assert!(cert.is_ca());
-        assert!(write_root_ca(&out).is_err(), "must not overwrite a root key");
+        assert!(
+            write_root_ca(&out).is_err(),
+            "must not overwrite a root key"
+        );
     }
 
     #[test]
@@ -265,7 +268,10 @@ mod tests {
     fn signed_certificate_has_the_device_id_and_chains_to_the_root() {
         let root = create_root_ca().unwrap();
         let cert = signed_device(&root, DEVICE_ID);
-        assert_eq!(verify_device_cert(&root.cert_pem, &cert).unwrap(), DEVICE_ID);
+        assert_eq!(
+            verify_device_cert(&root.cert_pem, &cert).unwrap(),
+            DEVICE_ID
+        );
         assert_eq!(certificate_subject(&cert).unwrap(), DEVICE_ID);
     }
 

@@ -2968,6 +2968,7 @@ dependencies = [
  "tokio",
  "ws-core",
  "ws-daemon",
+ "ws-hub",
 ]
 
 [[package]]

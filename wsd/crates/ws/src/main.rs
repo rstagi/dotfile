@@ -222,6 +222,16 @@ enum Command {
     },
     /// Initialize the local device identity.
     Init,
+    /// Manage the device key and its certificate.
+    Device {
+        #[command(subcommand)]
+        command: cmd::device::DeviceCommand,
+    },
+    /// Manage the WS root CA.
+    Ca {
+        #[command(subcommand)]
+        command: cmd::device::CaCommand,
+    },
     /// Serve the local API on the Unix socket.
     Daemon,
     /// Show the daemon version and uptime.
@@ -424,6 +434,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
         Command::Session { command } => return cmd::session::run(&socket_path()?, *command).await,
         Command::Init => init::run()?,
+        Command::Device { command } => cmd::device::device(command)?,
+        Command::Ca { command } => cmd::device::ca(command)?,
         Command::Daemon => {
             let socket = socket_path()?;
             ws_daemon::run(&socket).await.map_err(|error| {
