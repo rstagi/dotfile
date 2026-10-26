@@ -44,6 +44,9 @@ const CHAIN_KEYS = {
   "review-adv-a": "ADV_A", "review-adv-b": "ADV_B", "review-adv-c": "ADV_C",
 };
 const WAITING_TEXT = "waiting on you (orchestrator)";
+// loop-web events that time a phase: its first start, and its completion (merge first).
+const START_EVENTS = new Set(["phase.spawn", "phase.attempt.start", "review.start"]);
+const DONE_EVENTS = ["phase.merged", "review.finish", "phase.attempt.finish"];
 const AWAITING_MERGE_TEXT = "awaiting merge";
 const RESUME_HINT = "/loop-execute resume";
 const ESC = "\x1b[";
@@ -130,14 +133,17 @@ export function phaseRows(snapshot, state) {
   const depEdges = (snapshot?.graph?.edges ?? []).filter((e) => e.kind === "depends");
   const plannedLeg = firstTaskLeg();
   const byMilestone = milestoneTitles(snapshot).size > 0;
+  const shipped = new Set(archivedMilestones(snapshot).map((m) => m.number));
+  const times = eventTimes(snapshot);
   const order = byMilestone
     ? (a, b) => (a.milestone ?? Infinity) - (b.milestone ?? Infinity) || nodes.indexOf(a) - nodes.indexOf(b)
     : (a, b) => comparePhase(a.phase ?? a.id, b.phase ?? b.id);
   return nodes
-    .filter((n) => n.kind === "phase" || n.kind === "pr-review")
+    .filter((n) => (n.kind === "phase" || n.kind === "pr-review") && !shipped.has(n.milestone))
     .sort(order)
     .map((n) => {
       const ps = state?.phases?.[n.id] ?? {};
+      const { startedAt, doneAt } = phaseTiming(n, times);
       const parked = n.awaitingMerge === true;
       const waiting = parked || Boolean(n.runtime?.hilOpen || n.runtime?.awaiting) || n.ui === "awaiting";
       const incoming = depEdges.filter((e) => e.target === n.id);
@@ -160,18 +166,58 @@ export function phaseRows(snapshot, state) {
         icon: waiting ? ICONS.awaiting : n.paused && n.ui !== "done" ? ICONS.paused : (ICONS[n.ui] ?? ICONS.todo),
         milestone: n.milestone ?? null,
         gate: parked ? { prs: gatePrs(n.prs) } : null,
-        state: parked ? AWAITING_MERGE_TEXT : waiting ? WAITING_TEXT : n.ui === "todo" && pending.length ? `waiting on ${pending.join(", ")}` : (reviewProgress(n) ?? stateText(n)),
+        state: parked ? AWAITING_MERGE_TEXT : waiting ? WAITING_TEXT : n.ui === "todo" && pending.length ? `waiting on ${pending.join(", ")}` : (reviewProgress(n) ?? doneText(startedAt, doneAt) ?? stateText(n)),
         branch: ps.branch ?? n.runtime?.branch ?? null,
         worktree: ps.worktree ?? null,
+        startedAt,
+        doneAt,
       };
     });
 }
 
-/** Milestone headers from the snapshot graph (`M<n> — <title>`, archived stubs flagged); empty unless there are ≥2. */
+/** Shipped milestones, shown as one line each instead of their phases:
+ * `[{ number, title, completedAt }]`. completedAt (ms) comes from the source's own time
+ * (wsd: the merged gate), else the latest `milestone.*` gate event, else the last phase
+ * completion; null when no source has a time. */
+export function archivedMilestones(snapshot) {
+  const milestones = (snapshot?.graph?.milestones ?? []).filter((m) => m.archived);
+  if (!milestones.length) return [];
+  const gates = new Map();
+  for (const e of snapshot.events ?? []) {
+    if (!String(e.event).startsWith("milestone.")) continue;
+    const number = Number((/\bM(\d+)\b/.exec(e.detail ?? "") ?? /milestone (\d+)/i.exec(e.detail ?? ""))?.[1]);
+    const ms = Date.parse(e.ts);
+    if (Number.isFinite(number) && Number.isFinite(ms)) gates.set(number, Math.max(gates.get(number) ?? 0, ms));
+  }
+  const times = eventTimes(snapshot);
+  const lastDone = (number) => {
+    const done = (snapshot.graph.nodes ?? []).filter((n) => n.milestone === number).map((n) => phaseTiming(n, times).doneAt).filter((ms) => ms != null);
+    return done.length ? Math.max(...done) : null;
+  };
+  return milestones
+    .map((m) => ({ number: m.number, title: m.title, completedAt: m.completedAtMs ?? gates.get(m.number) ?? lastDone(m.number) }))
+    .sort((a, b) => a.number - b.number);
+}
+
+/** The account as a person reads it: the daemon's label, else a short id; a Grok identity
+ * (a JSON account id) names its team or user. */
+export function accountLabel(w) {
+  if (w.account_label) return w.account_label;
+  const id = w.account_id;
+  if (!id) return null;
+  let identity = null;
+  if (id.startsWith("{")) try { identity = JSON.parse(id); } catch { /* an opaque id */ }
+  if (identity?.user_id) {
+    return identity.principal_type === "Team" && identity.team_id ? `team ${shortId(identity.team_id)}` : `user ${shortId(identity.user_id)}`;
+  }
+  return shortId(id);
+}
+
+/** Milestone headers from the snapshot graph (`M<n> — <title>`); empty unless there are ≥2. */
 export function milestoneTitles(snapshot) {
   const milestones = snapshot?.graph?.milestones ?? [];
   return milestones.length > 1
-    ? new Map(milestones.map((m) => [m.number, m.archived ? `${m.title} · archived` : m.title]))
+    ? new Map(milestones.map((m) => [m.number, m.title]))
     : new Map();
 }
 
@@ -593,7 +639,11 @@ export function wsdSnapshot(state) {
   const mergeGate = openGate == null ? null : [...list("gates")].reverse().find((g) => g.kind === "merge" && g.state === "open" && g.milestone === openGate);
   const acceptGate = [...list("gates")].reverse().find((g) => g.kind === "accept");
   const numbers = [...new Set(phases.map((p) => p.milestone).filter((m) => m != null))].sort((a, b) => a - b);
-  const titles = new Map([...planText.matchAll(/^## Milestone (\d+) — (.+)$/gm)].map((m) => [Number(m[1]), m[2].trim()]));
+  const headers = [...planText.matchAll(/^## Milestone (\d+) — (.+)$/gm)].map((m) => ({ number: Number(m[1]), text: m[2].trim() }));
+  const titles = new Map(headers.map((h) => [h.number, h.text.replace(/\s*`?\[archived\]`?$/, "")]));
+  const stubs = new Set(headers.filter((h) => /\[archived\]`?$/.test(h.text)).map((h) => h.number));
+  const times = (key, n) => list(key).filter((r) => r.n === n && Number.isFinite(r.at_ms)).map((r) => r.at_ms);
+  const mergedAt = (m) => [...list("gates")].reverse().find((g) => g.kind === "merge" && g.state === "merged" && g.milestone === m && Number.isFinite(g.at_ms))?.at_ms ?? null;
 
   const nodes = phases.map((p) => {
     const attempts = list("attempts").filter((a) => a.n === p.n);
@@ -617,6 +667,8 @@ export function wsdSnapshot(state) {
       lane: p.output ?? null, repository: p.repo ?? null, status: p.status, ui,
       paused: state.pauses?.[p.n] === true, noteMarkdown: notes, modelOverride: override, review, reviewStages: [],
       milestone: p.milestone ?? null, awaitingMerge: parked, prs: parked ? mergeGate?.prs ?? {} : undefined,
+      startedAtMs: times("attempts", p.n).length ? Math.min(...times("attempts", p.n)) : null,
+      doneAtMs: finished(p) && [...times("attempts", p.n), ...times("merges", p.n)].length ? Math.max(...times("attempts", p.n), ...times("merges", p.n)) : null,
       runtime: {
         attempt: p.attempt ?? 0, branch: p.branch ?? null, engine: last?.engine ?? null, model: last?.model ?? null,
         lastHeartbeatAgeSec: null, problem: result?.verify === "fail" ? "verify-fail" : result?.outcome ?? null,
@@ -631,7 +683,10 @@ export function wsdSnapshot(state) {
   return {
     paused: state.pauses?.all === true,
     effort: { milestone: state.milestone, milestoneTotal: numbers.length, integrationBranch: null },
-    graph: { nodes, edges, milestones: numbers.map((number) => ({ number, title: titles.get(number) ?? "" })) },
+    graph: { nodes, edges, milestones: numbers.map((number) => ({
+      number, title: titles.get(number) ?? "",
+      ...(stubs.has(number) || state.merge_gates?.[number] === "merged" ? { archived: true, completedAtMs: mergedAt(number) } : {}),
+    })) },
   };
 }
 
@@ -921,8 +976,15 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
     return paint(STYLE.dim, padded.slice(0, at)) + paint(ICON_STYLE[glyph], glyph) + paint(STYLE.dim, padded.slice(at + glyph.length));
   };
   const titles = milestoneTitles(snapshot);
+  const shipped = archivedMilestones(snapshot).map((m) => {
+    const head = `M${m.number} — `;
+    const tail = ` ${ICONS.done} completed${m.completedAt != null ? ` ${fullStamp(m.completedAt)}` : ""}`;
+    const title = truncate(m.title, Math.max(10, width - 2 - head.length - tail.length));
+    const line = `  ${head}${title}${tail.replace(ICONS.done, paint(ICON_STYLE[ICONS.done], ICONS.done))}`;
+    return { milestone: m.number, done: true, selected: false, lines: [line] };
+  });
   let currentMilestone;
-  const groups = ordered.flatMap((r, i) => {
+  const rowGroups = ordered.flatMap((r, i) => {
     const entry = layout?.entries[i];
     const heading = [];
     if (titles.size && r.milestone != null && r.milestone !== currentMilestone) {
@@ -971,8 +1033,9 @@ function renderFrame(frame, { width, height = null, showWorktrees, graph = false
     if (entry) lines.push(...entry.after.map((l) => "  " + rails(l)));
     return [...heading, { milestone: r.milestone, done: r.icon === ICONS.done, selected: isSelected, lines }];
   });
+  const groups = [...shipped, ...rowGroups];
   out.push(...fitRows(groups, height ? height - out.length - (keys ? 3 : 2) : Infinity, paint));
-  if (rows.length === 0) out.push(paint(STYLE.dim, "  (no phases yet)"));
+  if (groups.length === 0) out.push(paint(STYLE.dim, "  (no phases yet)"));
 
   out.push("", ...renderFooter(frame, { width, keys, banner, paint, hints: LIST_HINTS }));
   return out.join("\n");
@@ -984,7 +1047,7 @@ function renderQuota(windows, width, paint) {
     const known = w.status === "available" && Number.isFinite(w.remaining_ratio) && w.remaining_ratio >= 0 && w.remaining_ratio <= 1;
     const remaining = known ? `${(w.remaining_ratio * 100).toFixed(1)}% remaining` : w.status === "unavailable" ? "unavailable" : "unknown";
     const age = Number.isFinite(w.age_secs) && w.age_secs >= 0 ? `${formatAge(w.age_secs)} ago` : "age unknown";
-    const identity = [w.runner, w.account_id, w.bucket, w.window].filter(Boolean).join(" · ");
+    const identity = [w.runner, accountLabel(w), w.bucket !== w.runner ? w.bucket : null, w.window].filter(Boolean).join(" · ");
     return truncate(`  ${identity} · ${remaining} · ${w.source ?? "source unknown"} · ${age}`, width);
   })];
 }
@@ -1255,6 +1318,49 @@ function gatePrs(prs) {
     .filter(([, url]) => url)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([slug, url]) => ({ slug, number: url.replace(/^.*\/pull\/(\d+).*$/, "#$1") }));
+}
+
+/** loop-web events per phase: `Map(phase → { start, done })` in ms. */
+function eventTimes(snapshot) {
+  const times = new Map();
+  for (const e of snapshot?.events ?? []) {
+    const ms = Date.parse(e.ts);
+    if (!e.phase || !Number.isFinite(ms)) continue;
+    const t = times.get(e.phase) ?? { start: null, done: null, doneRank: Infinity };
+    if (START_EVENTS.has(e.event)) t.start = Math.min(t.start ?? ms, ms);
+    const rank = DONE_EVENTS.indexOf(e.event);
+    // The best kind of completion event wins; within one kind, the latest.
+    if (rank >= 0 && (rank < t.doneRank || (rank === t.doneRank && ms > t.done))) Object.assign(t, { done: ms, doneRank: rank });
+    times.set(e.phase, t);
+  }
+  return times;
+}
+
+/** First start and completion (ms) of one phase node: the node's own times (wsd), else
+ * loop-web events, else the last ended attempt. Only a done phase has a completion. */
+function phaseTiming(n, times) {
+  const t = times.get(n.phase ?? n.id);
+  const ended = (n.runtime?.attempts ?? []).map((a) => a.endedAt).filter(Number.isFinite);
+  const doneAt = n.ui !== "done" ? null : n.doneAtMs ?? t?.done ?? (ended.length ? Math.max(...ended) : null);
+  return { startedAt: n.startedAtMs ?? t?.start ?? null, doneAt: doneAt == null ? null : Math.round(doneAt) };
+}
+
+/** `42m · 10-26 11:02`: how long a done phase took and when it finished; null without a time. */
+function doneText(startedAt, doneAt) {
+  if (doneAt == null) return null;
+  const took = startedAt != null && doneAt >= startedAt ? `${formatAge((doneAt - startedAt) / 1000)} · ` : "";
+  return `${took}${fullStamp(doneAt).slice(5)}`;
+}
+
+/** Local `YYYY-MM-DD HH:MM`. */
+function fullStamp(ms) {
+  const d = new Date(ms);
+  const p = (v) => String(v).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function shortId(id) {
+  return id.length > 12 ? `…${id.slice(-9)}` : id;
 }
 
 function stateText(n) {

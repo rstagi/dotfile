@@ -167,7 +167,7 @@ fn timestamp(value: &Value) -> Option<u64> {
 }
 
 // Ambiguous authentication entries cannot establish the quota owner.
-fn identity(home: &Path) -> Option<Identity> {
+pub(crate) fn identity(home: &Path) -> Option<Identity> {
     let auth: Value = serde_json::from_slice(&fs::read(home.join("auth.json")).ok()?).ok()?;
     let mut entries = auth.as_object()?.values().filter_map(|entry| {
         if entry["auth_mode"] != "oidc" {

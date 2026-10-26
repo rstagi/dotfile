@@ -1311,6 +1311,10 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
                 {
                     state["merge_gates"][milestone.to_string()] = body["state"].clone();
                 }
+                let mut body = body;
+                if let Some(record) = body.as_object_mut() {
+                    record.insert("at_ms".into(), json!(entry.ts_ms));
+                }
                 state[field].as_array_mut().unwrap().push(body);
             }
         }
@@ -2034,13 +2038,21 @@ mod tests {
             assert_eq!(status, StatusCode::CREATED);
         }
         let (_, state) = request(&app, "GET", &format!("/v1/loops/{id}"), Value::Null).await;
-        for (_, field, mut body) in cases {
+        for (kind, field, mut body) in cases {
             body["source"] = json!("agent");
             body["caller"] = Value::Null;
+            // Each folded record carries the time of its event. Dashboards read durations from it.
+            let mut records = state[field].clone();
+            for record in records.as_array_mut().unwrap() {
+                let at = record.as_object_mut().unwrap().remove("at_ms");
+                if field != "violations" {
+                    assert!(at.and_then(|at| at.as_u64()).is_some(), "{kind}");
+                }
+            }
             if field == "violations" {
-                assert!(state[field].as_array().unwrap().contains(&body));
+                assert!(records.as_array().unwrap().contains(&body));
             } else {
-                assert_eq!(state[field], json!([body]), "{field}");
+                assert_eq!(records, json!([body]), "{field}");
             }
         }
         assert_eq!(state["status"], "finished");
