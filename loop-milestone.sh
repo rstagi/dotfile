@@ -22,17 +22,18 @@ set -u -o pipefail
 
 HERE="${0:A:h}"
 LOOP_REPO="$HERE/loop-repo.sh"
-STATE="" NEXT="" BRANCHES=""
+STATE="" NEXT="" BRANCHES="" DIR=".loop"
 
 main() {
   local cmd="${1:-}"
   [[ -n "$cmd" ]] && shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --state | --next | --branches)
+    --state | --next | --branches | --dir)
       [[ $# -ge 2 && "$2" != --* ]] || die "$1 requires a value"
       case "$1" in
       --state) STATE="$2" ;;
+      --dir) DIR="$2" ;;
       --next) NEXT="$2" ;;
       --branches) BRANCHES="$2" ;;
       esac
@@ -41,10 +42,81 @@ main() {
     esac
   done
   case "$cmd" in
+  open) open_milestone ;;
   check) check_gate ;;
   advance) advance_milestone ;;
-  *) die "unknown command '$cmd' (check|advance)" ;;
+  *) die "unknown command '$cmd' (open|check|advance)" ;;
   esac
+}
+
+# Open is an explicit skills-engine entry point. The old commands do not use ws events.
+open_milestone() {
+  [[ -n "${WS_LOOP_ID:-}" ]] || die "open requires WS_LOOP_ID"
+  STATE="$DIR/state.json"
+  local plan state run_id milestone slug branch out rc phases
+  plan="$(node "$HERE/loop-plan-parse.mjs" --plan "$DIR/plan.md")" || die "cannot parse $DIR/plan.md"
+  run_id="$(sed -n '/^<!-- loop-plan$/,/^-->$/s/^planId:[[:space:]]*//p' "$DIR/plan.md" | head -1)"
+  [[ -n "$run_id" ]] || die "plan header has no planId"
+  state="$(jq -cn --arg run "$run_id" '{runId:$run,milestone:1,phases:{},repositories:{},awaitingMerge:null}')"
+  state="$(jq -c --argjson plan "$plan" '
+    reduce $plan.phases[] as $p (.; .phases[$p.phase] = {
+      kind:$p.kind, milestone:$p.milestone, gate:$p.gate, repository:$p.repository,
+      dependsOn:$p.dependsOn, branch:$p.suggestedBranch, status:"todo"})' <<< "$state")" || die "cannot build phase state"
+  milestone="$(jq -r .milestone <<< "$state")"
+  for slug in ${(f)"$(jq -r --argjson n "$milestone" '.milestones[] | select(.number==$n) | .participants[]' <<< "$plan")"}; do
+    branch="$(jq -er --argjson n "$milestone" --arg slug "$slug" '.milestones[] | select(.number==$n) | .integrationBranches[$slug]' <<< "$plan")" \
+      || die "milestone $milestone has no integration branch for $slug"
+    out="$("$LOOP_REPO" prepare --repo "$slug" --run-id "$run_id" \
+      --integration-branch "$branch" --milestone "$milestone" </dev/null)"
+    rc=$?
+    (( rc == 0 )) || return $rc
+    state="$(jq -c --arg slug "$slug" --argjson repo "$out" '.repositories[$slug]=$repo' <<< "$state")" \
+      || die "cannot record repository $slug"
+  done
+  mkdir -p "$DIR/runs" "$DIR/answers" "$DIR/hil" "$DIR/notes" || die "cannot create loop directories"
+  write_open_state "$state"
+  phases="$(phases_event_body "$plan" "$state")" || die "cannot build loop.phases"
+  append_tool_event loop.phases "$phases" || return $?
+  append_tool_event loop.milestone "$(jq -cn --argjson n "$milestone" '{milestone:$n}')"
+}
+
+# Convert parser phases and saved statuses to the public ws event body. Resume uses this seam too.
+phases_event_body() {
+  jq -cn --argjson plan "$1" --argjson state "$2" '
+    def status:
+      if . == "in-progress" then "running"
+      elif . == "blocked" then "todo"
+      elif IN("todo","claimed","running","done","merged") then .
+      else "todo" end;
+    {phases:[$plan.phases[] | . as $p | {
+      n:($p.phase|tonumber), title:$p.title,
+      kind:(if $p.kind=="pr-review" then "review" else "work" end),
+      output:(if $p.output=="doc" then "document" else ($p.output // "pr") end),
+      milestone:$p.milestone, gate:$p.gate,
+      repo:(if $p.kind=="pr-review" then null
+        elif $p.repository=="primary" then
+          (if ($plan.repositories|length)==1 and $plan.repositories[0].slug!="primary"
+           then $plan.repositories[0].slug else null end)
+        else $p.repository end),
+      branch:$p.suggestedBranch, depends_on:[$p.dependsOn[]|tonumber],
+      status:($state.phases[$p.phase].status|status)}]}'
+}
+
+append_tool_event() {
+  local type="$1" body="$2" digest
+  digest="$(print -rn -- "$body" | shasum -a 256 | cut -d' ' -f1)"
+  "${WS_BIN:-ws}" event "$type" --body "$body" --source tool --target "$WS_LOOP_ID" \
+    --key "$type:$digest" >/dev/null || die "cannot append $type"
+}
+
+write_open_state() {
+  local tmp
+  tmp="$(mktemp "$DIR/.state.XXXXXX")" || die "cannot create temporary state"
+  if print -r -- "$1" | jq . > "$tmp" && mv "$tmp" "$STATE"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  die "cannot write $STATE"
 }
 
 check_gate() {

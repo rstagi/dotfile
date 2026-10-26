@@ -3,6 +3,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 source "$HERE/lib.sh"
+source "$HERE/home-guard.sh"
 
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
@@ -10,6 +11,10 @@ trap 'rm -rf "$TMP"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+home_guard_sandbox "$TMP/home"
+unset WS_LOOP_ID WS_SESSION_ID WS_SESSION LOOP_DAEMON_URL
+export LOOP_DAEMON_URL="http://127.0.0.1:9"
+export WS_HOME="$TMP/ws" WS_STATE="$TMP/ws-state" WS_TMUX_SOCKET="$TMP/tmux.sock"
 export LOOP_REPO_REGISTRY="$TMP/home/repos.json"
 export LOOP_WORKTREE_ROOT="$TMP/worktrees"
 mkdir -p "$TMP/bin" "$TMP/home"
@@ -27,6 +32,10 @@ fi
 printf 'main\n'
 GH
 chmod +x "$TMP/bin/gh"
+for blocked in curl launchctl; do
+  printf '#!/bin/sh\nexit 99\n' > "$TMP/bin/$blocked"
+  chmod +x "$TMP/bin/$blocked"
+done
 export PATH="$TMP/bin:$PATH"
 export WS_SOCK="$TMP/wsd.sock" FAKE_WS_SOCKET="$TMP/wsd.sock" FAKE_WS_LOG="$TMP/ws.log"
 unset WS_BIN
@@ -57,6 +66,40 @@ make_repo() {
 make_repo acme/api
 branch_hash() { printf '%s' "$1" | shasum | cut -c1-8; }
 make_repo acme/web
+
+echo "loop-milestone: open a fresh plan"
+OPEN="$TMP/fresh/.loop"
+mkdir -p "$OPEN"
+cat > "$OPEN/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: skills-fresh
+-->
+# Skills start
+## Loop config
+- **Integration branch:** `feat/skills-fresh`
+## Repositories
+### `acme/api`
+- **Verify:** `true`
+## Phases
+### Phase 1 — Build API `[status: todo]`
+- **Repository:** `acme/api`
+- **Suggested branch:** `feat/api`
+### Phase 2 — Review API `[kind: pr-review]` `[gate: merge]` `[status: todo]`
+- **Depends on:** Phase 1
+PLAN
+make_fake_ws "$TMP/open-bin"
+export FAKE_WS_LOG="$TMP/open-events.jsonl"
+: > "$FAKE_WS_LOG"
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/open-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$OPEN" > "$TMP/open.out" 2> "$TMP/open.err"
+assert_exit "$?" 0 "a plan alone starts a skills loop"
+assert_eq "$(jq -c '[.runId,.milestone,.awaitingMerge,.phases["1"].status]' "$OPEN/state.json" 2>/dev/null)" '["skills-fresh",1,null,"todo"]' "fresh state starts at milestone one"
+assert_eq "$(jq -r '.repositories["acme/api"].integrationBranch' "$OPEN/state.json" 2>/dev/null)" feat/skills-fresh "fresh state records the prepared repository"
+for dir in runs answers hil notes; do
+  assert_eq "$([[ -d "$OPEN/$dir" ]] && print yes)" yes "open creates $dir"
+done
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 2 "open emits phases and milestone"
+assert_eq "$(jq -c 'select(.[1]=="loop.phases") | .[3] | fromjson | .phases[1]' "$FAKE_WS_LOG")" '{"n":2,"title":"Review API","kind":"review","output":"pr","milestone":1,"gate":"merge","repo":null,"branch":null,"depends_on":[1],"status":"todo"}' "review phase uses the event schema"
+[[ "${1:-}" == --open-only ]] && test_summary
 
 API_PR=https://github.com/acme/api/pull/1
 WEB_PR=https://github.com/acme/web/pull/2
