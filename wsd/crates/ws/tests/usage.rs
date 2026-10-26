@@ -193,3 +193,72 @@ fn usage_keeps_accounts_and_buckets_separate_and_uses_observation_time() {
     }
     assert!(find("a", "standard", "future")["age_secs"].is_null());
 }
+
+#[test]
+fn usage_labels_the_logged_in_account_and_hides_windows_the_plan_does_not_report() {
+    let home = common::SandboxRoot::new();
+    let state = home.path().join("state");
+    let socket = home.path().join("wsd.sock");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    // A fake unsigned ID token with only an email claim: {"email":"user@example.com"}.
+    std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+    std::fs::write(
+        home.path().join(".codex/auth.json"),
+        json!({"tokens": {"account_id": "account-a", "access_token": "fake-access",
+            "id_token": "e30.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifQ.fake-signature"}})
+        .to_string(),
+    )
+    .unwrap();
+    let mut sessions = Sessions::open(&state, 1).unwrap();
+    let session = sessions.create(CreateSession::default()).unwrap();
+    drop(sessions);
+    let device = Device::load(&state).unwrap();
+    let log = SessionLog::new(&state, session.id, device.device_id);
+    for (bucket, window, remaining, source, at) in [
+        (None, "five_hour", None, "estimated", now - 3_000),
+        (None, "weekly", None, "estimated", now - 3_000),
+        (Some("codex"), "five_hour", None, "estimated", now - 2_000),
+        (Some("codex"), "weekly", Some(0.92), "reported", now - 1_000),
+    ] {
+        log.append(
+            1,
+            "runner.usage.updated",
+            json!({
+                "ws.runner": "codex", "ws.runner.account.id": "account-a",
+                "ws.runner.usage.bucket": bucket, "ws.runner.usage.window": window,
+                "ws.runner.usage.remaining_ratio": remaining,
+                "ws.runner.usage.source": source,
+                "ws.runner.usage.observed_at": at, "received_at_ms": at,
+            }),
+        )
+        .unwrap();
+    }
+    let _daemon = common::Daemon::start(common::ws(home.path(), &socket), &socket);
+    let output = common::ws(home.path(), &socket)
+        .args(["usage", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!text.contains("fake"), "The output holds no token.");
+    let data: Value = serde_json::from_str(&text).unwrap();
+    let codex: Vec<_> = data["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["runner"] == "codex")
+        .collect();
+    assert_eq!(codex.len(), 1, "{codex:?}");
+    assert_eq!(codex[0]["window"], "weekly");
+    assert_eq!(codex[0]["bucket"], "codex");
+    assert_eq!(codex[0]["remaining_ratio"], 0.92);
+    assert_eq!(codex[0]["account_id"], "account-a");
+    assert_eq!(codex[0]["account_label"], "user@example.com");
+}

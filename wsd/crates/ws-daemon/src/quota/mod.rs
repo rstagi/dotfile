@@ -11,6 +11,7 @@ pub mod codex;
 mod collector;
 pub mod estimator;
 pub mod grok;
+pub mod labels;
 pub mod usage;
 pub(crate) use collector::Service;
 pub use collector::{Collector, Requests, Trigger};

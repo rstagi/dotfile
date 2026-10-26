@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ws_core::{log::LogEntry, semconv as sc};
 
-use super::Source;
+use super::{
+    Source,
+    labels::{self, Homes, Labels},
+};
 use crate::{
     api::{self, ApiError, Store},
     sessions::Sessions,
@@ -18,10 +21,14 @@ use crate::{
 
 type WindowKey = (String, String, Option<String>, String);
 
+/// Account labels can change at a new login. A snapshot reads the login files at most this often.
+const LABEL_TTL_MS: u64 = 60_000;
+
 /// Usage readings by window. Appends keep it current, and a rebuild clears it.
 #[derive(Debug, Default)]
 pub(crate) struct UsageIndex {
     windows: BTreeMap<WindowKey, Vec<LogEntry>>,
+    labels: Option<(u64, Labels)>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -33,6 +40,10 @@ pub struct Usage {
 pub struct Window {
     pub runner: String,
     pub account_id: Option<String>,
+    /// A readable name of the account, for example its email. Absent when the account is not
+    /// the current login of the runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
     pub bucket: Option<String>,
     pub window: String,
     pub remaining_ratio: Option<f64>,
@@ -71,8 +82,10 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
         }
         sessions.usage = Some(index);
     }
-    let latest = sessions.usage.as_mut().unwrap().select(now);
-    let mut windows: Vec<_> = latest
+    let index = sessions.usage.as_mut().unwrap();
+    let latest = index.select(now);
+    let labels = index.labels(now).clone();
+    let windows: Vec<_> = latest
         .into_iter()
         .map(|((runner, account, bucket, window), entry)| {
             let body = entry.body;
@@ -92,6 +105,7 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
                 .filter(|ratio| (0.0..=1.0).contains(ratio))
                 .filter(|_| !unavailable && age_secs.is_some() && source.is_some());
             Window {
+                account_label: labels.get(&(runner.clone(), account.clone())).cloned(),
                 runner,
                 account_id: Some(account),
                 bucket,
@@ -114,11 +128,13 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
             }
         })
         .collect();
+    let mut windows = collapse(windows);
     for runner in ["claude", "codex", "grok"] {
         if !windows.iter().any(|window| window.runner == runner) {
             windows.push(Window {
                 runner: runner.into(),
                 account_id: None,
+                account_label: None,
                 bucket: None,
                 window: "unknown".into(),
                 remaining_ratio: None,
@@ -143,7 +159,55 @@ fn snapshot(sessions: &mut Sessions, now: u64) -> crate::sessions::Result<Usage>
     Ok(Usage { windows })
 }
 
+/// Removes rows that only repeat or predate what the provider reports.
+/// A row without a bucket is a fallback (a failed read or an old rollout). It goes when the
+/// provider names a bucket for the same account. An unknown row goes when a later report of the
+/// same account and bucket omits its window: the plan has no such window.
+fn collapse(windows: Vec<Window>) -> Vec<Window> {
+    let account = |w: &Window| (w.runner.clone(), w.account_id.clone());
+    let bucketed: std::collections::HashSet<_> = windows
+        .iter()
+        .filter(|w| w.bucket.is_some())
+        .map(account)
+        .collect();
+    let mut reported = BTreeMap::new();
+    for w in windows
+        .iter()
+        .filter(|w| w.remaining_ratio.is_some() && w.source == Some(Source::Reported))
+    {
+        let at = reported
+            .entry((account(w), w.bucket.clone()))
+            .or_insert(0_u64);
+        *at = (*at).max(w.observed_at_ms.unwrap_or(0));
+    }
+    windows
+        .into_iter()
+        .filter(|w| w.bucket.is_some() || !bucketed.contains(&account(w)))
+        .filter(|w| {
+            w.status != "unknown"
+                || reported
+                    .get(&(account(w), w.bucket.clone()))
+                    .is_none_or(|at| *at <= w.observed_at_ms.unwrap_or(0))
+        })
+        .collect()
+}
+
 impl UsageIndex {
+    /// The labels of the current logins, read at most once per `LABEL_TTL_MS`.
+    fn labels(&mut self, now: u64) -> &Labels {
+        if self
+            .labels
+            .as_ref()
+            .is_none_or(|(at, _)| now.saturating_sub(*at) >= LABEL_TTL_MS)
+        {
+            let labels = Homes::from_env()
+                .map(|homes| labels::current(&homes))
+                .unwrap_or_default();
+            self.labels = Some((now, labels));
+        }
+        &self.labels.as_ref().unwrap().1
+    }
+
     pub(crate) fn observe(&mut self, entry: &LogEntry) {
         if entry.event_type != "runner.usage.updated" {
             return;
@@ -302,6 +366,74 @@ mod tests {
         assert_eq!(selected(&mut index, NOW), ["reported"]);
         // After the reset, the newer estimate must still be available.
         assert_eq!(selected(&mut index, NOW + 60_000), ["estimated"]);
+    }
+
+    fn window(
+        bucket: Option<&str>,
+        name: &str,
+        remaining: Option<f64>,
+        source: Source,
+        at: u64,
+    ) -> Window {
+        Window {
+            runner: "codex".into(),
+            account_id: Some("account-a".into()),
+            account_label: None,
+            bucket: bucket.map(str::to_owned),
+            window: name.into(),
+            remaining_ratio: remaining,
+            source: Some(source),
+            observed_at_ms: Some(at),
+            age_secs: Some(1),
+            status: if remaining.is_some() {
+                "available"
+            } else {
+                "unknown"
+            }
+            .into(),
+            reset_ms: None,
+            tokens: None,
+            coverage: None,
+        }
+    }
+
+    fn keys(windows: &[Window]) -> Vec<(Option<&str>, &str)> {
+        windows
+            .iter()
+            .map(|w| (w.bucket.as_deref(), w.window.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn collapse_drops_bucketless_fallbacks_once_the_provider_names_a_bucket() {
+        let windows = vec![
+            window(None, "five_hour", None, Source::Estimated, 10),
+            window(None, "weekly", None, Source::Estimated, 10),
+            window(Some("codex"), "weekly", Some(0.92), Source::Reported, 20),
+        ];
+        assert_eq!(keys(&collapse(windows)), [(Some("codex"), "weekly")]);
+    }
+
+    #[test]
+    fn collapse_drops_an_unknown_window_that_a_later_report_omits() {
+        let windows = vec![
+            window(Some("codex"), "five_hour", None, Source::Estimated, 10),
+            window(Some("codex"), "weekly", Some(0.92), Source::Reported, 20),
+            window(Some("review"), "weekly", None, Source::Estimated, 30),
+        ];
+        assert_eq!(
+            keys(&collapse(windows)),
+            [(Some("codex"), "weekly"), (Some("review"), "weekly")]
+        );
+    }
+
+    #[test]
+    fn collapse_keeps_unknown_windows_of_the_same_report() {
+        let windows = vec![
+            window(None, "five_hour", Some(0.75), Source::Reported, 10),
+            window(None, "other", None, Source::Estimated, 10),
+        ];
+        assert_eq!(collapse(windows).len(), 2);
     }
 
     #[test]

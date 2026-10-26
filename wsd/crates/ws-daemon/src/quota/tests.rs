@@ -3,11 +3,12 @@ use serde_json::{Value, json};
 use ws_core::semconv as sc;
 
 #[test]
-fn s3_weekly_only_readings_preserve_unknown_windows_and_provenance() {
+fn s3_weekly_only_plans_report_only_the_weekly_window_with_provenance() {
     let fixture = sample();
     let rpc = &fixture["app_server_responses"][1]["response"]["result"];
     let readings = codex::parse_app_server(rpc, "<redacted-account>", 1_792_186_317_783).unwrap();
-    assert_eq!(readings.len(), 2);
+    // A plan with a weekly limit only has no five-hour window. An invented window shows as unknown.
+    assert_eq!(readings.len(), 1);
     let weekly = readings.iter().find(|r| r.window == "weekly").unwrap();
     assert_eq!(weekly.duration_secs, Some(604800));
     assert_eq!(weekly.reset_ms, Some(1_792_653_579_000));
@@ -15,13 +16,10 @@ fn s3_weekly_only_readings_preserve_unknown_windows_and_provenance() {
     assert_eq!(weekly.used_ratio, Some(0.45));
     assert_eq!(weekly.remaining_ratio(), Some(0.55));
     assert_eq!(weekly.source, Source::Reported);
-    let missing = readings.iter().find(|r| r.window == "five_hour").unwrap();
-    assert_eq!(missing.used_ratio, None);
-    assert_eq!(missing.remaining_ratio(), None);
+    assert!(readings.iter().all(|r| r.window != "five_hour"));
     let body = weekly.event_body();
     assert_eq!(body[sc::RUNNER_USAGE_OBSERVED_AT], 1_792_186_317_783_u64);
     assert_eq!(body[sc::RUNNER_ACCOUNT_ID], "<redacted-account>");
-    assert!(missing.event_body()[sc::RUNNER_USAGE_USED_RATIO].is_null());
 
     let event = &fixture["rollout_events"][0];
     let rollout = codex::parse_rollout(event, "launch-account", 1_792_200_000_000).unwrap();
@@ -42,7 +40,7 @@ fn durations_buckets_and_expired_values_are_independent_of_window_position() {
         "review": {"primary": {"windowDurationMins": 60, "usedPercent": 80, "resetsAt": 1000}}
     }});
     let readings = codex::parse_app_server(&response, "a", 1_000_000).unwrap();
-    assert_eq!(readings.len(), 5);
+    assert_eq!(readings.len(), 3);
     let five = readings
         .iter()
         .find(|r| r.window == "five_hour" && r.bucket.as_deref() == Some("codex"))
@@ -228,11 +226,20 @@ async fn timer_ticks_and_each_phase_boundary_write_durable_quota_events() {
     impl Reader for SampleReader {
         fn read(&mut self, clock: Clock) -> ReadFuture<'_> {
             Box::pin(async move {
-                codex::parse_app_server(
+                let now = clock();
+                let mut readings = codex::parse_app_server(
                     &sample()["app_server_responses"][1]["response"]["result"],
                     "<redacted-account>",
-                    clock(),
-                )
+                    now,
+                )?;
+                // One window without a reported value. The collector writes its estimate.
+                let empty = json!({"accountId": "<redacted-account>"});
+                readings.extend(
+                    codex::parse_app_server(&empty, "<redacted-account>", now)?
+                        .into_iter()
+                        .filter(|reading| reading.window == "five_hour"),
+                );
+                Ok(readings)
             })
         }
     }
@@ -462,7 +469,7 @@ async fn daemon_collection_discovers_the_shared_launch_binding() {
     let mut changes = sessions.changes.subscribe();
     let store = Arc::new(Mutex::new(sessions));
     let service = Service::start(store.clone()).unwrap();
-    wait_for_usage(&log, &mut changes, 2).await;
+    wait_for_usage(&log, &mut changes, 1).await;
     store.lock().unwrap().shutdown.send_replace(true);
     service.shutdown().await;
     let events: Vec<_> = log
@@ -472,18 +479,10 @@ async fn daemon_collection_discovers_the_shared_launch_binding() {
         .into_iter()
         .filter(|e| e.event_type == "runner.usage.updated")
         .collect();
-    assert_eq!(events.len(), 2);
-    assert!(
-        events
-            .iter()
-            .all(|entry| entry.body[sc::RUNNER_ACCOUNT_ID] == "<redacted-account>")
-    );
-    assert!(
-        events
-            .iter()
-            .any(|entry| entry.body[sc::RUNNER_USAGE_WINDOW] == "five_hour"
-                && entry.body.get(sc::RUNNER_USAGE_USED_RATIO).is_none())
-    );
+    // The weekly-only plan reports one window. No five-hour window is invented.
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].body[sc::RUNNER_ACCOUNT_ID], "<redacted-account>");
+    assert_eq!(events[0].body[sc::RUNNER_USAGE_WINDOW], "weekly");
 }
 
 #[tokio::test(start_paused = true)]
