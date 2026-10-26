@@ -936,6 +936,8 @@ test("loop-top --once: shows quota windows from ws with source and age", async (
     { runner: "grok", account_id: null, bucket: null, window: "unknown", remaining_ratio: null, source: null, age_secs: null, status: "unavailable" },
     { runner: "codex", account_id: "account-a", window: "expired", remaining_ratio: 1, source: "reported", age_secs: 60, status: "unavailable" },
     { runner: "codex", account_id: "7ac061ce-9e60-4c1d-8f0a-0123e7fe2cf30", account_label: "person@example.com", bucket: "codex", window: "weekly", remaining_ratio: 0.92, source: "reported", age_secs: 60, status: "available" },
+    { runner: "claude", account_label: "future@example.com", window: "five_hour", remaining_ratio: 0.5, source: "reported", age_secs: 5, status: "available", reset_ms: Date.now() + (2 * 3600 + 13 * 60 + 30) * 1000 },
+    { runner: "claude", account_label: "past@example.com", window: "weekly", remaining_ratio: 0.5, source: "reported", age_secs: 5, status: "available", reset_ms: Date.now() - 60_000 },
   ];
   fs.writeFileSync(path.join(fx.root, "quota.json"), JSON.stringify({ windows }));
   fs.writeFileSync(path.join(fx.root, "bin", "ws"), `#!/bin/sh
@@ -952,6 +954,9 @@ test("loop-top --once: shows quota windows from ws with source and age", async (
   assert.match(out.stdout, /expired.*unavailable/);
   assert.doesNotMatch(out.stdout, /100\.0%/);
   assert.match(out.stdout, /^ +codex · person@example\.com · weekly · 92\.0% remaining/m, "the label replaces the id; a bucket named like the runner is not repeated");
+  assert.match(out.stdout, /future@example\.com · five_hour · 50\.0% remaining · reported · 5s ago · resets in 2h13m$/m);
+  assert.match(out.stdout, /past@example\.com · weekly · 50\.0% remaining · reported · 5s ago · reset passed$/m);
+  assert.doesNotMatch(out.stdout, /person@example\.com.*reset/, "no reset text without reset_ms");
 
 });
 
@@ -1127,6 +1132,42 @@ test("wsdSnapshot: phase status, dependencies, pauses, notes, tier and milestone
   assert.equal(snapshot.paused, false);
   assert.equal(wsdSnapshot(wsdState(fx, { pauses: { all: true } })).paused, true);
   assert.deepEqual([...milestoneTitles(snapshot)], [[1, "First"], [2, "Second"]]);
+});
+
+test("wsdSnapshot: a created loop without wsd phases reads milestones and phases from the plan", () => {
+  const fx = { root: "/r" };
+  const text = [
+    "## Milestone 1 — First shipped `[archived]`", "- **Phases (all done):** 1, 2",
+    "## Milestone 2 — Second shipped `[archived]`", "- **Phases (all done):** 3",
+    "## Milestone 3 — Device keys",
+    "### Phase 4 — Add the device key `[lane: A]` `[status: done]`", "- **Depends on:** Phase 3",
+    "### Phase 5 — Sign requests `[lane: B]` `[status: in-progress]`", "- **Depends on:** Phase 4",
+    "### Phase 6 — Rotate keys `[lane: A]` `[status: todo]`", "- **Depends on:** Phase 4, Phase 5",
+    "### Phase 7 — Review milestone 3 `[lane: review]` `[status: todo]` `[kind: pr-review]` `[review: max]` `[gate: merge]`",
+    "- **Depends on:** Phase 6",
+    "## Progress log",
+  ].join("\n");
+  const snapshot = wsdSnapshot(wsdState(fx, { plan: { sha: "x", text }, phases: {}, milestone: null, notes: [] }));
+  assert.deepEqual(archivedMilestones(snapshot).map((m) => [m.number, m.title]), [[1, "First shipped"], [2, "Second shipped"]]);
+  assert.deepEqual([snapshot.effort.milestone, snapshot.effort.milestoneTotal], [3, 3], "an unstarted loop is at its first open milestone");
+  const rows = phaseRows(snapshot, null);
+  assert.deepEqual(rows.map((r) => [r.label, r.title, r.lane, r.milestone, r.icon, r.deps]), [
+    ["4", "Add the device key", "A", 3, "✓", ["3"]],
+    ["5", "Sign requests", "B", 3, "◐", ["4"]],
+    ["6", "Rotate keys", "A", 3, "·", ["4", "5"]],
+    ["7", "Review milestone 3", "review", 3, "·", ["6"]],
+  ]);
+  assert.equal(rows[2].state, "waiting on 5", "a done plan phase and an archived phase do not block");
+  assert.deepEqual(rows[3].review, { tier: "max", rounds: null });
+
+  // wsd data wins over the plan for the same phase number.
+  const started = wsdSnapshot(wsdState(fx, { plan: { sha: "x", text }, milestone: 3, notes: [], phases: {
+    5: { n: 5, title: "Sign requests (wsd)", kind: "work", output: "pr", milestone: 3, gate: null, repo: "acme/api", branch: "feat/w5", depends_on: [4], status: "merged", attempt: 1 },
+  } }));
+  const merged = phaseRows(started, null);
+  assert.deepEqual(merged.map((r) => r.label), ["4", "5", "6", "7"]);
+  assert.deepEqual([merged[1].title, merged[1].icon, merged[1].branch], ["Sign requests (wsd)", "✓", "feat/w5"]);
+  assert.equal(merged[2].state, "todo");
 });
 
 test("wsdSnapshot: an open merge gate parks its phase with the gate PRs; a blocked attempt is a problem", () => {
