@@ -77,7 +77,7 @@ loop-state.sh           Loop engineering: state/lock/journal/daemon + note/notes
 loop-plan.sh            Loop engineering: register/push a plan on the daemon + progress notes (the only plan backend) + archive a shipped milestone
 loop-plan-archive.mjs   Loop engineering: pure milestone-archive transform for `loop-plan.sh archive` (imports loop-web's TS parser, Node ≥22.18); puts a pending `milestones/m<N>.retro.md` first
 loop-retro.mjs          Loop engineering: milestone retrospective facts collector (attempts, setback candidates, totals; facts only, zero-dep, Node ≥20)
-loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap (or adopt existing branch)
+loop-repo.sh            Loop engineering: global repo mapping + fresh-remote integration bootstrap (or adopt existing branch); `lane` gives a PR phase its own branch + worktree
 loop-milestone.sh       Loop engineering: milestone merge gate — open (skills loop), park (skills loop at the gate), check gate PR states, advance (prepare next milestone, print state patch)
 loop-plan-park.mjs      Loop engineering: pure plan transform for `loop-milestone.sh park` (done statuses, PR lines, Status `awaiting merge`; imports `loop-plan-model/park-milestone.ts`, Node ≥22.18)
 loop-ar.sh              Loop engineering: shared AR verdicts, rotation, state machine, prompts, disputed reports, fix proof (sourced, or run as `verdict|prompt|disputed|prove-fix`)
