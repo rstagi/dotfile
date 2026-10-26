@@ -75,6 +75,169 @@ make_repo acme/api
 branch_hash() { printf '%s' "$1" | shasum | cut -c1-8; }
 make_repo acme/web
 
+# Resume tests use the command boundary and private repositories.
+resume_fixture() {
+  local name="$1"
+  RESUME="$TMP/$name/.loop"
+  mkdir -p "$RESUME"
+  sed "s|feat/m2-web|feat/$name-m2-web|g" "$HERE/fixtures/milestones/plan.md" > "$RESUME/plan.md"
+  jq -n --arg run "$name" --arg apiwt "$TMP/api" --arg webwt "$TMP/web" '
+    {runId:$run,milestone:1,custom:{keep:true},
+      phases:{"1":{status:"done"},"2":{status:"merged"},"9":{status:"done"},"3":{status:"done"},
+        "4":{status:"todo"},"10":{status:"blocked"}},
+      repositories:{"acme/api":{integrationWorktree:$apiwt,adopted:true},
+        "acme/web":{integrationWorktree:$webwt,adopted:true}},
+      awaitingMerge:{milestone:1,prs:{"acme/api":"https://github.com/acme/api/pull/1",
+        "acme/web":"https://github.com/acme/web/pull/2"}}}' > "$RESUME/state.json"
+}
+
+echo "loop-milestone: resume refuses unmerged gate PRs"
+resume_fixture resume-refused
+for pr_state expected in OPEN 3 CLOSED 4 ERROR 1; do
+  export FAKE_PR_STATES="https://github.com/acme/api/pull/1=MERGED
+https://github.com/acme/web/pull/2=$pr_state"
+  cp "$RESUME/state.json" "$TMP/resume-state-before.json"
+  cp "$RESUME/plan.md" "$TMP/resume-plan-before.md"
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-$pr_state.out" 2>&1
+  assert_exit "$?" "$expected" "resume stops for $pr_state"
+  assert_eq "$(cat "$RESUME/state.json")" "$(cat "$TMP/resume-state-before.json")" "resume preserves state for $pr_state"
+  assert_eq "$(cat "$RESUME/plan.md")" "$(cat "$TMP/resume-plan-before.md")" "resume preserves the plan for $pr_state"
+  assert_eq "$([[ -e "$RESUME/milestones" ]] && print yes || print no)" no "resume creates no archive for $pr_state"
+done
+echo "loop-milestone: resume advances after the gate merge"
+mkdir -p "$TMP/resume-bin"
+cat > "$TMP/resume-bin/ws" <<'WS'
+#!/bin/sh
+[ "$WS_SOCK" = "$FAKE_WS_SOCKET" ] || exit 99
+if [ "$1" = usage ]; then
+  printf 'prepare\n' >> "$FAKE_RESUME_STEPS"
+  exit 0
+fi
+[ "$1" = event ] || exit 99
+jq -cn '$ARGS.positional' --args -- "$@" >> "$FAKE_RESUME_REQUESTS"
+[ "${FAKE_RESUME_FAIL_TYPE:-}" != "$2" ] || exit 1
+key="${10}"
+if ! jq -es --arg key "$key" 'any(.[]; .[9]==$key)' "$FAKE_WS_LOG" >/dev/null; then
+  jq -cn '$ARGS.positional' --args -- "$@" >> "$FAKE_WS_LOG"
+fi
+WS
+chmod +x "$TMP/resume-bin/ws"
+cat > "$TMP/bin/curl" <<'CURL'
+#!/bin/sh
+case "$*" in
+  */state)
+    if [ -n "${FAKE_RESUME_STATE_LOG:-}" ]; then
+      jq -c . >> "$FAKE_RESUME_STATE_LOG"
+      printf 'apply\n' >> "$FAKE_RESUME_STEPS"
+      exit 0
+    fi ;;
+esac
+exit 99
+CURL
+export FAKE_PR_STATES="https://github.com/acme/api/pull/1=MERGED
+https://github.com/acme/web/pull/2=MERGED"
+resume_fixture resume-merged
+export FAKE_WS_LOG="$TMP/resume-events.jsonl" FAKE_RESUME_REQUESTS="$TMP/resume-requests.jsonl"
+export FAKE_RESUME_STATE_LOG="$TMP/resume-states.jsonl" FAKE_RESUME_STEPS="$TMP/resume-steps.log"
+export EMIT_LOG="$TMP/resume-emit.log"
+: > "$FAKE_WS_LOG"; : > "$FAKE_RESUME_REQUESTS"; : > "$FAKE_RESUME_STATE_LOG"; : > "$FAKE_RESUME_STEPS"; : > "$EMIT_LOG"
+WS_LOOP_ID=RESUME1 WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-merged.out" 2> "$TMP/resume-merged.err"
+assert_exit "$?" 0 "resume succeeds after the merge"
+assert_eq "$(jq -c '[.milestone,.resumePending,.awaitingMerge,.custom]' "$RESUME/state.json")" '[2,null,null,{"keep":true}]' "resume advances and preserves unrelated state"
+assert_eq "$(jq -c '.repositories|keys' "$RESUME/state.json")" '["acme/web"]' "resume replaces repositories with the next participants"
+assert_eq "$(jq -r '.repositories["acme/web"].integrationBranch' "$RESUME/state.json")" feat/resume-merged-m2-web "resume reads the next integration branch from the plan"
+assert_eq "$([[ -f "$RESUME/milestones/m1.md" ]] && print yes || print no)" yes "resume archives the shipped milestone"
+assert_eq "$(node "$ROOT/loop-plan-parse.mjs" --plan "$RESUME/plan.md" | jq -r .status)" 'in progress' "resume restores plan Status"
+assert_eq "$(jq -sc '[.[]|select(.resumePending==.milestone)]|length' "$FAKE_RESUME_STATE_LOG")" 1 "resume applies the advance patch once"
+assert_eq "$(jq -sc '[.[]|.resumePending]' "$FAKE_RESUME_STATE_LOG")" '[2,null]' "resume clears the pending marker last"
+assert_eq "$(jq -sc '[.[]|.[1]]' "$FAKE_WS_LOG")" '["loop.gate","loop.milestone","loop.phases"]' "resume appends tool events in order"
+assert_eq "$(jq -c 'select(.[1]=="loop.gate")|.[3]|fromjson' "$FAKE_WS_LOG")" '{"kind":"merge","state":"merged","milestone":1,"prs":{"acme/api":"https://github.com/acme/api/pull/1","acme/web":"https://github.com/acme/web/pull/2"}}' "the merged gate records the parked PRs"
+assert_eq "$(jq -c 'select(.[1]=="loop.milestone")|.[3]|fromjson' "$FAKE_WS_LOG")" '{"milestone":2}' "resume records the new milestone"
+assert_eq "$(jq -c 'select(.[1]=="loop.phases")|.[3]|fromjson|[.phases[]|select(.n==4 or .n==10)|.status]' "$FAKE_WS_LOG")" '["todo","todo"]' "resume uses the open phase status mapping"
+assert_eq "$(jq -s 'all(.[]; .[4:9]==["--source","tool","--target","RESUME1","--key"] and (.[9]|length)>0)' "$FAKE_WS_LOG")" true "each resume event has tool provenance and a key"
+assert_eq "$(grep -c ' register ' "$EMIT_LOG")" 2 "resume pushes the archive and the active plan"
+echo "loop-milestone: resume recovers after the apply"
+for failed_type in loop.gate loop.milestone loop.phases; do
+  resume_fixture "resume-crash-${failed_type#loop.}"
+  : > "$FAKE_WS_LOG"; : > "$FAKE_RESUME_REQUESTS"; : > "$FAKE_RESUME_STATE_LOG"; : > "$FAKE_RESUME_STEPS"; : > "$EMIT_LOG"
+  FAKE_RESUME_FAIL_TYPE="$failed_type" WS_LOOP_ID=RESUME1 WS_BIN="$TMP/resume-bin/ws" \
+    LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" "$ROOT/loop-milestone.sh" resume --dir "$RESUME" \
+    > "$TMP/resume-crash.out" 2> "$TMP/resume-crash.err"
+  assert_exit "$?" 1 "a failed $failed_type stops resume after the apply"
+  assert_eq "$(jq -c '[.milestone,.resumePending,.awaitingMerge]' "$RESUME/state.json")" '[2,2,null]' "a failed $failed_type keeps the pending marker"
+  assert_eq "$(node "$ROOT/loop-plan-parse.mjs" --plan "$RESUME/plan.md" | jq -r .status)" 'awaiting merge' "a failed $failed_type does not activate the plan"
+  archive_identity="$(stat -f '%i:%m' "$RESUME/milestones/m1.md")"
+  FAKE_GH_FAIL=1 WS_LOOP_ID=RESUME1 WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+    "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-retry.out" 2> "$TMP/resume-retry.err"
+  assert_exit "$?" 0 "a retry after $failed_type skips the gate check"
+  assert_eq "$(jq -c '[.milestone,.resumePending]' "$RESUME/state.json")" '[2,null]' "a retry after $failed_type completes resume"
+  assert_eq "$(stat -f '%i:%m' "$RESUME/milestones/m1.md")" "$archive_identity" "a retry after $failed_type preserves the archive"
+  assert_eq "$(jq -sc '[.[]|.resumePending]' "$FAKE_RESUME_STATE_LOG")" '[2,null]' "a retry after $failed_type does not apply the patch again"
+  assert_eq "$(cat "$FAKE_RESUME_STEPS")" $'prepare\napply\napply' "a retry after $failed_type does not prepare repositories again"
+  assert_eq "$(jq -sc '[.[]|.[1]]' "$FAKE_WS_LOG")" '["loop.gate","loop.milestone","loop.phases"]' "a retry after $failed_type records each event once"
+  assert_eq "$(jq -s '[.[]|select(.[1]=="loop.gate")|.[9]]|unique|length' "$FAKE_RESUME_REQUESTS")" 1 "a retry after $failed_type reuses the gate key"
+  assert_eq "$(jq -s '[.[]|select(.[1]=="loop.milestone")|.[9]]|unique|length' "$FAKE_RESUME_REQUESTS")" 1 "a retry after $failed_type reuses the milestone key"
+  assert_eq "$(jq -s '[.[]|select(.[1]=="loop.phases")|.[9]]|unique|length' "$FAKE_RESUME_REQUESTS")" 1 "a retry after $failed_type reuses the phase key"
+done
+
+echo "loop-milestone: resume without a loop identity"
+resume_fixture resume-manual
+: > "$FAKE_WS_LOG"; : > "$FAKE_RESUME_REQUESTS"; : > "$FAKE_RESUME_STATE_LOG"; : > "$FAKE_RESUME_STEPS"; : > "$EMIT_LOG"
+WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-manual.out" 2> "$TMP/resume-manual.err"
+assert_exit "$?" 0 "resume works without WS_LOOP_ID"
+assert_eq "$(jq -c '[.milestone,.resumePending,.awaitingMerge]' "$RESUME/state.json")" '[2,null,null]' "manual resume advances the state"
+assert_eq "$(node "$ROOT/loop-plan-parse.mjs" --plan "$RESUME/plan.md" | jq -r .status)" 'in progress' "manual resume activates the plan"
+assert_eq "$(jq -s length "$FAKE_WS_LOG")" 0 "manual resume appends no tool events"
+assert_eq "$(grep -c ' register ' "$EMIT_LOG")" 2 "manual resume pushes the archive and the active plan"
+cp "$RESUME/state.json" "$TMP/resume-complete-state.json"
+cp "$RESUME/plan.md" "$TMP/resume-complete-plan.md"
+WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-complete.out" 2>&1
+assert_exit "$?" 1 "a completed resume cannot advance an unparked milestone"
+assert_eq "$(cat "$RESUME/state.json")" "$(cat "$TMP/resume-complete-state.json")" "a completed resume preserves the state on repeat"
+assert_eq "$(cat "$RESUME/plan.md")" "$(cat "$TMP/resume-complete-plan.md")" "a completed resume preserves the plan on repeat"
+
+echo "loop-milestone: an archive refusal stops resume"
+resume_fixture resume-archive-refused
+sed 's/Add the core API `\[lane: A\]` `\[status: done\]`/Add the core API `[lane: A]` `[status: todo]`/' \
+  "$RESUME/plan.md" > "$TMP/resume-not-done.md"
+cp "$TMP/resume-not-done.md" "$RESUME/plan.md"
+cp "$RESUME/state.json" "$TMP/resume-archive-state.json"
+: > "$FAKE_WS_LOG"; : > "$FAKE_RESUME_STATE_LOG"; : > "$FAKE_RESUME_STEPS"
+WS_LOOP_ID=RESUME1 WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-archive.out" 2> "$TMP/resume-archive.err"
+assert_exit "$?" 3 "resume returns the archive refusal code"
+assert_eq "$(cat "$RESUME/state.json")" "$(cat "$TMP/resume-archive-state.json")" "an archive refusal preserves the state"
+assert_eq "$(cat "$FAKE_RESUME_STEPS")" '' "an archive refusal does not prepare or apply"
+assert_eq "$(jq -s length "$FAKE_WS_LOG")" 0 "an archive refusal appends no event"
+echo "loop-milestone: resume archives every shipped milestone"
+resume_fixture resume-multi
+sed -e 's/feat\/m3-api/feat\/resume-multi-m3-api/' \
+  -e 's|\*\*PR (acme/web):\*\* _none yet_|**PR (acme/web):** https://github.com/acme/web/pull/3|' \
+  -e 's/status: in-progress/status: done/g' \
+  -e '/^### Phase 10 /s/status: todo/status: done/' \
+  -e '/^### Phase 5 /s/status: todo/status: done/; /^### Phase 5 /s/kind: pr-review/kind: pr-review]` `[gate: merge/' \
+  "$RESUME/plan.md" > "$TMP/resume-multi-plan.md"
+cp "$TMP/resume-multi-plan.md" "$RESUME/plan.md"
+jq '.milestone=2 | .awaitingMerge={milestone:2,prs:{"acme/web":"https://github.com/acme/web/pull/3"}} |
+  .phases["4"].status="done" | .phases["10"].status="done" | .phases["5"]={status:"done"} |
+  .milestones={"1":{prs:{"acme/api":"https://github.com/acme/api/pull/1","acme/web":"https://github.com/acme/web/pull/2"}}}' \
+  "$RESUME/state.json" > "$TMP/resume-multi-state.json"
+cp "$TMP/resume-multi-state.json" "$RESUME/state.json"
+export FAKE_PR_STATES="$FAKE_PR_STATES
+https://github.com/acme/web/pull/3=MERGED"
+: > "$FAKE_WS_LOG"; : > "$FAKE_RESUME_STATE_LOG"; : > "$FAKE_RESUME_STEPS"
+WS_LOOP_ID=RESUME1 WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-multi.out" 2> "$TMP/resume-multi.err"
+assert_exit "$?" 0 "resume advances from milestone two"
+assert_eq "$([[ -f "$RESUME/milestones/m1.md" && -f "$RESUME/milestones/m2.md" ]] && print yes || print no)" yes "resume archives milestones one and two"
+assert_eq "$(jq -c '[.milestone,.resumePending,.repositories["acme/api"].integrationBranch]' "$RESUME/state.json")" '[3,null,"feat/resume-multi-m3-api"]' "resume prepares the branch of milestone three"
+assert_eq "$(jq -c 'select(.[1]=="loop.gate")|.[3]|fromjson|[.milestone,.prs]' "$FAKE_WS_LOG")" '[2,{"acme/web":"https://github.com/acme/web/pull/3"}]' "the gate event uses the parked milestone"
+unset FAKE_RESUME_STATE_LOG FAKE_RESUME_STEPS
+[[ "${1:-}" == --resume-only ]] && test_summary
+
 echo "loop-milestone: open a fresh plan"
 OPEN="$TMP/fresh/.loop"
 mkdir -p "$OPEN"
