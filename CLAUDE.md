@@ -44,6 +44,9 @@ zsh tests/converge-assess-skills.test.sh
 # loop-review skill contract + step tool (fake ws)
 zsh tests/loop-review-skill.test.sh
 
+# loop skill prose contract
+zsh tests/loop-skill.test.sh
+
 # loop-top only
 node --test tests/loop-top.test.mjs
 
@@ -71,7 +74,7 @@ python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-install-agent-skills.sh Shares Loop (incl. assess + converge + loop-review), ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
+install-agent-skills.sh Shares Loop (incl. loop + assess + converge + loop-review), ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
 loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
@@ -101,6 +104,7 @@ wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 .claude/skills/ws-orchestrate/ Repo-less orchestrator: one child session per repo, ws-message coordination, PR URL summary, no repo edits
 .claude/skills/assess/ Idea gate before multiphase-plan: evidence → go|clarify|kill → .loop/assessments/<slug>.md with a Handoff goal
 .claude/skills/loop-review/ AR review of a PR, plan, document or file on ws tools: keyed headless steps via loop-runner.sh --review-key, step.sh picks the attempt from the loop log
+.claude/skills/loop/ Skills-engine orchestrator: open → spawn phases (lane worktree per pr phase) → merge by loop-merge.sh exit → loop-review → park at merge/accept gates; recycles with `ws on me exit --spawn`. Prose contract: `tests/loop-skill.test.sh`
 .claude/skills/converge/ Read-only Done-when check vs built code (met|partial|missing) → .loop/converge/p<N>.md. loop-execute §8 runs it once per review phase and inserts one gap phase per missing criterion
 .claude/skills/visual-explainer/ Props JSON → concept graph (graph.mjs: nodes, edges, fixed layout) → one self-contained surfable HTML page (plan|ship), zero-dep render.mjs + schemas. Narration JSON (one commentary text per report section) → report walkthrough that spotlights each section (template/walkthrough.js)
 .zshrc                  Main shell config, sources extensions
