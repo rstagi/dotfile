@@ -5,8 +5,8 @@ set -u -o pipefail
 #   open --dir <loop dir>
 #     Requires WS_LOOP_ID. Prepares repositories and writes fresh state or adopts saved state.
 #     Appends keyed tool events. A second open changes nothing. A parked loop exits 3.
-#     A plan whose non-final milestone has a [gate: accept] phase exits 1 (resume advances only
-#     from a merge gate).
+#     A plan whose non-final milestone ends with a [gate: accept] phase exits 1 (resume advances
+#     only from a merge gate). An accept gate before the last gated phase of a milestone is fine.
 #   park --dir <loop dir> --milestone <N> --prs '<json slug→url>'
 #     Requires WS_LOOP_ID. Parks the loop at the merge gate of milestone N (the state milestone).
 #     Exit 3 and no change while a phase of N is not done or merged in `ws loop get`. Sets
@@ -23,10 +23,13 @@ set -u -o pipefail
 #     artifacts appends nothing. `ws loop accept|reject` close the gate.
 #   resume --dir <loop dir>
 #     Checks the parked gate, archives milestones 1 through N, and advances to N+1.
-#     Applies the advance patch once. With WS_LOOP_ID, appends keyed gate, milestone and phase
-#     events. Restores plan Status to "in progress" and pushes the plan. Clears resumePending
+#     Applies the advance patch once. Appends keyed gate, milestone and phase events to the loop
+#     session. WS_LOOP_ID (a session id or a plan id) names the loop. Without it, a plan with
+#     `engine: skills` uses state.runId. Both resolve through `ws loop get`. A lookup that fails
+#     exits 1 before any change. A plan without `engine: skills` and without WS_LOOP_ID appends
+#     no event. Restores plan Status to "in progress" and pushes the plan. Clears resumePending
 #     last. A retry with resumePending == milestone runs only the steps after the apply.
-#     Without WS_LOOP_ID, appends no event. Start the skill with `ws loop start <loop dir>`.
+#     Start the skill with `ws loop start <loop dir>`.
 #   check   --state <state.json>
 #     one "slug<TAB>url<TAB>open|merged|closed" row per state.awaitingMerge.prs entry.
 #     exit 0 all merged, 3 any open, 4 any closed-unmerged (wins over open), 1 gh/state error.
@@ -97,7 +100,8 @@ open_milestone() {
   fi
   plan="$(node "$HERE/loop-plan-parse.mjs" --plan "$DIR/plan.md")" || die "cannot parse $DIR/plan.md"
   jq -e '([.phases[].milestone | tonumber] | max) as $last |
-    [.phases[] | select(.gate == "accept" and (.milestone | tonumber) < $last)] | length == 0' <<< "$plan" >/dev/null \
+    [.phases | group_by(.milestone | tonumber)[] | map(select((.gate // "") != "")) |
+      select(length > 0 and (.[-1].milestone | tonumber) < $last and .[-1].gate == "accept")] | length == 0' <<< "$plan" >/dev/null \
     || die "a [gate: accept] phase ends a non-final milestone. Resume advances only from a merge gate. End the milestone with a [gate: merge] phase or move the accept gate to the last milestone"
   if $fresh; then
     run_id="$(sed -n '/^<!-- loop-plan$/,/^-->$/s/^planId:[[:space:]]*//p' "$DIR/plan.md" | head -1)"
@@ -233,6 +237,7 @@ resume_milestone() {
   STATE="$DIR/state.json"
   load_state
   local old m plan patch state prs phases tmp
+  resolve_resume_loop || return $?
   if jq -e '.resumePending != null and .resumePending == .milestone' "$STATE" >/dev/null; then
     NEXT="$(jq -er '.milestone | select(type=="number" and .>=2 and floor==.)' "$STATE")" \
       || die "invalid pending milestone"
@@ -277,6 +282,27 @@ resume_milestone() {
   fi
   "$LOOP_PLAN" push --dir "$DIR" || return $?
   "$LOOP_STATE" set --dir "$DIR" '.resumePending = null' >/dev/null || die "cannot complete milestone resume"
+}
+
+# Resume events need the loop session id. A skills plan needs them, so a failed lookup is fatal.
+# WS_LOOP_ID may hold a plan id. Resolution runs before any change.
+resolve_resume_loop() {
+  local ref="${WS_LOOP_ID:-}" id
+  if [[ -z "$ref" ]]; then
+    [[ "$(plan_header_engine "$DIR/plan.md")" == skills ]] || return 0
+    ref="$(jq -er '.runId | select(type=="string" and length>0)' "$STATE")" || die "state has no runId"
+  fi
+  id="$("${WS_BIN:-ws}" loop get "$ref" --json | jq -er '.id | select(type=="string" and length>0)')" \
+    || die "cannot find loop $ref. Set WS_LOOP_ID to the loop session id"
+  WS_LOOP_ID="$id"
+}
+
+# Read the engine only from the canonical plan header, as loop-plan.sh does.
+plan_header_engine() {
+  [[ -f "$1" ]] || return 0
+  awk 'NR == 1 && $0 != "<!-- loop-plan" {exit}
+    /^-->$/ {exit}
+    /^engine:/ {sub(/^engine:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit}' "$1"
 }
 
 # Convert parser phases and saved statuses to the public ws event body. Resume uses this seam too.
