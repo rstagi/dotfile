@@ -59,15 +59,17 @@ The phase has no branch, no merge and no integration worktree. Its result makes 
 A `pr` phase ends with a result `done`. Before each merge, run `ws loop check <loop>` (see Checks).
 
 ```sh
-loop-merge.sh --worktree <integration worktree> --lane-branch <Suggested branch> --verify-cmd <Verify>
+loop-merge.sh --worktree <integration worktree> --lane-branch <Suggested branch> --verify-cmd <Verify> --phase <N> --repository <slug> --run-id <loop id>
 ```
+
+The three flags are required. `loop-merge.sh` writes the `loop.merge` record only with `--phase` and `--repository`. Pass the same three flags to `--finish`, `--abort` and `--undo`.
 
 Start no other merge while a merge failure is open. Act on the exit code:
 
 - Exit 0: the merge is pushed and recorded. Set `[status: done]` on the phase in `<loop dir>/plan.md`. Run `loop-plan.sh push`. Do this before you spawn a phase that depends on it. Then `loop-pickup --auto` in the next runner sees the dependency as done.
-- Exit 2 (conflict): start one merge runner in the integration worktree with a keyed create. Then run `loop-merge.sh --worktree <integration worktree> --finish --verify-cmd <Verify>`. When the runner fails, run `loop-merge.sh --worktree <integration worktree> --abort`. Then ask the human (`ws loop pause`, notification).
+- Exit 2 (conflict): start one merge runner in the integration worktree with a keyed create. Then run `loop-merge.sh --worktree <integration worktree> --finish --verify-cmd <Verify> --phase <N> --repository <slug> --run-id <loop id>`. When the runner fails, run `loop-merge.sh --worktree <integration worktree> --abort --phase <N> --repository <slug> --run-id <loop id>`. Then ask the human (`ws loop pause`, notification).
 - Exit 3 (no lane branch): run `loop-repo.sh lane` again. Start a new attempt of the phase.
-- Exit 4 (merged-tree Verify failed): run `loop-merge.sh --worktree <integration worktree> --undo`. Start a new attempt of the phase. A later merge of the fixed lane brings all lane changes.
+- Exit 4 (merged-tree Verify failed): run `loop-merge.sh --worktree <integration worktree> --undo --phase <N> --repository <slug> --run-id <loop id>`. Start a new attempt of the phase. A later merge of the fixed lane brings all lane changes.
 - Exit 1: ask the human. Do not retry.
 
 ## Reviews

@@ -36,6 +36,8 @@ step_state() {
   local loop="$1" phase="$2" repo="$3" role="$4" round="$5" inner="$6" prefix log verdict attempt
   prefix="review:${phase}:${repo}:${role}:${round}:${inner}:attempt:"
   log="$(ws log "$loop" --type loop.review)" || return 1
+  # `ws log` prints {entries:[...]}. A bare array is accepted too.
+  log="$(jq -c 'if type == "object" then .entries else . end' <<< "$log")" || return 1
   verdict="$(jq -r --arg prefix "$prefix" '
     [.[] | select(.body.state == "finished" and ((.body.key // "") | startswith($prefix)))
       | .body.verdict][0] // empty' <<< "$log")" || return 1
