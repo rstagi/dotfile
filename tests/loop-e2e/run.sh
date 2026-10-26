@@ -10,8 +10,9 @@ source "$ROOT/tests/lib.sh"
 source "$ROOT/tests/home-guard.sh"
 
 SCENARIOS=(happy verify-fail crash broken)
+MODEL_HANG_GUARD=900
 HANG_GUARD=60 # seconds. Only a hang guard: every wait ends on an event.
-TMP="" DAEMON_PID="" ORCH_ID="" MODEL=""
+TMP="" DAEMON_PID="" ORCH_ID="" MODEL="" REAL_CLAUDE=""
 
 main() {
   local scenario="" arg
@@ -25,6 +26,9 @@ main() {
   done
   [[ -n "$scenario" ]] || { print -u2 "usage: run.sh --scenario <name>|--all [--model <id>]"; return 2; }
   require_ws_test_binary || return 1
+  if [[ -n "$MODEL" ]]; then
+    REAL_CLAUDE="$(whence -p claude)" || { print -u2 "loop-e2e: no claude binary"; return 1; }
+  fi
   # Traps live here: a zsh EXIT trap set inside a function runs when that function returns.
   trap teardown EXIT
   trap 'exit 130' INT
@@ -101,6 +105,8 @@ setup_sandbox() {
   TMP="$(mktemp -d /tmp/loop-e2e.XXXXXX)"; TMP="${TMP:A}"
   home_guard_sandbox "$TMP/home"
   REAL_HOME="$TESTS_REAL_HOME"
+  # The daemon must not carry CLAUDE_CONFIG_DIR: the Keychain entry name depends on a custom config dir.
+  [[ -z "$MODEL" ]] || unset CLAUDE_CONFIG_DIR
   unset WS_SESSION_ID WS_SESSION WS_LOOP_ID WS_LOOP_PHASE WS_LOOP_ATTEMPT LOOP_DAEMON_URL TMUX TMUX_PANE E2E_BROKEN E2E_SCENARIO
   export LOOP_DAEMON_URL="http://127.0.0.1:9" # no Loop daemon; skills loops never use it
   export WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock" WS_TMUX_SOCKET="$TMP/tmux.sock" WS_NOTIFY=0
@@ -116,6 +122,8 @@ exec \"$WS_BIN\" \"\$@\"" > "$E2E_DIR/bin/ws"
   export PATH="$E2E_DIR/bin:$TMP/bin:$PATH"
   export WS_BIN
   make_origin || return 1
+  # The daemon starts the phase runners, so the fake engines must be on its PATH.
+  [[ -z "$MODEL" ]] || prepare_model_sandbox || return 1
   WS_TEST_DAEMON_PID=""
   start_ws_test_daemon || return 1
   DAEMON_PID="$WS_TEST_DAEMON_PID"
@@ -145,7 +153,7 @@ teardown() {
   DAEMON_PID=""
   [[ -n "$TMP" && -S "$TMP/tmux.sock" ]] && tmux -S "$TMP/tmux.sock" kill-server 2>/dev/null
   if [[ -n "$TMP" ]]; then
-    rm -f "$TMP/home/.claude/.credentials.json" # the copy of the login never outlives the run
+    rm -f "$TMP/home/Library/Keychains" # the link to the real login Keychain never outlives the run
     [[ -z "${E2E_KEEP:-}" ]] || print -u2 "loop-e2e: kept sandbox $TMP"
     [[ -n "${E2E_KEEP:-}" ]] || rm -rf "$TMP"
   fi
@@ -165,25 +173,52 @@ run_orchestrator() {
   "$WS_BIN" wait "$ORCH_ID" --for exit > "$E2E_DIR/wait.out" 2>&1
 }
 
-# The loop skill on a real model is the orchestrator. Only this process sees a credential: the sandbox HOME
-# gets a copy of the credential file when the real login has one. teardown deletes the copy.
+# The loop skill on a real model is the orchestrator. The sandbox HOME links the login Keychain directory of the
+# real HOME, so the login works. The harness never reads the Keychain secret. teardown removes the link.
+# Phase runners and AR reviewers are fake engines (bin/engine.sh) behind the real loop-runner.sh.
 run_model_orchestrator() {
-  local claude_bin; claude_bin="$(whence -p claude)" || { print -u2 "loop-e2e: no claude binary"; return 1; }
-  local prompt="Run the loop skill on the plan in $E2E_DIR/work/.loop (WS_LOOP_ID is set). Phase runners and reviewers are fakes. Stop when the loop parks at the merge gate."
-  mkdir -p "$E2E_DIR/work/.claude"
-  ln -s "$ROOT/.claude/skills" "$E2E_DIR/work/.claude/skills"
-  if [[ -f "$REAL_HOME/.claude/.credentials.json" ]]; then
-    mkdir -p "$HOME/.claude"
-    cp "$REAL_HOME/.claude/.credentials.json" "$HOME/.claude/.credentials.json"
-    chmod 600 "$HOME/.claude/.credentials.json"
-  fi
-  local auth; auth="$(cd "$E2E_DIR/work" && "$claude_bin" -p --model "$MODEL" 'Reply with the word ok.' 2>&1 < /dev/null | head -c 300)"
+  local claude_bin="$REAL_CLAUDE"
+  local prompt="You are the orchestrator of a Loop. Run the loop skill (skill file: $ROOT/.claude/skills/loop/SKILL.md) on the plan in $E2E_DIR/work/.loop. WS_LOOP_ID is set. The installed runtime of the skill (~/dotfile) is $ROOT: use the Loop scripts on PATH and the skills under $ROOT/.claude/skills, for example $ROOT/.claude/skills/loop-review/step.sh. Phase runners and reviewers are fake engines, so ignore model quotas. The review phase uses one round, review then critic then final. There is no GitHub: gh is a fake. Open the milestone PR with gh pr create. When the loop parks at the merge gate, end with ws done --output handoff.md. Do not ask questions."
+  local mcp; mcp="$(jq -cn --arg ws "$WS_BIN" '{mcpServers:{ws:{command:$ws,args:["mcp"]}}}')"
+  local auth; auth="$(cd "$E2E_DIR/work" && "$claude_bin" -p --model "$MODEL" 'Reply with the word ok only.' 2>&1 < /dev/null | head -c 300)"
   if [[ "$auth" != *ok* ]]; then
     print -u2 "loop-e2e: the model cannot authenticate in the sandbox: $auth"
     return 1
   fi
-  start_orchestrator_command "$claude_bin" -p --model "$MODEL" --permission-mode bypassPermissions "$prompt" || return 1
+  start_orchestrator_command "$claude_bin" -p --model "$MODEL" --permission-mode bypassPermissions \
+    --strict-mcp-config --mcp-config "$mcp" --output-format stream-json --verbose "$prompt" || return 1
+  # The guard only stops a hung model. The normal end is the exit of the orchestrator session.
+  ( /bin/sleep "$MODEL_HANG_GUARD"; "$WS_BIN" session stop "$ORCH_ID" > /dev/null 2>&1 ) &
+  local guard=$!
   "$WS_BIN" wait "$ORCH_ID" --for exit > "$E2E_DIR/wait.out" 2>&1
+  kill "$guard" 2>/dev/null; wait "$guard" 2>/dev/null
+  return 0
+}
+
+prepare_model_sandbox() {
+  mkdir -p "$E2E_DIR/work/.claude" "$HOME/Library" "$E2E_DIR/runtime-bin"
+  ln -s "$ROOT/.claude/skills" "$E2E_DIR/work/.claude/skills"
+  ln -s "$REAL_HOME/Library/Keychains" "$HOME/Library/Keychains"
+  local script
+  for script in loop-milestone loop-merge loop-repo loop-runner loop-plan loop-state loop-notify loop-review loop-ar; do
+    print -r -- "#!/bin/sh
+exec zsh \"$ROOT/$script.sh\" \"\$@\"" > "$E2E_DIR/runtime-bin/$script.sh"
+    chmod +x "$E2E_DIR/runtime-bin/$script.sh"
+  done
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/osascript"; chmod +x "$TMP/bin/osascript"
+  cat > "$TMP/bin/gh" <<'GH'
+#!/bin/sh
+case "$1 $2" in
+"pr create") echo "https://github.com/acme/e2e/pull/1" ;;
+"pr list") echo "[]" ;;
+"pr view") echo '{"state":"OPEN","url":"https://github.com/acme/e2e/pull/1"}' ;;
+*) echo main ;;
+esac
+GH
+  chmod +x "$TMP/bin/gh"
+  export PATH="$HERE/bin:$E2E_DIR/runtime-bin:$PATH"
+  export LOOP_RUNTIME_ROOT="$ROOT" LOOP_JEV_MODE=off
+  unset CLAUDE_CONFIG_DIR # the Keychain entry name depends on a custom config dir; the default is $HOME/.claude of the sandbox
 }
 
 start_orchestrator_command() {
