@@ -6,44 +6,36 @@
 
 ## Real orchestrator model (`--scenario happy --model claude-opus-5-5`)
 
-2026-10-26: **FAIL at the AR review.** The loop did not reach the merge gate. Duration: 442 s.
+Last run, 2026-10-26: **PASS.** 9 of 9 assertions passed. Duration: 239 s.
 
-Command: `zsh tests/loop-e2e/run.sh --scenario happy --model claude-opus-5-5` (one counted run; earlier runs
-stopped on harness setup errors that are fixed).
+`ws loop check`: 0 hard violations, 0 soft violations (no `source: agent` violation, no `loop.decision` departure).
 
-Authentication works: the sandbox HOME links `$HOME/Library/Keychains` (the `--model` path only, removed in teardown).
-The harness never reads the Keychain secret.
+Command: `zsh tests/loop-e2e/run.sh --scenario happy --model claude-opus-5-5`
 
-What the model did (the `loop` skill, with the ws MCP tools):
-- Opened milestone 1 (`loop-milestone.sh open`) and ran phases 1 and 2 in parallel, then phase 3. Each ran on its
-  Suggested branch in its own lane worktree and passed on its first attempt. Phases 2 and 3 were merged and pushed
-  through `loop-merge.sh`. It opened the milestone PR with the fake `gh`.
-- Started the review phase. The round 1 reviewer produced `APPROVE`, but no result record was written. It stopped
-  at phase 4 by the skill's stop path: `ws loop pause`, a note, a notification, `handoff.md`, `ws done`.
+What the `loop` skill did on the model:
+- Opened milestone 1 from `.loop/plan.md` only. Ran phases 1 and 2 in parallel and phase 3 after phase 1, each in
+  its own lane worktree on its Suggested branch. Each passed on its first attempt and merged through `loop-merge.sh`.
+- Opened the milestone PR with the fake `gh`.
+- Ran the review phase: gpt reviewer `APPROVE`, claude critic `AGREE`, claude final `APPROVE`, each as a keyed
+  step with a result record.
+- Parked with `loop-milestone.sh park`: status `awaiting-merge`, notification sent, `ws done --output handoff.md`.
+- Two notes of the model: `~/dotfile` does not exist under the sandbox HOME, so it ran the runtime from the worktree
+  path in its prompt; the quota preflight had no quota data and it logged a `loop.note`.
+- The milestone explainer runner (a fake engine with no job for it) wrote no props, narration or retrospective. The
+  skill records `error.txt` and `retro-error.txt` and parks anyway.
 
-`ws loop check` at the stop: 0 hard and 0 soft violations. The assertions of the run: parked at the gate FAIL,
-every work phase merged FAIL (phase 1 shows `done`, not `merged`, see finding 1), state `awaitingMerge` FAIL,
-lane worktrees pass, integration HEAD only through merges pass, no hard violation pass, no soft violation pass.
+Setup in the `--model` sandbox only: the sandbox HOME links `$HOME/Library/Keychains` (removed in teardown; the
+harness never reads the Keychain secret), `LOOP_WS_SESSIONS=1`, the fake engines in `tests/loop-e2e/bin/`
+(`engine.sh` for work phases and for the review, critic and final roles; the engine reads its job from the argv of
+its runner session), a fake `gh`, and wrappers of the Loop scripts on PATH.
 
-### Cause of the review failure (harness)
+### Loop bugs found by the first real-model run (2026-10-26, run failed at the review)
 
-`loop-runner.sh --review-key` records the review result only after `--publish-output`, and that needs a runner under a
-ws session (`LOOP_WS_SESSIONS` not 0). The sandbox keeps `LOOP_WS_SESSIONS=0` from `tests/lib.sh`.
-- Attempt 1 (sessions off): the fake engine wrote the report, then the runner exited 50
-  ("cannot publish output without a runner ws session").
-- Attempt 2 (the model turned sessions on for this runner): `tests/loop-e2e/bin/engine.sh` finds its run directory,
-  review key and report path from the argv of its parent runner. With sessions on, the engine is a child of `wsd`, so
-  it finds none and the chain ends with exit 40.
+1. FIXED. The merge command in `.claude/skills/loop/SKILL.md` had no `--phase`, `--repository` and `--run-id`, so
+   `loop-merge.sh` recorded no `loop.merge` and the phase stayed `done`. The skill now passes the three flags to the
+   merge, `--finish`, `--abort` and `--undo`. `tests/loop-skill.test.sh` checks the command.
+2. FIXED. `.claude/skills/loop-review/step.sh` read `ws log` as a bare array, but `ws log` prints `{"entries":[...]}`.
+   It now accepts both forms. `tests/loop-review-skill.test.sh` covers the object form.
 
-Fix for the next attempt: set `LOOP_WS_SESSIONS=1` in the `--model` sandbox and make `engine.sh` read its job without
-the process ancestry. The run directory is the directory of the open stdout file (`lsof -a -p $$ -d 1 -Fn`). The review
-key and the report path can come from the keyed runner session in `ws session get --json`.
-
-### Loop findings from the run (not fixed here)
-
-1. The merge command in `.claude/skills/loop/SKILL.md` ("Merge a lane") has no `--run-id`, `--phase` or `--repository`
-   flags. `loop-merge.sh` records `loop.merge` only with `--phase` and `--repository`, so phase 1 merged in git but stayed
-   `done`, not `merged`. A second merge with the flags found it merged and recorded nothing.
-2. `.claude/skills/loop-review/step.sh` reads `ws log <loop> --type loop.review` as a bare JSON array, but `ws log`
-   prints `{"entries":[...]}`. The model worked around it with a `ws` wrapper on PATH.
-3. The PR body of the model had an empty Verify command (a quoting slip of the model, not a tool bug).
+No open Loop bug. The first run also failed for a harness reason (the fake engine could not find its run directory
+under a ws session), fixed in `tests/loop-e2e/bin/engine.sh`.
