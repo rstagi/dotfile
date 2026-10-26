@@ -62,6 +62,8 @@ pub enum Error {
     PendingMessages,
     /// A merge gate of an earlier milestone is open, so the loop starts no later phase.
     MilestoneGateOpen,
+    /// An accept gate of a dependency review phase is open or rejected.
+    AcceptGateOpen,
     LoopControlConflict(&'static str),
     WaitTimeout,
     ShuttingDown,
@@ -437,6 +439,9 @@ impl fmt::Display for Error {
             Self::LoopControlConflict(message) => formatter.write_str(message),
             Self::MilestoneGateOpen => formatter.write_str(
                 "A merge gate is open. Merge it and resume before you start a later milestone.",
+            ),
+            Self::AcceptGateOpen => formatter.write_str(
+                "An accept gate is open or rejected. Accept it before you start a dependent phase.",
             ),
             Self::DependencyCycle(cycle) => write!(
                 formatter,

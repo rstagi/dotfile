@@ -580,10 +580,14 @@ impl Sessions {
         Ok(())
     }
 
-    /// Refuses a child of a phase from a later milestone while a merge gate is open.
+    /// Refuses a child of a phase that waits for an accept gate, or of a later milestone while a
+    /// merge gate is open.
     pub(crate) fn check_milestone_gate(&self, loop_id: SessionId, phase: u64) -> Result<()> {
         let session = self.get_record(&loop_id.to_string())?;
         let state = self.loop_state(&session)?;
+        if blocked_by_accept_gate(&state, phase) {
+            return Err(Error::AcceptGateOpen);
+        }
         let Some(open) = open_merge_gate(&state) else {
             return Ok(());
         };
@@ -1151,6 +1155,22 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
         state["status"] = json!("awaiting-merge");
     }
     state
+}
+
+/// Tells whether the phase depends on a review phase whose latest accept gate is open or rejected.
+fn blocked_by_accept_gate(state: &Value, phase: u64) -> bool {
+    let Some(dependencies) = state["phases"][phase.to_string()]["depends_on"].as_array() else {
+        return false;
+    };
+    dependencies.iter().filter_map(Value::as_u64).any(|n| {
+        state["gates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .find(|gate| gate["kind"] == "accept" && gate["phase"] == n)
+            .is_some_and(|gate| gate["state"] == "open" || gate["state"] == "rejected")
+    })
 }
 
 /// Returns the lowest milestone whose merge gate is open.
@@ -2140,6 +2160,48 @@ mod tests {
         let (_, state) = request(&app, "GET", &uri, Value::Null).await;
         assert_eq!(state["status"], "active");
         let (status, body) = request(&app, "POST", "/v1/sessions", spawn(2, "k2")).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    #[tokio::test]
+    async fn an_open_or_rejected_accept_gate_refuses_spawns_of_dependent_phases() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        post(
+            &app,
+            &id,
+            "loop.phases",
+            json!({"phases":[
+                phase(1, "work", Value::Null, 1, json!([])),
+                phase(2, "review", Value::Null, 1, json!([1])),
+                phase(3, "work", Value::Null, 1, json!([2])),
+                phase(4, "work", Value::Null, 1, json!([1])),
+            ]}),
+        )
+        .await;
+        let spawn = |phase: u64, key: &str| {
+            json!({"headless":true,"command":["/bin/true"],"cwd":sandbox.path(),"key":key,
+                "loop":{"loop":id,"phase":phase,"attempt":1}})
+        };
+        let gate = |state: &str, artifacts: Value| {
+            json!({"kind":"accept","state":state,"milestone":1,"phase":2,"artifacts":artifacts})
+        };
+        post(&app, &id, "loop.gate", gate("open", json!(["a.md"]))).await;
+        let (status, error) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        assert_eq!(error["error"]["code"], "accept_gate_open", "{error}");
+        // The gate phase and phases that do not depend on it still start.
+        let (status, body) = request(&app, "POST", "/v1/sessions", spawn(4, "k4")).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, _) = request(&app, "POST", &format!("{uri}/reject"), json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, error) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        post(&app, &id, "loop.gate", gate("open", json!(["b.md"]))).await;
+        let (status, _) = request(&app, "POST", &format!("{uri}/accept"), json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
     }
 
