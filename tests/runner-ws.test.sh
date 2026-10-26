@@ -17,7 +17,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 home_guard_sandbox "$TMP/home"
-unset WS_SESSION_ID WS_SESSION
+unset WS_LOOP_ID WS_SESSION_ID WS_SESSION LOOP_DAEMON_URL
+export LOOP_DAEMON_URL="http://127.0.0.1:9"
 export WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock"
 export WS_RUST_BIN
 export WS_NOTIFY=0 WS_TMUX_SOCKET="loop-ws-test-$$"
@@ -59,14 +60,38 @@ if [[ "${1:-}" == debug && "${2:-}" == models ]]; then
   print -r -- '{"models":[{"slug":"gpt-6-sol","visibility":"list"}]}'
   exit 0
 fi
+if [[ "${FAKE_REVIEW_RATE_LIMIT:-0}" == 1 && "${0:t}" == codex ]]; then
+  print -u2 -r -- 'rate limit'
+  exit 1
+fi
+if [[ "${FAKE_REVIEW_HANG:-0}" == 1 ]]; then
+  while true; do sleep 30; done
+fi
+if [[ -n "${FAKE_REVIEW_FIX:-}" ]]; then
+  before="$(git rev-parse HEAD)"
+  result=NOOP
+  if [[ "$FAKE_REVIEW_FIX" != NOOP ]]; then
+    git commit -qm fix --allow-empty
+    result=PUSHED
+  fi
+  after="$(git rev-parse HEAD)"
+  if [[ "$FAKE_REVIEW_FIX" == PUSHED ]]; then
+    git --git-dir="$FAKE_FIX_REMOTE" fetch -q "$PWD" HEAD:refs/heads/review
+  fi
+  FAKE_REVIEW_STATUS="$(jq -cn --arg result "$result" --arg before "$before" --arg after "$after" \
+    --arg remote "$FAKE_FIX_REMOTE" --arg wt "$PWD" \
+    '{outcome:"done",result:$result,headBefore:$before,headAfter:$after,remote:$remote,branch:"review",worktree:$wt}')"
+fi
 verdict="$(print -r -- "$FAKE_REVIEW_STATUS" | jq -r '.event // "APPROVE"')"
-printf 'Review complete.\nVerdict: %s\n' "$verdict" > "$FAKE_RUN_DIR/report.md"
+printf '%s\n' "${FAKE_REVIEW_REPORT:-Review complete.
+Verdict: $verdict}" > "$FAKE_RUN_DIR/report.md"
 if [[ "${FAKE_REVIEW_CRASH:-0}" != 1 ]]; then
   print -r -- "$FAKE_REVIEW_STATUS" > "$FAKE_RUN_DIR/status.json"
 fi
 print -r -- '{"type":"result","result":"Review complete."}'
 EOF
 chmod +x "$TMP/reviewer-bin/codex"
+ln -s codex "$TMP/reviewer-bin/claude"
 export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
 PARENT_SID="$(ws session create --headless --cwd "$TMP/work tree" -- /usr/bin/true)"
 ws wait "$PARENT_SID" --for exit --timeout 30 >/dev/null
@@ -179,6 +204,153 @@ assert_eq "$(jq -c '[.entries[] | select(.type | startswith("loop.attempt", "loo
   "[\"loop.attempt:4:${PARENT_SID}:result\",\"loop.review:4:${PARENT_SID}:result\"]" "the daemon stores both keys"
 unset FAKE_REVIEW_STATUS
 
+echo "runner: review keys record final status events without attempt results"
+mkdir -p "$TMP/review-ws"
+cat > "$TMP/review-ws/ws" <<'EOF'
+#!/bin/zsh
+if [[ "${1:-}" == event ]]; then
+  exec "$FAKE_WS_EVENT_BIN" "$@"
+fi
+if [[ "${1:-}" == done && -n "${FAKE_WS_DONE_EXIT:-}" ]]; then
+  exit "$FAKE_WS_DONE_EXIT"
+fi
+exec "$WS_RUST_BIN" "$@"
+EOF
+chmod +x "$TMP/review-ws/ws"
+export FAKE_WS_EVENT_BIN="$TMP/fakews/ws"
+review_body() { jq -c 'select(.[1] == "loop.review") | .[3] | fromjson' "$FAKE_WS_LOG"; }
+export FAKE_REVIEW_REPORT=APPROVE
+for outcome event expected in done APPROVE 0 question COMMENT 10 blocked REQUEST_CHANGES 20; do
+  export FAKE_REVIEW_STATUS="$(jq -cn --arg outcome "$outcome" --arg event "$event" \
+    '{outcome:$outcome,event:$event,commentUrl:"https://example.test/review/136"}')"
+  export FAKE_WS_LOG="$TMP/review-$event.ws.log"; : > "$FAKE_WS_LOG"
+  WS_LOOP_ID=LOOP1 WS_LOOP_PHASE=999 WS_LOOP_ATTEMPT=9 PATH="$TMP/review-ws:$TMP/reviewer-bin:$PATH" \
+    run_attempt "review-$event" --chain review-gpt --review-key review:136:acme/api:final:2:0:attempt:3 \
+    --publish-output "$TMP/review-$event/report.md"
+  assert_exit "$RC" "$expected" "$event keeps its exit code with a review key"
+  SID="$(cat "$FAKE_RUN_DIR/ws-session" 2>/dev/null)"
+  assert_eq "$(review_body | jq -c 'del(.session)')" \
+    "{\"phase\":136,\"repo\":\"acme/api\",\"key\":\"review:136:acme/api:final:2:0:attempt:3:result\",\"role\":\"final\",\"provider\":\"gpt\",\"round\":2,\"state\":\"finished\",\"verdict\":\"$event\",\"commentUrl\":\"https://example.test/review/136\"}" \
+    "$event records the final status and its comment URL"
+  assert_eq "$(review_body | jq -r .session)" "$SID" "$event records the publishing session"
+  assert_eq "$(jq -sc 'map(select(.[1] == "loop.attempt")) | length' "$FAKE_WS_LOG")" 0 "a review key suppresses loop.attempt"
+  assert_eq "$(jq -c '.[8:]' "$FAKE_WS_LOG")" '["--key","review:136:acme/api:final:2:0:attempt:3:result"]' "the event uses the result key"
+done
+unset FAKE_REVIEW_STATUS FAKE_REVIEW_REPORT
+
+echo "runner: a fallback records the provider and session of the successful leg"
+export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
+export FAKE_WS_LOG="$TMP/review-fallback.ws.log"; : > "$FAKE_WS_LOG"
+WS_LOOP_ID=LOOP1 FAKE_REVIEW_RATE_LIMIT=1 PATH="$TMP/review-ws:$TMP/reviewer-bin:$PATH" \
+  run_attempt review-fallback --chain task --review-key review:136:acme/api:final:2:0:attempt:1 \
+  --publish-output "$TMP/review-fallback/report.md"
+assert_exit "$RC" 0 "a review result survives a provider fallback"
+assert_eq "$(review_body | jq -r .provider)" claude "the result uses the successful provider"
+assert_eq "$(review_body | jq -r .session)" "$(cat "$FAKE_RUN_DIR/ws-session")" "the result uses the successful session"
+assert_eq "$(jq -sc 'length' "$FAKE_WS_LOG")" 1 "the failed leg records no result"
+
+echo "runner: each review role uses the last valid role verdict"
+export FAKE_REVIEW_STATUS='{"outcome":"done"}'
+for role report verdict in review 'NEEDS_CHANGES: F1 remains' NEEDS_CHANGES respond APPROVE APPROVE \
+    critic 'DISAGREE_CONCERN: F2 remains' DISAGREE_CONCERN confirm AGREE AGREE; do
+  export FAKE_REVIEW_REPORT="$report"
+  export FAKE_WS_LOG="$TMP/role-$role.ws.log"; : > "$FAKE_WS_LOG"
+  WS_LOOP_ID=LOOP1 PATH="$TMP/review-ws:$TMP/reviewer-bin:$PATH" \
+    run_attempt "role-$role" --chain review-gpt --review-key "review:136:none:$role:3:1:attempt:1" \
+    --publish-output "$TMP/role-$role/report.md"
+  assert_exit "$RC" 0 "$role publishes its report"
+  assert_eq "$(review_body | jq -c '[.phase,.repo,.role,.round,.verdict,.provider]')" \
+    "[136,\"none\",\"$role\",3,\"$verdict\",\"gpt\"]" "$role records its verdict and the chain provider"
+  assert_eq "$(jq -sc 'length' "$FAKE_WS_LOG")" 1 "$role appends one result"
+done
+unset FAKE_REVIEW_REPORT
+
+echo "runner: fix results require proof of the remote head"
+FIX_WT="$TMP/fix-worktree"
+export FAKE_FIX_REMOTE="$TMP/fix-remote.git"
+git init -q -b main "$FIX_WT"
+git -C "$FIX_WT" commit -qm initial --allow-empty
+git clone -q --bare "$FIX_WT" "$FAKE_FIX_REMOTE"
+git --git-dir="$FAKE_FIX_REMOTE" update-ref refs/heads/review "$(git -C "$FIX_WT" rev-parse HEAD)"
+for fixture in NOOP PUSHED mismatch; do
+  export FAKE_REVIEW_FIX="$fixture"
+  export FAKE_WS_LOG="$TMP/fix-$fixture.ws.log"; : > "$FAKE_WS_LOG"
+  WS_LOOP_ID=LOOP1 PATH="$TMP/review-ws:$TMP/reviewer-bin:$PATH" \
+    run_attempt "fix-$fixture" --worktree "$FIX_WT" --chain review-gpt \
+    --review-key review:136:acme/api:fix:1:0:attempt:2 --publish-output "$TMP/fix-$fixture/report.md"
+  assert_exit "$RC" 0 "$fixture fix publishes its report"
+  if [[ "$fixture" == mismatch ]]; then
+    assert_eq "$(cat "$FAKE_WS_LOG")" '' "an unproven fix appends no result"
+  else
+    assert_eq "$(review_body | jq -c '[.role,.verdict,.provider]')" \
+      "[\"fix\",\"$fixture\",\"gpt\"]" "$fixture fix records the proven result"
+    assert_eq "$(jq -sc 'length' "$FAKE_WS_LOG")" 1 "$fixture fix appends one result"
+  fi
+done
+unset FAKE_REVIEW_FIX
+
+echo "runner: incomplete keyed reviews append no result"
+for fixture expected in checkpoint 10 crash 50 invalid-verdict 0 invalid-final 0 question-review 10 exhausted 40 paused 30 timeout 10 verify-failed 12 publish-failed 50; do
+  export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
+  export FAKE_WS_LOG="$TMP/incomplete-$fixture.ws.log"; : > "$FAKE_WS_LOG"
+  args=(--chain review-gpt --review-key review:136:acme/api:final:2:0:attempt:1 \
+    --publish-output "$TMP/incomplete-$fixture/report.md")
+  case "$fixture" in
+    checkpoint) export FAKE_REVIEW_STATUS='{"outcome":"question","checkpoint":true,"event":"COMMENT"}' ;;
+    crash) export FAKE_REVIEW_CRASH=1 ;;
+    invalid-verdict) export FAKE_REVIEW_REPORT='APPROVE with trailing prose'; args+=(--review-key review:136:acme/api:review:1:0:attempt:1) ;;
+    invalid-final) export FAKE_REVIEW_STATUS='{"outcome":"done","event":"invalid"}' ;;
+    question-review) export FAKE_REVIEW_STATUS='{"outcome":"question"}' FAKE_REVIEW_REPORT=APPROVE; args+=(--review-key review:136:acme/api:review:1:0:attempt:1) ;;
+    exhausted) export FAKE_REVIEW_RATE_LIMIT=1 ;;
+    paused) mkdir -p "$TMP/paused-loop/control"; touch "$TMP/paused-loop/control/pause"; args+=(--loop-dir "$TMP/paused-loop") ;;
+    timeout) export FAKE_REVIEW_HANG=1 ;;
+    verify-failed) args+=(--verify-cmd false) ;;
+    publish-failed) export FAKE_WS_DONE_EXIT=1 ;;
+  esac
+  WS_LOOP_ID=LOOP1 PATH="$TMP/review-ws:$TMP/reviewer-bin:$PATH" run_attempt "incomplete-$fixture" "${args[@]}"
+  assert_exit "$RC" "$expected" "$fixture keeps its exit code"
+  assert_eq "$(cat "$FAKE_WS_LOG")" '' "$fixture appends no review or attempt result"
+  unset FAKE_REVIEW_CRASH FAKE_REVIEW_REPORT FAKE_REVIEW_RATE_LIMIT FAKE_REVIEW_HANG FAKE_WS_DONE_EXIT
+done
+
+echo "runner: invalid review keys fail before engine launch"
+for fixture in missing-output malformed disputed missing-key; do
+  args=(--review-key review:136:acme/api:final:2:0:attempt:1 --publish-output "$TMP/invalid-$fixture/report.md")
+  case "$fixture" in
+    missing-output) args=(--review-key review:136:acme/api:final:2:0:attempt:1) ;;
+    malformed) args+=(--review-key invalid) ;;
+    disputed) args+=(--review-key review:136:acme/api:disputed:2:0:attempt:1) ;;
+    missing-key) args=(--review-key) ;;
+  esac
+  PATH="$TMP/review-ws:$TMP/reviewer-bin:$PATH" run_attempt "invalid-$fixture" "${args[@]}"
+  assert_exit "$RC" 1 "$fixture is a usage error"
+  assert_eq "$([[ -f "$FAKE_RUN_DIR/ws-session" ]] && print created)" '' "$fixture starts no session"
+done
+
+echo "runner: keyed reviews stay silent without WS_LOOP_ID"
+export FAKE_REVIEW_STATUS='{"outcome":"done","event":"APPROVE"}'
+export FAKE_WS_LOG="$TMP/review-unset.ws.log"; : > "$FAKE_WS_LOG"
+PATH="$TMP/review-ws:$TMP/reviewer-bin:$PATH" run_attempt review-unset --chain review-gpt \
+  --review-key review:136:acme/api:final:2:0:attempt:1 --publish-output "$TMP/review-unset/report.md"
+assert_exit "$RC" 0 "an unset WS_LOOP_ID keeps publication"
+assert_eq "$(cat "$FAKE_WS_LOG")" '' "an unset WS_LOOP_ID appends no keyed review"
+
+echo "runner: the sandbox daemon accepts and deduplicates a keyed final result"
+WS_LOOP_ID="$LOOP_SID" PATH="$TMP/reviewer-bin:$PATH" run_attempt keyed-daemon --chain review-gpt \
+  --review-key review:136:acme/api:final:2:0:attempt:1 --publish-output "$TMP/keyed-daemon/report.md"
+assert_exit "$RC" 0 "a keyed final reaches wsd"
+assert_eq "$(grep -c warning "$FAKE_RUN_DIR/runner.log")" 0 "wsd accepts the final body"
+ws log "$LOOP_SID" --type loop.review > "$TMP/keyed-events.json"
+KEYED_BODY="$(jq -c '.entries[] | select(.body.key == "review:136:acme/api:final:2:0:attempt:1:result") | .body | del(.event_key,.source)' "$TMP/keyed-events.json")"
+assert_eq "$(print -r -- "$KEYED_BODY" | jq -c '[.phase,.role,.round,.verdict,.provider,.commentUrl]')" \
+  '[136,"final",2,"APPROVE","gpt",null]' "wsd stores the keyed final result"
+ws event loop.review --body "$KEYED_BODY" --source tool --target "$LOOP_SID" \
+  --key review:136:acme/api:final:2:0:attempt:1:result > /dev/null
+assert_exit "$?" 0 "wsd accepts a repeated append"
+assert_eq "$(ws log "$LOOP_SID" --type loop.review | jq '[.entries[] | select(.body.key == "review:136:acme/api:final:2:0:attempt:1:result")] | length')" \
+  1 "a repeated append stores one terminal result"
+unset FAKE_REVIEW_STATUS
+
 echo "runner: Rust daemon owns the runner session"
 run_attempt codex
 assert_exit "$RC" 0 "runner completes through ws"
@@ -195,12 +367,13 @@ assert_contains "$(cat "$FAKE_ENGINE_LOG")" 'mcp_servers.ws.command=' "runner ad
 echo "runner: completed attempts remove the watchdog process group members"
 cat > "$TMP/bin/sleep" <<'EOF'
 #!/bin/zsh
-[[ "$1" == 30 && -n "${FAKE_WATCHDOG_READY:-}" ]] && print -r -- "$$" > "$FAKE_WATCHDOG_READY"
+[[ "$1" == <-> && "$1" -gt 2 && -n "${FAKE_WATCHDOG_READY:-}" ]] && print -r -- "$$" > "$FAKE_WATCHDOG_READY"
 exec /bin/sleep "$@"
 EOF
 chmod +x "$TMP/bin/sleep"
 export FAKE_WATCHDOG_READY="$TMP/watchdog-ready"
 LOOP_WS_SESSIONS=0 run_attempt watchdog-cleanup
+assert_exit "$RC" 0 "the watchdog fixture completes before its deadline"
 watchdog_sleep="$(cat "$FAKE_WATCHDOG_READY")"
 assert_eq "$(kill -0 "$watchdog_sleep" 2>/dev/null && echo alive || echo gone)" gone "runner reaps the watchdog sleep before it returns"
 kill "$watchdog_sleep" 2>/dev/null
