@@ -137,6 +137,26 @@ verify_and_push() {
   return 0
 }
 
+# Return 0 when the remote branch contains HEAD, 1 when it does not, or 2 on a read error.
+# Read the remote branch directly. A local tracking ref can be stale after a failed push.
+remote_contains_head() {
+  local branch remote_line remote_head rc
+  branch="$(git symbolic-ref -q HEAD)" || return 2
+  remote_line="$(git ls-remote --exit-code origin "$branch")"
+  rc=$?
+  (( rc == 2 )) && return 1
+  (( rc == 0 )) || return 2
+  remote_head="${remote_line%%$'\t'*}"
+  [[ -n "$remote_head" ]] || return 2
+  if ! git cat-file -e "$remote_head^{commit}" 2>/dev/null; then
+    git fetch --no-tags --no-write-fetch-head origin "$remote_head" || return 2
+  fi
+  git merge-base --is-ancestor HEAD "$remote_head"
+  rc=$?
+  (( rc <= 1 )) && return "$rc"
+  return 2
+}
+
 # True when the runner record names the merged tree and this Verify command.
 tree_already_verified() {
   [[ -n "$VERIFIED_RECORD" && -r "$VERIFIED_RECORD" ]] || return 1
@@ -168,6 +188,15 @@ merge)
   [[ -n "$LANE" ]] || { echo "loop-merge: --lane-branch required" >&2; exit 1; }
   git rev-parse --verify --quiet "$LANE" >/dev/null || { echo "loop-merge: branch '$LANE' not found" >&2; exit 3; }
   if git merge-base --is-ancestor "$LANE" HEAD; then
+    if [[ -n "${WS_LOOP_ID:-}" ]]; then
+      remote_contains_head
+      remote_rc=$?
+      case "$remote_rc" in
+      0) ;;
+      1) verify_and_push; exit $? ;;
+      *) echo "loop-merge: cannot check the remote integration branch" >&2; exit 1 ;;
+      esac
+    fi
     echo '{"already":true}'
     exit 0
   fi

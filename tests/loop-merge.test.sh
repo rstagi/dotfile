@@ -9,6 +9,13 @@ source "$HERE/lib.sh"
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+export HOME="$TMP/home" WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock"
+mkdir -p "$HOME"
+unset WS_LOOP_ID WS_SESSION_ID LOOP_DAEMON_URL
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 export LOOP_EMIT_SH="$HERE/fake/loop-emit.sh"
 
 # new_repo <name> — an integration worktree on feat/int plus a lane branch feat/lane that
@@ -45,6 +52,7 @@ emitted() {
   sed -n 's/^run-1 event //p' "$EMIT_LOG" | jq -c --arg e "$1" 'select(.event == $e)'
 }
 
+if [[ $# -eq 0 ]]; then
 echo "loop-merge: a merged-tree Verify failure emits merge.verify-fail"
 export EMIT_LOG="$TMP/emit-fail.log"; : > "$EMIT_LOG"
 WT="$(new_repo fail)"
@@ -182,5 +190,58 @@ rm -f "$TMP/verify-ran"
 merge_recorded "$WT" "$VERIFY_CMD" "$TMP/no-such-record.json"
 assert_exit "$RC" "0" "a missing record is not an error"
 assert_eq "$([[ -e "$TMP/verify-ran" ]] && print ran)" "ran" "a missing record runs the Verify"
+
+fi
+
+# new_origin <name> creates a private origin and publishes the integration base.
+new_origin() {
+  WT="$(new_repo "$1")"
+  ORIGIN="$TMP/$1-origin.git"
+  git init -q --bare "$ORIGIN"
+  git -C "$WT" remote add origin "$ORIGIN"
+  git -C "$WT" push -q origin HEAD
+  export EMIT_LOG="$TMP/$1-emit.log" FAKE_WS_LOG="$TMP/$1-ws.log"
+  : > "$EMIT_LOG"
+  : > "$FAKE_WS_LOG"
+}
+
+# skills_merge <args...> runs the public CLI with private event sinks.
+skills_merge() {
+  WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" zsh "$ROOT/loop-merge.sh" --worktree "$WT" \
+    --run-id run-1 --phase 7 --repository acme/api "$@" > "$TMP/out" 2> "$TMP/err"
+  RC=$?
+}
+
+make_fake_ws "$TMP/fakews"
+if [[ "${1:-all}" == (all|retry) ]]; then
+  echo "loop-merge: a failed push retries Verify and publishes the merge once"
+  new_origin retry
+  cat > "$ORIGIN/hooks/pre-receive" <<'HOOK'
+#!/bin/sh
+exit 1
+HOOK
+  chmod +x "$ORIGIN/hooks/pre-receive"
+  verify="print verified >> '$TMP/retry-verify.log'"
+  skills_merge --lane-branch feat/lane --verify-cmd "$verify"
+  assert_exit "$RC" 1 "the rejected push exits 1"
+  merged="$(git -C "$WT" rev-parse HEAD)"
+  assert_eq "$(git -C "$WT" rev-list --count HEAD^2..HEAD)" 1 "the local merge commit remains"
+  assert_eq "$(cat "$FAKE_WS_LOG")" "" "the failed push appends no loop.merge"
+  assert_eq "$(emitted phase.merged)" "" "the failed push emits no phase.merged"
+  rm "$ORIGIN/hooks/pre-receive"
+  skills_merge --lane-branch feat/lane --verify-cmd "$verify"
+  assert_exit "$RC" 0 "the retry succeeds"
+  assert_eq "$(wc -l < "$TMP/retry-verify.log" | tr -d ' ')" 2 "the retry runs Verify"
+  assert_eq "$(git --git-dir="$ORIGIN" rev-parse refs/heads/feat/int)" "$merged" "the retry publishes the existing merge"
+  assert_eq "$(git --git-dir="$ORIGIN" show feat/int:result.txt)" lane "the remote tree contains the lane"
+  assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" 1 "the retry appends one loop.merge"
+  body="$(jq -r '.[3]' "$FAKE_WS_LOG")"
+  assert_eq "$(print -r -- "$body" | jq -c '{n,repo,verify}')" '{"n":7,"repo":"acme/api","verify":"pass"}' "the result records Verify pass"
+  assert_eq "$(jq -c '.[8:]' "$FAKE_WS_LOG")" "[\"--key\",\"loop.merge:7:acme/api:$merged:pass\"]" "the retry uses the Phase 134 key"
+  skills_merge --lane-branch feat/lane --verify-cmd "$verify"
+  assert_exit "$RC" 0 "a published merge stays complete"
+  assert_eq "$(wc -l < "$TMP/retry-verify.log" | tr -d ' ')" 2 "a published merge needs no Verify"
+  assert_eq "$(wc -l < "$FAKE_WS_LOG" | tr -d ' ')" 1 "a published merge adds no second result"
+fi
 
 test_summary
