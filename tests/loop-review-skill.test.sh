@@ -43,7 +43,7 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/ws" <<'FAKE'
 #!/bin/zsh
 case "$1" in
-log) cat "$FAKE_LOG" ;;
+log) if [[ -n "${FAKE_LOG_OBJECT:-}" ]]; then jq '{entries: .}' "$FAKE_LOG"; else cat "$FAKE_LOG"; fi ;;
 session)
   [[ "$2" == create ]] || exit 2
   shift 2
@@ -80,6 +80,14 @@ echo "loop-review skill: recovery sends the same key while the attempt is open"
 out="$(zsh "$STEP" run L1 7 acme/api review 1 1 gpt -- --chain review-gpt)"
 assert_eq "$out" $'started\t'"${K}1"$'\t01SESSION1' "same key again, same session"
 assert_eq "$(processes)" "1" "no second process"
+
+echo "loop-review skill: ws log prints {entries:[...]}"
+out="$(FAKE_LOG_OBJECT=1 zsh "$STEP" state L1 7 acme/api review 1 1)"
+assert_eq "$out" $'run\t'"${K}1" "the object form of ws log gives the open attempt"
+add '{"state":"finished","key":"'"${K}1"'","verdict":"APPROVE"}'
+out="$(FAKE_LOG_OBJECT=1 zsh "$STEP" state L1 7 acme/api review 1 1)"
+assert_eq "$out" $'terminal\tAPPROVE' "the object form of ws log gives the result"
+jq 'map(select(.body.state != "finished"))' "$FAKE_LOG" > "$FAKE_LOG.new" && mv "$FAKE_LOG.new" "$FAKE_LOG"
 
 echo "loop-review skill: a reviewer exits with no report"
 add '{"state":"exited","key":"'"${K}1"'"}'

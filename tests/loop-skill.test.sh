@@ -34,7 +34,7 @@ assert_contains "$SKILL" '<loop dir>/outputs/p<N>/' "outputs cwd"
 assert_contains "$SKILL" 'no repository and no base' "no repo for non-pr"
 
 echo "loop skill: action for each loop-merge.sh exit"
-assert_contains "$SKILL" 'loop-merge.sh --worktree <integration worktree> --lane-branch <Suggested branch>' "merge command"
+assert_contains "$SKILL" 'loop-merge.sh --worktree <integration worktree> --lane-branch <Suggested branch> --verify-cmd <Verify> --phase <N> --repository <slug> --run-id <loop id>' "merge command records loop.merge"
 assert_contains "$SKILL" 'Start no other merge while a merge failure is open.' "one merge failure at a time"
 assert_contains "$SKILL" '`[status: done]`' "done after exit 0"
 assert_contains "$SKILL" 'loop-plan.sh push' "plan push after exit 0"
