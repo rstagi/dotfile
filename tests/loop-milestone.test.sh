@@ -554,4 +554,151 @@ assert_eq "$(print -r -- "$out" | jq -c '[.runtimeRoot, .runtimeAdopted]')" "[\"
 [[ -d "$A1_Z" ]]
 assert_exit "$?" "0" "adopted retained host worktree never retired"
 
+
+echo "loop-milestone: park a skills loop at a merge gate"
+PARK="$TMP/park/.loop"
+mkdir -p "$PARK"
+cat > "$PARK/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: skills-park
+-->
+# Park fixture — Multi-Phase Plan
+
+**Status:** in progress
+
+## Repositories
+
+### `acme/api`
+- **Verify:** `true`
+
+### `acme/web`
+- **Verify:** `true`
+
+## Milestone 1 — Ship both
+- **Integration branch (acme/api):** `feat/p1-api`
+- **Integration branch (acme/web):** `feat/p1-web`
+
+### Phase 1 — Build API `[lane: A]` `[status: in-progress]`
+- **Repository:** `acme/api`
+- **Suggested branch:** `feat/p1-a`
+
+### Phase 2 — Build web `[lane: B]` `[status: todo]`
+- **Repository:** `acme/web`
+- **Suggested branch:** `feat/p1-w`
+
+### Phase 3 — Review milestone 1 `[lane: review]` `[status: todo]` `[kind: pr-review]` `[gate: merge]`
+- **Depends on:** Phase 1, Phase 2
+
+## Milestone 2 — Later
+- **Integration branch (acme/api):** `feat/p2-api`
+
+### Phase 4 — Later work `[lane: A]` `[status: todo]`
+- **Repository:** `acme/api`
+- **Depends on:** Phase 3
+- **Suggested branch:** `feat/p2-a`
+
+### Phase 5 — Review milestone 2 `[lane: review]` `[status: todo]` `[kind: pr-review]`
+- **Depends on:** Phase 4
+PLAN
+jq -n '{runId:"skills-park",milestone:1,awaitingMerge:null,phases:{},repositories:{"acme/api":{integrationBranch:"feat/p1-api"},"acme/web":{integrationBranch:"feat/p1-web"}}}' > "$PARK/state.json"
+mkdir -p "$TMP/park-bin"
+cat > "$TMP/park-bin/ws" <<'WS'
+#!/bin/sh
+if [ "$1" = loop ] && [ "$2" = get ]; then
+  cat "$FAKE_LOOP_GET"
+  exit 0
+fi
+jq -cn '$ARGS.positional' --args -- "$@" >> "$FAKE_WS_LOG"
+WS
+chmod +x "$TMP/park-bin/ws"
+export FAKE_WS_LOG="$TMP/park-events.jsonl" FAKE_LOOP_GET="$TMP/park-loop.json" EMIT_LOG="$TMP/park-emit.log"
+: > "$FAKE_WS_LOG"; : > "$EMIT_LOG"
+PARK_PRS='{"acme/api":"https://github.com/acme/api/pull/7","acme/web":"https://github.com/acme/web/pull/8"}'
+park() { WS_LOOP_ID=LOOP1 WS_BIN="$TMP/park-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" "$ROOT/loop-milestone.sh" park --dir "$PARK" --milestone 1 --prs "${1:-$PARK_PRS}" 2> "$TMP/park.err"; }
+loop_json() {
+  jq -n --arg s1 "$1" --arg s2 "$2" --arg s3 "$3" --argjson gates "${4:-{\}}" '{milestone:1,merge_gates:$gates,phases:{
+    "1":{n:1,milestone:1,status:$s1},"2":{n:2,milestone:1,status:$s2},"3":{n:3,milestone:1,status:$s3},
+    "4":{n:4,milestone:2,status:"todo"}}}' > "$FAKE_LOOP_GET"
+}
+
+loop_json merged running todo
+cp "$PARK/plan.md" "$TMP/park-plan-before.md"; cp "$PARK/state.json" "$TMP/park-state-before.json"
+park >/dev/null
+assert_exit "$?" 3 "an open phase exits 3"
+assert_eq "$(cat "$PARK/plan.md")" "$(cat "$TMP/park-plan-before.md")" "an open phase leaves the plan unchanged"
+assert_eq "$(cat "$PARK/state.json")" "$(cat "$TMP/park-state-before.json")" "an open phase leaves the state unchanged"
+assert_eq "$(wc -c < "$FAKE_WS_LOG" | tr -d ' ')" 0 "an open phase appends no event"
+assert_eq "$(wc -c < "$EMIT_LOG" | tr -d ' ')" 0 "an open phase pushes no plan"
+
+WS_BIN="$TMP/park-bin/ws" "$ROOT/loop-milestone.sh" park --dir "$PARK" --milestone 1 --prs "$PARK_PRS" >/dev/null 2>&1
+assert_exit "$?" 1 "park needs WS_LOOP_ID"
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/park-bin/ws" "$ROOT/loop-milestone.sh" park --dir "$PARK" --milestone 2 --prs "$PARK_PRS" >/dev/null 2>&1
+assert_exit "$?" 1 "park refuses a milestone other than the state milestone"
+
+loop_json merged done merged
+park >/dev/null
+assert_exit "$?" 0 "park succeeds when every phase of the milestone is done or merged"
+parsed="$(node "$ROOT/loop-plan-parse.mjs" --plan "$PARK/plan.md")"
+assert_eq "$(jq -c '[.phases[]|select(.milestone==1)|.status]' <<< "$parsed")" '["done","done","done"]' "the parser reads done for each phase of milestone 1"
+assert_eq "$(jq -c '[.phases[]|select(.milestone==2)|.status]' <<< "$parsed")" '["todo","todo"]' "later milestones keep their status"
+assert_eq "$(jq -c '.milestones[0].prs' <<< "$parsed")" '{"acme/api":"https://github.com/acme/api/pull/7","acme/web":"https://github.com/acme/web/pull/8"}' "the parser reads the PR lines of milestone 1"
+assert_eq "$(jq -r '.status' <<< "$parsed")" "awaiting merge" "the plan Status is awaiting merge"
+assert_eq "$(grep -c 'skills-park register' "$EMIT_LOG")" 1 "park pushes the plan once"
+assert_eq "$(jq -c '[.awaitingMerge, .repositories["acme/api"].prUrl, .repositories["acme/web"].prUrl, .repositories["acme/api"].integrationBranch]' "$PARK/state.json")" '[{"milestone":1,"prs":{"acme/api":"https://github.com/acme/api/pull/7","acme/web":"https://github.com/acme/web/pull/8"}},"https://github.com/acme/api/pull/7","https://github.com/acme/web/pull/8","feat/p1-api"]' "state records awaitingMerge and the PR URLs"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 1 "park appends one event"
+assert_eq "$(jq -c '.[1], (.[3]|fromjson), .[4:8]' "$FAKE_WS_LOG" | tr '\n' ' ')" '"loop.gate" {"kind":"merge","state":"open","milestone":1,"prs":{"acme/api":"https://github.com/acme/api/pull/7","acme/web":"https://github.com/acme/web/pull/8"}} ["--source","tool","--target","LOOP1"] ' "the gate event has tool provenance"
+assert_eq "$(jq -r '.[8]' "$FAKE_WS_LOG")" "--key" "the gate event has a key"
+
+echo "loop-milestone: park repeats without changes"
+cp "$PARK/plan.md" "$TMP/park-plan-after.md"; cp "$PARK/state.json" "$TMP/park-state-after.json"
+loop_json merged done merged '{"1":"open"}'
+park >/dev/null
+assert_exit "$?" 0 "a second park with the same PRs succeeds"
+assert_eq "$(cat "$PARK/plan.md")" "$(cat "$TMP/park-plan-after.md")" "a second park leaves the plan unchanged"
+assert_eq "$(cat "$PARK/state.json")" "$(cat "$TMP/park-state-after.json")" "a second park leaves the state unchanged"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 1 "a second park appends no event"
+assert_eq "$(grep -c 'skills-park register' "$EMIT_LOG")" 1 "a second park pushes no plan"
+echo "loop-milestone: park recovers a lost gate event"
+loop_json merged done merged
+park >/dev/null
+assert_exit "$?" 0 "a repeat appends the gate when the loop shows none"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 2 "the repeat re-appends the keyed gate event"
+assert_eq "$(jq -s '[.[]|.[9]]|unique|length' "$FAKE_WS_LOG")" 1 "both appends carry the same key"
+
+echo "loop-milestone: park with other PRs"
+park '{"acme/api":"https://github.com/acme/api/pull/9","acme/web":"https://github.com/acme/web/pull/8"}' >/dev/null
+assert_exit "$?" 1 "other PRs for a parked milestone exit 1"
+assert_eq "$(cat "$PARK/plan.md")" "$(cat "$TMP/park-plan-after.md")" "other PRs leave the plan unchanged"
+assert_eq "$(cat "$PARK/state.json")" "$(cat "$TMP/park-state-after.json")" "other PRs leave the state unchanged"
+assert_eq "$(jq -s 'length' "$FAKE_WS_LOG")" 2 "other PRs append no event"
+
+echo "loop-milestone: park a plan without milestone sections"
+IMPLICIT="$TMP/park-implicit/.loop"
+mkdir -p "$IMPLICIT"
+cat > "$IMPLICIT/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: skills-implicit
+-->
+# Implicit
+
+**Status:** in progress
+
+## Repositories
+
+### `acme/api`
+- **Verify:** `true`
+- **PR:** _none yet_
+
+## Phases
+
+### Phase 1 — Build `[status: in-progress]`
+- **Repository:** `acme/api`
+PLAN
+jq -n '{runId:"skills-implicit",milestone:1,awaitingMerge:null}' > "$IMPLICIT/state.json"
+jq -n '{milestone:1,phases:{"1":{n:1,milestone:1,status:"done"}}}' > "$FAKE_LOOP_GET"
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/park-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" "$ROOT/loop-milestone.sh" park --dir "$IMPLICIT" --milestone 1 --prs '{"acme/api":"https://github.com/acme/api/pull/5"}' >/dev/null 2>&1
+assert_exit "$?" 0 "park accepts a plan with one implicit milestone"
+parsed="$(node "$ROOT/loop-plan-parse.mjs" --plan "$IMPLICIT/plan.md")"
+assert_eq "$(jq -c '[.phases[0].status, .repositories[0].pr, .status]' <<< "$parsed")" '["done","https://github.com/acme/api/pull/5","awaiting merge"]' "the implicit milestone keeps its PR on the repository"
+
 test_summary
