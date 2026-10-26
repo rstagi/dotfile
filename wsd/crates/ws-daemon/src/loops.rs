@@ -18,6 +18,7 @@ use ws_core::{ids::SessionId, log::LogEntry, registry::Session};
 
 use crate::{
     api::{self, ApiError, SessionResponse, Store},
+    events::{latest_plan_entry, plan_sha},
     sessions::{Error, Result, Sessions},
 };
 
@@ -99,6 +100,7 @@ pub(crate) fn router() -> Router<Store> {
         .route("/v1/loops", get(list))
         .route("/v1/loops/{id}", get(fetch))
         .route("/v1/loops/{id}/check", get(check))
+        .route("/v1/loops/{id}/plan", get(plan))
         .route("/v1/loops/create", post(create))
         .route("/v1/loops/guard", post(guard::run))
         .route("/v1/loops/ack", post(ack))
@@ -183,6 +185,24 @@ async fn check(
             let mut result = crate::loop_check::check_entries(&log.entries);
             result["id"] = json!(session.id);
             Ok(result)
+        })
+        .await?,
+    ))
+}
+
+async fn plan(
+    State(store): State<Store>,
+    RoutePath(id): RoutePath<String>,
+    Query(context): Query<api::CallContext>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    Ok(Json(
+        api::call(store, move |sessions| {
+            sessions.record_call(context.parent_session_id, "loop.plan", Some(&id))?;
+            let session = sessions.resolve_loop(&id)?;
+            if session.body["kind"] != "loop" {
+                return Err(Error::InvalidRequest("The session is not a loop."));
+            }
+            sessions.loop_plan(&session)
         })
         .await?,
     ))
@@ -644,9 +664,43 @@ impl Sessions {
     fn loop_state(&self, session: &Session) -> Result<Value> {
         let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
         let plan_id = loop_plan_id(session, &log.entries);
+        let engine = latest_plan_entry(&log.entries).and_then(plan_engine);
         let mut state = fold_loop(session, log.entries);
         state["plan_id"] = json!(plan_id);
+        state["engine"] = json!(engine);
         Ok(state)
+    }
+
+    /// The latest plan of a loop with its engine and current milestone.
+    fn loop_plan(&self, session: &Session) -> Result<Value> {
+        let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
+        let plan_id = loop_plan_id(session, &log.entries);
+        let entry = latest_plan_entry(&log.entries).ok_or(Error::NoLoopPlan)?;
+        let engine = plan_engine(entry);
+        let (seq, body) = (entry.seq, entry.body.clone());
+        let milestone = fold_loop(session, log.entries)["milestone"].clone();
+        Ok(json!({
+            "plan_id":plan_id, "engine":engine, "sha":body["sha"], "text":body["text"],
+            "seq":seq, "milestone":milestone,
+        }))
+    }
+
+    /// Appends the first `loop.plan` of a loop from the `plan.md` file of its directory.
+    fn seed_loop_plan(&mut self, session: &Session, directory: &Path) -> Result<()> {
+        let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
+        if latest_plan_entry(&log.entries).is_some() {
+            return Ok(());
+        }
+        let Ok(text) = fs::read_to_string(directory.join("plan.md")) else {
+            return Ok(());
+        };
+        let body = json!({"sha":plan_sha(&text), "text":text});
+        self.append_daemon_loop_event(
+            &session.id.to_string(),
+            "loop.plan",
+            body.as_object().unwrap().clone(),
+        )?;
+        Ok(())
     }
 
     /// Resolves the session identity or the plan identity of a loop.
@@ -714,6 +768,7 @@ impl Sessions {
                     .is_ok_and(|path| path == directory)
             });
             if loop_plan_id(&session, &entries).as_deref() == Some(&plan_id) {
+                self.seed_loop_plan(&session, &directory)?;
                 return Ok((false, session));
             }
             if same_directory {
@@ -721,6 +776,7 @@ impl Sessions {
             }
         }
         if let Some(session) = directory_match {
+            self.seed_loop_plan(&session, &directory)?;
             return Ok((false, session));
         }
         self.check_spawn_limits(parent_session_id)?;
@@ -732,7 +788,9 @@ impl Sessions {
             json!({"alias":alias,"name":null,"workspace_id":null,
                 "parent_session_id":parent_session_id,"kind":"loop","loop_dir":directory,"plan_id":plan_id}),
         )?;
-        Ok((true, self.get_record(&id.to_string())?))
+        let session = self.get_record(&id.to_string())?;
+        self.seed_loop_plan(&session, &directory)?;
+        Ok((true, session))
     }
 }
 
@@ -756,6 +814,11 @@ fn loop_plan_id(session: &Session, entries: &[LogEntry]) -> Option<String> {
                 .and_then(|path| fs::read_to_string(Path::new(path).join("plan.md")).ok())
                 .and_then(|text| plan_header_value(&text, "planId"))
         })
+}
+
+/// The `engine:` value in the header of a plan event, or null.
+fn plan_engine(entry: &LogEntry) -> Option<String> {
+    plan_header_value(entry.body["text"].as_str()?, "engine")
 }
 
 /// Reads a nonempty field from the canonical plan header.
@@ -1348,7 +1411,7 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use crate::sessions::Sessions;
+    use crate::{events::plan_sha, sessions::Sessions};
 
     #[tokio::test]
     async fn enforcement_blocks_hard_violations_until_the_human_acknowledges() {
@@ -1746,7 +1809,10 @@ mod tests {
         assert_eq!(initial["status"], "planned");
         assert_eq!(initial["phases"], json!({}));
         let events = [
-            ("loop.plan", json!({"text":"# Plan", "sha":"abc"})),
+            (
+                "loop.plan",
+                json!({"text":"# Plan", "sha":plan_sha("# Plan")}),
+            ),
             (
                 "loop.phases",
                 json!({"phases":[{"n":1,"title":"Build","kind":"work","output":"pr","milestone":1,
@@ -1799,7 +1865,7 @@ mod tests {
         let (_, state) = request(&app, "GET", &uri, Value::Null).await;
         assert_eq!(state["id"], created["id"]);
         assert_eq!(state["loop_dir"], json!(directory.canonicalize().unwrap()));
-        assert_eq!(state["plan"]["sha"], "abc");
+        assert_eq!(state["plan"]["sha"], plan_sha("# Plan"));
         assert_eq!(state["phases"]["1"]["status"], "merged");
         assert_eq!(state["phases"]["1"]["title"], "Build");
         assert_eq!(state["milestone"], 5);
@@ -2312,6 +2378,147 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let (status, body) = request(&app, "POST", "/v1/sessions", spawn(3, "k3")).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    fn plan_text(plan_id: &str, engine: Option<&str>, body: &str) -> String {
+        let engine = engine.map_or(String::new(), |engine| format!("engine: {engine}\n"));
+        format!("<!-- loop-plan\nplanId: {plan_id}\n{engine}-->\n{body}\n")
+    }
+
+    async fn plan_append(app: &Router, id: &str, text: &str, sha: &str) -> (StatusCode, Value) {
+        request(
+            app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            json!({"type":"loop.plan","source":"tool","body":{"text":text,"sha":sha}}),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn the_plan_read_follows_create_and_later_appends() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let directory = sandbox.path().join("loop");
+        std::fs::create_dir(&directory).unwrap();
+        let first = plan_text("plan-read", Some("skills"), "# First");
+        std::fs::write(directory.join("plan.md"), &first).unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, created) = request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":directory}),
+        )
+        .await;
+        let id = created["id"].as_str().unwrap().to_owned();
+
+        let (status, plan) =
+            request(&app, "GET", &format!("/v1/loops/{id}/plan"), Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(plan["plan_id"], "plan-read");
+        assert_eq!(plan["engine"], "skills");
+        assert_eq!(plan["sha"], plan_sha(&first));
+        assert_eq!(plan["text"], first);
+        assert_eq!(plan["milestone"], Value::Null);
+        let created_seq = plan["seq"].as_u64().unwrap();
+        let (_, log) = request(&app, "GET", &format!("/v1/sessions/{id}/log"), Value::Null).await;
+        let entry = log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["type"] == "loop.plan")
+            .unwrap();
+        assert_eq!(entry["seq"], created_seq);
+        assert_eq!(entry["body"]["source"], "daemon");
+
+        // A second create appends nothing.
+        request(
+            &app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":directory}),
+        )
+        .await;
+        let (_, again) = request(&app, "GET", &format!("/v1/loops/{id}/plan"), Value::Null).await;
+        assert_eq!(again["seq"], created_seq);
+
+        let second = plan_text("plan-read", None, "# Second");
+        let third = plan_text("plan-read", Some("old"), "# Third");
+        for text in [&second, &third] {
+            let (status, _) = plan_append(&app, &id, text, &plan_sha(text)).await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        assert_eq!(
+            post(&app, &id, "loop.milestone", json!({"milestone":4})).await,
+            StatusCode::CREATED
+        );
+        // The plan id resolves the same loop.
+        let (status, plan) = request(&app, "GET", "/v1/loops/plan-read/plan", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(plan["text"], third);
+        assert_eq!(plan["sha"], plan_sha(&third));
+        assert_eq!(plan["engine"], "old");
+        assert_eq!(plan["milestone"], 4);
+        assert!(plan["seq"].as_u64().unwrap() > created_seq);
+
+        let (_, state) = request(&app, "GET", &format!("/v1/loops/{id}"), Value::Null).await;
+        assert_eq!(state["engine"], "old");
+        let (_, list) = request(&app, "GET", "/v1/loops", Value::Null).await;
+        assert_eq!(list[0]["engine"], "old");
+    }
+
+    #[tokio::test]
+    async fn a_plan_append_checks_the_sha_and_ignores_an_unchanged_plan() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (id, uri) = loop_session(&app, sandbox.path()).await;
+        let text = plan_text("fixture", None, "# Body\r\nline");
+
+        for sha in [
+            "wrong".to_owned(),
+            plan_sha(&text).to_uppercase(),
+            plan_sha(text.trim_end()),
+        ] {
+            let (status, _) = plan_append(&app, &id, &text, &sha).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{sha}");
+        }
+        let (status, _) = request(&app, "GET", &format!("{uri}/plan"), Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, first) = plan_append(&app, &id, &text, &plan_sha(&text)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, repeat) = plan_append(&app, &id, &text, &plan_sha(&text)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(repeat["seq"], first["seq"]);
+        let (_, log) = request(&app, "GET", &format!("/v1/sessions/{id}/log"), Value::Null).await;
+        let plans = log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["type"] == "loop.plan")
+            .count();
+        assert_eq!(plans, 1);
+
+        let changed = plan_text("fixture", None, "# Changed");
+        let (status, _) = plan_append(&app, &id, &changed, &plan_sha(&changed)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        // The old text is a change again, not a repeat of the first event.
+        let (status, _) = plan_append(&app, &id, &text, &plan_sha(&text)).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn the_plan_read_refuses_a_loop_without_a_plan_and_an_unknown_id() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let app = crate::api::router(Sessions::open(sandbox.path(), 1).unwrap());
+        let (_, uri) = loop_session(&app, sandbox.path()).await;
+        let (status, body) = request(&app, "GET", &format!("{uri}/plan"), Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "loop_plan_not_found");
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(state["engine"], Value::Null);
+        let (status, _) = request(&app, "GET", "/v1/loops/unknown/plan", Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     async fn request(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {

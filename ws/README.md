@@ -405,6 +405,7 @@ The tools return the daemon JSON in both text and structured content.
 | `session_block_on` | `ws session block-on <target> <dependency> --json` |
 | `wait` | `ws wait <target>... --for <condition> [--mode any\|all] [--after-seq <seq>] [--timeout <seconds>] --json` |
 | `loop_get` | `ws loop get <id> --json` |
+| `loop_plan` | `ws loop plan <id> [--json] [--out <file>]` |
 | `loop_check` | `ws loop check <id> --json` |
 | `loop_ack` | `ws loop ack <violation id> --reason <text> --json` |
 | `loop_list` | `ws loop list --json` |
@@ -463,6 +464,15 @@ An orchestrator continuation can still start. Each new hard result sends one des
 to record an acknowledgment as a `loop.control` event. An agent cannot acknowledge a hard
 violation. MCP `loop_ack` takes `{"id":"<violation id>","reason":"<text>"}`.
 `POST /v1/loops/ack` accepts the same fields and optional `parent_session_id` for the caller.
+
+`GET /v1/loops/{id}/plan`, MCP `loop_plan` and `ws loop plan <id>` return the latest `loop.plan` event as
+`{plan_id, engine, sha, text, seq, milestone}`. `engine` is the `engine:` value in the plan header, or null.
+The loop states show the same `engine`. `ws loop plan` prints the text, or the object with `--json`, or
+writes it to the `--out` file. An unknown loop or a loop with no plan gives HTTP 404 and exit code 3.
+`ws loop create` appends the first `loop.plan` from `<loop dir>/plan.md` with `source: daemon`.
+The `sha` of a `loop.plan` body is the lowercase SHA-256 hex digest of the exact UTF-8 bytes of `text`.
+A wrong `sha` gives HTTP 400. A plan with the `sha` of the latest plan appends nothing and returns
+that latest event (HTTP 200 on the event route).
 
 MCP `loop_get` takes `{"id":"<loop session>"}`. MCP `loop_list` takes `{}`.
 The CLI read commands print formatted JSON by default. `--json` prints compact JSON.

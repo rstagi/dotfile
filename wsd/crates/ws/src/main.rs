@@ -342,7 +342,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             worktrees,
             graph,
         } => return cmd::top::run(&socket_path()?, once, worktrees, graph).await,
-        Command::Loop { command } => cmd::loops::run(&socket_path()?, command).await?,
+        Command::Loop { command } => return cmd::loops::run(&socket_path()?, command).await,
         Command::Phase { command } => return cmd::phase::run(&socket_path()?, command).await,
         Command::Mcp => cmd::mcp::run(&socket_path()?).await?,
         Command::Migrate { dry_run, .. } => cmd::migrate::run(dry_run)?,

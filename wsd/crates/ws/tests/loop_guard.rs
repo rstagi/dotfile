@@ -2,6 +2,7 @@
 mod common;
 
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::{
     fs,
     io::Write,
@@ -9,6 +10,10 @@ use std::{
     process::{Command, Stdio},
 };
 use ws_daemon::agents::Prepared;
+
+fn plan_body(text: &str) -> Value {
+    json!({"text":text, "sha":format!("{:x}", sha2::Sha256::digest(text.as_bytes()))})
+}
 
 struct Sandbox {
     _daemon: common::Daemon,
@@ -76,7 +81,7 @@ fn guard_denies_recorded_tool_bypasses_and_records_daemon_evidence() {
         &format!("/v1/sessions/{owner}/events"),
         json!({
             "type":"loop.plan", "source":"tool",
-            "body":{"text":"# Plan\n- **Integration branch:** `feat/integration`\n", "sha":"test"}
+            "body":plan_body("# Plan\n- **Integration branch:** `feat/integration`\n")
         }),
     );
     let cases = [
@@ -147,7 +152,7 @@ fn guard_supports_fix_pushes_observation_only_agents_and_unrelated_sessions() {
     let sandbox = Sandbox::new();
     let owner = sandbox.loop_session();
     sandbox.post(&format!("/v1/sessions/{owner}/events"), json!({
-        "type":"loop.plan", "source":"tool", "body":{"text":"- **Integration branch:** `feat/integration`", "sha":"test"}
+        "type":"loop.plan", "source":"tool", "body":plan_body("- **Integration branch:** `feat/integration`")
     }));
     let fix = sandbox.post("/v1/sessions", json!({"headless":true, "command":["/bin/true"], "cwd":sandbox.home.path(),
         "loop":{"loop":owner, "phase":2, "attempt":1, "repo":"owner/repo", "role":"fix", "provider":"claude", "round":1, "inner":1}
@@ -178,7 +183,7 @@ fn guard_recognizes_implicit_push_targets_and_shell_wrappers() {
     let owner = sandbox.loop_session();
     let child = sandbox.session(Some(&owner));
     sandbox.post(&format!("/v1/sessions/{owner}/events"), json!({
-        "type":"loop.plan", "source":"tool", "body":{"text":"- **Integration branch:** `feat/integration`", "sha":"test"}
+        "type":"loop.plan", "source":"tool", "body":plan_body("- **Integration branch:** `feat/integration`")
     }));
     let output = Command::new("git")
         .current_dir(sandbox.home.path())

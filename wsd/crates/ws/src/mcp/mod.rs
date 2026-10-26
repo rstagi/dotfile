@@ -68,6 +68,15 @@ impl Control {
                 )
                 .await
             }
+            "loop_plan" => {
+                let request: LoopId = serde_json::from_value(arguments)?;
+                self.request(
+                    Method::GET,
+                    &format!("/v1/loops/{}/plan", client::encode(&request.id)),
+                    None,
+                )
+                .await
+            }
             "loop_ack" => {
                 let request: LoopAck = serde_json::from_value(arguments)?;
                 // A legacy agent must not become an anonymous human for an acknowledgment.
@@ -427,6 +436,10 @@ fn tools() -> Vec<Tool> {
         tool::<LoopId>(
             "loop_get",
             "Read the state of one loop from its session events.",
+        ),
+        tool::<LoopId>(
+            "loop_plan",
+            "Read the current plan of one loop: plan_id, engine, sha, text, seq and milestone. It fails when the loop has no plan.",
         ),
         tool::<LoopAck>(
             "loop_ack",
