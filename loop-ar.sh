@@ -22,7 +22,7 @@
 # Commands (run as a script; inactive when sourced):
 #   loop-ar.sh verdict <report> reviewer|critic   → token; invalid → "invalid", exit 2
 #   loop-ar.sh prompt --role R --framing F --ledger L --run-dir D
-#   loop-ar.sh disputed --ledger L                → sidecar path
+#   loop-ar.sh disputed --ledger L [--review-key K] → sidecar path
 #   loop-ar.sh prove-fix <run-dir>                → PUSHED|NOOP, checked against the remote head
 
 typeset -g _LOOP_AR_ROOT="${${(%):-%x}:A:h}"
@@ -207,11 +207,21 @@ ar_prompt() {
 ar_write_disputed() {
   emulate -L zsh
   local ledger="" line active="" last_role="" max_attempt=0 report_r report_c
-  local disputed tmp_report="" tmp_ledger=""
+  local disputed tmp_report="" tmp_ledger="" review_key="" review_meta=""
   local -a columns reviewer critic
   local -A ar_state
-  [[ $# == 2 && "$1" == --ledger && -n "$2" ]] || return 1
-  ledger="$2"
+  while (( $# )); do
+    [[ $# -ge 2 && -n "$2" ]] || return 1
+    case "$1" in
+      --ledger) [[ -z "$ledger" ]] || return 1; ledger="$2" ;;
+      --review-key) [[ -z "$review_key" ]] || return 1; review_key="$2" ;;
+      *) return 1 ;;
+    esac
+    shift 2
+  done
+  if [[ -n "$review_key" ]]; then
+    review_meta="$(_ar_review_key "$review_key")" && [[ "$(jq -r .role <<< "$review_meta")" == disputed ]] || return 1
+  fi
   [[ -f "$ledger" && -r "$ledger" ]] || return 1
   _ar_load_round "$ledger" 1 || return 1
   disputed="${ledger%.tsv}.disputed.md"
@@ -228,6 +238,7 @@ ar_write_disputed() {
     esac
   done < "$ledger"
   if [[ "$last_role" == disputed && -f "$disputed" ]]; then
+    _ar_disputed_result "$review_meta" "$disputed"
     print -r -- "$disputed"; return 0
   fi
   [[ "$last_role" == critic || "$last_role" == confirm || "$last_role" == disputed ]] || return 1
@@ -259,11 +270,27 @@ ar_write_disputed() {
     # Publish evidence first. A crash before the ledger rename can safely replay.
     mv -f -- "$tmp_report" "$disputed" || return 1
     mv -f -- "$tmp_ledger" "$ledger" || return 1
+    _ar_disputed_result "$review_meta" "$disputed"
     print -r -- "$disputed"
   } always {
     [[ -n "$tmp_report" ]] && rm -f -- "$tmp_report"
     [[ -n "$tmp_ledger" ]] && rm -f -- "$tmp_ledger"
   }
+}
+
+# The Loop owns --review-key. Remove it with the old engine after caller migration.
+_ar_disputed_result() {
+  [[ -n "$1" && -n "${WS_LOOP_ID:-}" ]] || return 0
+  local body key ws_bin
+  body="$(jq -cn --argjson review "$1" --arg sidecar "$2" \
+    '$review + {state:"finished",verdict:"DISPUTED",sidecar:$sidecar,session:null,provider:null}')"
+  key="$(jq -r .key <<< "$1")"
+  ws_bin="$(whence -p ws)"
+  if [[ -z "$ws_bin" || -z "$body" ]] ||
+      ! "$ws_bin" event loop.review --body "$body" --source tool --target "$WS_LOOP_ID" --key "$key" > /dev/null 2>&1; then
+    print -u2 -r -- "loop-ar: warning: cannot append loop.review to loop session $WS_LOOP_ID"
+  fi
+  return 0
 }
 
 _ar_disputed_ids() {
@@ -345,6 +372,16 @@ ar_prove_fix() {
   remote_head="$(git -C "$worktree" ls-remote --exit-code -- "$remote" "refs/heads/$branch")" || return 1
   [[ "${remote_head%%$'\t'*}" == "$after" ]] || { print -u2 -r -- 'loop-ar: remote head does not match completed fix'; return 1; }
   print -r -- "$result"
+}
+
+# _ar_review_key <step key> → result coordinates for the skills engine.
+_ar_review_key() {
+  emulate -L zsh
+  local step="$1"
+  [[ "$step" =~ '^review:([1-9][0-9]*):([^:]+):(review|respond|critic|confirm|final|fix|disputed):([0-9]+):([0-9]+):attempt:([1-9][0-9]*)$' ]] || return 1
+  jq -cn --arg phase "$match[1]" --arg repo "$match[2]" --arg role "$match[3]" \
+    --arg round "$match[4]" --arg key "${step}:result" \
+    '{phase:($phase|tonumber),repo:$repo,key:$key,role:$role,round:($round|tonumber)}'
 }
 
 ar_main() {

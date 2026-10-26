@@ -27,6 +27,7 @@ esac
 #     [--resume <sessionId> --engine codex|claude|grok] [--models-conf <f>] [--budget <usd>]
 #     [--loop-dir <d>]   (default: RUN_DIR/../.. — the coordinator .loop/)
 #     [--publish-output <file>]   (publish a terminal report to the runner's ws session)
+#     [--review-key <step key>]   (record the published review result in the skills engine)
 #
 # Live controls (polled every LOOP_CONTROL_POLL_SEC, default 2s, while the engine runs):
 #   <loopDir>/control/pause | control/pause-<phase>  → kill the engine, exit 30 (resumable)
@@ -50,7 +51,7 @@ fi
 WT="" RUN_DIR="" PROMPT_FILE="" CHAIN_NAME="task" TIMEOUT="" VERIFY=""
 RESUME_SID="" RESUME_ENGINE="" MODELS_CONF="$SCRIPT_DIR/loop-models.conf" BUDGET=""
 RUN_ID="" PHASE="" REPOSITORY="" LOOP_DIR="" REVIEW_TIER=""
-PUBLISH_OUTPUT=""
+PUBLISH_OUTPUT="" REVIEW_KEY="" REVIEW_META=""
 ROUTE_PROPOSED_PROFILE="" ROUTE_ACTUAL_PROFILE="" ROUTE_FALLBACK_REASON=""
 
 while [[ $# -gt 0 ]]; do
@@ -70,6 +71,9 @@ while [[ $# -gt 0 ]]; do
   --repository) REPOSITORY="$2"; shift 2 ;;
   --loop-dir) LOOP_DIR="$2"; shift 2 ;;
   --review-tier) REVIEW_TIER="$2"; shift 2 ;;
+  --review-key)
+    [[ -n "${2:-}" ]] || { echo "loop-runner: --review-key requires a step key" >&2; exit 1; }
+    REVIEW_KEY="$2"; shift 2 ;;
   --publish-output)
     [[ -n "${2:-}" ]] || { echo "loop-runner: --publish-output requires a file" >&2; exit 1; }
     PUBLISH_OUTPUT="$2"; shift 2 ;;
@@ -118,11 +122,16 @@ ws_loop_event() {
   return 0
 }
 ws_loop_attempt_event() { # $1 = outcome, $2 = pass|fail|none. A checkpoint is not a result.
+  [[ -n "$REVIEW_KEY" ]] && return 0
   jq -e '.checkpoint == true' "$STATUS" >/dev/null 2>&1 && return 0
   ws_loop_event loop.attempt "loop.attempt:${WS_LOOP_PHASE:-}:${WS_SESSION_ID:-}:result" '{n:($phase|tonumber), attempt:($attempt|tonumber), session:$session,
     state:"result", outcome:$outcome, verify:$verify}' --arg outcome "$1" --arg verify "$2"
 }
-ws_loop_review_event() { # a final review is published: record its verdict
+ws_loop_review_event() { # Record the published result. Preserve the old event without a review key.
+  if [[ -n "$REVIEW_KEY" ]]; then
+    ws_loop_review_result
+    return 0
+  fi
   local verdict
   verdict="$(zsh "$SCRIPT_DIR/loop-ar.sh" verdict "$PUBLISH_OUTPUT" reviewer 2>/dev/null)" ||
     verdict="$(jq -r '.event // "invalid"' "$STATUS" 2>/dev/null)"
@@ -131,11 +140,44 @@ ws_loop_review_event() { # a final review is published: record its verdict
     provider:$provider, verdict:$verdict}' --arg repo "$REPOSITORY" --arg provider "${CUR_ENGINE:-}" \
     --arg verdict "$verdict"
 }
+# The Loop owns --review-key. Remove it with the old engine after caller migration.
+ws_loop_review_result() {
+  [[ -n "${WS_LOOP_ID:-}" ]] || return 0
+  local role verdict kind session provider="$CUR_ENGINE"
+  role="$(jq -r .role <<< "$REVIEW_META")"
+  case "$role" in
+    final)
+      verdict="$(jq -er '.event | select(. == "APPROVE" or . == "COMMENT" or . == "REQUEST_CHANGES")' "$STATUS")" || return 0 ;;
+    review|respond|critic|confirm)
+      [[ "$outcome" == done ]] || return 0
+      case "$role" in review|respond) kind=reviewer ;; *) kind=critic ;; esac
+      verdict="$(zsh "$SCRIPT_DIR/loop-ar.sh" verdict "$PUBLISH_OUTPUT" "$kind" 2>/dev/null)" || return 0 ;;
+    fix)
+      [[ "$outcome" == done ]] || return 0
+      verdict="$(cd "$WT" && zsh "$SCRIPT_DIR/loop-ar.sh" prove-fix "$RUN_DIR" 2>/dev/null)" || return 0 ;;
+    *) return 0 ;;
+  esac
+  session="$(cat "$RUN_DIR/ws-session")"
+  [[ "$provider" == codex ]] && provider=gpt
+  ws_loop_event loop.review "${REVIEW_KEY}:result" \
+    '{phase:$review.phase, repo:$review.repo, key:$review.key, role:$review.role,
+      provider:$provider, round:$review.round, state:"finished", verdict:$verdict, session:$runner} +
+      (if $review.role == "final" then {commentUrl:$status[0].commentUrl} else {} end)' \
+    --argjson review "$REVIEW_META" --arg provider "$provider" --arg verdict "$verdict" \
+    --arg runner "$session" --slurpfile status "$STATUS"
+}
 trap 'loop_runner_finish $?' EXIT
 
 [[ -d "$WT" && -n "$RUN_DIR" && -f "$PROMPT_FILE" ]] || {
   echo "loop-runner: --worktree, --run-dir, --prompt-file are required" >&2; exit 1
 }
+if [[ -n "$REVIEW_KEY" ]]; then
+  [[ -n "$PUBLISH_OUTPUT" ]] || { echo "loop-runner: --review-key requires --publish-output" >&2; exit 1; }
+  source "$SCRIPT_DIR/loop-ar.sh"
+  REVIEW_META="$(_ar_review_key "$REVIEW_KEY")" && [[ "$(jq -r .role <<< "$REVIEW_META")" != disputed ]] || {
+    echo "loop-runner: the review step key is invalid" >&2; exit 1
+  }
+fi
 source "$MODELS_CONF" || { echo "loop-runner: cannot source $MODELS_CONF" >&2; exit 1; }
 (( ${+CODEX_EXTRA_ARGS} )) || CODEX_EXTRA_ARGS=()
 (( ${+CLAUDE_EXTRA_ARGS} )) || CLAUDE_EXTRA_ARGS=()

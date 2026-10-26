@@ -4,10 +4,16 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 source "$HERE/lib.sh"
+source "$HERE/home-guard.sh"
 source "$ROOT/loop-ar.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+trap 'exit 1' INT TERM HUP
+home_guard_sandbox "$TMP/home"
+unset WS_LOOP_ID WS_SESSION_ID WS_SESSION LOOP_DAEMON_URL
+export LOOP_DAEMON_URL="http://127.0.0.1:9"
+export WS_HOME="$TMP/ws" WS_STATE="$TMP/state" WS_SOCK="$TMP/ws.sock"
 REPORT="$TMP/report.md"
 LEDGER="$TMP/review.ledger.tsv"
 T=$'\t'
@@ -416,6 +422,36 @@ actual="$(zsh "$AR" disputed --ledger "$CLI_LEDGER")"; rc=$?
 assert_exit "$rc" 0 "disputed command writes the sidecar"
 assert_eq "$actual" "${CLI_LEDGER%.tsv}.disputed.md" "disputed command prints the sidecar path"
 assert_eq "$(tail -n 1 "$CLI_LEDGER" | cut -f2,3,5)" "disputed${T}disputed${T}DISPUTED" "disputed command appends the marker row"
+
+echo "ar: disputed review keys publish the sidecar as a tool result"
+KEY_LEDGER="$CLI_LOOP/runs/cli-key.ledger.tsv"
+head -n 4 "$CLI_LEDGER" > "$KEY_LEDGER"
+make_fake_ws "$TMP/fakews"
+export FAKE_WS_LOG="$TMP/disputed-events.jsonl"; : > "$FAKE_WS_LOG"
+REVIEW_KEY=review:136:acme/api:disputed:2:0:attempt:4
+WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" zsh "$AR" disputed --ledger "$KEY_LEDGER" \
+  --review-key "$REVIEW_KEY" > "$TMP/disputed-key-path"
+assert_exit "$?" 0 "a keyed dispute keeps the sidecar result"
+assert_eq "$(cat "$TMP/disputed-key-path")" "${KEY_LEDGER%.tsv}.disputed.md" "a keyed dispute prints only its sidecar path"
+assert_eq "$(jq -c '.[0:3] + .[4:]' "$FAKE_WS_LOG")" \
+  '["event","loop.review","--body","--source","tool","--target","LOOP1","--key","review:136:acme/api:disputed:2:0:attempt:4:result"]' "the dispute appends the result key as a tool"
+assert_eq "$(jq -c '.[3] | fromjson | del(.sidecar)' "$FAKE_WS_LOG")" \
+  '{"phase":136,"repo":"acme/api","key":"review:136:acme/api:disputed:2:0:attempt:4:result","role":"disputed","round":2,"state":"finished","verdict":"DISPUTED","session":null,"provider":null}' \
+  "the dispute has no runner and uses the key coordinates"
+assert_eq "$(jq -r '.[3] | fromjson | .sidecar' "$FAKE_WS_LOG")" "${KEY_LEDGER%.tsv}.disputed.md" "the event preserves the sidecar path"
+: > "$FAKE_WS_LOG"
+PATH="$TMP/fakews:$PATH" zsh "$AR" disputed --review-key "$REVIEW_KEY" --ledger "$KEY_LEDGER" > /dev/null
+assert_exit "$?" 0 "a keyed dispute works without WS_LOOP_ID"
+assert_eq "$(cat "$FAKE_WS_LOG")" '' "an unset WS_LOOP_ID appends no dispute event"
+WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" zsh "$AR" disputed --ledger "$KEY_LEDGER" > /dev/null
+assert_exit "$?" 0 "a legacy dispute works with WS_LOOP_ID"
+assert_eq "$(cat "$FAKE_WS_LOG")" '' "a missing review key appends no dispute event"
+
+for args in '--review-key invalid' '--review-key review:136:none:final:1:0:attempt:1' '--ledger /duplicate' '--review-key'; do
+  WS_LOOP_ID=LOOP1 PATH="$TMP/fakews:$PATH" zsh "$AR" disputed --ledger "$KEY_LEDGER" ${=args} > /dev/null 2>&1
+  assert_exit "$?" 1 "the dispute rejects invalid arguments: $args"
+  assert_eq "$(cat "$FAKE_WS_LOG")" '' "invalid arguments append no dispute event"
+done
 
 echo "ar: prove-fix command checks the remote head"
 PF_REPO="$TMP/pf-repo"; PF_REMOTE="$TMP/pf-remote.git"; PF_RUN="$TMP/pf-run"
