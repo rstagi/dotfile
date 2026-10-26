@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Skills engine end to end: tests/loop-e2e/run.sh --scenario <name>|--all [--model <id>] [--broken]
-# Scenarios: happy, verify-fail, crash. Everything runs in a sandbox: temporary HOME, WS_HOME, WS_STATE and
+# Skills engine end to end: tests/loop-e2e/run.sh --scenario <name>|--all [--model <id>]
+# Scenarios: happy, verify-fail, crash, broken (a broken fake orchestrator must fail ws loop check). Everything runs in a sandbox: temporary HOME, WS_HOME, WS_STATE and
 # WS_SOCK, a `tmux -L` server, a wsd built from this branch, a bare git origin and fake engines.
 # Without --model a scripted fake orchestrator runs the loop. With --model the `loop` skill runs on that model.
 set -u
@@ -9,9 +9,9 @@ ROOT="${HERE:h:h}"
 source "$ROOT/tests/lib.sh"
 source "$ROOT/tests/home-guard.sh"
 
-SCENARIOS=(happy verify-fail crash)
+SCENARIOS=(happy verify-fail crash broken)
 HANG_GUARD=60 # seconds. Only a hang guard: every wait ends on an event.
-TMP="" DAEMON_PID="" ORCH_PID="" MODEL="" BROKEN=0
+TMP="" DAEMON_PID="" ORCH_ID="" MODEL=""
 
 main() {
   local scenario="" arg
@@ -20,13 +20,16 @@ main() {
     --scenario) scenario="$2"; shift 2 ;;
     --all) scenario=all; shift ;;
     --model) MODEL="$2"; shift 2 ;;
-    --broken) BROKEN=1; shift ;;
-    *) print -u2 "usage: run.sh --scenario <name>|--all [--model <id>] [--broken]"; return 2 ;;
+    *) print -u2 "usage: run.sh --scenario <name>|--all [--model <id>]"; return 2 ;;
     esac
   done
-  [[ -n "$scenario" ]] || { print -u2 "usage: run.sh --scenario <name>|--all [--model <id>] [--broken]"; return 2; }
+  [[ -n "$scenario" ]] || { print -u2 "usage: run.sh --scenario <name>|--all [--model <id>]"; return 2; }
   require_ws_test_binary || return 1
-  if (( BROKEN )); then run_scenario broken; test_summary; return $?; fi
+  # Traps live here: a zsh EXIT trap set inside a function runs when that function returns.
+  trap teardown EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   if [[ "$scenario" == all ]]; then
     for arg in $SCENARIOS; do run_scenario "$arg"; done
   else
@@ -96,10 +99,6 @@ scenario_broken() {
 
 setup_sandbox() {
   TMP="$(mktemp -d /tmp/loop-e2e.XXXXXX)"; TMP="${TMP:A}"
-  trap teardown_exit EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  trap 'exit 129' HUP
   home_guard_sandbox "$TMP/home"
   unset WS_SESSION_ID WS_SESSION WS_LOOP_ID WS_LOOP_PHASE WS_LOOP_ATTEMPT LOOP_DAEMON_URL TMUX TMUX_PANE E2E_BROKEN E2E_SCENARIO
   export LOOP_DAEMON_URL="http://127.0.0.1:9" # no Loop daemon; skills loops never use it
@@ -138,8 +137,6 @@ make_origin() {
   git -C "$checkout" push -q origin main
   "$ROOT/loop-repo.sh" map acme/e2e "$checkout" > /dev/null
 }
-
-teardown_exit() { teardown; }
 
 # Stop only the processes of this sandbox: the daemon and the tmux server that the sandbox socket names.
 teardown() {

@@ -16,7 +16,7 @@ main() {
   RUN_ID="$(jq -er .runId "$LOOP_DIR/state.json")"
   INTEG="$(jq -er --arg r "$REPO" '.repositories[$r].integrationWorktree' "$LOOP_DIR/state.json")"
   if [[ "${E2E_BROKEN:-0}" == 1 ]]; then
-    "$WS_BIN" event loop.phase --body '{"n":1,"status":"merged"}' --target "$WS_LOOP_ID" || return $?
+    "$WS_BIN" event loop.phase --body '{"n":1,"status":"merged","session":null}' --target "$WS_LOOP_ID" || return $?
     return 0
   fi
   work_phase 1 feat/e2e-alpha alpha.txt || return $?

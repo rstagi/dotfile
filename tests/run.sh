@@ -45,7 +45,7 @@ else # copied-runner fixtures (runner.test.sh) ship run.sh alone: sandbox HOME, 
 fi
 
 echo "== zsh -n (syntax) =="
-ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh(N))"}) # relative to $ROOT
+ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh(N) tests/loop-e2e/*.sh(N))"}) # relative to $ROOT
 for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh $ws_scripts; do
   [[ -f "$ROOT/$s" ]] || continue
   if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; failed_suites+=("zsh -n: $s"); fi
