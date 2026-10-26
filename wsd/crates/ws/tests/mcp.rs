@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
 use serde_json::{Value, json};
+use sha2::Digest;
 
 #[tokio::test]
 async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
@@ -41,6 +42,7 @@ async fn stdio_session_list_matches_the_json_cli_and_records_the_caller() {
             "loop_model",
             "loop_note",
             "loop_pause",
+            "loop_plan",
             "loop_reject",
             "loop_resume",
             "loop_start",
@@ -1102,6 +1104,44 @@ async fn loop_check_matches_http_and_json_cli_and_names_the_proving_events() {
         "invalid_request"
     );
     server.assert_audit("loop.check");
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn loop_plan_matches_http_and_json_cli_and_fails_without_a_plan() {
+    let server = TestServer::start().await;
+    let directory = server.home.path().join("loop");
+    std::fs::create_dir(&directory).unwrap();
+    let created = server
+        .call(
+            "loop_create",
+            json!({"loop_dir":directory,"plan_id":"mcp-plan"}),
+        )
+        .await;
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(
+        server.error("loop_plan", json!({"id":id})).await["error"]["code"],
+        "loop_plan_not_found"
+    );
+    let text = "<!-- loop-plan\nplanId: mcp-plan\nengine: skills\n-->\n# Plan\n";
+    let sha = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
+    server
+        .call(
+            "session_event",
+            json!({"target":id,"type":"loop.plan","source":"tool","body":{"text":text,"sha":sha}}),
+        )
+        .await;
+    let plan = server.call("loop_plan", json!({"id":"mcp-plan"})).await;
+    assert_eq!(plan["text"], text);
+    assert_eq!(plan["sha"], sha);
+    assert_eq!(plan["engine"], "skills");
+    assert_eq!(plan["plan_id"], "mcp-plan");
+    assert_eq!(plan["milestone"], Value::Null);
+    assert_eq!(plan, server.cli(&["loop", "plan", id, "--json"]));
+    let response = common::request(&server.socket, "GET", &format!("/v1/loops/{id}/plan"), "");
+    let http: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(http, plan);
+    server.assert_audit("loop.plan");
     server.finish().await;
 }
 

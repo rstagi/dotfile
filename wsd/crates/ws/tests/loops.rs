@@ -4,6 +4,7 @@ mod common;
 use std::{fs, path::PathBuf};
 
 use serde_json::{Value, json};
+use sha2::Digest;
 
 struct Sandbox {
     _daemon: common::Daemon,
@@ -385,6 +386,108 @@ fn loop_enforcement_sends_one_notification_for_a_new_hard_result() {
 }
 
 #[test]
+fn loop_plan_cli_prints_the_text_writes_a_file_and_exits_3_without_a_plan() {
+    let sandbox = Sandbox::new();
+    let ws = |args: &[&str]| {
+        common::ws(sandbox.home.path(), &sandbox.socket)
+            .args(args)
+            .env_remove("WS_SESSION_ID")
+            .env_remove("WS_SESSION")
+            .output()
+            .unwrap()
+    };
+    let dir = sandbox.loop_dir.to_str().unwrap();
+    let created = ws(&[
+        "loop",
+        "create",
+        "--dir",
+        dir,
+        "--plan-id",
+        "cli-read",
+        "--json",
+    ]);
+    let created: Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    // No plan.md and no plan event.
+    let missing = ws(&["loop", "plan", id]);
+    assert_eq!(missing.status.code(), Some(3), "{missing:?}");
+    let unknown = ws(&["loop", "plan", "no-such-loop", "--json"]);
+    assert_eq!(unknown.status.code(), Some(3), "{unknown:?}");
+
+    let text =
+        "<!-- loop-plan\nplanId: cli-read\nengine: skills\n-->\n# Plan\n\nno newline at the end";
+    let sha = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
+    let body = json!({"text":text,"sha":sha}).to_string();
+    let append = |body: &str| {
+        ws(&[
+            "event",
+            "loop.plan",
+            "--target",
+            id,
+            "--source",
+            "tool",
+            "--body",
+            body,
+        ])
+    };
+    let first = append(&body);
+    assert!(first.status.success(), "{first:?}");
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+
+    let printed = ws(&["loop", "plan", id]);
+    assert!(printed.status.success(), "{printed:?}");
+    assert_eq!(String::from_utf8(printed.stdout).unwrap(), text);
+    let by_plan_id = ws(&["loop", "plan", "cli-read", "--json"]);
+    let object: Value = serde_json::from_slice(&by_plan_id.stdout).unwrap();
+    assert_eq!(object["seq"], first["seq"]);
+    assert_eq!(object["engine"], "skills");
+    let out = sandbox.home.path().join("plan-out.md");
+    let written = ws(&["loop", "plan", id, "--out", out.to_str().unwrap()]);
+    assert!(written.status.success(), "{written:?}");
+    assert!(written.stdout.is_empty());
+    assert_eq!(fs::read_to_string(&out).unwrap(), text);
+    let shown = ws(&["loop", "get", id, "--json"]);
+    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["engine"], "skills");
+    let listed = ws(&["loop", "list", "--json"]);
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed[0]["engine"], "skills");
+
+    // The same plan again appends nothing. A wrong sha is refused.
+    let repeat = append(&body);
+    assert!(repeat.status.success(), "{repeat:?}");
+    let repeat: Value = serde_json::from_slice(&repeat.stdout).unwrap();
+    assert_eq!(repeat["seq"], first["seq"]);
+    let log = ws(&["log", id, "--type", "loop.plan"]);
+    let log: Value = serde_json::from_slice(&log.stdout).unwrap();
+    assert_eq!(log["entries"].as_array().unwrap().len(), 1);
+    let wrong = append(&json!({"text":text,"sha":"0".repeat(64)}).to_string());
+    assert!(!wrong.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong.stderr).contains("sha"),
+        "{wrong:?}"
+    );
+}
+
+#[test]
+fn loop_create_appends_the_first_plan_from_plan_md_once() {
+    let sandbox = Sandbox::new();
+    let text = "<!-- loop-plan\nplanId: create-seed\n-->\n# Plan\n";
+    fs::write(sandbox.loop_dir.join("plan.md"), text).unwrap();
+    let created = sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let id = created["id"].as_str().unwrap();
+    let plan = sandbox.request_get(&format!("/v1/loops/{id}/plan"));
+    assert_eq!(plan["text"], text);
+    assert_eq!(plan["engine"], Value::Null);
+    let log = sandbox.request_get(&format!("/v1/sessions/{id}/log?type=loop.plan"));
+    assert_eq!(log["entries"][0]["body"]["source"], "daemon");
+    sandbox.request("/v1/loops/create", json!({"loop_dir":sandbox.loop_dir}));
+    let log = sandbox.request_get(&format!("/v1/sessions/{id}/log?type=loop.plan"));
+    assert_eq!(log["entries"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn skills_tier_changes_the_plan_and_refuses_a_review_that_started() {
     let sandbox = Sandbox::new();
     let plan = sandbox.loop_dir.join("plan.md");
@@ -405,7 +508,10 @@ fn skills_tier_changes_the_plan_and_refuses_a_review_that_started() {
     assert!(text.contains("[review: max]"));
     assert!(text.contains("[rounds: 4]"));
     assert_eq!(entry["body"]["text"], text);
-    assert_eq!(entry["body"]["sha"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        entry["body"]["sha"],
+        format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
+    );
     fs::write(
         sandbox.loop_dir.join("state.json"),
         r#"{"runId":"loop-test","phases":{"9":{"status":"running","attempt":1}}}"#,
@@ -1351,6 +1457,12 @@ with (root / 'coordinator/.loop/sub/release').open() as release:
             );
             std::thread::yield_now();
         }
+    }
+
+    fn request_get(&self, path: &str) -> Value {
+        let response = common::get(&self.socket, path);
+        assert!(response.starts_with("HTTP/1.1 2"), "{response}");
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
     }
 
     fn request(&self, path: &str, body: Value) -> Value {
