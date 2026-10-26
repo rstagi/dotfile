@@ -217,7 +217,7 @@ esac
 GH
   chmod +x "$TMP/bin/gh"
   export PATH="$HERE/bin:$E2E_DIR/runtime-bin:$PATH"
-  export LOOP_RUNTIME_ROOT="$ROOT" LOOP_JEV_MODE=off
+  export LOOP_RUNTIME_ROOT="$ROOT" LOOP_JEV_MODE=off LOOP_WS_SESSIONS=1 # runners record results through ws sessions
   unset CLAUDE_CONFIG_DIR # the Keychain entry name depends on a custom config dir; the default is $HOME/.claude of the sandbox
 }
 

@@ -23,7 +23,15 @@ while (( pid > 1 )); do
 done
 # The runner reads the session of its result from RUN_DIR/ws-session. The fake engine is a direct child of the
 # keyed runner session, so WS_SESSION_ID is that session.
-[[ -z "$run_dir" || -z "${WS_SESSION_ID:-}" ]] || print -r -- "$WS_SESSION_ID" > "$run_dir/ws-session"
+[[ -z "$run_dir" || -z "${WS_SESSION_ID:-}" || -s "$run_dir/ws-session" ]] || print -r -- "$WS_SESSION_ID" > "$run_dir/ws-session"
+# Under a ws session the engine is a child of wsd. Its parent session is the runner, and the command of the
+# runner session holds the same arguments.
+if [[ -z "$run_dir" && -n "${WS_SESSION_ID:-}" ]]; then
+  parent="$(ws session get "$WS_SESSION_ID" --json | jq -r '.parent_session_id // empty')"
+  command_json="$([[ -z "$parent" ]] || ws session get "$parent" --json | jq -c '.body.command // []')"
+  arg_after() { jq -r --arg flag "$1" '. as $a | (index($flag)) as $i | if $i == null then "" else $a[$i + 1] end' <<< "$command_json"; }
+  run_dir="$(arg_after --run-dir)"; key="$(arg_after --review-key)"; report="$(arg_after --publish-output)"
+fi
 [[ -n "$run_dir" ]] || { print -u2 "fake engine: no --run-dir above me"; exit 1; }
 
 done_status() { jq -cn --arg summary "$1" '{outcome:"done", summary:$summary, checkpoint:false}' > "$run_dir/status.json"; }
