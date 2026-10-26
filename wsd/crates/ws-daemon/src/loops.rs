@@ -857,6 +857,7 @@ fn valid_model(model: &str) -> bool {
 }
 
 /// Returns the phase and the status that a Loop fact implies, if that status is higher.
+/// A phase that the current state does not have gets no status.
 fn derived_status(state: &Value, kind: &str, body: &Value) -> Option<(u64, &'static str)> {
     let (n, status) = match kind {
         "loop.attempt" => {
@@ -884,6 +885,9 @@ fn derived_status(state: &Value, kind: &str, body: &Value) -> Option<(u64, &'sta
         }
         _ => return None,
     };
+    if !state["phases"][n.to_string()].is_object() {
+        return None;
+    }
     let rank = |status: &Value| PHASE_RANKS.iter().position(|s| status == *s).unwrap_or(0);
     let current = rank(&state["phases"][n.to_string()]["status"]);
     (PHASE_RANKS.iter().position(|s| *s == status)? > current).then_some((n, status))
@@ -1251,6 +1255,7 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
         "merge_gates":{}, "attempts":[], "merges":[], "gates":[], "reviews":[], "notes":[],
         "decisions":[], "controls":[], "pauses":{}, "guards":[], "violations":[], "finish":null
     });
+    let mut snapshot_seen = false;
     for entry in entries {
         let body = entry.body;
         if !entry.event_type.starts_with("loop.") {
@@ -1263,10 +1268,11 @@ fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
             "loop.plan" => state["plan"] = body,
             "loop.phases" => {
                 if let Some(phases) = body["phases"].as_array() {
+                    snapshot_seen = true;
                     replace_phases(&mut state["phases"], phases);
                 }
             }
-            "loop.phase" => promote_phase(&mut state["phases"], &body),
+            "loop.phase" => promote_phase(&mut state["phases"], &body, snapshot_seen),
             "loop.milestone" => state["milestone"] = body["milestone"].clone(),
             "loop.finish" => {
                 state["status"] = json!("finished");
@@ -1383,11 +1389,15 @@ fn phase_rank(phase: &Value) -> usize {
         .unwrap_or(0)
 }
 
-fn promote_phase(phases: &mut Value, incoming: &Value) {
+/// After a snapshot, a phase that the snapshot does not list stays absent.
+fn promote_phase(phases: &mut Value, incoming: &Value, snapshot_seen: bool) {
     let Some(n) = incoming["n"].as_u64() else {
         return;
     };
     let key = n.to_string();
+    if snapshot_seen && !phases[&key].is_object() {
+        return;
+    }
     let current = &mut phases[&key];
     if phase_rank(incoming) < phase_rank(current) {
         return;
@@ -1566,6 +1576,41 @@ mod tests {
             request(&app, "GET", &format!("/v1/loops/{}", owner.id), Value::Null).await;
         assert_eq!(state["violations"].as_array().unwrap().len(), 1);
         assert_eq!(state["violations"][0]["rule"], "merged-needs-verify");
+    }
+
+    #[tokio::test]
+    async fn a_phase_removed_by_a_snapshot_stays_absent_after_old_events_and_a_rebuild() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
+        let (_, owner) = sessions
+            .create_loop_session(sandbox.path(), Some("fixture-plan"), None)
+            .unwrap();
+        let log = ws_core::log::SessionLog::new(sandbox.path(), owner.id, owner.device_id);
+        let one = phase(1, "work", Value::Null, 1, json!([]));
+        let two = phase(2, "work", Value::Null, 1, json!([]));
+        log.append(0, "loop.phases", json!({"phases":[one.clone(), two]}))
+            .unwrap();
+        log.append(0, "loop.phases", json!({"phases":[one]}))
+            .unwrap();
+        // An attempt of the removed phase is older than the latest snapshot in intent only.
+        log.append(0, "loop.attempt", attempt(2, "started", json!({})))
+            .unwrap();
+        sessions.needs_rebuild = true;
+        let app = crate::api::router(sessions);
+        let uri = format!("/v1/loops/{}", owner.id);
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert!(state["phases"]["2"].is_null(), "{state}");
+        let id = owner.id.to_string();
+        post(
+            &app,
+            &id,
+            "loop.phase",
+            json!({"n":2,"status":"running","session":null}),
+        )
+        .await;
+        let (_, state) = request(&app, "GET", &uri, Value::Null).await;
+        assert!(state["phases"]["2"].is_null(), "{state}");
+        assert_eq!(state["phases"]["1"]["status"], "todo");
     }
 
     #[tokio::test]
