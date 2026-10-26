@@ -41,6 +41,7 @@ const PHASE_DEFINITION_FIELDS: [&str; 8] = [
 #[serde(deny_unknown_fields)]
 pub struct LoopRequest {
     pub loop_dir: PathBuf,
+    pub plan_id: Option<String>,
     pub parent_session_id: Option<SessionId>,
 }
 
@@ -154,7 +155,7 @@ async fn fetch(
     Ok(Json(
         api::call(store, move |sessions| {
             sessions.record_call(context.parent_session_id, "loop.get", Some(&id))?;
-            let session = sessions.get_record(&id)?;
+            let session = sessions.resolve_loop(&id)?;
             if session.body["kind"] != "loop" {
                 return Err(Error::InvalidRequest("The session is not a loop."));
             }
@@ -172,7 +173,7 @@ async fn check(
     Ok(Json(
         api::call(store, move |sessions| {
             sessions.record_call(context.parent_session_id, "loop.check", Some(&id))?;
-            let session = sessions.get_record(&id)?;
+            let session = sessions.resolve_loop(&id)?;
             if session.body["kind"] != "loop" {
                 return Err(Error::InvalidRequest("The session is not a loop."));
             }
@@ -208,7 +209,11 @@ async fn create(
             "loop.create",
             request.loop_dir.to_str(),
         )?;
-        sessions.create_loop_session(&request.loop_dir, request.parent_session_id)
+        sessions.create_loop_session(
+            &request.loop_dir,
+            request.plan_id.as_deref(),
+            request.parent_session_id,
+        )
     })
     .await?;
     let status = if created {
@@ -299,7 +304,7 @@ impl Sessions {
             &format!("loop.{action}"),
             Some(id),
         )?;
-        let session = self.get_record(id)?;
+        let session = self.resolve_loop(id)?;
         if session.body["kind"] != "loop" {
             return Err(Error::InvalidRequest("The session is not a loop."));
         }
@@ -467,7 +472,11 @@ impl Sessions {
                 return Err(Error::Io(error));
             }
         }
-        let entry = self.append_daemon_loop_event(id, kind, body.as_object().unwrap().clone())?;
+        let entry = self.append_daemon_loop_event(
+            &session.id.to_string(),
+            kind,
+            body.as_object().unwrap().clone(),
+        )?;
         serde_json::to_value(entry).map_err(Error::Json)
     }
 
@@ -634,14 +643,41 @@ impl Sessions {
 
     fn loop_state(&self, session: &Session) -> Result<Value> {
         let log = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id).read()?;
-        Ok(fold_loop(session, log.entries))
+        let plan_id = loop_plan_id(session, &log.entries);
+        let mut state = fold_loop(session, log.entries);
+        state["plan_id"] = json!(plan_id);
+        Ok(state)
+    }
+
+    /// Resolves the session identity or the plan identity of a loop.
+    pub(crate) fn resolve_loop(&self, input: &str) -> Result<Session> {
+        match self.get_record(input) {
+            Ok(session) => return Ok(session),
+            Err(Error::Registry(ws_core::registry::Error::NotFound(_))) => {}
+            Err(error) => return Err(error),
+        }
+        for session in self.registry.sessions()? {
+            if session.body["kind"] == "loop" {
+                let entries =
+                    ws_core::log::SessionLog::new(&self.state, session.id, self.device_id)
+                        .read()?
+                        .entries;
+                if loop_plan_id(&session, &entries).as_deref() == Some(input) {
+                    return Ok(session);
+                }
+            }
+        }
+        Err(Error::Registry(ws_core::registry::Error::NotFound(
+            input.into(),
+        )))
     }
 
     /// Returns `(true, session)` for a new loop session and `(false, session)` for the session
-    /// that already holds this canonical loop directory.
+    /// that already holds this plan id or canonical loop directory.
     pub fn create_loop_session(
         &mut self,
         loop_dir: &Path,
+        plan_id: Option<&str>,
         parent_session_id: Option<SessionId>,
     ) -> Result<(bool, Session)> {
         if !loop_dir.is_absolute() {
@@ -655,12 +691,37 @@ impl Sessions {
                 "The loop directory is not a directory.",
             ));
         }
+        let plan_id = match plan_id {
+            Some(id) => Some(id.trim().to_owned()).filter(|id| !id.is_empty()),
+            None => fs::read_to_string(directory.join("plan.md"))
+                .ok()
+                .and_then(|text| plan_header_value(&text, "planId")),
+        }
+        .ok_or(Error::InvalidRequest(
+            "Specify a plan id in the plan header or with --plan-id.",
+        ))?;
+        let mut directory_match = None;
         for session in self.registry.sessions()? {
-            if session.body["kind"] == "loop"
-                && session.body["loop_dir"].as_str() == directory.to_str()
-            {
-                return Ok((false, self.get_record(&session.id.to_string())?));
+            if session.body["kind"] != "loop" {
+                continue;
             }
+            let entries = ws_core::log::SessionLog::new(&self.state, session.id, self.device_id)
+                .read()?
+                .entries;
+            let same_directory = session.body["loop_dir"].as_str().is_some_and(|path| {
+                Path::new(path)
+                    .canonicalize()
+                    .is_ok_and(|path| path == directory)
+            });
+            if loop_plan_id(&session, &entries).as_deref() == Some(&plan_id) {
+                return Ok((false, session));
+            }
+            if same_directory {
+                directory_match = Some(session);
+            }
+        }
+        if let Some(session) = directory_match {
+            return Ok((false, session));
         }
         self.check_spawn_limits(parent_session_id)?;
         let id = ws_core::ids::Ulid::new();
@@ -669,10 +730,45 @@ impl Sessions {
             id,
             "session.created",
             json!({"alias":alias,"name":null,"workspace_id":null,
-                "parent_session_id":parent_session_id,"kind":"loop","loop_dir":directory}),
+                "parent_session_id":parent_session_id,"kind":"loop","loop_dir":directory,"plan_id":plan_id}),
         )?;
         Ok((true, self.get_record(&id.to_string())?))
     }
+}
+
+/// Older sessions obtain their plan identity from the latest plan event, then the file.
+fn loop_plan_id(session: &Session, entries: &[LogEntry]) -> Option<String> {
+    session.body["plan_id"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            entries
+                .iter()
+                .rev()
+                .find(|entry| entry.event_type == "loop.plan")
+                .and_then(|entry| entry.body["text"].as_str())
+                .and_then(|text| plan_header_value(text, "planId"))
+        })
+        .or_else(|| {
+            session.body["loop_dir"]
+                .as_str()
+                .and_then(|path| fs::read_to_string(Path::new(path).join("plan.md")).ok())
+                .and_then(|text| plan_header_value(&text, "planId"))
+        })
+}
+
+/// Reads a nonempty field from the canonical plan header.
+fn plan_header_value(text: &str, field: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim() != "<!-- loop-plan" {
+        return None;
+    }
+    lines
+        .take_while(|line| line.trim() != "-->")
+        .filter_map(|line| line.split_once(':'))
+        .find(|(key, value)| key.trim() == field && !value.trim().is_empty())
+        .map(|(_, value)| value.trim().to_owned())
 }
 
 fn valid_model(model: &str) -> bool {
@@ -944,7 +1040,11 @@ async fn start_skills(
                 shell_words::quote(&directory.to_string_lossy())
             )));
         }
-        let (_, owner) = sessions.create_loop_session(&directory, request.parent_session_id)?;
+        let (_, owner) = sessions.create_loop_session(
+            &directory,
+            request.plan_id.as_deref(),
+            request.parent_session_id,
+        )?;
         for session in sessions.registry.sessions()? {
             let orchestrator_child = session.body["parent_session_id"] == json!(owner.id)
                 && session.body["loop"].is_null();
@@ -1083,6 +1183,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 fn fold_loop(session: &Session, entries: Vec<LogEntry>) -> Value {
     let mut state = json!({
         "id":session.id, "alias":session.alias, "loop_dir":session.body["loop_dir"],
+        "plan_id":session.body["plan_id"],
         "status":"planned", "plan":null, "phases":{}, "milestone":null,
         "merge_gates":{}, "attempts":[], "merges":[], "gates":[], "reviews":[], "notes":[],
         "decisions":[], "controls":[], "pauses":{}, "guards":[], "violations":[], "finish":null
@@ -1377,7 +1478,9 @@ mod tests {
     async fn enforcement_recovers_a_missing_violation_before_a_spawn() {
         let sandbox = tempfile::tempdir().unwrap();
         let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-        let (_, owner) = sessions.create_loop_session(sandbox.path(), None).unwrap();
+        let (_, owner) = sessions
+            .create_loop_session(sandbox.path(), Some("fixture-plan"), None)
+            .unwrap();
         // Model a durable fact whose derived violation append failed.
         ws_core::log::SessionLog::new(sandbox.path(), owner.id, owner.device_id)
             .append(
@@ -1551,7 +1654,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":sandbox.path()}),
+            json!({"loop_dir":sandbox.path(),"plan_id":format!("fixture:{}", sandbox.path().display())}),
         )
         .await;
         let (status, _) = request(
@@ -1577,7 +1680,9 @@ mod tests {
     async fn recovery_repairs_interrupted_loop_appends_once_and_preserves_later_writes() {
         let sandbox = tempfile::tempdir().unwrap();
         let mut sessions = Sessions::open(sandbox.path(), 1).unwrap();
-        let (_, owner) = sessions.create_loop_session(sandbox.path(), None).unwrap();
+        let (_, owner) = sessions
+            .create_loop_session(sandbox.path(), Some("fixture-plan"), None)
+            .unwrap();
         drop(sessions);
         // Model a crash after each child fact, before the corresponding Loop append.
         let child = ws_core::ids::Ulid::new();
@@ -1631,7 +1736,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":directory}),
+            json!({"loop_dir":directory,"plan_id":format!("fixture:{}", directory.display())}),
         )
         .await;
         let id = created["id"].as_str().unwrap();
@@ -1798,7 +1903,7 @@ mod tests {
             &app,
             "POST",
             "/v1/loops/create",
-            json!({"loop_dir":sandbox.path()}),
+            json!({"loop_dir":sandbox.path(),"plan_id":format!("fixture:{}", sandbox.path().display())}),
         )
         .await;
         let id = created["id"].as_str().unwrap();
@@ -1902,7 +2007,13 @@ mod tests {
     }
 
     async fn loop_session(app: &Router, dir: &std::path::Path) -> (String, String) {
-        let (_, created) = request(app, "POST", "/v1/loops/create", json!({"loop_dir":dir})).await;
+        let (_, created) = request(
+            app,
+            "POST",
+            "/v1/loops/create",
+            json!({"loop_dir":dir,"plan_id":format!("fixture:{}", dir.display())}),
+        )
+        .await;
         let id = created["id"].as_str().unwrap().to_owned();
         (id.clone(), format!("/v1/loops/{id}"))
     }

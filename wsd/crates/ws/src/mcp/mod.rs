@@ -442,7 +442,7 @@ fn tools() -> Vec<Tool> {
         ),
         tool::<Loop>(
             "loop_create",
-            "Create the loop session of a loop directory. The session has no process. A second call for the same directory returns the same session.",
+            "Create a loop session with a plan id from the header or plan_id. Repeated calls return the same session.",
         ),
         tool::<Loop>(
             "loop_start",

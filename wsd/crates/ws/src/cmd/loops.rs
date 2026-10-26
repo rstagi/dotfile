@@ -37,6 +37,8 @@ pub enum Command {
         #[arg(long)]
         dir: PathBuf,
         #[arg(long)]
+        plan_id: Option<String>,
+        #[arg(long)]
         json: bool,
     },
     /// Start a prepared Loop orchestrator as a headless session.
@@ -112,7 +114,11 @@ pub async fn run(socket: &Path, command: Command) -> Result<()> {
         Command::Check { id, json } => ("loop_check", json!({"id":id}), json),
         Command::Ack { id, reason, json } => ("loop_ack", json!({"id":id,"reason":reason}), json),
         Command::List { json } => ("loop_list", json!({}), json),
-        Command::Create { dir, json } => ("loop_create", json!({"loop_dir":dir}), json),
+        Command::Create { dir, plan_id, json } => (
+            "loop_create",
+            json!({"loop_dir":dir,"plan_id":plan_id}),
+            json,
+        ),
         Command::Start { loop_dir, json } => ("loop_start", json!({"loop_dir":loop_dir}), json),
         Command::Pause { id, phase, json } => ("loop_pause", json!({"id":id,"phase":phase}), json),
         Command::Resume { id, phase, json } => {

@@ -174,7 +174,7 @@ pub struct Spawn {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LoopId {
-    /// ULID, alias, or name of the loop session.
+    /// Session ULID, alias, name, or plan id of the loop.
     pub id: String,
 }
 
@@ -190,14 +190,17 @@ pub struct LoopAck {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Loop {
-    /// Directory that contains the Loop state.json file.
+    /// Directory that contains the Loop plan and state.
     pub loop_dir: PathBuf,
+    /// Overrides the planId field in the plan header for loop creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LoopPause {
-    /// ULID, alias, or name of the loop session.
+    /// Session ULID, alias, name, or plan id of the loop.
     pub id: String,
     /// Omit the phase to control the whole loop.
     pub phase: Option<u64>,
