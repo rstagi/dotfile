@@ -16,7 +16,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn state_path() -> Result<PathBuf> {
+pub(crate) fn state_path() -> Result<PathBuf> {
     if let Some(path) = env::var_os("WS_STATE") {
         return Ok(path.into());
     }
