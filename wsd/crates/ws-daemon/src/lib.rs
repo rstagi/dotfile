@@ -42,6 +42,7 @@ mod semconv_emit;
 pub mod sessions;
 pub mod spans;
 pub mod supervisor;
+pub mod sync;
 pub mod tail;
 pub mod tmux;
 pub mod triggers;
@@ -91,6 +92,7 @@ pub async fn run(socket: &Path) -> io::Result<()> {
     let mut telemetry =
         otlp::Receiver::bind_with_spans(&state, Some(sessions.spans.clone())).await?;
     let _forwarder = forwarder::Forwarder::start(&state)?;
+    let _sync = sync::start(&state);
     let store = Arc::new(Mutex::new(sessions));
     let quota = quota::Service::start(store.clone())?;
     supervisor::adopt(store.clone())

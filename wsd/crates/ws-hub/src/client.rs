@@ -103,6 +103,10 @@ impl HubClient {
             .await
     }
 
+    pub async fn post_json(&self, path: &str, body: Vec<u8>) -> Result<HubResponse> {
+        self.connect().await?.post_json(path, body).await
+    }
+
     /// Opens a keep-alive connection for several requests.
     pub async fn connect(&self) -> Result<HubConnection> {
         let tcp = TcpStream::connect(&self.authority).await?;
@@ -125,6 +129,14 @@ pub struct HubConnection {
 impl HubConnection {
     pub async fn request(&mut self, method: Method, path: &str) -> Result<HubResponse> {
         self.send(method, path, Vec::new()).await
+    }
+
+    pub async fn get(&mut self, path: &str) -> Result<HubResponse> {
+        self.send(Method::GET, path, Vec::new()).await
+    }
+
+    pub async fn post_json(&mut self, path: &str, body: Vec<u8>) -> Result<HubResponse> {
+        self.send(Method::POST, path, body).await
     }
 
     pub async fn send(&mut self, method: Method, path: &str, body: Vec<u8>) -> Result<HubResponse> {

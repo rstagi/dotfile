@@ -3009,6 +3009,7 @@ dependencies = [
  "toml",
  "tower",
  "ws-core",
+ "ws-hub",
 ]
 
 [[package]]

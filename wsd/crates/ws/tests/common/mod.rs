@@ -1,4 +1,6 @@
 #[allow(dead_code)]
+pub mod hub_fixture;
+#[allow(dead_code)]
 pub mod sandbox;
 #[allow(unused_imports)]
 pub use sandbox::SandboxRoot;
