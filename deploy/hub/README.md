@@ -23,7 +23,7 @@ ssh root@hub.example.com
   --ca-cert /root/root-ca.pem
 ```
 
-The root CA certificate is the public `root.pem` that `ws ca init` wrote (step 3 below). It is not secret. Never copy the root key to the VPS.
+The root CA certificate is the public `root-ca.pem` that `ws ca init` wrote (step 3 below). It is not secret. Never copy the root key to the VPS.
 
 The script does these steps in order:
 
