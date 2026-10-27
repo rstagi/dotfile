@@ -561,7 +561,7 @@ async fn terminal_bundle(context: &Context, config: &Config) -> String {
 async fn branch(path: &std::path::Path, config: &Config) -> String {
     let mut command = tokio::process::Command::new(executable("git", config));
     let output = tokio::time::timeout(
-        Duration::from_millis(100),
+        Duration::from_secs(1),
         command
             .args(["-C"])
             .arg(path)
