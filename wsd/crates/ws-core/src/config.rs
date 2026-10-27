@@ -1,7 +1,10 @@
 //! Local daemon configuration from the state directory.
 
 use serde::{Deserialize, Serialize};
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -11,6 +14,21 @@ pub struct Config {
     pub r#loop: LoopConfig,
     pub naming: NamingConfig,
     pub telemetry: TelemetryConfig,
+    /// The hub that this device talks to. Absent when the device uses no hub.
+    pub hub: Option<HubConfig>,
+}
+
+/// The `[hub]` section: the hub URL and the device mTLS identity.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HubConfig {
+    pub url: String,
+    /// The device certificate (PEM).
+    pub cert: PathBuf,
+    /// The device key (PEM).
+    pub key: PathBuf,
+    /// The WS root certificate (PEM). It must sign the hub server certificate.
+    pub ca: PathBuf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -142,5 +160,26 @@ impl Default for NamingConfig {
 impl Default for LoopConfig {
     fn default() -> Self {
         Self { max_spawns: 500 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_section_is_optional_and_complete_when_present() {
+        let state = tempfile::tempdir().unwrap();
+        assert!(Config::load(state.path()).unwrap().hub.is_none());
+        fs::write(
+            state.path().join("config.toml"),
+            "[hub]\nurl = \"https://h:1\"\ncert = \"/c\"\nkey = \"/k\"\nca = \"/a\"\n",
+        )
+        .unwrap();
+        let hub = Config::load(state.path()).unwrap().hub.unwrap();
+        assert_eq!(hub.url, "https://h:1");
+        assert_eq!(hub.ca, PathBuf::from("/a"));
+        fs::write(state.path().join("config.toml"), "[hub]\nurl = \"x\"\n").unwrap();
+        assert!(Config::load(state.path()).is_err());
     }
 }

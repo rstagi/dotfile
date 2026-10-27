@@ -167,10 +167,12 @@ pub fn ws(home: &Path, socket: &Path) -> Command {
     command
 }
 
+#[allow(dead_code)]
 pub fn get(socket: &Path, path: &str) -> String {
     request(socket, "GET", path, "")
 }
 
+#[allow(dead_code)]
 pub fn request(socket: &Path, method: &str, path: &str, body: &str) -> String {
     // The daemon completes trigger actions before it sends the response.
     // Allow parallel tests to finish that work within a generous hang guard.

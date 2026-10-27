@@ -12,6 +12,7 @@ pub mod done;
 pub mod events;
 pub mod grok;
 pub mod hook;
+pub mod hub;
 pub mod inbox;
 pub mod list;
 pub mod loops;
