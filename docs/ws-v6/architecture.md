@@ -262,6 +262,17 @@ A phase completes only when I test its checkpoint by hand and it passes.
 **1. Local `wsd` + control surface.** Rust daemon and CLI, import from `$WS_HOME`, ULID + aliases, logs, messages as events, edges + `wait`, local MCP, Loop runners as ws sessions. Also `ws top`, `ws phase worktree`, and the picker from the registry.
 - *Checkpoint:* start a loop, kill the terminal, reattach. `ws top` shows it live. Drive a session end to end from Claude and from Codex through MCP. `ws on A done --spawn …` runs with no shell lock files. During a Loop plan, the picker shows no review worktrees.
 
+**Roadmap order (2026-10-26).** This order replaces the order of the list below:
+1. Milestone 7: the hub MVP (roadmap phase 3) and the milestone 6 fixes.
+2. Milestone 8: ws issues v1, local only, with no GitHub or Linear source. The hub syncs the issues.
+3. Milestone 9: resilience 4a (leases and a planned move) and notifications.
+4. Retire the old stack, after 2 clean milestones on the skills engine.
+5. Telemetry with TokenScope or a Ratel link.
+6. Quota-aware scheduling on the devices of the human.
+7. Resilience 4b (automatic failover) and 4c (remote control and change sets).
+8. Cloud workers (spike S4).
+9. Issue autonomy.
+
 The remaining work follows this order. Roadmap phase numbers stay stable. The new items between phases 2 and 3 follow the milestone 2 gate decisions.
 
 **2. Telemetry + quota visibility (local, milestone 3).** OTLP receiver, agent env injection, span synthesis from hooks, `ws.session.*` semconv v1, the telemetry log and local OTLP export. Also the quota collector, `ws usage`, the `ws top` panel and the pre-flight warning. This phase fixes the milestone 2 findings and removes the zsh `ws`. It does not port or retire the loop-web daemon. TokenScope changes belong to a separate plan.

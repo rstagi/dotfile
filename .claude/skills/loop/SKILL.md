@@ -98,6 +98,26 @@ After the final review of a `[gate: accept]` phase:
 2. Notify the human with the artifact paths.
 3. Wait for `ws loop accept` or `ws loop reject`. They close the gate. Accept: continue. Reject: read the reason in `ws loop get <loop> --json`, add the fix to the plan and continue.
 
+An accept gate of the last milestone also runs the gate explainer (see Milestone explainers) before the notification of step 2. The explainer failure rules are the same as at a merge gate.
+After an accept of the last milestone, follow Finish.
+
+## Finish
+
+Finish the loop when the last milestone of the plan ends. The last milestone ends in one of two ways:
+
+- The accept gate of the last milestone closes with `ws loop accept`.
+- The review of the last milestone has no gate. Its final reviews are posted.
+
+Then:
+
+1. Run `ws loop check <loop>`. On a hard violation, stop (see Checks).
+2. Run the gate explainer (see Milestone explainers) for the last milestone, as at a merge gate. A failed explainer never blocks the finish.
+3. Append one keyed event with a short summary: `ws event loop.finish --source tool --target <loop> --key finish --body '{"summary":"<text>"}'`. Put the outcome, the PR links and the explainer link in the summary. The key makes a repeat of this step add no second event. `ws loop get` and `ws top` then show the loop as `finished`.
+4. Notify the human with `loop-notify.sh`. Include the explainer link or the failure.
+5. Register no continuation. End with `ws done --output handoff.md`.
+
+Do not recycle at the finish.
+
 ## Milestone explainers
 
 At each merge gate, start one explainer session before the human notification.
