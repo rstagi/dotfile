@@ -222,6 +222,21 @@ enum Command {
     },
     /// Initialize the local device identity.
     Init,
+    /// Manage the device key and its certificate.
+    Device {
+        #[command(subcommand)]
+        command: cmd::device::DeviceCommand,
+    },
+    /// Run the hub or add its first device.
+    Hub {
+        #[command(subcommand)]
+        command: cmd::hub::HubCommand,
+    },
+    /// Manage the WS root CA.
+    Ca {
+        #[command(subcommand)]
+        command: cmd::device::CaCommand,
+    },
     /// Serve the local API on the Unix socket.
     Daemon,
     /// Show the daemon version and uptime.
@@ -251,6 +266,9 @@ enum Command {
     Sessions {
         #[arg(long)]
         json: bool,
+        /// Also list the sessions of the other devices from the hub.
+        #[arg(long)]
+        all_devices: bool,
         target: Vec<String>,
     },
     /// Set the current session name.
@@ -424,6 +442,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
         Command::Session { command } => return cmd::session::run(&socket_path()?, *command).await,
         Command::Init => init::run()?,
+        Command::Device { command } => return cmd::device::device(command).await,
+        Command::Hub { command } => return cmd::hub::hub(command).await,
+        Command::Ca { command } => cmd::device::ca(command)?,
         Command::Daemon => {
             let socket = socket_path()?;
             ws_daemon::run(&socket).await.map_err(|error| {
@@ -448,9 +469,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         } => cmd::add::run(&socket_path()?, target, agent, detach).await?,
         Command::List { json } => cmd::list::run(&socket_path()?, json).await?,
         Command::Whoami { json } => cmd::whoami::run(&socket_path()?, json).await?,
-        Command::Sessions { json, target } => {
-            cmd::sessions::run(&socket_path()?, &target, json).await?
-        }
+        Command::Sessions {
+            json,
+            all_devices,
+            target,
+        } => return cmd::sessions::run(&socket_path()?, &target, json, all_devices).await,
         Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
         Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
         Command::BuildNotifier => cmd::build_notifier::run()?,

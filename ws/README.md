@@ -143,11 +143,26 @@ The `focus` action's shell command selects the tab, switches the tmux client to 
 ## Layout
 
 `ws/ws.sh` executes `${WS_RUST_BIN:-$WS_HOME/bin/ws-rs}`. It ignores old backend selectors.
-The Cargo workspace in `wsd/` contains three crates:
+The Cargo workspace in `wsd/` contains four crates:
 
 - `ws-core` stores durable data.
 - `ws-daemon` provides the runtime.
+- `ws-hub` holds the device identity code (and later the hub server and sync types).
 - `ws` provides the CLI and embeds `wsd/crates/ws/src/cmd/picker.zsh` for the fzf UI.
+
+Device identity: `ws ca init --out <dir>` writes the Ed25519 root key (0600) and a 10-year root certificate.
+`ws device init` writes `$WS_STATE/device/key.pem` (0600) and `csr.pem` for the id in `$WS_STATE/device.json`.
+`ws device sign --csr <file> --root-cert <file> [--root-key-cmd '<cmd>'] [--days 90]` prints the device certificate.
+Hub: `ws hub serve --listen <addr> --tls-cert <file> --tls-key <file> --ca-cert <root cert> --state <dir>` serves the hub over mTLS and prints `hub ready <addr>`.
+Each `/v1/` route needs a client certificate from the root CA whose fingerprint is an unrevoked row in `<state>/hub.db`. A failed registry check gives HTTP 403.
+Log sync: with a `[hub]` section, `wsd` starts a sync task. It pushes an export projection of each local session log to the hub with `POST /v1/sync/logs`, within 5 seconds after a new entry. At start, it reads its cursors with `GET /v1/sync/cursors`. The projection (`wsd/crates/ws-daemon/src/sync/export.rs`) is an allowlist: `session.*` lifecycle events with allowlisted fields, and `agent.waiting`, `turn.started` and `turn.ended` with no payload. No hook payload, tool data, message text or command argument leaves the device. The hub stores each entry one time by `event_id`, with the device id of the client certificate. When the hub is down, the task retries with a backoff of up to 60 seconds and prints one warning for each outage. Without a `[hub]` section, `wsd` starts no task.
+`ws hub add-device --state <dir> --cert <file> --name <name>` adds the first device on the hub host. `ws device list [--json]` and `ws device remove <id>` call the hub with the `[hub]` section (`url`, `cert`, `key`, `ca`) of `config.toml`. Without it they print one error line and exit 2.
+
+The hub keeps a sessions table from the synced events: id, device, name, kind, state, cwd, repos and time of the last event. A session shows the state `blocked` from its last `agent.waiting` until its next `turn.started`. The registry state does not change. `GET /v1/sessions` (mTLS) returns the table. `ws sessions --all-devices [--json]` lists the local sessions, then the sessions of the other devices. A remote row shows the ULID and the device name, with no `#N` alias. Without `[hub]` the flag prints one error line and exits 2.
+Remote MCP: `POST /mcp` is a stateless streamable HTTP MCP server with the read-only tools `list_sessions`, `get_session` and `get_session_timeline`. They read the sessions table and the stored export projection only. Each request needs `Authorization: Bearer <token>`. A missing, unknown or revoked token gives HTTP 401, and the route takes no client certificate. `ws hub token create --name <name>` (mTLS) prints a read token one time. The hub stores only its SHA-256 hash. `ws hub token list [--json]` and `ws hub token revoke <name>` manage the tokens, and a revoked token fails on its next request. The hub adds one audit row for each tool call (time, token name, tool, `ok` or `error`). `ws hub audit [--json]` prints the rows.
+Pairing: `ws device join <hub url> --name <name> [--ca <file>]` runs `ws device init`, sends the request to `POST /v1/pair`, prints an 8-character code and waits for the certificate (the default trust is the system roots). It then writes `$WS_STATE/device/cert.pem` and `root.pem` and appends the `[hub]` section to `config.toml`.
+On a device that the hub has, `ws device approve <code> --root-key-cmd '<cmd>'` signs the request and sends the certificate. The hub adds the device to the registry. A code works one time and expires after 10 minutes. A used, unknown or expired code gives HTTP 404. An approve from a device that the registry does not have gives HTTP 403.
+It reads the root key from the stdout of the command (default `op read op://ws/root-ca/key`).
 
 Rust owns sessions, messages, logs, dependency edges and the local MCP server.
 Run `cd wsd && cargo test` to test the CLI and daemon.

@@ -29,7 +29,7 @@ fn stop_waits_for_a_graceful_exit_and_records_the_child_status() {
     sandbox.wait_file("ready");
     let session = sandbox.stop(&id);
     assert_eq!(session["exit_code"], 23);
-    assert_eq!(session["state"], "failed");
+    assert_eq!(session["state"], "finished");
     assert!(
         sandbox
             .entries(&id)

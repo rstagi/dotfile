@@ -43,6 +43,22 @@ for name in launchctl chsh curl cargo node npm nvm pyenv tfenv terraform gcloud 
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$HOME/%s.calls"\n' "$name" > "$TMP/fake/$name"
   chmod +x "$TMP/fake/$name"
 done
+# The launchctl fake tracks load state: the installer waits for an unload and checks the job pid.
+# The lsof fake reports that pid as the holder of the socket lock. The state file ends in .calls so tree snapshots skip it.
+cat > "$TMP/fake/launchctl" <<'LAUNCHCTL'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/launchctl.calls"
+case "$1" in
+  bootout) rm -f "$HOME/launchd-loaded.calls" ;;
+  bootstrap) touch "$HOME/launchd-loaded.calls" ;;
+  print)
+    [ -e "$HOME/launchd-loaded.calls" ] || exit 113
+    echo "	pid = 4242" ;;
+esac
+exit 0
+LAUNCHCTL
+printf '#!/bin/sh\n[ "$1" = "-t" ] && echo 4242\nexit 0\n' > "$TMP/fake/lsof"
+chmod +x "$TMP/fake/launchctl" "$TMP/fake/lsof"
 # Stop the test when a host command comes before its fake on PATH.
 for name in launchctl chsh curl; do
   found="$(env -i PATH="$TMP/fake:$SYSTEM_PATH" /bin/bash -c "command -v $name")"

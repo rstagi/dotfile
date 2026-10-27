@@ -113,6 +113,16 @@ if [ "$1" = usage ]; then
   printf 'prepare\n' >> "$FAKE_RESUME_STEPS"
   exit 0
 fi
+if [ "$1" = loop ] && [ "$2" = get ]; then
+  printf '%s\n' "$3" >> "$FAKE_RESUME_GETS"
+  case " ${FAKE_LOOP_KNOWN:-RESUME1 resume-planid resume-skills} " in *" $3 "*) ;; *) exit 1 ;; esac
+  jq -cn --arg id "${FAKE_LOOP_ID:-$3}" '{id:$id}'
+  exit 0
+fi
+if [ "$1" = loop ] && [ "$2" = create ]; then
+  printf 'RESUME1\n'
+  exit 0
+fi
 [ "$1" = event ] || exit 99
 jq -cn '$ARGS.positional' --args -- "$@" >> "$FAKE_RESUME_REQUESTS"
 [ "${FAKE_RESUME_FAIL_TYPE:-}" != "$2" ] || exit 1
@@ -150,7 +160,8 @@ https://github.com/acme/web/pull/2=MERGED"
 resume_fixture resume-merged
 export FAKE_WS_LOG="$TMP/resume-events.jsonl" FAKE_RESUME_REQUESTS="$TMP/resume-requests.jsonl"
 export FAKE_RESUME_STATE_LOG="$TMP/resume-states.jsonl" FAKE_RESUME_STEPS="$TMP/resume-steps.log"
-export EMIT_LOG="$TMP/resume-emit.log"
+export EMIT_LOG="$TMP/resume-emit.log" FAKE_RESUME_GETS="$TMP/resume-gets.log"
+: > "$FAKE_RESUME_GETS"
 : > "$FAKE_WS_LOG"; : > "$FAKE_RESUME_REQUESTS"; : > "$FAKE_RESUME_STATE_LOG"; : > "$FAKE_RESUME_STEPS"; : > "$EMIT_LOG"
 WS_LOOP_ID=RESUME1 WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
   "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-merged.out" 2> "$TMP/resume-merged.err"
@@ -210,6 +221,41 @@ assert_exit "$?" 1 "a completed resume cannot advance an unparked milestone"
 assert_eq "$(cat "$RESUME/state.json")" "$(cat "$TMP/resume-complete-state.json")" "a completed resume preserves the state on repeat"
 assert_eq "$(cat "$RESUME/plan.md")" "$(cat "$TMP/resume-complete-plan.md")" "a completed resume preserves the plan on repeat"
 
+echo "loop-milestone: resume resolves the loop id"
+reset_resume_logs() { : > "$FAKE_WS_LOG"; : > "$FAKE_RESUME_REQUESTS"; : > "$FAKE_RESUME_STATE_LOG"; : > "$FAKE_RESUME_STEPS"; : > "$EMIT_LOG"; : > "$FAKE_RESUME_GETS"; }
+resume_fixture resume-planid
+reset_resume_logs
+FAKE_LOOP_ID=RESUME1 WS_LOOP_ID=resume-planid WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-planid.out" 2> "$TMP/resume-planid.err"
+assert_exit "$?" 0 "resume accepts a plan id in WS_LOOP_ID"
+assert_eq "$(grep -cx resume-planid "$FAKE_RESUME_GETS")" 1 "resume reads the loop with the WS_LOOP_ID value"
+assert_eq "$(jq -sc '[.[]|.[7]]|unique' "$FAKE_RESUME_REQUESTS")" '["RESUME1"]' "resume events target the resolved session id"
+assert_eq "$(jq -sc '[.[]|.[1]]' "$FAKE_WS_LOG")" '["loop.gate","loop.milestone","loop.phases"]' "a plan id still records all 3 events"
+
+echo "loop-milestone: resume on a skills plan without WS_LOOP_ID"
+resume_fixture resume-skills
+sed -i '' 's|^planId:.*|&\nengine: skills|' "$RESUME/plan.md"
+reset_resume_logs
+FAKE_LOOP_ID=RESUME1 WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-skills.out" 2> "$TMP/resume-skills.err"
+assert_exit "$?" 0 "resume resolves the loop from state.runId on a skills plan"
+assert_eq "$(grep -cx resume-skills "$FAKE_RESUME_GETS")" 1 "resume reads the loop with state.runId"
+assert_eq "$(jq -sc '[.[]|.[1]|select(. != "loop.plan")]' "$FAKE_WS_LOG")" '["loop.gate","loop.milestone","loop.phases"]' "a skills plan records all 3 events"
+assert_eq "$(jq -sc '[.[]|select(.[1]|startswith("loop.g") or startswith("loop.m") or startswith("loop.ph"))|.[7]]|unique' "$FAKE_RESUME_REQUESTS")" '["RESUME1"]' "skills events target the resolved session id"
+
+echo "loop-milestone: resume on a skills plan fails without a loop"
+resume_fixture resume-skills-noloop
+sed -i '' 's|^planId:.*|&\nengine: skills|' "$RESUME/plan.md"
+cp "$RESUME/state.json" "$TMP/resume-noloop-state.json"
+cp "$RESUME/plan.md" "$TMP/resume-noloop-plan.md"
+reset_resume_logs
+WS_BIN="$TMP/resume-bin/ws" LOOP_EMIT_SH="$HERE/fake/loop-emit.sh" \
+  "$ROOT/loop-milestone.sh" resume --dir "$RESUME" > "$TMP/resume-noloop.out" 2> "$TMP/resume-noloop.err"
+assert_exit "$?" 1 "resume exits 1 when the loop of a skills plan is not found"
+assert_contains "$(cat "$TMP/resume-noloop.err")" 'loop' "the error names the loop"
+assert_eq "$(cat "$RESUME/state.json")" "$(cat "$TMP/resume-noloop-state.json")" "a failed loop lookup preserves the state"
+assert_eq "$(cat "$RESUME/plan.md")" "$(cat "$TMP/resume-noloop-plan.md")" "a failed loop lookup preserves the plan"
+assert_eq "$(jq -s length "$FAKE_WS_LOG")" 0 "a failed loop lookup appends no event"
 echo "loop-milestone: an archive refusal stops resume"
 resume_fixture resume-archive-refused
 sed 's/Add the core API `\[lane: A\]` `\[status: done\]`/Add the core API `[lane: A]` `[status: todo]`/' \
@@ -950,5 +996,32 @@ WS_LOOP_ID=LOOP1 WS_BIN="$TMP/park-bin/ws" "$ROOT/loop-milestone.sh" open --dir 
 assert_exit "$?" 1 "open refuses an accept gate at the end of milestone 1 of 2"
 assert_contains "$(cat "$TMP/accept2.err")" 'accept' "the open message names the accept gate"
 assert_eq "$([[ -e "$ACCEPT2/state.json" ]] && print yes || print no)" no "a refused open writes no state"
+
+echo "loop-milestone: open accepts an accept gate inside a milestone"
+ACCEPT3="$TMP/accept3/.loop"
+mkdir -p "$ACCEPT3"
+cat > "$ACCEPT3/plan.md" <<'PLAN'
+<!-- loop-plan
+planId: skills-accept-three
+-->
+# Accept fixture three — Multi-Phase Plan
+
+**Status:** in progress
+
+## Milestone 1 — Write notes
+### Phase 1 — Write notes `[output: doc]` `[status: todo]`
+### Phase 2 — Review notes `[kind: pr-review]` `[gate: accept]` `[status: todo]`
+- **Depends on:** Phase 1
+### Phase 3 — Write more `[output: doc]` `[status: todo]`
+- **Depends on:** Phase 2
+### Phase 4 — Review all `[kind: pr-review]` `[gate: merge]` `[status: todo]`
+- **Depends on:** Phase 3
+
+## Milestone 2 — Later
+### Phase 5 — Later work `[output: doc]` `[status: todo]`
+- **Depends on:** Phase 4
+PLAN
+WS_LOOP_ID=LOOP1 WS_BIN="$TMP/park-bin/ws" "$ROOT/loop-milestone.sh" open --dir "$ACCEPT3" > "$TMP/accept3.out" 2> "$TMP/accept3.err"
+assert_exit "$?" 0 "open accepts an accept gate in the middle of milestone 1 ending in a merge gate"
 
 test_summary

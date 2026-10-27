@@ -16,11 +16,13 @@ serde_json.workspace = true
 tokio.workspace = true
 ws-core.workspace = true
 ws-daemon.workspace = true
+ws-hub.workspace = true
 
 shell-words = "1"
 tempfile.workspace = true
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"] }
 tokio = { workspace = true, features = ["test-util"] }
 sha2 = "0.10"
 rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process"] }

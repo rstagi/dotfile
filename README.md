@@ -43,7 +43,7 @@ requires `loop-milestone.sh resume`. The `check` and `advance` commands retain t
 After the gate PRs merge, run `./loop-milestone.sh resume --dir .loop`, then `ws loop start .loop`.
 The resume command checks the PRs, archives shipped milestones, prepares the next integration
 worktrees, and applies one state patch. With `WS_LOOP_ID`, it records keyed gate, milestone and
-phase events. Without that variable, it updates the files and the plan only. A retry after the
+phase events. `WS_LOOP_ID` may be a session id or a plan id. On a plan with `engine: skills`, the command finds the loop from `state.runId` and exits 1 when it cannot. On other plans, it updates the files and the plan only. A retry after the
 apply continues from `resumePending`. Open or closed PRs stop the command without changes.
 `ws loop resume` only clears a pause.
 

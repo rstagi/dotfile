@@ -33,11 +33,26 @@ with tempfile.TemporaryDirectory(prefix="ws-install-", dir="/tmp") as directory:
         shutil.copy(template, home / "dotfile/wsd/launchd" / template.name)
     commands = home / "commands"
     commands.mkdir()
-    for name in ("cargo", "launchctl", "grok"):
+    for name in ("cargo", "grok"):
         path = commands / name
-        # `launchctl print` fails: launchd has unloaded the job, so the installer does not wait.
-        path.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/' + name + '.calls"\n[ "$1" != print ]\n')
+        path.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/' + name + '.calls"\n')
         path.chmod(0o755)
+    # The fake launchd job is loaded between `bootstrap` and `bootout`, and it runs as pid 4242.
+    # The fake lsof reports pid 4242 as the lock holder while the job is loaded.
+    (commands / "launchctl").write_text('''#!/bin/sh
+printf "%s\\n" "$*" >> "$HOME/launchctl.calls"
+case "$1" in
+  bootstrap) : > "$HOME/job.loaded" ;;
+  bootout) rm -f "$HOME/job.loaded"; exit 0 ;;
+  print) [ -f "$HOME/job.loaded" ] && printf '\\tpid = 4242\\n' ;;
+esac
+''')
+    (commands / "lsof").write_text('''#!/bin/sh
+[ -f "$HOME/job.loaded" ] && echo 4242
+exit 0
+''')
+    for name in ("launchctl", "lsof"):
+        (commands / name).chmod(0o755)
     environment.update(PATH=str(commands) + ":" + os.environ["PATH"],
                        WS_HOME=str(home / "custom & ws"), WS_STATE=str(home / "state"),
                        WS_SOCK=str(home / "daemon.sock"), WS_ROOT=str(home / "work <trees>"),
