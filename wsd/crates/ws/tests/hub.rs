@@ -587,6 +587,30 @@ fn missing_unknown_and_revoked_tokens_give_401_and_the_list_shows_no_token() {
 }
 
 #[test]
+fn revoke_removes_only_the_token_with_the_exact_name() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = sandbox.path();
+    pki(dir, &["dev-a"]);
+    let hub = serve(dir);
+    add_device(dir, "dev-a");
+    config_hub(dir, &hub.addr, "dev-a");
+    let plain = token_create(dir, "grok");
+    let query = token_create(dir, "grok?bot");
+    let space = token_create(dir, "grok bot");
+    let ping = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+
+    let revoked = cli(dir, &["hub", "token", "revoke", "grok?bot"]);
+    assert!(revoked.status.success(), "{revoked:?}");
+    assert_eq!(mcp(dir, &hub.addr, Some(&query), ping.clone()).0, 401);
+    assert_eq!(mcp(dir, &hub.addr, Some(&plain), ping.clone()).0, 200);
+
+    let revoked = cli(dir, &["hub", "token", "revoke", "grok bot"]);
+    assert!(revoked.status.success(), "{revoked:?}");
+    assert_eq!(mcp(dir, &hub.addr, Some(&space), ping.clone()).0, 401);
+    assert_eq!(mcp(dir, &hub.addr, Some(&plain), ping).0, 200);
+}
+
+#[test]
 fn token_and_audit_commands_need_the_hub_section() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
     for arguments in [

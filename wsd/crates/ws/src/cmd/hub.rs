@@ -7,7 +7,7 @@ use ws_hub::{
     client::HubClient,
     registry::{DeviceRow, Registry},
     server::{self, HubOptions},
-    tokens::{AuditRow, TokenRow},
+    tokens::{self, AuditRow, TokenRow},
 };
 
 use crate::Result;
@@ -136,7 +136,7 @@ async fn token(command: TokenCommand) -> Result<ExitCode> {
         }
         TokenCommand::Revoke { name } => {
             let response = client
-                .request(Method::DELETE, &format!("/v1/tokens/{name}"))
+                .request(Method::DELETE, &tokens::token_path(&name))
                 .await?;
             if response.status != 204 {
                 return Err(hub_error(&response));

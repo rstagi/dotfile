@@ -28,6 +28,7 @@ use crate::{
 pub const SCOPE_READ: &str = "read";
 
 const TOKEN_PREFIX: &str = "wsmcp_";
+const TOKENS_PATH: &str = "/v1/tokens/";
 
 /// One token as `GET /v1/tokens` shows it. The row has no token and no hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,8 +185,14 @@ pub async fn admin(store: &TokenStore, request: Request<Incoming>) -> Response<F
         (&Method::GET, "/v1/audit") => store.audit().map(|rows| json(StatusCode::OK, &rows)),
         (&Method::GET, "/v1/tokens") => store.list().map(|rows| json(StatusCode::OK, &rows)),
         (&Method::POST, "/v1/tokens") => return create(store, request).await,
-        (&Method::DELETE, _) if path.starts_with("/v1/tokens/") => {
-            store.revoke(&path["/v1/tokens/".len()..]).map(|found| {
+        (&Method::DELETE, _) if path.starts_with(TOKENS_PATH) => {
+            let Some(name) = decode_segment(&path[TOKENS_PATH.len()..]) else {
+                return reply(
+                    StatusCode::BAD_REQUEST,
+                    "The token name has a bad encoding.",
+                );
+            };
+            store.revoke(&name).map(|found| {
                 if found {
                     reply(StatusCode::NO_CONTENT, "")
                 } else {
@@ -196,6 +203,20 @@ pub async fn admin(store: &TokenStore, request: Request<Incoming>) -> Response<F
         _ => Ok(reply(StatusCode::NOT_FOUND, "Unknown route.")),
     };
     outcome.unwrap_or_else(|error| reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()))
+}
+
+/// The path of one token: `/v1/tokens/` and the name, percent-encoded as one path segment.
+/// Each byte outside the RFC 3986 unreserved set is encoded.
+pub fn token_path(name: &str) -> String {
+    let mut path = String::from(TOKENS_PATH);
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            path.push(char::from(byte));
+        } else {
+            path.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    path
 }
 
 async fn create(store: &TokenStore, request: Request<Incoming>) -> Response<Full<Bytes>> {
@@ -212,6 +233,34 @@ async fn create(store: &TokenStore, request: Request<Incoming>) -> Response<Full
         ),
         Err(error) => reply(StatusCode::CONFLICT, &error.to_string()),
     }
+}
+
+/// Decodes one percent-encoded path segment. `None` means a bad escape, a raw `/` or a name
+/// that is not UTF-8.
+fn decode_segment(segment: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(segment.len());
+    let mut rest = segment.as_bytes();
+    while let [first, tail @ ..] = rest {
+        match first {
+            b'%' => {
+                let [high, low, after @ ..] = tail else {
+                    return None;
+                };
+                bytes.push(hex_value(*high)? << 4 | hex_value(*low)?);
+                rest = after;
+            }
+            b'/' => return None,
+            _ => {
+                bytes.push(*first);
+                rest = tail;
+            }
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn hex_value(digit: u8) -> Option<u8> {
+    char::from(digit).to_digit(16).map(|value| value as u8)
 }
 
 fn hash(token: &str) -> String {
@@ -308,5 +357,23 @@ mod tests {
             ]
         );
         assert!(rows[0].ts_ms > 0);
+    }
+
+    #[test]
+    fn a_token_name_round_trips_through_one_path_segment() {
+        for name in ["grok", "grok?bot", "grok bot", "a/b#c%d", "naïve"] {
+            let path = token_path(name);
+            let segment = &path[TOKENS_PATH.len()..];
+            assert!(!segment.contains(['/', '?', '#', ' ']), "{segment}");
+            assert_eq!(decode_segment(segment).as_deref(), Some(name));
+        }
+        assert_eq!(token_path("grok?bot"), "/v1/tokens/grok%3Fbot");
+    }
+
+    #[test]
+    fn a_bad_segment_encoding_decodes_to_none() {
+        for segment in ["%", "%4", "%zz", "%+1", "a/b", "%FF"] {
+            assert_eq!(decode_segment(segment), None, "{segment}");
+        }
     }
 }
