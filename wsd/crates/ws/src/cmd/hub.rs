@@ -108,7 +108,7 @@ pub async fn device_remove(id: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn client() -> Result<Option<HubClient>> {
+pub(super) fn client() -> Result<Option<HubClient>> {
     let Some(hub) = hub_config()? else {
         return Ok(None);
     };

@@ -9,7 +9,7 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{identity::Result, registry::DB_FILE};
+use crate::{identity::Result, registry::DB_FILE, sessions};
 
 /// The most entries in one `POST /v1/sync/logs` request.
 pub const MAX_BATCH_ENTRIES: usize = 200;
@@ -51,7 +51,7 @@ pub struct StoredEntry {
 }
 
 pub struct SyncStore {
-    connection: Mutex<Connection>,
+    pub(crate) connection: Mutex<Connection>,
 }
 
 impl SyncStore {
@@ -78,6 +78,8 @@ impl SyncStore {
                 PRIMARY KEY (device_id, session_id)
             );",
         )?;
+        connection.execute_batch(sessions::SCHEMA)?;
+        sessions::backfill(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -109,6 +111,7 @@ impl SyncStore {
                  ON CONFLICT(device_id, session_id) DO UPDATE SET seq = MAX(seq, excluded.seq)",
                 params![device_id, session.session_id, session.through_seq as i64],
             )?;
+            sessions::refresh(&transaction, device_id, &session.session_id)?;
         }
         transaction.commit()?;
         Ok(stored)

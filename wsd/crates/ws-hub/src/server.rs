@@ -151,8 +151,26 @@ async fn route(
             Ok(cursors) => json(StatusCode::OK, &cursors),
             Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
         },
+        (&Method::GET, "/v1/sessions") => list_sessions(registry, sync),
         (&Method::POST, "/v1/sync/logs") => ingest_logs(sync, &device.id, request).await,
         _ => reply(StatusCode::NOT_FOUND, "Unknown route."),
+    }
+}
+
+/// The sessions table with the registry name of each device.
+fn list_sessions(registry: &Registry, sync: &SyncStore) -> Response<Full<Bytes>> {
+    let rows = registry.list().and_then(|devices| {
+        let mut sessions = sync.sessions()?;
+        for session in &mut sessions {
+            if let Some(device) = devices.iter().find(|device| device.id == session.device_id) {
+                session.device_name = device.name.clone();
+            }
+        }
+        Ok(sessions)
+    });
+    match rows {
+        Ok(rows) => json(StatusCode::OK, &rows),
+        Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
 }
 

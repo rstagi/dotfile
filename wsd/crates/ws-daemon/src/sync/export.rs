@@ -26,7 +26,10 @@ const BARE_TYPES: &[&str] = &[
 
 /// Exported types with the string or integer fields that they keep.
 const FIELD_TYPES: &[(&str, &[&str])] = &[
-    ("session.created", &["alias", "name", "workspace_id", "cwd"]),
+    (
+        "session.created",
+        &["alias", "name", "workspace_id", "cwd", "kind"],
+    ),
     ("session.renamed", &["name"]),
     (
         "session.repo_attached",

@@ -266,6 +266,9 @@ enum Command {
     Sessions {
         #[arg(long)]
         json: bool,
+        /// Also list the sessions of the other devices from the hub.
+        #[arg(long)]
+        all_devices: bool,
         target: Vec<String>,
     },
     /// Set the current session name.
@@ -466,9 +469,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         } => cmd::add::run(&socket_path()?, target, agent, detach).await?,
         Command::List { json } => cmd::list::run(&socket_path()?, json).await?,
         Command::Whoami { json } => cmd::whoami::run(&socket_path()?, json).await?,
-        Command::Sessions { json, target } => {
-            cmd::sessions::run(&socket_path()?, &target, json).await?
-        }
+        Command::Sessions {
+            json,
+            all_devices,
+            target,
+        } => return cmd::sessions::run(&socket_path()?, &target, json, all_devices).await,
         Command::Name { json, label } => cmd::name::run(&socket_path()?, &label, json).await?,
         Command::Show { json, target } => cmd::show::run(&socket_path()?, &target, json).await?,
         Command::BuildNotifier => cmd::build_notifier::run()?,
