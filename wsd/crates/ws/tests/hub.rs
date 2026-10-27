@@ -369,3 +369,233 @@ fn the_sessions_route_needs_a_registered_device() {
         "{denied:?}"
     );
 }
+
+const SECRET: &str = "sk-live-SECRET-1234";
+
+fn token_create(dir: &Path, name: &str) -> String {
+    let output = cli(dir, &["hub", "token", "create", "--name", name]);
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// One `POST /mcp` request with no client certificate. `token` None sends no header.
+fn mcp(dir: &Path, addr: &str, token: Option<&str>, body: serde_json::Value) -> (u16, String) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let client = ws_hub::client::HubClient::anonymous(
+        &format!("https://{addr}"),
+        Some(&dir.join("root.pem")),
+    )
+    .unwrap();
+    let authorization = token.map(|token| format!("Bearer {token}"));
+    let headers: Vec<(&str, &str)> = authorization
+        .iter()
+        .map(|value| ("authorization", value.as_str()))
+        .collect();
+    let response = runtime
+        .block_on(client.request_with_headers(
+            hyper::Method::POST,
+            "/mcp",
+            &headers,
+            &body.to_string(),
+        ))
+        .unwrap();
+    (response.status, response.body)
+}
+
+fn tool(
+    dir: &Path,
+    addr: &str,
+    token: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let call = serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    });
+    let (status, body) = mcp(dir, addr, Some(token), call);
+    assert_eq!(status, 200, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+fn tool_json(result: &serde_json::Value) -> serde_json::Value {
+    assert_eq!(result["result"]["isError"], false, "{result}");
+    serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn mcp_tools_read_sessions_and_timelines_with_a_token_and_leak_no_secret() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = sandbox.path();
+    pki(dir, &["dev-a"]);
+    let hub = serve(dir);
+    add_device(dir, "dev-a");
+    let a = SyncedDevice::start(dir, &hub.addr, "dev-a");
+    let session = a.create_session("alpha");
+    let log = ws_core::log::SessionLog::new(
+        &a.home.join("state"),
+        session.parse().unwrap(),
+        ws_core::ids::Ulid::nil(),
+    );
+    let mut writer = log.writer();
+    writer
+        .append_current(
+            "message.sent",
+            serde_json::json!({"body": SECRET, "command": SECRET}),
+        )
+        .unwrap();
+    writer
+        .append_current("turn.ended", serde_json::json!({"summary": SECRET}))
+        .unwrap();
+    a.wait_remote(&session, "created");
+    config_hub(dir, &hub.addr, "dev-a");
+    let token = token_create(dir, "claude");
+
+    let init = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
+    let (status, body) = mcp(dir, &hub.addr, Some(&token), init);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"tools\""), "{body}");
+    let notice = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    assert_eq!(mcp(dir, &hub.addr, Some(&token), notice).0, 202);
+    let listed = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+    let (_, body) = mcp(dir, &hub.addr, Some(&token), listed);
+    for name in ["list_sessions", "get_session", "get_session_timeline"] {
+        assert!(body.contains(name), "{body}");
+    }
+
+    let mut transcript = String::new();
+    let sessions = tool(
+        dir,
+        &hub.addr,
+        &token,
+        "list_sessions",
+        serde_json::json!({}),
+    );
+    transcript += &sessions.to_string();
+    let rows = tool_json(&sessions);
+    assert_eq!(rows[0]["id"], session.as_str());
+    assert_eq!(rows[0]["device_name"], "dev-a");
+    let one = tool(
+        dir,
+        &hub.addr,
+        &token,
+        "get_session",
+        serde_json::json!({"id": session}),
+    );
+    transcript += &one.to_string();
+    assert_eq!(tool_json(&one)["name"], "alpha");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let timeline = loop {
+        let timeline = tool(
+            dir,
+            &hub.addr,
+            &token,
+            "get_session_timeline",
+            serde_json::json!({"id": session}),
+        );
+        if timeline.to_string().contains("turn.ended") {
+            break timeline;
+        }
+        assert!(Instant::now() < deadline, "The wait timed out.");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    transcript += &timeline.to_string();
+    let entries = tool_json(&timeline)["entries"].as_array().unwrap().clone();
+    assert!(!entries.is_empty(), "{timeline}");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["type"] == "session.created")
+    );
+    let missing = tool(
+        dir,
+        &hub.addr,
+        &token,
+        "get_session",
+        serde_json::json!({"id": "nope"}),
+    );
+    assert_eq!(missing["result"]["isError"], true);
+    assert!(!transcript.contains(SECRET), "{transcript}");
+
+    let audit = cli(dir, &["hub", "audit", "--json"]);
+    assert!(audit.status.success(), "{audit:?}");
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&audit.stdout).unwrap();
+    let calls: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            (
+                row["token"].as_str().unwrap(),
+                row["tool"].as_str().unwrap(),
+                row["result"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    // The timeline poll adds one or more `get_session_timeline` rows.
+    let (last, rest) = calls.split_last().unwrap();
+    assert_eq!(
+        calls[..2],
+        [
+            ("claude", "list_sessions", "ok"),
+            ("claude", "get_session", "ok")
+        ]
+    );
+    assert_eq!(*last, ("claude", "get_session", "error"));
+    assert!(
+        rest[2..]
+            .iter()
+            .all(|call| *call == ("claude", "get_session_timeline", "ok"))
+    );
+    assert!(rest.len() >= 3, "{calls:?}");
+    assert!(rows.iter().all(|row| row["ts_ms"].as_i64().unwrap() > 0));
+    let text = cli(dir, &["hub", "audit"]);
+    assert!(String::from_utf8_lossy(&text.stdout).contains("claude\tlist_sessions\tok"));
+}
+
+#[test]
+fn missing_unknown_and_revoked_tokens_give_401_and_the_list_shows_no_token() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = sandbox.path();
+    pki(dir, &["dev-a"]);
+    let hub = serve(dir);
+    add_device(dir, "dev-a");
+    config_hub(dir, &hub.addr, "dev-a");
+    let token = token_create(dir, "claude");
+    let ping = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+    assert_eq!(mcp(dir, &hub.addr, Some(&token), ping.clone()).0, 200);
+    assert_eq!(mcp(dir, &hub.addr, None, ping.clone()).0, 401);
+    assert_eq!(
+        mcp(dir, &hub.addr, Some("wsmcp_unknown"), ping.clone()).0,
+        401
+    );
+
+    let listed = cli(dir, &["hub", "token", "list", "--json"]);
+    let text = String::from_utf8(listed.stdout).unwrap();
+    assert!(text.contains("claude") && text.contains("read") && !text.contains(&token));
+    let revoked = cli(dir, &["hub", "token", "revoke", "claude"]);
+    assert!(revoked.status.success(), "{revoked:?}");
+    assert_eq!(mcp(dir, &hub.addr, Some(&token), ping).0, 401);
+    let plain = cli(dir, &["hub", "token", "list"]);
+    assert!(String::from_utf8_lossy(&plain.stdout).contains("claude\tread\trevoked"));
+    let again = cli(dir, &["hub", "token", "revoke", "claude"]);
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("404"),
+        "{again:?}"
+    );
+}
+
+#[test]
+fn token_and_audit_commands_need_the_hub_section() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    for arguments in [
+        vec!["hub", "token", "create", "--name", "x"],
+        vec!["hub", "token", "list"],
+        vec!["hub", "token", "revoke", "x"],
+        vec!["hub", "audit"],
+    ] {
+        let output = cli(sandbox.path(), &arguments);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+    }
+}
