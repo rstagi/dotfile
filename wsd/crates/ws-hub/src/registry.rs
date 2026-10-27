@@ -49,11 +49,15 @@ impl Registry {
 
     /// Adds the device of a certificate file. Returns the new row.
     pub fn add_device(&self, cert: &Path, name: &str) -> Result<DeviceRow> {
-        let pem = fs::read_to_string(cert)?;
+        self.add_device_pem(&fs::read_to_string(cert)?, name)
+    }
+
+    /// Adds the device of a certificate in PEM form. Returns the new row.
+    pub fn add_device_pem(&self, pem: &str, name: &str) -> Result<DeviceRow> {
         let row = DeviceRow {
-            id: certificate_subject(&pem)?,
+            id: certificate_subject(pem)?,
             name: name.to_owned(),
-            fingerprint: pem_fingerprint(&pem)?,
+            fingerprint: pem_fingerprint(pem)?,
             added_at: now(),
             revoked_at: None,
         };

@@ -26,6 +26,7 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::{
     identity::Result,
+    pair::Pairing,
     registry::{Registry, der_fingerprint},
 };
 
@@ -41,17 +42,23 @@ pub struct Hub {
     listener: TcpListener,
     acceptor: TlsAcceptor,
     registry: Arc<Registry>,
+    pairing: Arc<Pairing>,
 }
 
 /// Binds the listener and loads the certificates and the registry.
 pub async fn bind(options: &HubOptions) -> Result<Hub> {
     let registry = Arc::new(Registry::open(&options.state)?);
     let acceptor = TlsAcceptor::from(Arc::new(tls_config(options)?));
+    let pairing = Arc::new(Pairing::new(
+        registry.clone(),
+        std::fs::read_to_string(&options.ca_cert)?,
+    ));
     let listener = TcpListener::bind(options.listen).await?;
     Ok(Hub {
         listener,
         acceptor,
         registry,
+        pairing,
     })
 }
 
@@ -66,6 +73,7 @@ impl Hub {
             let (stream, _) = self.listener.accept().await?;
             let acceptor = self.acceptor.clone();
             let registry = self.registry.clone();
+            let pairing = self.pairing.clone();
             tokio::spawn(async move {
                 let Ok(tls) = acceptor.accept(stream).await else {
                     return;
@@ -77,8 +85,13 @@ impl Hub {
                     .and_then(|chain| chain.first())
                     .map(|cert| der_fingerprint(cert));
                 let service = service_fn(move |request| {
-                    let response = route(&registry, fingerprint.as_deref(), request);
-                    async move { Ok::<_, Infallible>(response) }
+                    let (registry, pairing, fingerprint) =
+                        (registry.clone(), pairing.clone(), fingerprint.clone());
+                    async move {
+                        let response =
+                            route(&registry, &pairing, fingerprint.as_deref(), request).await;
+                        Ok::<_, Infallible>(response)
+                    }
                 });
                 let _ = http1::Builder::new()
                     .serve_connection(TokioIo::new(tls), service)
@@ -88,13 +101,17 @@ impl Hub {
     }
 }
 
-fn route(
+async fn route(
     registry: &Registry,
+    pairing: &Pairing,
     fingerprint: Option<&str>,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let path = request.uri().path().to_owned();
-    if path.starts_with("/v1/pair/") || path == "/mcp" {
+    if path == "/v1/pair" || path.starts_with("/v1/pair/") {
+        return pairing.handle(fingerprint, request).await;
+    }
+    if path == "/mcp" {
         return reply(StatusCode::NOT_FOUND, "Not implemented.");
     }
     if !path.starts_with("/v1/") {
@@ -147,7 +164,7 @@ pub fn read_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     Ok(CertificateDer::pem_reader_iter(&mut reader).collect::<std::result::Result<_, _>>()?)
 }
 
-fn json<T: serde::Serialize>(status: StatusCode, value: &T) -> Response<Full<Bytes>> {
+pub(crate) fn json<T: serde::Serialize>(status: StatusCode, value: &T) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from(
         serde_json::to_vec(value).unwrap_or_default(),
     )));
@@ -158,7 +175,7 @@ fn json<T: serde::Serialize>(status: StatusCode, value: &T) -> Response<Full<Byt
     response
 }
 
-fn reply(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
+pub(crate) fn reply(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from(message.to_owned())));
     *response.status_mut() = status;
     response
