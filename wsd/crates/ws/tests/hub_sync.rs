@@ -25,7 +25,6 @@ use common::{
 const SECRET: &str = "sk-live-SECRET-1234";
 
 struct Device {
-    id: &'static str,
     home: PathBuf,
     socket: PathBuf,
     daemon: Daemon,
@@ -63,7 +62,11 @@ impl Fixture {
         let socket = home.join("wsd.sock");
         config_hub_with(&home, self.dir.path(), &self.hub.addr, id);
         let daemon = Daemon::start(ws(&home, &socket), &socket);
-        Device { id, home, socket, daemon }
+        Device {
+            home,
+            socket,
+            daemon,
+        }
     }
 
     fn client(&self, id: &str) -> HubClient {
@@ -83,7 +86,13 @@ impl Fixture {
 
     /// Waits until the hub cursor of the session reaches `seq`.
     fn wait_cursor(&self, device: &str, session: &str, seq: u64) {
-        wait(|| self.store.cursors(device).unwrap().get(session).is_some_and(|&c| c >= seq));
+        wait(|| {
+            self.store
+                .cursors(device)
+                .unwrap()
+                .get(session)
+                .is_some_and(|&c| c >= seq)
+        });
     }
 }
 
@@ -93,7 +102,12 @@ impl Device {
     }
 
     fn create_session(&self, name: &str) -> String {
-        let response = common::request(&self.socket, "POST", "/v1/sessions", &json!({"name": name}).to_string());
+        let response = common::request(
+            &self.socket,
+            "POST",
+            "/v1/sessions",
+            &json!({"name": name}).to_string(),
+        );
         assert!(response.starts_with("HTTP/1.1 201"), "{response}");
         let body: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         body["id"].as_str().unwrap().to_owned()
@@ -124,12 +138,19 @@ fn wait(condition: impl Fn() -> bool) {
 }
 
 fn event_ids(entries: &[StoredEntry]) -> Vec<String> {
-    entries.iter().map(|stored| stored.entry.event_id.clone()).collect()
+    entries
+        .iter()
+        .map(|stored| stored.entry.event_id.clone())
+        .collect()
 }
 
 fn assert_unique(entries: &[StoredEntry]) {
     let ids = event_ids(entries);
-    assert_eq!(ids.len(), ids.iter().collect::<HashSet<_>>().len(), "{ids:?}");
+    assert_eq!(
+        ids.len(),
+        ids.iter().collect::<HashSet<_>>().len(),
+        "{ids:?}"
+    );
 }
 
 #[test]
@@ -144,7 +165,12 @@ fn two_daemons_push_new_entries_with_the_device_of_the_certificate() {
     fixture.wait_cursor("dev-b", &sb, seq_b);
     for (device, session) in [("dev-a", &sa), ("dev-b", &sb)] {
         let entries = fixture.entries(device);
-        assert!(entries.iter().all(|stored| &stored.entry.session_id == session), "{entries:?}");
+        assert!(
+            entries
+                .iter()
+                .all(|stored| &stored.entry.session_id == session),
+            "{entries:?}"
+        );
         assert_eq!(entries.first().unwrap().entry.event_type, "session.created");
         assert_eq!(entries.last().unwrap().entry.event_type, "turn.started");
     }
@@ -169,11 +195,20 @@ fn a_duplicate_push_stores_one_entry_and_the_body_device_id_is_ignored() {
         body: json!({}),
     });
     let mut body = serde_json::to_value(SyncBatch {
-        sessions: vec![SessionBatch { session_id: session.clone(), through_seq: seq + 1, entries }],
+        sessions: vec![SessionBatch {
+            session_id: session.clone(),
+            through_seq: seq + 1,
+            entries,
+        }],
     })
     .unwrap();
     body["sessions"][0]["entries"][0]["device_id"] = json!("dev-b");
-    let response = futures_block(fixture.client("dev-a").post_json("/v1/sync/logs", body.to_string().into_bytes()));
+    let response = futures_block(
+        fixture
+            .client("dev-a")
+            .post_json("/v1/sync/logs", body.to_string().into_bytes()),
+    )
+    .unwrap();
     assert_eq!(response.status, 200, "{}", response.body);
     let after = fixture.entries("dev-a");
     assert_eq!(after.len(), before.len() + 1);
@@ -198,10 +233,19 @@ fn entries_arrive_one_time_after_a_hub_restart_and_after_a_daemon_restart() {
     fixture.wait_cursor("dev-a", &session, seq);
     let entries = fixture.entries("dev-a");
     assert_unique(&entries);
-    let types: Vec<_> = entries.iter().map(|stored| stored.entry.event_type.as_str()).collect();
+    let types: Vec<_> = entries
+        .iter()
+        .map(|stored| stored.entry.event_type.as_str())
+        .collect();
     assert_eq!(
         types,
-        ["session.created", "turn.started", "agent.waiting", "turn.ended", "turn.started"]
+        [
+            "session.created",
+            "turn.started",
+            "agent.waiting",
+            "turn.ended",
+            "turn.started"
+        ]
     );
 
     a.restart();
@@ -217,17 +261,36 @@ fn no_uploaded_entry_contains_a_secret_from_a_hook_a_tool_a_message_or_a_command
     let fixture = Fixture::new();
     let a = fixture.device("dev-a");
     let session = a.create_session("alpha");
-    a.append(&session, "hook.received", json!({"payload": {"tool_input": {"command": SECRET}, "note": SECRET}}));
-    a.append(&session, "tool.result", json!({"result": SECRET, "tool_response": SECRET}));
-    a.append(&session, "message.sent", json!({"from_session": session, "to_session": session, "pair_seq": 1, "body": SECRET}));
-    a.append(&session, "process.started", json!({"command": SECRET, "argv": ["sh", "-c", SECRET]}));
+    a.append(
+        &session,
+        "hook.received",
+        json!({"payload": {"tool_input": {"command": SECRET}, "note": SECRET}}),
+    );
+    a.append(
+        &session,
+        "tool.result",
+        json!({"result": SECRET, "tool_response": SECRET}),
+    );
+    a.append(
+        &session,
+        "message.sent",
+        json!({"from_session": session, "to_session": session, "pair_seq": 1, "body": SECRET}),
+    );
+    a.append(
+        &session,
+        "process.started",
+        json!({"command": SECRET, "argv": ["sh", "-c", SECRET]}),
+    );
     let seq = a.append(&session, "turn.ended", json!({"summary": SECRET}));
     fixture.wait_cursor("dev-a", &session, seq);
     let entries = fixture.entries("dev-a");
     assert!(entries.len() >= 2, "{entries:?}");
     assert!(!serde_json::to_string(&entries).unwrap().contains(SECRET));
     let db = fs::read(fixture.dir.path().join("hub/hub.db")).unwrap();
-    assert!(!db.windows(SECRET.len()).any(|window| window == SECRET.as_bytes()));
+    assert!(
+        !db.windows(SECRET.len())
+            .any(|window| window == SECRET.as_bytes())
+    );
 }
 
 #[test]
@@ -237,7 +300,12 @@ fn a_daemon_without_a_hub_section_starts_and_pushes_nothing() {
     fs::create_dir_all(&home).unwrap();
     let socket = home.join("wsd.sock");
     let _daemon = Daemon::start(ws(&home, &socket), &socket);
-    let response = common::request(&socket, "POST", "/v1/sessions", &json!({"name": "x"}).to_string());
+    let response = common::request(
+        &socket,
+        "POST",
+        "/v1/sessions",
+        &json!({"name": "x"}).to_string(),
+    );
     assert!(response.starts_with("HTTP/1.1 201"), "{response}");
     assert!(fixture.store.cursors("dev-a").unwrap().is_empty());
     assert!(fixture.entries("dev-a").is_empty());
@@ -255,5 +323,9 @@ impl Fixture {
 }
 
 fn futures_block<T>(future: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
 }

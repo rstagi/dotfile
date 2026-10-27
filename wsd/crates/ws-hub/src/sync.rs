@@ -120,7 +120,9 @@ impl SyncStore {
         let mut statement =
             connection.prepare("SELECT session_id, seq FROM sync_cursors WHERE device_id = ?1")?;
         let rows = statement
-            .query_map([device_id], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u64)))?
+            .query_map([device_id], |row| {
+                Ok((row.get(0)?, row.get::<_, i64>(1)? as u64))
+            })?
             .collect::<std::result::Result<_, _>>()?;
         Ok(rows)
     }
@@ -181,8 +183,18 @@ mod tests {
     fn ingest_stores_each_event_one_time_and_moves_the_cursor_forward_only() {
         let dir = tempfile::tempdir().unwrap();
         let store = SyncStore::open(dir.path()).unwrap();
-        assert_eq!(store.ingest("dev-a", &batch(vec![entry("E1", 1), entry("E2", 2)], 3)).unwrap(), 2);
-        assert_eq!(store.ingest("dev-a", &batch(vec![entry("E2", 2)], 2)).unwrap(), 0);
+        assert_eq!(
+            store
+                .ingest("dev-a", &batch(vec![entry("E1", 1), entry("E2", 2)], 3))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .ingest("dev-a", &batch(vec![entry("E2", 2)], 2))
+                .unwrap(),
+            0
+        );
         assert_eq!(store.cursors("dev-a").unwrap()["S1"], 3);
         assert_eq!(store.entries("dev-a").unwrap().len(), 2);
         assert!(store.cursors("dev-b").unwrap().is_empty());

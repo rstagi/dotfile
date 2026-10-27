@@ -148,8 +148,14 @@ async fn ingest_logs(
     device_id: &str,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let Ok(body) = Limited::new(request.into_body(), MAX_BODY_BYTES).collect().await else {
-        return reply(StatusCode::PAYLOAD_TOO_LARGE, "Cannot read the request body.");
+    let Ok(body) = Limited::new(request.into_body(), MAX_BODY_BYTES)
+        .collect()
+        .await
+    else {
+        return reply(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Cannot read the request body.",
+        );
     };
     let Ok(batch) = serde_json::from_slice::<SyncBatch>(&body.to_bytes()) else {
         return reply(StatusCode::BAD_REQUEST, "The batch is not valid JSON.");

@@ -130,9 +130,7 @@ impl Syncer {
         &self,
         connection: &mut HubConnection,
     ) -> Result<HashMap<SessionId, Progress>, Error> {
-        let response = connection
-            .get("/v1/sync/cursors")
-            .await?;
+        let response = connection.get("/v1/sync/cursors").await?;
         if response.status != 200 {
             return Err(format!("The hub answered {} to the cursor read.", response.status).into());
         }
@@ -140,7 +138,13 @@ impl Syncer {
         Ok(cursors
             .into_iter()
             .filter_map(|(id, seq)| {
-                Some((id.parse().ok()?, Progress { pushed: seq, offset: 0 }))
+                Some((
+                    id.parse().ok()?,
+                    Progress {
+                        pushed: seq,
+                        offset: 0,
+                    },
+                ))
             })
             .collect())
     }
@@ -163,15 +167,25 @@ impl Syncer {
         let log = SessionLog::new(&self.state, id, self.device_id);
         let offset = progress.offset;
         let tail = tokio::task::spawn_blocking(move || log.read_after(offset)).await??;
-        let pending: Vec<_> = tail.entries.iter().filter(|e| e.seq > progress.pushed).collect();
+        let pending: Vec<_> = tail
+            .entries
+            .iter()
+            .filter(|e| e.seq > progress.pushed)
+            .collect();
         let Some(last) = pending.last() else {
             progress.offset = tail.offset;
             return Ok(());
         };
         let through_seq = last.seq;
-        let exported: Vec<_> = pending.iter().filter_map(|entry| export::project(entry)).collect();
+        let exported: Vec<_> = pending
+            .iter()
+            .filter_map(|entry| export::project(entry))
+            .collect();
         // Send at least one request when the batch has no exported entry, so the cursor moves.
-        let mut chunks: Vec<_> = exported.chunks(MAX_BATCH_ENTRIES).map(<[_]>::to_vec).collect();
+        let mut chunks: Vec<_> = exported
+            .chunks(MAX_BATCH_ENTRIES)
+            .map(<[_]>::to_vec)
+            .collect();
         if chunks.is_empty() {
             chunks.push(Vec::new());
         }

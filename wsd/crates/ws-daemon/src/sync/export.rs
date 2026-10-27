@@ -28,7 +28,10 @@ const BARE_TYPES: &[&str] = &[
 const FIELD_TYPES: &[(&str, &[&str])] = &[
     ("session.created", &["alias", "name", "workspace_id", "cwd"]),
     ("session.renamed", &["name"]),
-    ("session.repo_attached", &["path", "remote", "branch", "base"]),
+    (
+        "session.repo_attached",
+        &["path", "remote", "branch", "base"],
+    ),
 ];
 
 /// Returns the export form of an entry, or `None` when the entry stays on the device.
@@ -70,8 +73,12 @@ fn pick(body: &Value, fields: &[&str]) -> Value {
 fn strip_credentials(remote: &str) -> String {
     match remote.split_once("://") {
         Some((scheme, rest)) => {
-            let (authority, path) = rest.split_once('/').map_or((rest, None), |(a, p)| (a, Some(p)));
-            let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+            let (authority, path) = rest
+                .split_once('/')
+                .map_or((rest, None), |(a, p)| (a, Some(p)));
+            let host = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
             match path {
                 Some(path) => format!("{scheme}://{host}/{path}"),
                 None => format!("{scheme}://{host}"),
@@ -112,20 +119,43 @@ mod tests {
             "reason": SECRET, "callback_id": SECRET,
         });
         for event_type in [
-            "hook.received", "message.sent", "tool.result", "exit", "agent.started", "session.created",
-            "session.running", "session.finished", "session.renamed", "session.repo_attached",
-            "agent.waiting", "turn.started", "turn.ended", "done",
+            "hook.received",
+            "message.sent",
+            "tool.result",
+            "exit",
+            "agent.started",
+            "session.created",
+            "session.running",
+            "session.finished",
+            "session.renamed",
+            "session.repo_attached",
+            "agent.waiting",
+            "turn.started",
+            "turn.ended",
+            "done",
         ] {
             if let Some(exported) = project(&entry(event_type, secret_body.clone())) {
-                assert!(!serde_json::to_string(&exported).unwrap().contains(SECRET), "{event_type}");
+                assert!(
+                    !serde_json::to_string(&exported).unwrap().contains(SECRET),
+                    "{event_type}"
+                );
             }
         }
     }
 
     #[test]
     fn unlisted_types_are_not_exported() {
-        for event_type in ["hook.received", "message.sent", "tool.result", "exit", "workspace.created"] {
-            assert!(project(&entry(event_type, json!({"x": 1}))).is_none(), "{event_type}");
+        for event_type in [
+            "hook.received",
+            "message.sent",
+            "tool.result",
+            "exit",
+            "workspace.created",
+        ] {
+            assert!(
+                project(&entry(event_type, json!({"x": 1}))).is_none(),
+                "{event_type}"
+            );
         }
     }
 
@@ -146,7 +176,10 @@ mod tests {
             json!({"alias": 3, "name": "n", "cwd": "/w", "workspace_id": "w1", "argv": ["x"], "env": {"K": SECRET}}),
         ))
         .unwrap();
-        assert_eq!(exported.body, json!({"alias": 3, "name": "n", "cwd": "/w", "workspace_id": "w1"}));
+        assert_eq!(
+            exported.body,
+            json!({"alias": 3, "name": "n", "cwd": "/w", "workspace_id": "w1"})
+        );
     }
 
     #[test]
