@@ -7,6 +7,7 @@ use ws_hub::{
     client::HubClient,
     registry::{DeviceRow, Registry},
     server::{self, HubOptions},
+    tokens::{AuditRow, TokenRow},
 };
 
 use crate::Result;
@@ -37,6 +38,32 @@ pub enum HubCommand {
         #[arg(long)]
         name: String,
     },
+    /// Manage the bearer tokens of the remote MCP endpoint.
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
+    /// Show the audit rows of the remote MCP calls.
+    Audit {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TokenCommand {
+    /// Create a read token. The command prints the token one time.
+    Create {
+        #[arg(long)]
+        name: String,
+    },
+    /// List the tokens. The list never shows a token.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke the token with this name at once.
+    Revoke { name: String },
 }
 
 pub async fn hub(command: HubCommand) -> Result<ExitCode> {
@@ -64,8 +91,84 @@ pub async fn hub(command: HubCommand) -> Result<ExitCode> {
             let row = Registry::open(&state)?.add_device(&cert, &name)?;
             println!("Added device {} ({})", row.id, row.name);
         }
+        HubCommand::Token { command } => return token(command).await,
+        HubCommand::Audit { json } => return audit(json).await,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs `ws hub token`. Exit code 2 means the `[hub]` section is missing.
+async fn token(command: TokenCommand) -> Result<ExitCode> {
+    let Some(client) = client()? else {
+        return Ok(no_hub());
+    };
+    match command {
+        TokenCommand::Create { name } => {
+            let body = serde_json::json!({ "name": name }).to_string();
+            let response = client
+                .request_json(Method::POST, "/v1/tokens", &body)
+                .await?;
+            if response.status != 201 {
+                return Err(hub_error(&response));
+            }
+            let created: serde_json::Value = serde_json::from_str(&response.body)?;
+            println!("{}", created["token"].as_str().unwrap_or_default());
+            eprintln!("ws: The hub shows this token one time. Store it now.");
+        }
+        TokenCommand::List { json } => {
+            let response = client.request(Method::GET, "/v1/tokens").await?;
+            if response.status != 200 {
+                return Err(hub_error(&response));
+            }
+            if json {
+                println!("{}", response.body);
+                return Ok(ExitCode::SUCCESS);
+            }
+            let rows: Vec<TokenRow> = serde_json::from_str(&response.body)?;
+            for row in rows {
+                let state = if row.revoked_at.is_some() {
+                    "revoked"
+                } else {
+                    "active"
+                };
+                println!("{}\t{}\t{}", row.name, row.scope, state);
+            }
+        }
+        TokenCommand::Revoke { name } => {
+            let response = client
+                .request(Method::DELETE, &format!("/v1/tokens/{name}"))
+                .await?;
+            if response.status != 204 {
+                return Err(hub_error(&response));
+            }
+            println!("Revoked token {name}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Runs `ws hub audit`.
+async fn audit(json: bool) -> Result<ExitCode> {
+    let Some(client) = client()? else {
+        return Ok(no_hub());
+    };
+    let response = client.request(Method::GET, "/v1/audit").await?;
+    if response.status != 200 {
+        return Err(hub_error(&response));
+    }
+    if json {
+        println!("{}", response.body);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let rows: Vec<AuditRow> = serde_json::from_str(&response.body)?;
+    for row in rows {
+        println!("{}\t{}\t{}\t{}", row.ts_ms, row.token, row.tool, row.result);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn hub_error(response: &ws_hub::client::HubResponse) -> Box<dyn std::error::Error + Send + Sync> {
+    format!("The hub answered {}: {}", response.status, response.body).into()
 }
 
 /// Runs `ws device list`. Exit code 2 means the `[hub]` section is missing.

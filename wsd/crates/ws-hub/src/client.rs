@@ -107,6 +107,20 @@ impl HubClient {
         self.connect().await?.post_json(path, body).await
     }
 
+    /// One request with a JSON body and extra headers on a new connection.
+    pub async fn request_with_headers(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> Result<HubResponse> {
+        self.connect()
+            .await?
+            .send_with_headers(method, path, headers, body.as_bytes().to_vec())
+            .await
+    }
+
     /// Opens a keep-alive connection for several requests.
     pub async fn connect(&self) -> Result<HubConnection> {
         let tcp = TcpStream::connect(&self.authority).await?;
@@ -140,12 +154,25 @@ impl HubConnection {
     }
 
     pub async fn send(&mut self, method: Method, path: &str, body: Vec<u8>) -> Result<HubResponse> {
-        let request = Request::builder()
+        self.send_with_headers(method, path, &[], body).await
+    }
+
+    pub async fn send_with_headers(
+        &mut self,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+    ) -> Result<HubResponse> {
+        let mut request = Request::builder()
             .method(method)
             .uri(path)
             .header("host", &self.authority)
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(body)))?;
+            .header("content-type", "application/json");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let request = request.body(Full::new(Bytes::from(body)))?;
         let response = self.sender.send_request(request).await?;
         let status = response.status().as_u16();
         let body = response.into_body().collect().await?.to_bytes();

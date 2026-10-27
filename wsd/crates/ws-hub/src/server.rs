@@ -26,9 +26,11 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::{
     identity::Result,
+    mcp::{self, McpContext},
     pair::Pairing,
     registry::{Registry, der_fingerprint},
     sync::{SyncBatch, SyncStore},
+    tokens::{self, TokenStore},
 };
 
 /// The largest accepted request body.
@@ -48,6 +50,7 @@ pub struct Hub {
     registry: Arc<Registry>,
     pairing: Arc<Pairing>,
     sync: Arc<SyncStore>,
+    tokens: Arc<TokenStore>,
 }
 
 /// Binds the listener and loads the certificates and the registry.
@@ -59,6 +62,7 @@ pub async fn bind(options: &HubOptions) -> Result<Hub> {
         std::fs::read_to_string(&options.ca_cert)?,
     ));
     let sync = Arc::new(SyncStore::open(&options.state)?);
+    let tokens = Arc::new(TokenStore::open(&options.state)?);
     let listener = TcpListener::bind(options.listen).await?;
     Ok(Hub {
         listener,
@@ -66,6 +70,7 @@ pub async fn bind(options: &HubOptions) -> Result<Hub> {
         registry,
         pairing,
         sync,
+        tokens,
     })
 }
 
@@ -82,6 +87,7 @@ impl Hub {
             let registry = self.registry.clone();
             let pairing = self.pairing.clone();
             let sync = self.sync.clone();
+            let tokens = self.tokens.clone();
             tokio::spawn(async move {
                 let Ok(tls) = acceptor.accept(stream).await else {
                     return;
@@ -96,12 +102,16 @@ impl Hub {
                     let registry = registry.clone();
                     let pairing = pairing.clone();
                     let sync = sync.clone();
+                    let tokens = tokens.clone();
                     let fingerprint = fingerprint.clone();
                     async move {
-                        Ok::<_, Infallible>(
-                            route(&registry, &pairing, &sync, fingerprint.as_deref(), request)
-                                .await,
-                        )
+                        let stores = Stores {
+                            registry: &registry,
+                            pairing: &pairing,
+                            sync: &sync,
+                            tokens: &tokens,
+                        };
+                        Ok::<_, Infallible>(route(&stores, fingerprint.as_deref(), request).await)
                     }
                 });
                 let _ = http1::Builder::new()
@@ -112,19 +122,39 @@ impl Hub {
     }
 }
 
+/// The stores that the routes use.
+struct Stores<'a> {
+    registry: &'a Registry,
+    pairing: &'a Pairing,
+    sync: &'a SyncStore,
+    tokens: &'a TokenStore,
+}
+
 async fn route(
-    registry: &Registry,
-    pairing: &Pairing,
-    sync: &SyncStore,
+    stores: &Stores<'_>,
     fingerprint: Option<&str>,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
+    let Stores {
+        registry,
+        pairing,
+        sync,
+        tokens,
+    } = *stores;
     let path = request.uri().path().to_owned();
     if path == "/v1/pair" || path.starts_with("/v1/pair/") {
         return pairing.handle(fingerprint, request).await;
     }
     if path == "/mcp" {
-        return reply(StatusCode::NOT_FOUND, "Not implemented.");
+        return mcp::handle(
+            &McpContext {
+                tokens,
+                registry,
+                sync,
+            },
+            request,
+        )
+        .await;
     }
     if !path.starts_with("/v1/") {
         return reply(StatusCode::NOT_FOUND, "Unknown route.");
@@ -135,6 +165,9 @@ async fn route(
         Some(Err(error)) => return reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
         _ => return reply(StatusCode::FORBIDDEN, "Device not allowed."),
     };
+    if path == "/v1/audit" || path == "/v1/tokens" || path.starts_with("/v1/tokens/") {
+        return tokens::admin(tokens, request).await;
+    }
     match (request.method(), path.as_str()) {
         (&Method::GET, "/v1/devices") => match registry.list() {
             Ok(rows) => json(StatusCode::OK, &rows),
@@ -159,16 +192,7 @@ async fn route(
 
 /// The sessions table with the registry name of each device.
 fn list_sessions(registry: &Registry, sync: &SyncStore) -> Response<Full<Bytes>> {
-    let rows = registry.list().and_then(|devices| {
-        let mut sessions = sync.sessions()?;
-        for session in &mut sessions {
-            if let Some(device) = devices.iter().find(|device| device.id == session.device_id) {
-                session.device_name = device.name.clone();
-            }
-        }
-        Ok(sessions)
-    });
-    match rows {
+    match mcp::session_rows(registry, sync) {
         Ok(rows) => json(StatusCode::OK, &rows),
         Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
