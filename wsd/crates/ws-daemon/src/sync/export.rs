@@ -176,12 +176,12 @@ mod tests {
     fn created_keeps_allowlisted_fields_only() {
         let exported = project(&entry(
             "session.created",
-            json!({"alias": 3, "name": "n", "cwd": "/w", "workspace_id": "w1", "argv": ["x"], "env": {"K": SECRET}}),
+            json!({"alias": 3, "name": "n", "cwd": "/w", "workspace_id": "w1", "kind": "headless", "argv": ["x"], "env": {"K": SECRET}}),
         ))
         .unwrap();
         assert_eq!(
             exported.body,
-            json!({"alias": 3, "name": "n", "cwd": "/w", "workspace_id": "w1"})
+            json!({"alias": 3, "name": "n", "cwd": "/w", "workspace_id": "w1", "kind": "headless"})
         );
     }
 
