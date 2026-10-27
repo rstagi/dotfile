@@ -2,7 +2,7 @@
 
 use std::{fs::File, io::BufReader, path::Path, sync::Arc};
 
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, body::Bytes, client::conn::http1::SendRequest};
 use hyper_util::rt::TokioIo;
 use rustls::{
@@ -65,6 +65,11 @@ impl HubClient {
         self.connect().await?.request(method, path).await
     }
 
+    /// One request with a JSON body on a new connection.
+    pub async fn post_json(&self, path: &str, body: Vec<u8>) -> Result<HubResponse> {
+        self.connect().await?.post_json(path, body).await
+    }
+
     /// Opens a keep-alive connection for several requests.
     pub async fn connect(&self) -> Result<HubConnection> {
         let tcp = TcpStream::connect(&self.authority).await?;
@@ -81,16 +86,29 @@ impl HubClient {
 
 pub struct HubConnection {
     authority: String,
-    sender: SendRequest<Empty<Bytes>>,
+    sender: SendRequest<Full<Bytes>>,
 }
 
 impl HubConnection {
     pub async fn request(&mut self, method: Method, path: &str) -> Result<HubResponse> {
+        self.send(method, path, Vec::new()).await
+    }
+
+    pub async fn get(&mut self, path: &str) -> Result<HubResponse> {
+        self.send(Method::GET, path, Vec::new()).await
+    }
+
+    pub async fn post_json(&mut self, path: &str, body: Vec<u8>) -> Result<HubResponse> {
+        self.send(Method::POST, path, body).await
+    }
+
+    async fn send(&mut self, method: Method, path: &str, body: Vec<u8>) -> Result<HubResponse> {
         let request = Request::builder()
             .method(method)
             .uri(path)
             .header("host", &self.authority)
-            .body(Empty::<Bytes>::new())?;
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body)))?;
         let response = self.sender.send_request(request).await?;
         let status = response.status().as_u16();
         let body = response.into_body().collect().await?.to_bytes();

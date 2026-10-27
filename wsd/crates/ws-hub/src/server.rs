@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
     Method, Request, Response, StatusCode, body::Bytes, body::Incoming, server::conn::http1,
     service::service_fn,
@@ -27,7 +27,11 @@ use tokio_rustls::TlsAcceptor;
 use crate::{
     identity::Result,
     registry::{Registry, der_fingerprint},
+    sync::{SyncBatch, SyncStore},
 };
+
+/// The largest accepted request body.
+const MAX_BODY_BYTES: usize = 8 << 20;
 
 pub struct HubOptions {
     pub listen: SocketAddr,
@@ -41,17 +45,20 @@ pub struct Hub {
     listener: TcpListener,
     acceptor: TlsAcceptor,
     registry: Arc<Registry>,
+    sync: Arc<SyncStore>,
 }
 
 /// Binds the listener and loads the certificates and the registry.
 pub async fn bind(options: &HubOptions) -> Result<Hub> {
     let registry = Arc::new(Registry::open(&options.state)?);
     let acceptor = TlsAcceptor::from(Arc::new(tls_config(options)?));
+    let sync = Arc::new(SyncStore::open(&options.state)?);
     let listener = TcpListener::bind(options.listen).await?;
     Ok(Hub {
         listener,
         acceptor,
         registry,
+        sync,
     })
 }
 
@@ -66,6 +73,7 @@ impl Hub {
             let (stream, _) = self.listener.accept().await?;
             let acceptor = self.acceptor.clone();
             let registry = self.registry.clone();
+            let sync = self.sync.clone();
             tokio::spawn(async move {
                 let Ok(tls) = acceptor.accept(stream).await else {
                     return;
@@ -77,8 +85,14 @@ impl Hub {
                     .and_then(|chain| chain.first())
                     .map(|cert| der_fingerprint(cert));
                 let service = service_fn(move |request| {
-                    let response = route(&registry, fingerprint.as_deref(), request);
-                    async move { Ok::<_, Infallible>(response) }
+                    let registry = registry.clone();
+                    let sync = sync.clone();
+                    let fingerprint = fingerprint.clone();
+                    async move {
+                        Ok::<_, Infallible>(
+                            route(&registry, &sync, fingerprint.as_deref(), request).await,
+                        )
+                    }
                 });
                 let _ = http1::Builder::new()
                     .serve_connection(TokioIo::new(tls), service)
@@ -88,8 +102,9 @@ impl Hub {
     }
 }
 
-fn route(
+async fn route(
     registry: &Registry,
+    sync: &SyncStore,
     fingerprint: Option<&str>,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
@@ -106,7 +121,6 @@ fn route(
         Some(Err(error)) => return reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
         _ => return reply(StatusCode::FORBIDDEN, "Device not allowed."),
     };
-    let _ = device;
     match (request.method(), path.as_str()) {
         (&Method::GET, "/v1/devices") => match registry.list() {
             Ok(rows) => json(StatusCode::OK, &rows),
@@ -119,7 +133,30 @@ fn route(
                 Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
             }
         }
+        (&Method::GET, "/v1/sync/cursors") => match sync.cursors(&device.id) {
+            Ok(cursors) => json(StatusCode::OK, &cursors),
+            Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+        },
+        (&Method::POST, "/v1/sync/logs") => ingest_logs(sync, &device.id, request).await,
         _ => reply(StatusCode::NOT_FOUND, "Unknown route."),
+    }
+}
+
+/// Stores a batch for the device of the client certificate. The body names no device.
+async fn ingest_logs(
+    sync: &SyncStore,
+    device_id: &str,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    let Ok(body) = Limited::new(request.into_body(), MAX_BODY_BYTES).collect().await else {
+        return reply(StatusCode::PAYLOAD_TOO_LARGE, "Cannot read the request body.");
+    };
+    let Ok(batch) = serde_json::from_slice::<SyncBatch>(&body.to_bytes()) else {
+        return reply(StatusCode::BAD_REQUEST, "The batch is not valid JSON.");
+    };
+    match sync.ingest(device_id, &batch) {
+        Ok(stored) => json(StatusCode::OK, &serde_json::json!({ "stored": stored })),
+        Err(error) => reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
 }
 
