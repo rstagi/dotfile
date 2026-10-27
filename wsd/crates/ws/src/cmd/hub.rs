@@ -2,7 +2,7 @@ use std::{io::Write, net::SocketAddr, path::PathBuf, process::ExitCode};
 
 use clap::Subcommand;
 use hyper::Method;
-use ws_core::config::Config;
+use ws_core::config::{Config, HubConfig};
 use ws_hub::{
     client::HubClient,
     registry::{DeviceRow, Registry},
@@ -109,8 +109,7 @@ pub async fn device_remove(id: &str) -> Result<ExitCode> {
 }
 
 fn client() -> Result<Option<HubClient>> {
-    let state = crate::init::state_path()?;
-    let Some(hub) = Config::load(&state)?.hub else {
+    let Some(hub) = hub_config()? else {
         return Ok(None);
     };
     Ok(Some(HubClient::new(
@@ -118,7 +117,12 @@ fn client() -> Result<Option<HubClient>> {
     )?))
 }
 
-fn no_hub() -> ExitCode {
+pub(super) fn hub_config() -> Result<Option<HubConfig>> {
+    let state = crate::init::state_path()?;
+    Ok(Config::load(&state)?.hub)
+}
+
+pub(super) fn no_hub() -> ExitCode {
     eprintln!("ws: Add a [hub] section to config.toml in the state directory.");
     ExitCode::from(2)
 }
