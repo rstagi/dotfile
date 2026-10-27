@@ -87,7 +87,7 @@ After the final reviews of a `[gate: merge]` phase:
 2. Run the gate explainer (see Milestone explainers). Do not wait for a running progress checkpoint.
 3. Run `loop-milestone.sh park --dir <loop dir> --milestone <N> --prs '<json slug→PR url>'`.
 4. Notify the human with `loop-notify.sh`. Include the explainer link or the failure.
-   Give the PR links and the two resume commands: `loop-milestone.sh resume --dir <loop dir>`, then `ws loop start <loop dir>`.
+   Give the PR links and the two resume commands: `WS_LOOP_ID=<loop id> loop-milestone.sh resume --dir <loop dir>`, then `ws loop start <loop dir>`. The loop id is the session id or the plan id.
 5. Register no continuation. End with `ws done --output handoff.md`.
 
 ## Accept gate
