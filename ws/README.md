@@ -156,6 +156,8 @@ Device identity: `ws ca init --out <dir>` writes the Ed25519 root key (0600) and
 Hub: `ws hub serve --listen <addr> --tls-cert <file> --tls-key <file> --ca-cert <root cert> --state <dir>` serves the hub over mTLS and prints `hub ready <addr>`.
 Each `/v1/` route needs a client certificate from the root CA whose fingerprint is an unrevoked row in `<state>/hub.db`. A failed registry check gives HTTP 403.
 `ws hub add-device --state <dir> --cert <file> --name <name>` adds the first device on the hub host. `ws device list [--json]` and `ws device remove <id>` call the hub with the `[hub]` section (`url`, `cert`, `key`, `ca`) of `config.toml`. Without it they print one error line and exit 2.
+Pairing: `ws device join <hub url> --name <name> [--ca <file>]` runs `ws device init`, sends the request to `POST /v1/pair`, prints an 8-character code and waits for the certificate (the default trust is the system roots). It then writes `$WS_STATE/device/cert.pem` and `root.pem` and appends the `[hub]` section to `config.toml`.
+On a device that the hub has, `ws device approve <code> --root-key-cmd '<cmd>'` signs the request and sends the certificate. The hub adds the device to the registry. A code works one time and expires after 10 minutes. A used, unknown or expired code gives HTTP 404. An approve from a device that the registry does not have gives HTTP 403.
 It reads the root key from the stdout of the command (default `op read op://ws/root-ca/key`).
 
 Rust owns sessions, messages, logs, dependency edges and the local MCP server.

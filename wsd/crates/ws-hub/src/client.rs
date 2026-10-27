@@ -91,8 +91,16 @@ impl HubClient {
     }
 
     /// One request with a JSON body on a new connection.
-    pub async fn request_json(&self, method: Method, path: &str, body: &str) -> Result<HubResponse> {
-        self.connect().await?.send(method, path, body.as_bytes().to_vec()).await
+    pub async fn request_json(
+        &self,
+        method: Method,
+        path: &str,
+        body: &str,
+    ) -> Result<HubResponse> {
+        self.connect()
+            .await?
+            .send(method, path, body.as_bytes().to_vec())
+            .await
     }
 
     /// Opens a keep-alive connection for several requests.

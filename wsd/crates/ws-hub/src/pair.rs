@@ -130,10 +130,11 @@ impl Pairing {
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         match (method, parts.as_slice()) {
             (Method::POST, ["v1", "pair"]) => match read_json::<PairStart>(request).await {
-                Ok(start) => self.open(&start.name, &start.csr, Instant::now()).map_or_else(
-                    error_response,
-                    |code| json(StatusCode::OK, &PairCode { code }),
-                ),
+                Ok(start) => self
+                    .open(&start.name, &start.csr, Instant::now())
+                    .map_or_else(error_response, |code| {
+                        json(StatusCode::OK, &PairCode { code })
+                    }),
                 Err(response) => response,
             },
             (Method::GET, ["v1", "pair", code, "cert"]) => self.wait(code).await,
@@ -141,10 +142,10 @@ impl Pairing {
                 if let Some(response) = self.deny_unregistered(fingerprint) {
                     return response;
                 }
-                self.request(code, Instant::now()).map_or_else(
-                    error_response,
-                    |(name, csr)| json(StatusCode::OK, &PairRequest { name, csr }),
-                )
+                self.request(code, Instant::now())
+                    .map_or_else(error_response, |(name, csr)| {
+                        json(StatusCode::OK, &PairRequest { name, csr })
+                    })
             }
             (Method::POST, ["v1", "pair", code, "cert"]) => {
                 if let Some(response) = self.deny_unregistered(fingerprint) {
@@ -162,16 +163,24 @@ impl Pairing {
     }
 
     /// Stores a request and returns its code.
-    pub fn open(&self, name: &str, csr: &str, now: Instant) -> std::result::Result<String, PairError> {
+    pub fn open(
+        &self,
+        name: &str,
+        csr: &str,
+        now: Instant,
+    ) -> std::result::Result<String, PairError> {
         let name = name.trim();
         if name.is_empty() || name.len() > MAX_NAME || name.chars().any(char::is_control) {
             return Err(PairError::Invalid("The device name is not valid.".into()));
         }
-        let (device_id, public_key) = read_csr(csr).map_err(|error| PairError::Invalid(error.to_string()))?;
+        let (device_id, public_key) =
+            read_csr(csr).map_err(|error| PairError::Invalid(error.to_string()))?;
         let mut entries = self.entries.lock().unwrap();
         entries.retain(|_, entry| entry.expires > now);
         if entries.len() >= MAX_PENDING {
-            return Err(PairError::Conflict("Too many pending pairing codes.".into()));
+            return Err(PairError::Conflict(
+                "Too many pending pairing codes.".into(),
+            ));
         }
         let code = loop {
             let code = random_code().map_err(|error| PairError::Internal(error.to_string()))?;
@@ -195,7 +204,11 @@ impl Pairing {
     }
 
     /// Returns the name and the request of a code that no one approved.
-    pub fn request(&self, code: &str, now: Instant) -> std::result::Result<(String, String), PairError> {
+    pub fn request(
+        &self,
+        code: &str,
+        now: Instant,
+    ) -> std::result::Result<(String, String), PairError> {
         let entries = self.entries.lock().unwrap();
         match entries.get(&normalize(code)) {
             Some(entry) if entry.expires > now && entry.cert.is_none() => {
@@ -207,7 +220,12 @@ impl Pairing {
 
     /// Checks the certificate, adds the device and wakes the joining device.
     /// A code works one time: a second approval gets `NotFound`.
-    pub fn approve(&self, code: &str, cert: &str, now: Instant) -> std::result::Result<(), PairError> {
+    pub fn approve(
+        &self,
+        code: &str,
+        cert: &str,
+        now: Instant,
+    ) -> std::result::Result<(), PairError> {
         let code = normalize(code);
         // The lock stays held, so two approvals of one code cannot both pass.
         let mut entries = self.entries.lock().unwrap();
@@ -215,9 +233,12 @@ impl Pairing {
             Some(entry) if entry.expires > now && entry.cert.is_none() => entry,
             _ => return Err(PairError::NotFound),
         };
-        let subject = verify_device_cert(&self.root_pem, cert)
-            .map_err(|error| PairError::Invalid(format!("The certificate is not valid: {error}")))?;
-        if subject != entry.device_id || certificate_public_key(cert).ok().as_deref() != Some(&entry.public_key) {
+        let subject = verify_device_cert(&self.root_pem, cert).map_err(|error| {
+            PairError::Invalid(format!("The certificate is not valid: {error}"))
+        })?;
+        if subject != entry.device_id
+            || certificate_public_key(cert).ok().as_deref() != Some(&entry.public_key)
+        {
             return Err(PairError::Invalid(
                 "The certificate does not belong to the request.".into(),
             ));
@@ -237,7 +258,10 @@ impl Pairing {
             Err(error) => error_response(error),
             Ok(Take::Ready(cert)) => self.result(cert),
             Ok(Take::Pending(ready)) => {
-                if tokio::time::timeout(self.poll_wait, ready.notified()).await.is_err() {
+                if tokio::time::timeout(self.poll_wait, ready.notified())
+                    .await
+                    .is_err()
+                {
                     return reply(StatusCode::NO_CONTENT, "");
                 }
                 match self.take(code, Instant::now()) {
@@ -280,7 +304,10 @@ impl Pairing {
         )
     }
 
-    fn deny_unregistered(&self, fingerprint: Option<&str>) -> Option<Response<http_body_util::Full<Bytes>>> {
+    fn deny_unregistered(
+        &self,
+        fingerprint: Option<&str>,
+    ) -> Option<Response<http_body_util::Full<Bytes>>> {
         match fingerprint.map(|print| self.registry.active_by_fingerprint(print)) {
             Some(Ok(Some(_))) => None,
             Some(Err(error)) => Some(reply(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())),
@@ -370,7 +397,8 @@ fn random_code() -> Result<String> {
 fn read_csr(csr: &str) -> Result<(String, Vec<u8>)> {
     CertificateSigningRequestParams::from_pem(csr)?;
     let (_, pem) = x509_parser::pem::parse_x509_pem(csr.as_bytes())?;
-    let (_, parsed) = x509_parser::certification_request::X509CertificationRequest::from_der(&pem.contents)?;
+    let (_, parsed) =
+        x509_parser::certification_request::X509CertificationRequest::from_der(&pem.contents)?;
     let info = &parsed.certification_request_info;
     let id = info
         .subject
@@ -412,7 +440,7 @@ fn error_response(error: PairError) -> Response<http_body_util::Full<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::{create_root_ca, init_device_key, sign_device_csr, RootCa};
+    use crate::identity::{RootCa, create_root_ca, init_device_key, sign_device_csr};
 
     const ID: &str = "01JABCDEFGHJKMNPQRSTVWXYZ0";
 
@@ -456,12 +484,20 @@ mod tests {
         let now = Instant::now();
         let code = f.pairing.open("laptop", &f.csr, now).unwrap();
         assert_eq!(f.pairing.request(&code, now).unwrap().0, "laptop");
-        f.pairing.approve(&code.to_lowercase(), &sign(&f), now).unwrap();
+        f.pairing
+            .approve(&code.to_lowercase(), &sign(&f), now)
+            .unwrap();
         assert_eq!(f.pairing.registry.list().unwrap()[0].id, ID);
-        assert_eq!(f.pairing.approve(&code, &sign(&f), now), Err(PairError::NotFound));
+        assert_eq!(
+            f.pairing.approve(&code, &sign(&f), now),
+            Err(PairError::NotFound)
+        );
         assert_eq!(f.pairing.request(&code, now), Err(PairError::NotFound));
         assert!(matches!(f.pairing.take(&code, now), Ok(Take::Ready(_))));
-        assert!(matches!(f.pairing.take(&code, now), Err(PairError::NotFound)));
+        assert!(matches!(
+            f.pairing.take(&code, now),
+            Err(PairError::NotFound)
+        ));
     }
 
     #[test]
@@ -473,8 +509,14 @@ mod tests {
         assert!(f.pairing.request(&code, almost).is_ok());
         let late = now + CODE_TTL;
         assert_eq!(f.pairing.request(&code, late), Err(PairError::NotFound));
-        assert_eq!(f.pairing.approve(&code, &sign(&f), late), Err(PairError::NotFound));
-        assert!(matches!(f.pairing.take(&code, late), Err(PairError::NotFound)));
+        assert_eq!(
+            f.pairing.approve(&code, &sign(&f), late),
+            Err(PairError::NotFound)
+        );
+        assert!(matches!(
+            f.pairing.take(&code, late),
+            Err(PairError::NotFound)
+        ));
         assert!(f.pairing.registry.list().unwrap().is_empty());
     }
 
@@ -484,14 +526,22 @@ mod tests {
         let now = Instant::now();
         let code = f.pairing.open("laptop", &f.csr, now).unwrap();
         let other_root = create_root_ca().unwrap();
-        let foreign = sign_device_csr(&f.csr, &other_root.cert_pem, &other_root.key_pem, 30).unwrap();
-        assert!(matches!(f.pairing.approve(&code, &foreign, now), Err(PairError::Invalid(_))));
+        let foreign =
+            sign_device_csr(&f.csr, &other_root.cert_pem, &other_root.key_pem, 30).unwrap();
+        assert!(matches!(
+            f.pairing.approve(&code, &foreign, now),
+            Err(PairError::Invalid(_))
+        ));
         // A certificate of the same root for a different key and id.
         let other = tempfile::tempdir().unwrap();
         init_device_key(other.path(), "01JOTHERDEVICE0000000000AA").unwrap();
         let other_csr = std::fs::read_to_string(other.path().join("csr.pem")).unwrap();
-        let other_cert = sign_device_csr(&other_csr, &f.root.cert_pem, &f.root.key_pem, 30).unwrap();
-        assert!(matches!(f.pairing.approve(&code, &other_cert, now), Err(PairError::Invalid(_))));
+        let other_cert =
+            sign_device_csr(&other_csr, &f.root.cert_pem, &f.root.key_pem, 30).unwrap();
+        assert!(matches!(
+            f.pairing.approve(&code, &other_cert, now),
+            Err(PairError::Invalid(_))
+        ));
         assert!(f.pairing.registry.list().unwrap().is_empty());
         f.pairing.approve(&code, &sign(&f), now).unwrap();
     }
@@ -500,8 +550,14 @@ mod tests {
     fn open_rejects_a_bad_request_or_name() {
         let f = fixture();
         let now = Instant::now();
-        assert!(matches!(f.pairing.open("laptop", "nope", now), Err(PairError::Invalid(_))));
-        assert!(matches!(f.pairing.open("  ", &f.csr, now), Err(PairError::Invalid(_))));
+        assert!(matches!(
+            f.pairing.open("laptop", "nope", now),
+            Err(PairError::Invalid(_))
+        ));
+        assert!(matches!(
+            f.pairing.open("  ", &f.csr, now),
+            Err(PairError::Invalid(_))
+        ));
     }
 
     #[tokio::test]
@@ -520,7 +576,10 @@ mod tests {
         };
         tokio::task::yield_now().await;
         pairing.approve(&code, &sign(&f), Instant::now()).unwrap();
-        let status = tokio::time::timeout(Duration::from_secs(5), waiter).await.unwrap().unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(status, StatusCode::OK);
     }
 
@@ -535,6 +594,9 @@ mod tests {
         );
         let code = pairing.open("laptop", &f.csr, Instant::now()).unwrap();
         assert_eq!(pairing.wait(&code).await.status(), StatusCode::NO_CONTENT);
-        assert_eq!(pairing.wait("ZZZZZZZZ").await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            pairing.wait("ZZZZZZZZ").await.status(),
+            StatusCode::NOT_FOUND
+        );
     }
 }
