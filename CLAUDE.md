@@ -60,6 +60,9 @@ zsh tests/visual-explainer.test.sh
 # loop-retro milestone facts collector
 node --test tests/loop-retro.test.mjs
 
+# hub VPS install script + unit (shellcheck, rendered unit, step order; contacts no server)
+zsh tests/hub-deploy.test.sh
+
 # ws picker shell smoke test with a private tmux server
 zsh ws/tests/run.sh
 
@@ -101,6 +104,7 @@ loop-web/               Loop daemon: Node HTTP API, persistence and pure TypeScr
 ws/ws.sh                Rust CLI launcher (see ws/README.md)
 wsd/crates/ws/src/cmd/picker.zsh  Embedded fzf picker UI
 ws/tests/               Picker smoke test and Rust picker integration shell checks
+deploy/hub/             Hub VPS install: `install-hub.sh` (root, Ubuntu: CA, certbot, release build, `ws-hub.service`), unit template, runbook README
 wsd/                    Default ws implementation: ws-core durable data, ws-daemon runtime, ws CLI + MCP
 docs/ws-v6/             WS v6 architecture, semantic conventions and spike reports (S1 scripts stay)
 wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
