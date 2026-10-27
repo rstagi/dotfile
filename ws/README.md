@@ -153,6 +153,9 @@ The Cargo workspace in `wsd/` contains four crates:
 Device identity: `ws ca init --out <dir>` writes the Ed25519 root key (0600) and a 10-year root certificate.
 `ws device init` writes `$WS_STATE/device/key.pem` (0600) and `csr.pem` for the id in `$WS_STATE/device.json`.
 `ws device sign --csr <file> --root-cert <file> [--root-key-cmd '<cmd>'] [--days 90]` prints the device certificate.
+Hub: `ws hub serve --listen <addr> --tls-cert <file> --tls-key <file> --ca-cert <root cert> --state <dir>` serves the hub over mTLS and prints `hub ready <addr>`.
+Each `/v1/` route needs a client certificate from the root CA whose fingerprint is an unrevoked row in `<state>/hub.db`. A failed registry check gives HTTP 403.
+`ws hub add-device --state <dir> --cert <file> --name <name>` adds the first device on the hub host. `ws device list [--json]` and `ws device remove <id>` call the hub with the `[hub]` section (`url`, `cert`, `key`, `ca`) of `config.toml`. Without it they print one error line and exit 2.
 It reads the root key from the stdout of the command (default `op read op://ws/root-ca/key`).
 
 Rust owns sessions, messages, logs, dependency edges and the local MCP server.

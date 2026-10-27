@@ -2959,6 +2959,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rcgen",
  "rmcp",
  "serde",
  "serde_json",
@@ -3014,12 +3015,19 @@ dependencies = [
 name = "ws-hub"
 version = "0.1.0"
 dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "rcgen",
  "rmcp",
+ "rusqlite",
  "rustls",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "time",
+ "tokio",
  "tokio-rustls",
  "x509-parser",
 ]

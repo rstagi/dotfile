@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, process::ExitCode};
 
 use clap::Subcommand;
 use ws_core::device::Device;
@@ -22,6 +22,13 @@ pub enum DeviceCommand {
         #[arg(long, default_value_t = identity::DEFAULT_DEVICE_DAYS)]
         days: i64,
     },
+    /// List the devices of the hub.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke a device at the hub.
+    Remove { id: String },
 }
 
 #[derive(Subcommand)]
@@ -33,16 +40,19 @@ pub enum CaCommand {
     },
 }
 
-pub fn device(command: DeviceCommand) -> Result<()> {
+pub async fn device(command: DeviceCommand) -> Result<ExitCode> {
     match command {
-        DeviceCommand::Init => device_init(),
+        DeviceCommand::List { json } => return super::hub::device_list(json).await,
+        DeviceCommand::Remove { id } => return super::hub::device_remove(&id).await,
+        DeviceCommand::Init => device_init()?,
         DeviceCommand::Sign {
             csr,
             root_cert,
             root_key_cmd,
             days,
-        } => device_sign(&csr, &root_cert, &root_key_cmd, days),
+        } => device_sign(&csr, &root_cert, &root_key_cmd, days)?,
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 pub fn ca(command: CaCommand) -> Result<()> {

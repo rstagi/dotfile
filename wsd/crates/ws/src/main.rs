@@ -227,6 +227,11 @@ enum Command {
         #[command(subcommand)]
         command: cmd::device::DeviceCommand,
     },
+    /// Run the hub or add its first device.
+    Hub {
+        #[command(subcommand)]
+        command: cmd::hub::HubCommand,
+    },
     /// Manage the WS root CA.
     Ca {
         #[command(subcommand)]
@@ -434,7 +439,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Pin { target } => cmd::pin::run(&socket_path()?, &target).await?,
         Command::Session { command } => return cmd::session::run(&socket_path()?, *command).await,
         Command::Init => init::run()?,
-        Command::Device { command } => cmd::device::device(command)?,
+        Command::Device { command } => return cmd::device::device(command).await,
+        Command::Hub { command } => return cmd::hub::hub(command).await,
         Command::Ca { command } => cmd::device::ca(command)?,
         Command::Daemon => {
             let socket = socket_path()?;
