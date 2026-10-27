@@ -1,15 +1,15 @@
 use std::{
     fs,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 mod common;
 use common::{
     Daemon,
-    hub_fixture::{config_hub, pki, serve},
+    hub_fixture::{config_hub, config_hub_with, pki, serve},
     ws,
 };
 
@@ -21,7 +21,12 @@ fn cli(home: &Path, arguments: &[&str]) -> std::process::Output {
 #[test]
 fn hub_commands_without_hub_section_print_one_error_and_exit_2() {
     let sandbox = tempfile::tempdir_in("/tmp").unwrap();
-    for arguments in [vec!["device", "list"], vec!["device", "remove", "x"]] {
+    for arguments in [
+        vec!["device", "list"],
+        vec!["device", "remove", "x"],
+        vec!["sessions", "--all-devices"],
+        vec!["sessions", "--all-devices", "--json"],
+    ] {
         let output = cli(sandbox.path(), &arguments);
         assert_eq!(output.status.code(), Some(2), "{output:?}");
         assert_eq!(String::from_utf8_lossy(&output.stderr).lines().count(), 1);
@@ -232,4 +237,135 @@ fn approve_from_an_unregistered_device_gives_403_and_keeps_the_code() {
     config_hub(dir, &hub.addr, "dev-a");
     assert!(approve(dir, &joining.code).status.success());
     assert!(wait_exit(&mut joining.child).success());
+}
+
+struct SyncedDevice {
+    home: PathBuf,
+    socket: PathBuf,
+    _daemon: Daemon,
+}
+
+impl SyncedDevice {
+    fn start(dir: &Path, hub_addr: &str, id: &str) -> Self {
+        let home = dir.join(format!("home-{id}"));
+        fs::create_dir_all(&home).unwrap();
+        let socket = home.join("wsd.sock");
+        config_hub_with(&home, dir, hub_addr, id);
+        let daemon = Daemon::start(ws(&home, &socket), &socket);
+        Self {
+            home,
+            socket,
+            _daemon: daemon,
+        }
+    }
+
+    fn create_session(&self, name: &str) -> String {
+        let response = common::request(
+            &self.socket,
+            "POST",
+            "/v1/sessions",
+            &serde_json::json!({"name": name}).to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        let body: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        body["id"].as_str().unwrap().to_owned()
+    }
+
+    /// Sends one hook callback to the daemon hook endpoint.
+    fn hook(&self, session: &str, state: &str, event: &str, at_us: u64) {
+        let callback = serde_json::json!({
+            "callback_id": ws_core::ids::Ulid::new(), "session_id": session,
+            "observed_at_us": at_us, "state": state, "pane": null, "tmux_socket": null,
+            "tmux_path": null, "payload": {"hook_event_name": event},
+        });
+        let response = common::request(
+            &self.socket,
+            "POST",
+            "/v1/hooks/ingest",
+            &callback.to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+    }
+
+    fn all_sessions(&self) -> Vec<serde_json::Value> {
+        let mut command = ws(&self.home, &self.socket);
+        let output = command
+            .args(["sessions", "--all-devices", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    /// Polls the hub view of this device until the remote session has `state`.
+    fn wait_remote(&self, session: &str, state: &str) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let found = self
+                .all_sessions()
+                .into_iter()
+                .find(|row| row["id"] == session && row["state"] == state);
+            if let Some(row) = found {
+                return row;
+            }
+            assert!(Instant::now() < deadline, "The wait timed out.");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[test]
+fn each_device_sees_the_sessions_of_the_other_device_and_their_state_changes() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = sandbox.path();
+    pki(dir, &["dev-a", "dev-b"]);
+    let hub = serve(dir);
+    add_device(dir, "dev-a");
+    add_device(dir, "dev-b");
+    let a = SyncedDevice::start(dir, &hub.addr, "dev-a");
+    let b = SyncedDevice::start(dir, &hub.addr, "dev-b");
+    let (alpha, beta) = (a.create_session("alpha"), b.create_session("beta"));
+
+    let seen = b.wait_remote(&alpha, "created");
+    assert_eq!(seen["device_name"], "dev-a");
+    assert_eq!(seen["name"], "alpha");
+    assert_eq!(seen["remote"], true);
+    assert!(seen.get("alias").is_none(), "{seen}");
+    a.wait_remote(&beta, "created");
+
+    // A permission wait blocks the session until the next turn starts.
+    a.hook(&alpha, "waiting", "PermissionRequest", 1);
+    b.wait_remote(&alpha, "blocked");
+    a.hook(&alpha, "working", "UserPromptSubmit", 2);
+    let unblocked = b.wait_remote(&alpha, "created");
+    assert_eq!(unblocked["device_name"], "dev-a");
+
+    // The other direction, and the local rows come first without the remote duplicates.
+    b.hook(&beta, "waiting", "PermissionRequest", 3);
+    a.wait_remote(&beta, "blocked");
+    let rows = a.all_sessions();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["id"], alpha);
+    assert!(rows[0].get("remote").is_none());
+    assert_eq!(rows[1]["id"], beta);
+}
+
+#[test]
+fn the_sessions_route_needs_a_registered_device() {
+    let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = sandbox.path();
+    pki(dir, &["dev-a", "dev-b"]);
+    let hub = serve(dir);
+    add_device(dir, "dev-a");
+    let outsider = SyncedDevice::start(dir, &hub.addr, "dev-b");
+    let denied = ws(&outsider.home, &outsider.socket)
+        .args(["sessions", "--all-devices"])
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("403"),
+        "{denied:?}"
+    );
 }
