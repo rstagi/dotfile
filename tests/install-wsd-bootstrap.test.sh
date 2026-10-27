@@ -24,14 +24,21 @@ case "$1" in
   bootout) echo 2 > "$HOME/unload-delay" ;;
   print)
     delay="$(cat "$HOME/unload-delay" 2>/dev/null || echo 0)"
-    [ "$delay" -gt 0 ] || exit 113
+    if [ "$delay" -le 0 ]; then
+      # After the bootstrap the job runs with a pid. Before it, the job is not loaded.
+      [ -e "$HOME/job.pid" ] || exit 113
+      echo "	pid = $(cat "$HOME/job.pid")"
+      exit 0
+    fi
     echo $((delay - 1)) > "$HOME/unload-delay" ;;
   bootstrap)
     if [ ! -e "$HOME/bootstrap-failed" ]; then
       touch "$HOME/bootstrap-failed"
       echo "Bootstrap failed: 5: Input/output error" >&2
       exit 5
-    fi ;;
+    fi
+    nohup /bin/sleep 300 > /dev/null 2>&1 < /dev/null &
+    echo $! > "$HOME/job.pid" ;;
 esac
 exit 0
 ''')
@@ -47,6 +54,8 @@ printf '%s\\n' "$*" >> "$HOME/lsof.calls"
 [ "$1" = "-t" ] && [ "$2" = "{socket}.lock" ] || exit 1
 echo {stray.pid}
 echo {decoy.pid}
+cat "$HOME/job.pid" 2>/dev/null
+exit 0
 ''')
     for name in ("launchctl", "lsof"):
         (commands / name).chmod(0o755)
@@ -62,12 +71,14 @@ echo {decoy.pid}
         assert calls.count("print") >= 3, calls
         bootout = calls.index("bootout")
         first_bootstrap = calls.index("bootstrap")
-        unloaded = max(index for index, call in enumerate(calls) if call == "print")
+        unloaded = max(index for index, call in enumerate(calls) if call == "print" and index < first_bootstrap)
         assert bootout < unloaded < first_bootstrap, calls
-        assert calls[-1] == "kickstart", calls
+        assert [call for call in calls if call != "print"][-1] == "kickstart", calls
         assert stray.wait(timeout=10) is not None, "The stray ws-rs daemon still runs."
         assert decoy.poll() is None, "The installer stopped a process that is not ws-rs."
     finally:
+        if (home / "job.pid").exists():
+            subprocess.run(["kill", (home / "job.pid").read_text().strip()])
         for process in (stray, decoy):
             if process.poll() is None:
                 process.kill()

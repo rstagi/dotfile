@@ -27,6 +27,8 @@ fn ping_starts_a_background_daemon_for_a_missing_socket() {
     let calls = fs::read_to_string(home.path().join("launchctl.calls")).unwrap();
     assert!(calls.contains("print gui/"), "{calls}");
     assert!(calls.contains("/com.rstagi.wsd"), "{calls}");
+    assert!(!calls.contains("kickstart"), "{calls}");
+    assert!(home.path().join("wsd.daemon.log").exists());
 }
 
 #[test]
@@ -38,6 +40,44 @@ fn ping_does_not_start_another_daemon_when_launchd_owns_it() {
     assert!(!home.path().join("wsd.sock").exists());
     let calls = fs::read_to_string(home.path().join("launchctl.calls")).unwrap();
     assert!(calls.contains("/com.rstagi.wsd"), "{calls}");
+}
+
+#[test]
+fn ping_kickstarts_the_launchd_job_when_its_plist_exists() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let (_cleanup, mut command) = cli(home.path(), false);
+    let plist = home
+        .path()
+        .join("Library/LaunchAgents/com.rstagi.wsd.plist");
+    fs::create_dir_all(plist.parent().unwrap()).unwrap();
+    fs::write(plist, "<plist/>").unwrap();
+    // The fake job answers `kickstart` as launchd does: it starts the daemon outside the client.
+    let launchctl = home.path().join("fake-agents/launchctl");
+    fs::write(
+        &launchctl,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/launchctl.calls\"\n\
+             if [ \"$1\" = kickstart ]; then\n\
+             nohup {} daemon >> \"$HOME/job.log\" 2>&1 < /dev/null &\nfi\nexit 0\n",
+            home.path().join("ws-test").display()
+        ),
+    )
+    .unwrap();
+    let output = run(command.arg("ping"));
+    assert!(output.status.success(), "{output:?}");
+    assert!(common::get(&home.path().join("wsd.sock"), "/v1/ping").starts_with("HTTP/1.1 200"));
+    let calls = fs::read_to_string(home.path().join("launchctl.calls")).unwrap();
+    assert!(
+        calls
+            .lines()
+            .any(|line| line.starts_with("kickstart gui/") && line.ends_with("/com.rstagi.wsd")),
+        "{calls}"
+    );
+    assert!(!calls.contains("print "), "{calls}");
+    assert!(
+        !home.path().join("wsd.daemon.log").exists(),
+        "The client started its own daemon."
+    );
 }
 
 #[test]

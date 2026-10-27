@@ -228,6 +228,9 @@ async fn start_daemon(socket: &Path) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(socket).await {
         return Ok(stream);
     }
+    if let Some(service) = launchd_service().await {
+        return kickstart_launchd_job(socket, &service).await;
+    }
     if launchd_owns_daemon().await {
         return Err(format!(
             "Cannot connect to the daemon at {}. launchd owns com.rstagi.wsd. Check the LaunchAgent.",
@@ -277,22 +280,69 @@ async fn start_daemon(socket: &Path) -> Result<UnixStream> {
     }
 }
 
-async fn launchd_owns_daemon() -> bool {
-    let Ok(uid) = tokio::process::Command::new("id")
+/// Starts the daemon through its launchd job and waits for the socket.
+/// The job must hold the socket lock. A daemon that the client starts would take it.
+/// Kickstart fails while the installer has unloaded the job. The loop then retries it.
+async fn kickstart_launchd_job(socket: &Path, service: &str) -> Result<UnixStream> {
+    loop {
+        let kicked = tokio::process::Command::new("launchctl")
+            .args(["kickstart", service])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status()
+            .await
+            .is_ok_and(|status| status.success());
+        if kicked {
+            break;
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+    loop {
+        if let Ok(probe) = UnixStream::connect(socket).await
+            && send_request(probe, Method::GET, "/v1/ping", Vec::new())
+                .await
+                .is_ok()
+            && let Ok(stream) = UnixStream::connect(socket).await
+        {
+            return Ok(stream);
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Returns the launchd service name when the LaunchAgent plist of the daemon exists.
+async fn launchd_service() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    if !Path::new(&home)
+        .join("Library/LaunchAgents/com.rstagi.wsd.plist")
+        .exists()
+    {
+        return None;
+    }
+    launchd_service_name().await
+}
+
+async fn launchd_service_name() -> Option<String> {
+    let uid = tokio::process::Command::new("id")
         .arg("-u")
         .kill_on_drop(true)
         .output()
         .await
-    else {
+        .ok()?;
+    uid.status.success().then(|| {
+        format!(
+            "gui/{}/com.rstagi.wsd",
+            String::from_utf8_lossy(&uid.stdout).trim()
+        )
+    })
+}
+
+async fn launchd_owns_daemon() -> bool {
+    let Some(service) = launchd_service_name().await else {
         return false;
     };
-    if !uid.status.success() {
-        return false;
-    }
-    let service = format!(
-        "gui/{}/com.rstagi.wsd",
-        String::from_utf8_lossy(&uid.stdout).trim()
-    );
     tokio::process::Command::new("launchctl")
         .args(["print", &service])
         .stdin(Stdio::null())

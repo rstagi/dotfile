@@ -549,7 +549,40 @@ install_ws_daemon() {
   launchctl enable "gui/$uid/$label" || return 1
   launchd_bootstrap "gui/$uid" "$plist" || return 1
   launchctl kickstart "gui/$uid/$label" || return 1
+  ensure_launchd_holds_ws_lock "gui/$uid/$label" "${WS_SOCK:-$HOME/.ws/wsd.sock}.lock" || return 1
   echo "ws: installed $plist"
+}
+
+# A ws client can start its own daemon between the unload and the bootstrap. That daemon holds
+# the socket lock and the launchd job exits. Check that the job holds the lock. When it does not,
+# stop the stray daemon and restart the job one time.
+ensure_launchd_holds_ws_lock() {
+  local target="$1" lock="$2"
+  launchd_wait_lock_holder "$target" "$lock" && return 0
+  stop_stray_ws_daemon "$lock" "$(launchd_job_pid "$target")"
+  launchctl kickstart -k "$target" || return 1
+  launchd_wait_lock_holder "$target" "$lock" && return 0
+  echo "ws: the launchd job $target does not hold $lock" >&2
+  return 1
+}
+
+# Wait at most 10 s until the launchd job is the process that holds the lock.
+launchd_wait_lock_holder() {
+  local target="$1" lock="$2" tries="${WS_LOCK_WAIT_TRIES:-50}" job
+  while :; do
+    job="$(launchd_job_pid "$target")"
+    if [ -n "$job" ] && lsof -t "$lock" 2>/dev/null | grep -qx "$job"; then
+      return 0
+    fi
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] || return 1
+    sleep 0.2
+  done
+}
+
+# Print the pid of the running launchd job. Print nothing when the job has no process.
+launchd_job_pid() {
+  launchctl print "$1" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -1
 }
 
 # launchctl bootout returns before launchd unloads the job. Wait at most 10 s for the unload.
@@ -578,9 +611,11 @@ launchd_bootstrap() {
 # While the LaunchAgent is unloaded, a ws client can start its own daemon. That daemon holds
 # the socket lock, so the LaunchAgent daemon exits. Call this after the unload: then every
 # lock holder is outside launchd. Stop only the lock holders whose executable is ws-rs.
+# The optional second argument is the pid of the launchd job. This function never stops it.
 stop_stray_ws_daemon() {
-  local lock="$1" pid name tries
+  local lock="$1" keep="${2:-}" pid name tries
   for pid in $(lsof -t "$lock" 2>/dev/null); do
+    [ "$pid" != "$keep" ] || continue
     name="$(ps -o comm= -p "$pid" 2>/dev/null)" || continue
     [ "${name##*/}" = "ws-rs" ] || continue
     echo "ws: stopping the daemon $pid that runs outside launchd"
