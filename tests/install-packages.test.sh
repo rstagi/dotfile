@@ -68,7 +68,7 @@ reset_home() {
   local home="$TMP/home" skill
   local dot="$home/dotfile"
   rm -rf "$home"
-  mkdir -p "$dot/nvim" "$dot/loop-web" "$dot/ws" "$dot/wsd/launchd" "$dot/wsd/target/release" \
+  mkdir -p "$dot/nvim" "$dot/loop-web" "$dot/cockpit" "$dot/ws" "$dot/wsd/launchd" "$dot/wsd/target/release" \
     "$dot/.claude/agents" "$home/brew/opt/fzf"
   print -r -- "# dotfile tmux config" > "$dot/.tmux.conf"
   print -r -- "# dotfile git config" > "$dot/.gitconfig"
@@ -232,9 +232,15 @@ assert_eq "${#new_backups}" 1 "neovim makes one new backup"
 assert_eq "$(cat $new_backups < /dev/null)" "-- user nvim config" "neovim moves the user folder to the new backup"
 
 echo "install: each configure step is idempotent"
-for package in tmux python node terraform gcloud kubectl docker ws loop-web claude-config gh fzf zsh; do
+for package in tmux python node terraform gcloud kubectl docker ws loop-web cockpit claude-config gh fzf zsh; do
   reset_home
   assert_idempotent "$package" run_step "install_package $package"
+  if [[ "$package" == cockpit ]]; then
+    assert_eq "$(calls npm | sed '/^install --global /d')" $'install\nrun build\ninstall\nrun build' "cockpit installs dependencies and builds the UI"
+    assert_contains "$(cat "$TMP/home/Library/LaunchAgents/com.rstagi.cockpit.plist")" \
+      "$TMP/home/dotfile/cockpit/server/index.mjs" "cockpit installs the daemon LaunchAgent"
+    assert_eq "$(readlink "$TMP/home/.local/bin/cockpit")" "$TMP/home/dotfile/cockpit/cli.mjs" "cockpit installs its CLI"
+  fi
   if [[ "$package" == loop-web ]]; then
     assert_eq "$(calls npm | sed '/^install --global /d')" $'install\ninstall' "loop-web installs dependencies without a UI build"
     assert_contains "$(cat "$TMP/home/Library/LaunchAgents/com.rstagi.loop-web.plist")" \

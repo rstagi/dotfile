@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "rust" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "claude-config" "loop-web" "ws" "grok")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "rust" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "claude-config" "loop-web" "cockpit" "ws" "grok")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -15,7 +15,7 @@ get_dependencies() {
     "docker") echo "gcloud" ;;
     "zsh") echo "" ;;
     "python") echo "pyenv pipx" ;;
-    "loop-web") echo "node" ;;
+    "loop-web"|"cockpit") echo "node" ;;
     "ws") echo "tmux fzf neovim rust" ;;
     "claude-config") echo "claude-code" ;;
     *) echo "" ;;
@@ -278,6 +278,7 @@ install_package() {
     "tailscale") install_tailscale ;;
     "claude-code") install_claude_code ;;
     "loop-web") install_loop_web ;;
+    "cockpit") install_cockpit ;;
     "ws") install_ws ;;
     "grok") install_grok ;;
     "claude-config") install_claude_config ;;
@@ -493,6 +494,39 @@ PLIST
     echo "Configuring loop-web..."
     configure_loop_web
   fi
+}
+
+install_cockpit() {
+  local node_bin label="com.rstagi.cockpit" plist uid escaped_home escaped_node escaped_path
+  node_bin="$(command -v node)" || return 1
+  command -v npm >/dev/null 2>&1 || return 1
+  (cd "$HOME/dotfile/cockpit" && npm install && npm run build) || return 1
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.cockpit" "$HOME/.local/bin" || return 1
+  link_file "$HOME/dotfile/cockpit/cli.mjs" "$HOME/.local/bin/cockpit" || return 1
+  plist="$HOME/Library/LaunchAgents/$label.plist"
+  uid="$(id -u)"
+  escaped_home="$(printf '%s' "$HOME" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
+  escaped_node="$(printf '%s' "$node_bin" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
+  escaped_path="$(printf '%s' "$PATH" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array><string>$escaped_node</string><string>--experimental-transform-types</string><string>$escaped_home/dotfile/cockpit/server/index.mjs</string></array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>$escaped_home</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$escaped_path</string><key>COCKPIT_HOME</key><string>$escaped_home/.cockpit</string></dict>
+  <key>StandardOutPath</key><string>$escaped_home/.cockpit/daemon.log</string>
+  <key>StandardErrorPath</key><string>$escaped_home/.cockpit/daemon.log</string>
+</dict></plist>
+PLIST
+  launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+  launchd_wait_unloaded "gui/$uid/$label"
+  launchd_bootstrap "gui/$uid" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
+  launchctl enable "gui/$uid/$label" 2>/dev/null || true
+  launchctl kickstart -k "gui/$uid/$label" 2>/dev/null || true
+  echo "cockpit installed. Run cockpit status for its URL."
 }
 
 install_ws() {

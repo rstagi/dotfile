@@ -169,3 +169,30 @@ Go to `Settings > General > Login items` and set the following apps to start whe
 - Raycast
 - Rectangle
 - RunCat
+
+## Agent cockpit
+
+`./install.sh cockpit` installs the private observer, builds its UI, and loads the
+`com.rstagi.cockpit` LaunchAgent. This package is optional. The default install does
+not include it. It needs Node >= 22.18. `~/.local/bin` must be on your PATH.
+
+Use `cockpit status` to print the URL, `cockpit open` to open it, and
+`cockpit start` or `cockpit stop` to control the daemon. The server binds to
+`127.0.0.1:5191`. It uses the next free port if that port is occupied.
+
+The observer reads Claude Code sessions, Codex sessions, and Loop folders every
+30 seconds. It writes only to `~/.cockpit`. It does not modify source files.
+Haiku names new intents through `claude -p`. Sonnet groups older intents.
+Rule names apply if a model call fails. Set `COCKPIT_RULE_NAMES=1` to use rules only.
+
+The canvas has all-runs and session views, finished-run cards, intent groups,
+checkpoint markers, replay, and Live. Use `?view=session&chat=<id>` for a session.
+The read-only API provides `/api/state?view=all`, `/api/state?view=session&chat=<id>`,
+`/api/state?at=<ISO time>`, `/api/events?run=<id>`, `/api/stream` (SSE), and `/media/<id>`.
+
+For local development, run `cd cockpit && npm install && npm run build && npm start`.
+`npm run verify` checks types, runs tests, and builds the UI.
+`COCKPIT_HOME` changes the event-store folder. `COCKPIT_PORT=0` selects a free port.
+`COCKPIT_LOOP_DIRS` adds colon-separated Loop folders for observation.
+`COCKPIT_USER_HOME` selects the home folder that contains session sources.
+Event logs retain 30 days of runs. Replay uses those same logs.
