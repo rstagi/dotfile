@@ -2,7 +2,7 @@
 name: loop-pickup
 description: >-
   Resume a multi-phase effort in a fresh chat/worktree: recover the plan from `.loop/plan.md`,
-  then the Loop daemon — pick (or accept) a parallel lane, conflict-check it against sibling
+  then from the Beluga board epic — pick (or accept) a parallel lane, conflict-check it against sibling
   worktrees, claim the phase (status + branch), and load just enough context to start. Use at
   the start of a new Conductor worktree or clean chat, or when asked to "pick up the plan",
   "resume the effort", "start a lane", or "continue where the handoff left off".
@@ -12,31 +12,40 @@ argument-hint: "<project name> [lane/phase] (optional) | --auto <project> phase:
 # Loop Pickup
 
 The receiving end of `multiphase-plan` and `loop-handoff`. A fresh chat has no memory of
-prior sessions — this skill rebuilds working context from the durable plan store (the Loop
-daemon + `.loop/plan.md`), so a **Claude Code or Codex** agent in **any** worktree can grab
+prior sessions — this skill rebuilds working context from the durable plan store
+(`.loop/plan.md`, and the Beluga board for a board plan), so a **Claude Code or Codex** agent in **any** worktree can grab
 an unblocked lane and start. Designed for Conductor's parallel worktrees: each worktree runs
 this and claims a different lane.
 
 ## Prerequisites
 
-The Loop daemon (`http://localhost:7717`) is the only backend — `loop-plan.sh` talks to it,
-no MCP required. This skill works purely locally against the daemon + `.loop/plan.md`.
+There are two kinds of plan:
+
+- A **board plan** has a `board: <EPIC KEY>` line in its header.
+  The Beluga board holds the plan.
+  The epic is the plan, milestone sub-tasks are under it, and phase tasks are under the milestones.
+  `.loop/plan.md` is the execution copy.
+- A **file plan** has no `board:` line. `.loop/plan.md` is the only copy.
+
+Only a session with the board tools (`task_get`, `task_list`, `task_update`) can read or write the board.
+A `loop-execute` runner never has the board tools.
 
 ## Workflow
 
 ### 1. Find the effort and download the plan
 
-Resolve the plan in this order — stop at the first that yields it:
+Resolve the plan in this order. Stop at the first step that gives the plan.
 
 1. **Local `.loop/plan.md`:** if it exists in the worktree, read its canonical header
-   (`<!-- loop-plan`) for the `planId` and `daemon` (ignore legacy `kestral*` keys).
-2. **The Loop daemon:** `loop-plan.sh get --plan-id <id>` fetches the plan markdown (use
-   `loop-plan.sh list` — a compact `runId · status · effort` table — to find the `planId`
-   by effort/status when the argument or header didn't give it).
+   (`<!-- loop-plan`) for the `planId` and the optional `board` key (ignore legacy `kestral*` and `daemon` keys).
+   For a board plan, run `loop-plan.sh get --dir .loop --out .loop/plan.md`.
+   This command renders the plan again from `~/.beluga/board.json` and keeps the local Loop fields.
+2. **The board epic:** use this step only in a session with the board tools.
+   Find the epic with `task_list` or `task_get`.
+   Then run `loop-board.mjs export --epic <KEY> > .loop/plan.md`.
+3. **Ask** which effort to resume.
 
-**Freshness.** The daemon copy is authoritative and current (a sibling worktree's
-`loop-plan.sh push` already updated it), so `loop-plan.sh get` gives you the latest.
-**Ask** which effort to resume if ambiguous.
+Ask also when more than one effort matches.
 
 Save the resolved plan to `.loop/plan.md` with the canonical header (see
 `../multiphase-plan/references/plan-format.md`).
@@ -71,10 +80,9 @@ Read that file only when the chosen phase needs its history. Then:
 Do not start integration phases until their dependency phases are `done`.
 
 **Milestones.** In a plan with milestones, read `state.milestone` from `.loop/state.json`; when
-that file is absent (a fresh worktree), ask the daemon — `GET /api/loops/<id>/plan` → `.milestone`
-— and, if the daemon is down, read the plan: when plan `**Status:**` is `awaiting merge`, the current milestone is the one whose gate is the last `done` gate
+that file is absent (a fresh worktree), read the plan: when plan `**Status:**` is `awaiting merge`, the current milestone is the one whose gate is the last `done` gate
 (the loop is parked there; nothing later is claimable); otherwise take the lowest milestone whose gate phase is not `done`.
-If neither state nor daemon is available and the status is unclear, refuse every later-milestone claim.
+If the state file is absent and the status is unclear, refuse every later-milestone claim.
 Then never offer or claim a phase of a later milestone than `state.milestone` — those stay locked
 until a human merges the gate and resumes the loop, even if their `Depends on` looks satisfied —
 and never claim a phase of an earlier (shipped) milestone either (inspecting it read-only is fine).
@@ -92,6 +100,8 @@ So two worktrees don't collide:
 
 Confirm with the user, then claim the phase: flip its marker to `[status: in-progress]` in
 `.loop/plan.md`, run `loop-plan.sh push`, and create/switch to the phase's Suggested branch.
+For a board plan, `loop-plan.sh push` only prints the `planId`. It does not write to the board.
+In a session with the board tools, also move the phase task to In Progress with `task_update`.
 The plan's `[status: …]` markers + the **Conflict watch** (step 3) *are* the conflict check
 — last-writer-wins is acceptable for single-user local mode.
 
@@ -127,8 +137,8 @@ the start of its headless session, inside the lane worktree the orchestrator cre
 `../loop-execute/references/loop-protocol.md`); never in a human-facing session unasked.
 Every "ask the user" gate becomes deterministic:
 
-- **Step 1 still re-resolves** the plan from the daemon — freshness matters even more with
-  parallel lanes.
+- **Step 1 uses only the local copy.** Read `.loop/plan.md` in the lane worktree.
+  Do not use the board tools. Auto mode never reads or writes the board.
 - **No lane menu (step 2):** the given phase *is* the choice.
 - **Milestone refusal:** resolve `state.milestone` as in step 2. If the given phase belongs to a
   later milestone, emit `REFUSED: phase belongs to a later milestone`; if to an earlier one, emit
@@ -150,6 +160,6 @@ Every "ask the user" gate becomes deterministic:
 
 ## Cross-agent notes
 
-Everything needed to resume comes from the **Loop daemon + `.loop/plan.md`**, re-fetched
-fresh — so it doesn't matter which agent or worktree wrote the last handoff. Use the Loop
-daemon (`loop-plan.sh`) + git + local files; reference both `/name` and `$name` invocation.
+Everything needed to resume comes from **`.loop/plan.md`**, and from the Beluga board for a board plan.
+It does not matter which agent or worktree wrote the last handoff.
+Use `loop-plan.sh`, git and local files. Reference both `/name` and `$name` invocation.

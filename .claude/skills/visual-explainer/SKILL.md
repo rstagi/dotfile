@@ -198,7 +198,7 @@ Write the text by these rules:
 1. Explain. Do not repeat the section. Say what the reader must see in it and why it matters.
 2. Take facts only from the props. Do not add a fact that the props do not support.
 3. Write short sentences, active voice and simple tenses.
-4. Write code names as the page writes them, for example `wsd`. Do not spell them for a voice.
+4. Write code names as the page writes them, for example `loop-plan.sh`. Do not spell them for a voice.
 5. Do not use backticks, markup or lists in the text.
 6. Use 10 to 90 words for each step and 80 to 450 words in total. Keep most steps under
    60 words, so that the card stays short.
@@ -381,18 +381,16 @@ checkpoint, the review and the ship. At a time, each phase shows its status: `to
 page. Each walkthrough step moves the slider to its time.
 
 ```bash
-node <skill>/scripts/run-graph.mjs --loop <.loop dir> --milestone <n> [--notes <file>] [--ws-log <file>] --out <dir>
+node <skill>/scripts/run-graph.mjs --loop <.loop dir> --milestone <n> [--notes <file>] --out <dir>
 ```
 
 - It writes `run.html`, `run.graph.json` and `run.timeline.json` in `<dir>`. It prints the
   absolute path of `run.html`. It writes nothing in the Loop dir.
 - The phases come from `milestones/m<n>.md` when the milestone is archived. Else they come from
   `plan.md`.
-- A skills loop: the facts come from the saved output of `ws log <loop> --type loop.`. The default
-  file is `explainers/m<n>-ship/loop-log.json`. Use `--ws-log` for another file.
-- An old-engine loop: the facts come from `events.jsonl`, the retro facts, `state.json`, the
+- The facts come from `events.jsonl`, the retro facts, `state.json`, the
   review ledger, `converge/p<gate>.md` and the git commit times of the merges.
-- Both engines: the checkpoints come from `explainers/m<n>-cp<k>/`. The verdict, the hand test
+- The checkpoints come from `explainers/m<n>-cp<k>/`. The verdict, the hand test
   and the rollback come from `explainers/m<n>-ship/props.json`.
 - When no fact has a time, the page has no time bar. It still shows the graph with the outcomes.
   A stderr line `warning: no timestamps ...` tells this.

@@ -6,8 +6,8 @@ skills — run by Claude Code **or** Codex, in any worktree — read and write t
 shape. Keep the inline markers stable; they are parsed, not just displayed.
 
 The plan lives on disk in a flattened `.loop/` dir (this `plan.md` sits beside `state.json`).
-Every plan is backed by the central Loop Observatory daemon (`http://localhost:7717`) — the
-only backend.
+A plan has one of two backends. A board plan lives on the Beluga board, and `plan.md` is its
+execution copy. A file plan lives only in `plan.md`. See **`.loop/plan.md` header** below.
 
 Repository checkouts are deliberately absent from the plan. Plans carry GitHub
 `owner/repo` slugs only; each machine resolves them through `~/.loop/repos.json` via
@@ -38,7 +38,7 @@ between repositories.
 - `lane:` groups phases that one worktree owns end-to-end. Same letter = same lane =
   sequential within that worktree. Different letters = independent = parallel worktrees.
 - `status:` is the source of truth for progress in the document; `loop-handoff` mirrors it to
-  the daemon.
+  the board for a board plan.
 - `Repository:` is mandatory on every work phase with output `pr` when `## Repositories`
   exists and must match one declared slug. A work phase with another output may omit it. When
   it names a repository, the slug must match a declared one. A PR-review phase covers every
@@ -182,8 +182,6 @@ out of `plan.md`.
   - Its number stays reserved. Never reuse it.
   - Never claim, reopen, renumber or drop it. Never copy its block back into `plan.md`.
   - `.loop/state.json` keeps its entries.
-  - The Loop daemon gives it the title `(archived)` and a display-only dependency chain in stub
-    order.
 - **Command rules.**
   - The command refuses with exit 3 in these conditions:
     - A phase of N is not `done`.
@@ -346,47 +344,65 @@ The final milestone ends with the ordinary terminal review (no `[gate: merge]`).
 ## `.loop/plan.md` header
 
 The first lines of `.loop/plan.md` contain a `loop-plan` HTML comment.
-Every plan has a `planId`. An old-engine plan also has a `daemon` URL:
-
-```markdown
-<!-- loop-plan
-planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
-daemon: http://localhost:7717
--->
-```
-
 Keep this comment at the start of `.loop/plan.md`.
-A skills plan uses `wsd` as its backend. Its header has no `daemon` line:
+The header has no `daemon:` line and no `engine:` line.
+
+A plan has one of two backends:
+
+- **Board plan.** The session has the Beluga board tools (`mcp__beluga_board__*`). The plan
+  lives on the Beluga board. `.loop/plan.md` is the execution copy that the Loop scripts read.
+- **File plan.** The session does not have the board tools. The plan lives only in
+  `.loop/plan.md`.
+
+A board plan has a `planId` and a `board` line with the epic key:
 
 ```markdown
 <!-- loop-plan
 planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
-engine: skills
+board: <EPIC KEY, for example RC-78>
 -->
 ```
 
-A reader ignores `daemon:` when the header has `engine: skills`.
-`loop-plan.sh register` and `push` store that plan as a `loop.plan` event in its loop session.
-The event has the exact file text and its SHA-256, including final newlines.
-`get` reads the active engine's backend. `list` shows each plan id once.
-For rollback, remove `engine: skills`, then run `loop-plan.sh push`.
-The push updates loop-web and clears the engine of the existing wsd copy.
+A file plan has only a `planId`:
 
-The optional `engine` field selects the Loop engine:
+```markdown
+<!-- loop-plan
+planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
+-->
+```
 
-- Without `engine`, `ws loop start` starts `loop-orchestrator.sh` with the existing state and prompt behavior.
-- With `engine: skills`, `ws loop start` starts the `loop` skill in a headless agent session.
-  Its parent is the loop session. The prompt names the loop directory and the loop session.
-  A fresh loop needs only `.loop/plan.md`. It needs no `state.json` or `sub/prompt-seed.md`.
-- The skills engine accepts an existing `state.json` with a milestone and no `awaitingMerge`.
-  For a parked merge, run `loop-milestone.sh resume --dir <loop dir>` before `ws loop start`.
-  A running orchestrator prevents a second start.
+Commands for a board plan:
 
-Add `engine: skills` inside the header comment to select the skills engine.
-The field applies to milestones that did not start.
-The human changes the engine only while the loop is parked at a merge gate.
-Remove the field at a parked gate to select the old engine again.
-The field is the engine switch. Its removal is a separate change after the old engine retires.
+- `~/dotfile/loop-board.mjs split --plan .loop/plan.md` prints the board task specs as JSON:
+  `planId`, `epic`, `milestones` and `phases`.
+- `~/dotfile/loop-board.mjs export --epic <KEY> [--base .loop/plan.md]` renders the plan from
+  `~/.beluga/board.json`.
+- `~/dotfile/loop-board.mjs check --epic <KEY> --plan .loop/plan.md` exits 0 when the board
+  renders the same parsed plan.
+- `loop-plan.sh get --dir .loop` renders the plan from the board, the same as `export`.
+- `loop-plan.sh register` and `loop-plan.sh push` only print the `planId`.
+
+## Board layout
+
+A board plan maps to the Beluga board as follows:
+
+| Plan part | Board task |
+|---|---|
+| The plan | The epic task. Brief goal = Goal. Decisions = Approach & key decisions. Context = the `loop-plan` block. |
+| Milestone N | A sub-task of the epic. Title `M<n> · <outcome>`. |
+| Phase N | A task with title `P<n> · <title>`. Its parent is its milestone task. In a plan without milestones, its parent is the epic. |
+| Done when | The acceptance checklist of the phase task. One item for each criterion. |
+| Depends on | `blocked_by` relations of the phase task. |
+
+- **Status.** Backlog and Ready mean `todo`. In Progress and In Review mean `in-progress`.
+  Done means `done`. Canceled removes the phase from the plan.
+- **Raw text.** The `context` of each task holds one fenced block (`loop-plan`,
+  `loop-milestone` or `loop-phase`, with four backticks) with the raw plan text. Do not edit
+  the text inside the fence by hand. Change only the fields in this section.
+- **The board owns** the titles, Done when, Depends on, new phases, canceled phases, the Goal
+  and the decisions.
+- **Loop owns** the plan Status line, the Progress log, the PR lines, the phase statuses and
+  the archived stubs. These fields come from the local `.loop/plan.md`.
 
 ## Rules
 
@@ -434,8 +450,8 @@ The field is the engine switch. Its removal is a separate change after the old e
 - **Loop mode ships one PR per repository.** Per-phase Suggested branches are short-lived
   lane branches cut from that repository's integration tip and merged back; no per-phase
   PRs; `[status: done]` = merged into the phase repository's integration branch.
-- **Status agrees across copies:** the document and its engine's backend have the same `[status: …]` marker.
-  `loop-handoff` uses `loop-plan.sh push` to update the backend.
+- **Status agrees across copies:** for a board plan, the document and the board have the same
+  status for each phase. `loop-handoff` updates the board.
 - **Naming: describe the work, never the index.** Phase titles, `Suggested branch`,
   worktrees, commits, and PRs must say *what the change does* — never `phase-4`,
   `product-split-phase-4`, `<effort>-phase-N`, or a bare number. The phase↔branch link is

@@ -11,7 +11,7 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 - [Editable plan reconciliation](#editable-plan-reconciliation)
 - [Milestones](#milestones)
 - [Directory layout](#directory-layout)
-- [Daemon and events](#daemon--events)
+- [Events](#events)
 - [State schema](#statejson-schema-v2)
 - [Repository bootstrap](#repository-registry-and-bootstrap)
 - [Runner mechanics](#runner-spawn-how-the-orchestrator-launches-loop-runnersh)
@@ -27,14 +27,17 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 
 ## Roles
 
-- **Orchestrator** — owns the plan **document** (sole `loop-plan.sh push` writer — parallel
-  repushes are last-writer-wins), post-merge phase status flips, PR creation, all
+- **Orchestrator** — owns the plan **document** (sole writer of `.loop/plan.md` — parallel
+  writes are last-writer-wins), post-merge phase status flips, PR creation, all
   pushes to repository integration branches, scheduling, escalation, HIL. In the two-tier model this
   role is **split across two modes** (§ Two-tier orchestration): a THIN `supervise` main (the
   interactive Claude Code session the user talks to — preflight/init/lock, HIL answering,
   and review phases) and disposable headless `sub` instances that do the heavy scheduling/merge/
   escalation and self-recycle. A single-tier run (`supervise` doing everything itself) is
   still valid for a short effort.
+- **Coordinator** — the supervise or single-tier session that the user talks to. It is the only
+  process with the Beluga board tools. At each poll, it copies the phase statuses and the
+  `.loop/board-outbox.jsonl` notes to the board (§ Backend mapping).
 - **Sub-orchestrator (SUB)** — a disposable headless orchestrator (`claude -p`,
   `CHAIN_ORCHESTRATE`) spawned by `loop-orchestrator.sh`, entered via `loop-execute resume`.
   Does the heavy orchestration under a self-measured token ceiling and recycles itself at a
@@ -49,7 +52,7 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   attempt inside a lane worktree. Both hosts have the skills installed. A runner opens with
   `loop-pickup --auto` (claims its own phase, loads context) and closes with
   `loop-handoff --auto` — **phase-scoped ops only**: a local `.loop/plan.md` copy marker
-  update + `loop-plan.sh note`. Runners NEVER: push, open PRs, push the plan document,
+  update + `loop-plan.sh note`. Runners NEVER: push, open PRs, write the plan document or the board,
   touch files outside their worktree, or ask the user. A
   runner's final act is writing `status.json`.
 - **Reviewer R** — a fresh read-only runner producing numbered findings and a verdict for
@@ -66,8 +69,8 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
 - **Final review runner** — Opus through Claude Code after the terminal outer round or a
   clean early stop. It verifies that round's converged review and disputed items against
   current code, then posts the pipeline's only GitHub review.
-- **Scripts** — mechanism only (spawn/merge/notify/state; `loop-plan.sh` registers/pushes/
-  notes the plan on the daemon — the local backend). They never decide; the orchestrator
+- **Scripts** — mechanism only (spawn/merge/notify/state; `loop-plan.sh` renders a board plan,
+  appends notes to the outbox and archives milestones, § Backend mapping). They never decide; the orchestrator
   switches on their exit codes.
 
 ## Editable plan reconciliation
@@ -86,8 +89,9 @@ Merge new phase entries into `state.phases` as `todo`; never replace existing en
 A phase that an `[archived]` stub lists is an existing phase with status `done` (plan-format →
 Archived milestones). Never drop, reopen or renumber an archived phase. Keep its `state.phases`
 entry. Add a missing entry for it as `done`, never as `todo`.
-Edits that conflict with a live runner wait for a safe boundary or raise HIL. Push the fully
-reconciled document atomically to the daemon. Legacy no-kind plans
+Edits that conflict with a live runner wait for a safe boundary or raise HIL. For a board plan,
+run `loop-plan.sh get --dir .loop --out .loop/plan.md` at each safe boundary first. Write the fully
+reconciled document atomically to `.loop/plan.md`. Legacy no-kind plans
 continue to use one synthetic terminal review.
 
 ## Milestones
@@ -120,66 +124,17 @@ no stacking.
   parked loop (info notification, exit 2), not a crash.
 - **Resume (human only, `LOOP_SUB` unset).** `loop-milestone.sh check` → archive → `advance`, then
   the skill applies the printed patch to state, clears `REVIEW_READY`, logs `milestone.resumed`,
-  and starts the engine from the plan header (§ Engine switch and rollback).
+  and respawns the orchestrator.
   Then it starts the best-effort `plan` explainer for the new milestone (§ Milestone explainers).
 - **Archive (resume, after `check` exits 0, before `advance`).** For each M from 1 to the parked
   milestone P, run `loop-plan.sh archive --milestone <M> --dir .loop`. The command moves the phase
-  blocks and the progress-log entries of M to `.loop/milestones/m<M>.md`, writes the `[archived]`
-  stub into `plan.md` and pushes the plan. It refuses unless every phase of M is `done` and every
+  blocks and the progress-log entries of M to `.loop/milestones/m<M>.md` and writes the `[archived]`
+  stub into `plan.md`. It refuses unless every phase of M is `done` and every
   gate PR of M is merged. It is atomic and idempotent: exit 0 means archived or already archived.
   Any other exit stops the resume before `advance`. The archive never changes `state.json`.
   Grammar: plan-format → Archived milestones.
 - **Reconciliation.** Phases of a milestone whose gate PRs are merged are permanently shipped;
   crash-resume never re-checks them against a later integration tip.
-
-### Engine switch and rollback
-
-The initial `<!-- loop-plan … -->` header selects one engine for the plan.
-The field applies to milestones that did not start. A plan never runs on both engines at the same time.
-Without `engine: skills`, the old engine runs as before.
-With `engine: skills`, `loop-orchestrator.sh` exits 1 before supervision or a SUB starts.
-It prints one line that names `ws loop start <loop dir>`.
-The `/loop-execute <plan>` preflight also refuses the plan and prints that command.
-Use the resolved loop directory. Quote the path for the shell when necessary.
-
-At the milestone 6 gate, the human merges the PR and installs the milestone 6 runtime.
-The install commands are `./install.sh ws` and `install-agent-skills.sh`.
-The human runs the Phase 100 hand tests before adding `engine: skills` to the header.
-If a hand test fails, the human keeps the header unchanged. The old engine can run milestone 7.
-
-After the header change, the human runs `/loop-execute resume`.
-Milestone resume steps 1–4 keep their recovery, check, archive, advance and apply behavior.
-Step 5 keeps the plan Status push, the removal of `sub/REVIEW_READY`, the lessons and the crash marker.
-Before `ws loop start <loop dir>`, step 5 creates or reuses the session with `ws loop create --dir <absolute loop dir>`.
-It passes that session as `WS_LOOP_ID` to the installed `loop-milestone.sh open --dir <loop dir>`.
-The tool records `loop.phases`, `loop.milestone` and the earlier merged `loop.gate` events from the advanced state.
-The agent never writes those facts with `source: agent`.
-Step 5 checks the recorded milestone and merged gates with `ws loop get <loop session> --json`.
-It restores `resumePending` if `open` cleared it. A failed history check or start stops the resume.
-It logs `milestone.resumed` with detail `M<n> engine skills` and an empty phase.
-Then it runs `ws loop start <loop dir>` in place of the orchestrator respawn.
-After success, it clears `resumePending`. Step 6 still runs the best-effort plan explainer.
-The old-engine event detail stays `M<n>`.
-
-If the switch resume fails, the human runs these commands in order:
-
-1. Run `loop-milestone.sh resume --dir .loop` with `WS_LOOP_ID` unset.
-2. Run `loop-plan.sh push`.
-3. Run `ws loop start .loop`.
-
-During milestone 7, the skills engine uses the installed runtime from the milestone 6 merge in `~/dotfile`.
-It uses the installed `wsd`. It never runs a tool or skill from the milestone 7 integration worktree.
-Milestone 7 changes `wsd`, but the installed daemon has only the milestone 5 and 6 APIs.
-The human installs the milestone 7 code after its merge.
-
-For rollback, the human removes `engine: skills` from the header while the loop is parked at a merge gate.
-Then the human runs `loop-plan.sh push` and `/loop-execute resume`.
-A rollback inside a milestone is a manual rescue:
-
-1. Pause the skills loop with `ws loop pause`.
-2. Wait until no child session of the loop runs.
-3. Use `loop-handoff` to make `.loop/plan.md` and `.loop/state.json` agree with the merged work.
-4. Remove `engine: skills` from the header. Run `loop-plan.sh push` and `/loop-execute resume`.
 
 ### Milestone explainers
 
@@ -432,13 +387,14 @@ State lives in the launching coordinator checkout (add `.loop/` to
 ```
 .loop/
   state.json                 # orchestrator bookkeeping (loop-state.sh, atomic writes)
-  plan.md                    # the plan document, beside state.json (register/push planText source)
+  plan.md                    # the plan document, beside state.json (board plan: the execution copy)
+  board-outbox.jsonl         # board plan: {ts, phase, text} notes from `loop-plan.sh note`; the coordinator copies them to the board
   milestones/m<N>.md         # archived milestone N: its section and progress-log entries, moved
                              # without changes by `loop-plan.sh archive`. plan.md keeps a stub.
                              # With a retro: the retro first, then `## Raw log` and that content.
   milestones/m<N>.retro.md   # pending retro of milestone N (§ Milestone retrospective); the
                              # archive moves it into milestones/m<N>.md
-  progress.md                # progress stream (loop-plan.sh note / handoff --auto append)
+  progress.md                # progress stream (handoff --auto appends)
   events.jsonl               # append-only journal: {ts, event, phase, repository?, detail}
   lock/                      # mkdir-lock; owner = run id (sessions have no stable pid);
                              # same owner re-locks freely, another owner needs --force
@@ -482,7 +438,7 @@ State lives in the launching coordinator checkout (add `.loop/` to
   answers/<phase-slug>.md    # orchestrator guidance injected into a retry
   hil/<phase-slug>.md        # HIL request; answer arrives as hil/<phase-slug>.answer.md
   notes/<key>.md             # explicit phase number; legacy pr-review.* keys accepted
-  control/                   # out-of-band user control (daemon POST /control, e.g. loop-top, or by hand)
+  control/                   # out-of-band user control (files written by hand or by the coordinator)
     pause                    # whole loop paused (§ Pause & live control)
     pause-<N>                # phase N paused; may be set before it starts
     model-<N>                # one-line leg `engine:model[+fb]` override for a not-yet-started phase
@@ -504,7 +460,7 @@ Worktrees live outside the repo:
   hop removes the old worktree; reuse is same-repository consecutive phases only.
 - Integration: `~/.loop/worktrees/<runId>/<owner--repo>/integration`. `loop-repo.sh
   prepare` fetches GitHub's default ref and creates it from the exact fetched SHA, or adopts
-  an existing integration branch: its current worktree (often the user's ws worktree or the
+  an existing integration branch: its current worktree (often the user's worktree or the
   coordinator checkout) when checked out, else this path on that branch. Adopted worktrees
   are the user's; never remove them. All repository merges/pushes happen only here.
 - Milestones: milestone 1 keeps `…/<owner--repo>/integration` (above); milestones ≥2 use
@@ -512,42 +468,18 @@ Worktrees live outside the repo:
   the exact branch name, so same-slug branches never collide), created fresh from the fetched default and never
   adopted. Old non-adopted worktrees are retired only after the next milestone's are prepared.
 
-## Daemon & events
+## Events
 
-A perpetual **central daemon** (`LOOP_DAEMON_URL`, default `http://localhost:7717`) is the
-authoritative, never-stale source for **UI status**; the `.loop/` files stay the
-crash-resume **source of truth** for code + bookkeeping. A launchd LaunchAgent auto-starts it
-on login (KeepAlive); `loop-emit.sh` (sourced by the four loop scripts) provides
-`loop_ensure_daemon` as the fallback. Loops **register**, then push clean lifecycle events.
-Emission is **best-effort** — a `curl` failure never fails the caller.
-On startup and reconcile, the daemon recovers persisted route, question, and risk decision files
-after missed POSTs while the coordinator `.loop/` directory still exists.
-The daemon also reads size-capped `notes/*.md` content on each reconcile. NOTE badges are
-file-derived but completion-aware: a numeric phase note is pending only while its phase is
-not `done|merged`; legacy `pr-review.<owner--repo>` is pending only until that review
-finishes. This makes missed best-effort file cleanup harmless.
+`.loop/events.jsonl` is the local, append-only event journal. The `.loop/` files are the
+crash-resume **source of truth** for bookkeeping. Every loop exports `LOOP_DAEMON=off`,
+`LOOP_WS_SESSIONS=0` and `LOOP_EMIT_FILE=<abs loop dir>/emitted.jsonl`. With `LOOP_DAEMON=off`, `loop-emit.sh` makes no network call and starts no process.
+The progress is visible on the board (board plan) and in the progress checkpoints.
 
-Endpoints (POST bodies are JSON built injection-safely with `jq`):
-
-- `POST /api/loops/:runId/register` `{ loopDir, planFile?, effort?, integrationBranch?, startedAt?, planText? }` — server reads plan.md from `planFile` if `planText` omitted.
-- `POST /api/loops/:runId/state` — the full state.json contents.
-- `POST /api/loops/:runId/event` `{ event, phase?, repository?, detail?, ts?, outcome?, exitCode?, engine?, model?, prUrl?, tokens?, recycleIndex?, percent? }` — folded verbatim.
-- `POST /api/loops/:runId/finish` accepts v2 `{ status?, finishedAt?, repositories:{slug:{prUrl?,review?}} }`; legacy scalar `prUrl/review` remains accepted. For explicit plans it is ignored until the terminal review phase is `done|merged`.
-- `GET /api/loops/:runId/plan` → `{ runId, effort, status, integrationBranch, milestone, milestoneTotal, awaitingMerge, planText }` — how a fresh checkout fetches the plan (and the current milestone) with **no worktree needed**.
-- `POST /api/loops/:runId/note` `{ key, markdown }` to write or `{ key, clear:true }` to delete a steering note; rejects archived loops.
-- `POST /api/loops/:runId/archive` · `/unarchive` — manual archive flag on the store record (`loop-top archive [runId]`): listed as `archived` regardless of the worktree; worktrees untouched.
-- `POST /api/loops/:runId/control` `{ action:"pause"|"resume", phase? }` writes/removes `control/pause[-<N>]`; `{ action:"model", phase, leg|null }` writes/removes `control/model-<N>` (409 once the phase has started; invalid leg → 400). Rejects archived loops (410). The snapshot gains loop-level `paused` and per-node `paused`, `modelOverride`; UI state `paused`. `{ action:"review", phase, tier }` rewrites a not-yet-started review phase's `[review: …]` tag in plan.md (drops `[rounds: …]` → tier default).
-- `GET /api/loops` (plural repository summaries) · `GET /events?runId=` ·
-  `/api/loops/:runId/review?repository=<owner/repo>`; bare `/review` is the legacy alias ·
-  `/api/loops/:runId/{snapshot,attempt/:slug/:k}` · `/api/health`.
-
-A register-only record shows status **`planned`** (a plan on the daemon with no run yet):
-`multiphase-plan` registers the plan (**`planned`**) before any run; the first state push or
-event flips it to **`active`**.
-
-Re-registering replaces `planText` without discarding phase overlays. If a finished record
-receives a newly appended unfinished phase, it reopens as `active` under the same runId;
-completed phase ranks remain monotone.
+Only `loop-state.sh log` and `loop-state.sh hil-resolve` append to `events.jsonl`.
+The other emitters in the table below write to `.loop/emitted.jsonl` (`LOOP_EMIT_FILE`).
+Each line is `{ts, runId, action, body}`. The event name is `.body.event`.
+Read a `phase.merged` or `merge.conflict` event there. For other facts, `state.json`, the run
+directories and git win over both journals.
 
 **Typed event vocabulary** (who emits what):
 
@@ -564,43 +496,24 @@ completed phase ranks remain monotone.
 | `loop.finish` | orchestrator (loop-state.sh finish) | repositories |
 | `milestone.awaiting-merge` | supervise (loop-state.sh log) | detail = `M<n> owner/repo=<url> …` |
 | `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n>` |
-| `milestone.resumed` | supervise (loop-state.sh log) | detail = `M<n> engine skills` |
 | `sub.recycle` | loop-orchestrator.sh (on a SUB recycle) | tokens, recycleIndex |
 | `sub.saturation` | loop-state.sh occupancy (periodic heartbeat) | tokens, percent |
 | `progress.note` | loop-plan.sh note / loop-handoff --auto | phase, detail |
-| `control.pause` / `control.resume` / `control.model` | daemon (POST /control) | phase?, detail |
 | `loop.paused` / `loop.resumed` | loop-orchestrator.sh | — |
 | `note.applied` | loop-runner.sh (live note resume) | phase, repository |
 | `jev.decision` | runner (route) or SUB (question/risk) | phase, attempt, stage, mode, candidate, confidence/probabilities, appliedAction, fallbackReason, resolvedModel, evidenceChecked/evidenceSources, questionRound, head, required/completed/remaining gates, focus, ts |
 
 `loop-state.sh log` carries only phase/repository/detail, so both `milestone.*` payloads ride in
 `detail` as compact text (structured data lives in `state.awaitingMerge`). Both are typed and
-loop-level: they never promote a phase (the keyword fallback would read "merg…" as a merge), and
-`milestone.awaiting-merge` drives the `awaiting-merge` loop status from `state.awaitingMerge`.
+loop-level: they never promote a phase.
 
-`progress.note` is the progress narration — kept on the timeline, promotes
-nothing in the lattice.
+`progress.note` is the progress narration. For a board plan, `loop-plan.sh note` appends the note
+to `.loop/board-outbox.jsonl` instead (§ Backend mapping).
 
-`merge.verify-fail` records a merged-tree Verify failure (`loop-merge.sh` exit 4). The daemon
-keeps it as a typed event on the timeline only. It does not change the status of a phase.
-- `loop-merge.sh` sends it to the daemon. Its detail is `verify exit <n>` and the last 20 lines
-  of the Verify output, 2048 bytes at most.
-- The orchestrator writes it to `events.jsonl` with `loop-state.sh log`. `loop-retro.mjs` reads
-  only this copy.
-
-Unknown/legacy event names fall back to keyword matching, so today's free-form
-`events.jsonl` still works. The two `sub.*` events are **loop-level** (no `phase`); the daemon
-folds them idempotently — `subRecycles = max(recycleIndex)`, `occupancy = last {tokens, percent}`
-— so re-folding `events.jsonl` on every reconcile never double-counts. They update loop state
-only; they are NOT appended to the on-disk `events.jsonl` (heartbeats would flood the timeline),
-so they ride the live daemon POST exclusively.
-
-**Monotone promotion lattice.** The daemon materializes each loop through a monotone rank
-`todo < claimed < running < done < merged`; a `phase.attempt.finish{outcome:done, exit 0}`
-promotes a work phase to **done even if state.json bookkeeping lags** (fixes "done phases stuck
-at running/todo"). Individual review-stage attempts never promote an explicit `pr-review`
-phase; only the aggregate review pipeline does that after every repository finishes. Ranks never
-regress — a phase never un-completes in the UI (v1).
+`merge.verify-fail` records a merged-tree Verify failure (`loop-merge.sh` exit 4). It does not
+change the status of a phase. The orchestrator writes it to `events.jsonl` with `loop-state.sh log`.
+The detail is the last lines of the Verify output, 2048 bytes at most. `loop-retro.mjs` reads
+only this copy.
 
 ## state.json schema v2
 
@@ -650,7 +563,7 @@ flag so a host retained across a milestone it sits out is never retired if it is
 `advance` patch, cleared last by resume step 5); `null` otherwise.
 
 Legacy scalar `integrationBranch/integrationWorktree/prUrl/review` state migrates to the
-synthetic `primary` repository. Singular daemon projections remain for legacy consumers.
+synthetic `primary` repository.
 Global scheduling follows the DAG/lane/concurrency cap; merge serialization is global, but
 worktree, verify, PR, and review operations always target the phase repository.
 
@@ -690,7 +603,7 @@ the PR). Create mode reports `false`/`0`.
 ## Runner spawn (how the orchestrator launches loop-runner.sh)
 
 Resolve `RUNTIME_ROOT` to the repository integration worktree when the effort changes the
-Loop runtime itself; otherwise use `~/dotfile`. Skills-engine milestones use the installed runtime instead (§ Engine switch and rollback).
+Loop runtime itself; otherwise use `~/dotfile`.
 The runner resolves its Jev client, model
 config, and emitter from that same directory. Compose later SUB prompts from
 `$RUNTIME_ROOT/.claude/skills/loop-execute/{SKILL.md,references/loop-protocol.md}` too, so
@@ -723,7 +636,7 @@ keep the *interactive* chat under a hard ~200k ceiling, `loop-execute` runs in o
 
 - **`supervise`** (new default for a hands-off run) — the interactive session. THIN:
   preflight/init/lock, then spawn ONE detached `loop-orchestrator.sh` and poll **compact
-  local** state (`loop-state.sh get '.phases|map(.status)'`, not the fat daemon snapshot) for
+  local** state (`loop-state.sh get '.phases|map(.status)'`) for
   a 2-3 line progress read. It answers HIL from the on-disk brief and, on
   `sub/REVIEW_READY`, executes that explicit review phase (bounded parallel repository
   review/remediation runners), then either respawns scheduling for later work or finishes when
@@ -734,7 +647,7 @@ keep the *interactive* chat under a hard ~200k ceiling, `loop-execute` runs in o
   heavy orchestration but NEVER runs pr-review and NEVER `AskUserQuestion`.
 
 `loop-orchestrator.sh` (detached, spawned once by `supervise`) is a **dead-simple sequential
-while-loop**, not a concurrent daemon. It runs SUB instance *k*, waits for it to exit, reads
+while-loop**, not a concurrent scheduler. It runs SUB instance *k*, waits for it to exit, reads
 `sub/status.json`, and:
 
 - `recycle` → emit `sub.recycle`, `k++`, respawn SUB *k+1* with a `resume` prompt.
@@ -780,8 +693,8 @@ jq -R 'fromjson? | select((.type == "assistant") and (.message.usage != null))
 skips a malformed/partial last line (a mid-write transcript); `tail -n1` is the ≥1-productive-
 tick guard (no assistant turn yet → empty → `0`). With `--window`
 it also prints a percent (`<tokens> <percent>`); it **exits 10** when the sum ≥
-`LOOP_ORCH_RECYCLE_TOKENS` (0 otherwise — the recycle signal is the exit code, NOT stdout), and
-best-effort emits a `sub.saturation` event to the daemon. It requires ≥1 productive tick (a
+`LOOP_ORCH_RECYCLE_TOKENS` (0 otherwise — the recycle signal is the exit code, NOT stdout).
+It requires ≥1 productive tick (a
 usage-bearing event) — a fresh SUB with no assistant turn yet reports `0` and never fires. Spawn
 the SUB through `stdbuf`/a pty so stream-json flushes per line; a sidecar `tail` writing
 `sub/saturation.json` is the documented fallback if buffering proves too coarse (confirm the
@@ -796,14 +709,14 @@ or a merge in progress), keep going, even past 200k, and recycle **asap** once e
 a persisted checkpoint. **No token hard-kill.**
 
 **Handoff = single-consumption.** At a safe boundary the SUB flushes durable state (state.json,
-plan/daemon, git are already externalized), writes `sub/handoff.md`, and exits with `sub/status.json
+`.loop/plan.md`, the outbox and git are already externalized), writes `sub/handoff.md`, and exits with `sub/status.json
 {outcome:"recycle"}`. The successor reads `sub/handoff.md` **exactly once** at startup, then it
 is archived to `sub/handoff.consumed-<k>.md`; `plan.md` + `state.json` stay freely re-readable.
 This is a purpose-built recycle handoff — **NOT** the `loop-handoff` skill (that one is
 plan-doc/phase-status scoped and marks phases *done*: wrong semantics for a mid-run recycle).
 `handoff.md` carries: open exit-10 question rounds + their `sessionId`s; pending merge-runner
 promotions (runDir + lane-branch awaiting a `phase.merged`); per-lane notes; and why-stopped.
-Everything else the successor rebuilds by reconciling **git > plan/daemon > state**.
+Everything else the successor rebuilds by reconciling **git > plan > state**.
 
 ### SUB `status.json` (sub-orchestrator → loop-orchestrator.sh)
 
@@ -1090,7 +1003,7 @@ must create and emit a new timestamped record. The canonical candidate is
 store records and emits one JSON report without writing to the source loops. It compares each
 recorded route, question, and merge-risk proposal with the applied action using stage-specific
 policy mappings, then reports per-stage and overall agreement and fallback rates. Archived records
-use the frozen `lastSnapshot.decisions`, matching Observatory reload behavior.
+use the frozen `lastSnapshot.decisions`.
 
 Latency, runner retries, and cost appear only when those numeric fields were recorded; otherwise
 the report marks each metric `unavailable`. Synthetic fixtures cover the three decision points, archive
@@ -1149,8 +1062,7 @@ Every explicit `[kind: pr-review]` phase runs one Adversarial Review (AR) pipeli
 repository. The heading accepts `[review: standard|max]` (default
 `LOOP_REVIEW_TIER_DEFAULT=standard`), `[rounds: N]` (a maximum, default `LOOP_REVIEW_ROUNDS_DEFAULT=2`),
 and `[inner: M]` (default `LOOP_REVIEW_INNER_DEFAULT=2`). Both counts are integers 1..5;
-`LOOP_REVIEW_ROUNDS_CAP=5`. Legacy tiers shallow and medium are rejected by execution paths;
-historical Observatory/loop-top displays may still render them with a warning.
+`LOOP_REVIEW_ROUNDS_CAP=5`. Legacy tiers shallow and medium are rejected by execution paths.
 
 | Tier | GPT slot | Claude slot | Grok slot | Fix (`review-fix`) | Final (`review-final`) |
 |------|----------|-------------|-----------|--------------------|------------------------|
@@ -1499,8 +1411,8 @@ observability only: serialized merge and the merged-tree Verify gate remain unco
   inline; a **`sub`** spawns a **detached merge-runner** (skeleton below) so the conflict diff
   never enters the SUB's context — the SUB promotes on the next tick when `loop-merge`'s EXIT
   trap fires `phase.merged`.
-- **4** — merge committed but Verify failed (semantic conflict). `loop-merge.sh` sends
-  `merge.verify-fail` to the daemon. The orchestrator then does these steps in this order:
+- **4** — merge committed but Verify failed (semantic conflict). The orchestrator then does
+  these steps in this order:
   1. It writes the failure to `events.jsonl`: `loop-state.sh log --dir .loop --repository
      <owner/repo> merge.verify-fail <N> "<last Verify output lines, 2 KB at most>"`.
   2. It reverts the merge commit (`git revert -m1 HEAD`).
@@ -1581,8 +1493,7 @@ outcome "done" (merged+verified+pushed), "question" (not confident — needs HIL
 
 ## Pause & live control
 
-User control arrives as files under `.loop/control/` (written by the daemon's
-`POST /control`, e.g. from `loop-top`, or by hand); runners and loop-orchestrator.sh poll them
+User control arrives as files under `.loop/control/` (written by hand or by the coordinator); runners and loop-orchestrator.sh poll them
 on their ~2s watchdog tick.
 
 - **Phase pause** (`control/pause-<N>`): the runner kills the engine tree and exits 30;
@@ -1610,27 +1521,50 @@ on their ~2s watchdog tick.
    question, options A/B/C + recommendation. Include these reply instructions:
    Reply in the orchestrator chat or run:
    `loop-state.sh hil-resolve --dir .loop <phase> <phase-slug> "<answer>"`.
-2. Flip the phase to `[status: blocked]` and repush the plan doc.
+2. Flip the phase to `[status: blocked]` in `.loop/plan.md`.
 3. `loop-notify.sh --level question --run-id <runId> --event hil.raise --phase <phase> --title "HIL: <phase>" --body "<question>"`.
 4. Supervise asks in-session (AskUserQuestion / plain question). Single-tier mode asks in its orchestrator session.
    Other lanes keep running. Record the answer with:
    `loop-state.sh hil-resolve --dir .loop <phase> <phase-slug> "<answer>"`.
    The operation writes `hil/<phase-slug>.answer.md`, then logs `hil.resolve` for the phase.
-   Never write the answer file directly. The daemon clears the HIL pause when it receives this event.
+   Never write the answer file directly.
 5. Requeue the phase with the answer in context. Set its status to `in-progress`.
 
 ## Backend mapping
 
-One backend: the **central daemon** + `.loop/plan.md`. **Runners** own phase-scoped ops via
-the auto skills; the **orchestrator** owns the plan document and everything cross-phase:
+Two plan backends exist. The plan header selects one:
+
+- **Board plan** (the header has `board: <EPIC KEY>`). The Beluga board holds the plan. The epic
+  task holds the Goal, the decisions and the Loop config. Each milestone is one sub-task of the
+  epic. Each phase is one task under its milestone. The acceptance checklist of a phase task is
+  its *Done when*. Its `blocked_by` is its `Depends on`. `.loop/plan.md` is the execution copy.
+- **File plan** (no `board:` line). `.loop/plan.md` is the only copy. Read and write it directly.
+  It has no register or push target.
+
+For a board plan, `loop-plan.sh` makes no network call:
+
+- `loop-plan.sh get --dir .loop [--out <f>]` renders the plan from `~/.beluga/board.json` with
+  `loop-board.mjs export --epic <KEY> --base .loop/plan.md`. The board owns the structure, the
+  titles, *Done when* and `Depends on`. The local `plan.md` owns the plan Status line, the
+  Progress log, the PR lines, the phase statuses and the archived milestone stubs.
+- `loop-plan.sh register` and `loop-plan.sh push` only print the planId.
+- `loop-plan.sh note --dir .loop --phase <N> --body <text>` appends `{ts, phase, text}` to `.loop/board-outbox.jsonl`.
+- `loop-plan.sh archive` works on the local `plan.md`.
+
+Only the coordinator has the board tools. Headless SUB instances and runners never touch the
+board. They use `.loop/plan.md`, `loop-plan.sh get`, `state.json` and the outbox. At each poll,
+the coordinator copies the phase statuses and the outbox notes to the board.
+
+**Runners** own phase-scoped ops via the auto skills; the **orchestrator** owns the plan
+document and everything cross-phase:
 
 | Operation | Behaviour |
 |-----------|-----------|
 | Claim (runner, via `loop-pickup --auto`) | orchestrator pre-creates the lane branch; the phase flips to `claimed` in state.json (`loop-state.sh`) + a `[status: claimed]` marker in `.loop/plan.md`; lane collisions are caught by the branch/worktree conflict-check. |
-| Runner handoff (via `loop-handoff --auto ... status:in-progress`) | `loop-plan.sh note --plan-id <runId> --phase <N> --body <progress>` (a `progress.note` event) + update the `[status: ...]` marker in the local `.loop/plan.md` copy; **phase-scoped only** — no plan-doc rewrite. |
-| Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + `loop-plan.sh push` (re-register/overwrite the plan on the daemon) + a `progress.note`. |
+| Runner handoff (via `loop-handoff --auto ... status:in-progress`) | board plan: `loop-plan.sh note --dir .loop --phase <N> --body <progress>` (an outbox line); file plan: a `.loop/progress.md` line + update the `[status: ...]` marker in the local `.loop/plan.md` copy; **phase-scoped only** — no plan-doc rewrite. |
+| Post-merge status (orchestrator) | flip `[status: done]` in `.loop/plan.md` + append Progress log + a progress note (outbox line for a board plan). The coordinator copies the status to the board. |
 | PR link (orchestrator, at effort completion) | record each `repositories[slug].prUrl`; with milestones the PR is per milestone per participant and its URL also goes into that milestone's `PR` bullet. |
-| Milestone gate (supervise, after the gate review aggregates) | `state.awaitingMerge` + plan Status `awaiting merge` + `loop-plan.sh push` + `milestone.awaiting-merge` event + best-effort `ship` explainer + notify. Keep `sub/REVIEW_READY`, unlock, stop (no `finish`). |
+| Milestone gate (supervise, after the gate review aggregates) | `state.awaitingMerge` + plan Status `awaiting merge` in `.loop/plan.md` + `milestone.awaiting-merge` event + best-effort `ship` explainer + notify. Keep `sub/REVIEW_READY`, unlock, stop (no `finish`). |
 | Completion (orchestrator) | one `loop-state.sh finish` with plural repository reviews after every AR pipeline reaches its final Opus review; plan remains `integrating`. Then the best-effort `ship` explainer and the completion notification. |
 
 "done" in loop mode = merged into the phase repository's integration branch. Humans merge
@@ -1640,14 +1574,15 @@ one PR per repository.
 
 `loop-execute resume`: re-acquire the lock with the run id from state.json (a different
 owner means another orchestrator claims this effort — stop and ask before `--force`), then
-reconcile the sources — **git > plan/daemon > state.json** (git is
-truth for code, the plan/daemon for claims + phase status, state for attempt bookkeeping):
+reconcile the sources — **git > plan > state.json** (git is
+truth for code, `.loop/plan.md` for claims + phase status, state for attempt bookkeeping).
+For a board plan, run `loop-plan.sh get --dir .loop --out .loop/plan.md` first:
 
 - attempt marked running: pid alive → re-attach (watch transcript mtime; stale >25m → kill,
   treat as 124); pid dead + status.json present → process it normally; pid dead + none →
   failed attempt.
 - `MERGE_HEAD` in any repository integration worktree → finish or abort before anything else.
-- Phase `done` in the plan/daemon but lane branch not merged (or
+- Phase `done` in the plan but lane branch not merged (or
   vice versa) → repair from git.
 - Review pipeline: follow § Review recovery in order: recover → GitHub final-marker reconcile → `next`.
   Reattach to live pids; record completed-but-unrecorded metadata before selecting work.
@@ -1656,13 +1591,13 @@ truth for code, the plan/daemon for claims + phase status, state for attempt boo
   R/C/T use fresh calls with inlined exchange when continuation is needed, never session resume.
 - `state.awaitingMerge` set → parked at a milestone merge gate: do not respawn the orchestrator
   and do not re-run the gate review; a SUB writes `blocked` and exits, only a human resume leaves
-  the park. Applies while `state.awaitingMerge` is set, whatever the plan or daemon status says.
+  the park. Applies while `state.awaitingMerge` is set, whatever the plan status says.
 - Gate review `done` for the current milestone but `state.awaitingMerge` unset (crash before
   parking finished) → recover `awaitingMerge` from the gate review's recorded PR URLs, persist it
-  (`check` reads it from disk) and redo the park's Status push, event, `ship` explainer and
+  (`check` reads it from disk) and redo the park's plan Status write, event, `ship` explainer and
   notification (idempotent). Never re-run the gate review.
 - `state.resumePending` equals `state.milestone` (crash after the advance patch was applied, before restart)
-  → run resume step 5 only (plan Status push, `milestone.resumed`, clear the marker, respawn), then
+  → run resume step 5 only (plan Status write, `milestone.resumed`, clear the marker, respawn), then
   clear `resumePending`. Milestone history and `sub/REVIEW_READY` are not evidence: both persist
   through every later milestone's own review barrier.
 - Phases of a milestone whose gate PRs are merged are permanently shipped: never re-check them

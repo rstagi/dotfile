@@ -3,8 +3,8 @@ name: multiphase-plan
 description: >-
   Turn a goal into a multi-phase implementation plan, marking any genuinely independent
   lanes that could run in separate Conductor worktrees (and staying fully sequential when
-  the work doesn't parallelize), then register it on the local Loop daemon as the shared
-  source of truth. Use when asked to "plan this out", "make a multi-phase plan", "break
+  the work doesn't parallelize), then register it as the shared source of truth: on the
+  Beluga board when the session has the board tools, else in `.loop/plan.md`. Use when asked to "plan this out", "make a multi-phase plan", "break
   this into parallel phases", or before spinning up parallel worktrees for a larger effort.
   For Loop plans, estimate and size phases to fit one 30-minute execution attempt where the
   work can be bounded. The draft gets at most 2 reviewer/critic plan-review rounds (Codex, Claude, Grok) unless invoked as `light <goal>`. Only security, unprotected breakage or a failing check blocks a plan. Other items go to its Deferred / Not now list.
@@ -16,8 +16,8 @@ argument-hint: "[light] <goal> (optional)"
 > Source of truth for these rules: [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md). When this skill and that file differ, the file wins. Update the file first.
 
 
-Produce a correct phased plan, and register it on the local **Loop daemon**
-(http://localhost:7717) as the shared source of truth so any coding agent — **Claude
+Produce a correct phased plan, and register it on the **Beluga board** (or only in
+`.loop/plan.md` without the board tools) as the shared source of truth so any coding agent — **Claude
 Code or Codex**, in any worktree — can pick it up and continue. *Where the work genuinely allows it*, mark phases into **lanes** that
 can be worked concurrently in separate worktrees (Conductor). Pairs with `loop-pickup`
 (start a lane in a fresh worktree) and `loop-handoff` (reconcile progress and repush the
@@ -53,8 +53,8 @@ user only for a blocking review finding that needs their decision (step 3).
 
 ## Prerequisites
 
-`jq` and the **Loop daemon** (http://localhost:7717). The daemon is auto-ensured for you by
-`loop-plan.sh register` / `loop-emit.sh`, so no manual setup is needed.
+`jq` and Node >= 22.18 for `~/dotfile/loop-board.mjs`. A board plan also needs the Beluga
+board tools (`mcp__beluga_board__*`) in the session. Without these tools, the plan is a file plan.
 
 ## Workflow
 
@@ -278,30 +278,72 @@ blocking findings. It adds no new deferred finding.
 
 Do not run a round only to find more small issues. After the last round, continue to step 4.
 
-### 4. Register on the daemon
+### 4. Register the plan
 
-**This always runs** — every plan lives on the daemon. Write the
-plan markdown to `.loop/plan.md` in the current worktree (already there unless `light`), prefixed with the canonical
-`<!-- loop-plan -->` header (see `references/plan-format.md`). Mint the `planId`
-(`loop-<effort-slug>-<date>-<HHMMSS|rand>`) and set `daemon: http://localhost:7717`:
+**This always runs.** A plan has one of two backends:
+
+- **Board plan.** The session has the Beluga board tools (`mcp__beluga_board__*`). The plan
+  lives on the Beluga board. `.loop/plan.md` is the execution copy.
+- **File plan.** The session does not have the board tools. The plan lives only in
+  `.loop/plan.md`.
+
+Mint the `planId` (`loop-<effort-slug>-<date>-<HHMMSS|rand>`). The header has no `daemon:` line
+and no `engine:` line. See `references/plan-format.md` → `.loop/plan.md` header and Board layout.
+
+**File plan.** Write the plan to `.loop/plan.md` in the current worktree. The plan is already
+there unless the mode is `light`. Put this header at the start of the file:
 
     <!-- loop-plan
     planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
-    daemon: http://localhost:7717
     -->
 
-Then register it:
+**Board plan.** Do these steps in this order:
 
-    loop-plan.sh register            # defaults to --dir .loop, --plan-file .loop/plan.md
+1. Write `.loop/plan.md` with this header:
 
-`register` POSTs `/register` to the daemon (auto-starting it if it isn't up) and prints the
-`planId`; the plan lands with daemon status `planned`. This lets the current worktree start
-immediately and lets `loop-handoff` repush from here. Mention the user can add `.loop/` to
-`.gitignore` if they don't want the plan committed.
+       <!-- loop-plan
+       planId: loop-<effort-slug>-<date>-<HHMMSS|rand>
+       board: <EPIC KEY>
+       -->
+
+   Keep `<EPIC KEY>` as a placeholder until the epic exists. When the user gives an epic key,
+   use that key.
+2. Run `~/dotfile/loop-board.mjs split --plan .loop/plan.md`. It prints the task specs as JSON:
+   `planId`, `epic`, `milestones` and `phases`.
+3. Create the tasks with the board tools. Copy each `context` from the split output verbatim.
+   - Use the epic key that the user gave. Else create the epic with `task_create`: title, `goal`,
+     `decisions` and `context` from `epic`.
+   - Create one task for each milestone with `task_create`. Set `parent` to the epic key. Use
+     `goal`, `acceptance` and `context` from the milestone.
+   - Create one task for each phase with `task_create`. Set `parent` to the key of its milestone
+     task. For a plan without milestones, set `parent` to the epic key.
+   - Give each phase task its `goal`, `acceptance` and `context`. When the phase has points, set
+     `estimate` from them.
+   - For each `dependsOn` entry, run `task_relate` with `relation: blocked_by`.
+4. Write the epic key into the `board:` line of the header.
+5. Run `~/dotfile/loop-board.mjs check --epic <KEY> --plan .loop/plan.md`. Exit 0 means that the
+   board renders the same parsed plan. Fix each difference that it reports, then run it again.
+
+Obey the brief limits of the board:
+
+- The `context` of `task_create` is at most 8000 characters.
+- The `decisions` of `task_create` is at most 4000 characters.
+- For longer epic decisions, create the epic first. Then write the decisions with
+  `task_brief_edit` (at most 20000 characters).
+
+Each `context` holds one fenced block (`loop-plan`, `loop-milestone` or `loop-phase`, with four
+backticks) with the raw plan text. Do not edit the text inside the fence by hand. Change only the
+fields that `references/plan-format.md` → Board layout gives.
+
+For a board plan, `loop-plan.sh register` only prints the `planId`. For a file plan, do not run
+`loop-plan.sh register`. The current worktree can start immediately. `loop-handoff` can repush
+from here. Tell the user that they can add `.loop/` to `.gitignore` when they do not want to
+commit the plan.
 
 The review tier was settled in step 1 — don't ask again. (It stays changeable later, before
-the review phase starts: rewrite its `` `[review: …]` `` / `` `[rounds: …]` `` / `` `[inner: …]` `` tags and
-`loop-plan.sh push`, or `m` on the review phase in `loop-top`.) Only if step 1 left it open —
+the review phase starts. Rewrite its `` `[review: …]` `` / `` `[rounds: …]` `` / `` `[inner: …]` `` tags.
+For a file plan, edit them in `.loop/plan.md`. For a board plan, edit the `tags:` line of the
+`loop-phase` block of the review phase task with `task_brief_edit`.) Only if step 1 left it open —
 e.g. the user skipped it — ask it now, in one message.
 
 ### 5. Visual checkpoint (skipped in `light` mode)
@@ -345,7 +387,7 @@ for a `light` plan.
 **Single-lane (sequential) plan — the common case:**
 
 > **Plan registered** · N phases, sequential · plan review: `<n blocking fixed / n deferred / n rejected>` (or `light`).
-> State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
+> State backend: **Beluga board** epic `<KEY>` (or **file** `.loop/plan.md`) · planId `<id>`
 >
 > This work is sequential — each phase builds on the last, so it runs in one worktree in
 > order. Start with **Phase 1**: run **`/loop-pickup <planId>`** (Codex: **`$loop-pickup`**).
@@ -357,7 +399,7 @@ for a `light` plan.
 **Multi-lane plan — only when phases passed the Independence test:**
 
 > **Plan registered** · N phases in M lanes · plan review: `<n blocking fixed / n deferred / n rejected>` (or `light`).
-> State backend: **local daemon** · planId `<id>` · Observatory http://localhost:7717
+> State backend: **Beluga board** epic `<KEY>` (or **file** `.loop/plan.md`) · planId `<id>`
 >
 > **Parallel lanes:**
 > - **Lane A** (worktree 1): Phase 1 → Phase 3 — start now.
@@ -378,8 +420,8 @@ parallelism rather than presenting it as the required structure.
 
 ## Cross-agent notes
 
-The durable contract is the **daemon plan (planId) + `.loop/plan.md`** — not this chat, so a Codex agent in another
+The durable contract is the **Beluga board epic (board plan) or `.loop/plan.md` (file plan)** — not this chat, so a Codex agent in another
 worktree resumes from the same state a Claude Code agent wrote. Keep the plan mechanics to
-`loop-plan.sh` + git + local files only; do not rely on any
+`loop-plan.sh`, `loop-board.mjs`, the board tools, git and local files only; do not rely on any
 host-specific feature. Reference both invocation styles (`/name` for Claude Code,
 `$name` for Codex).

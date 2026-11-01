@@ -1,7 +1,15 @@
 #!/bin/zsh
 set -u -o pipefail
 
-# Loop Engineering — plan helper. Skills plans use wsd. Other plans use loop-web.
+# Loop Engineering — plan helper. Board plans use the Beluga board. Skills plans use wsd.
+# Other plans use loop-web.
+#
+# A board plan has `board: <epic key>` in its header. The board holds its structure, and
+# <dir>/plan.md is the execution copy. Its commands make no daemon or ws call:
+#   register/push print the planId. get renders the plan from the board with loop-board.mjs
+#   (the local plan.md is the base). note appends {ts, phase, text} to <dir>/board-outbox.jsonl.
+#   The coordinator copies the outbox to the board. With LOOP_DAEMON=off, note on a file plan also
+#   appends to that local outbox.
 #
 # Usage:
 #   loop-plan.sh register [--dir .loop] [--plan-file <f>] [--plan-id <id>] [--effort <name>]
@@ -9,7 +17,7 @@ set -u -o pipefail
 #     Otherwise POST /register to loop-web. Print the planId. Repeated writes are safe.
 #   loop-plan.sh push [--dir .loop] [--plan-file <f>] [--plan-id <id>] [--effort <name>]
 #     Use register to store the current markdown in the backend of its engine.
-#   loop-plan.sh get --plan-id <id> [--out <f>]
+#   loop-plan.sh get --plan-id <id> [--out <f>]   (a board plan: get [--dir .loop] [--out <f>])
 #     Read wsd first. Use its text only for engine: skills. Otherwise read loop-web.
 #   loop-plan.sh list
 #     Print skills rows first, then loop-web rows. Each plan id appears once.
@@ -77,6 +85,14 @@ header_engine() {
     /^engine:/ {sub(/^engine:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit}' "$1"
 }
 
+# Read the board epic key only from the canonical header.
+header_board() {
+  [[ -f "$1" ]] || return 0
+  awk 'NR == 1 && $0 != "<!-- loop-plan" {exit}
+    /^-->$/ {exit}
+    /^board:/ {sub(/^board:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit}' "$1"
+}
+
 # Append the exact file text. The SHA includes every final newline.
 append_ws_plan() {
   local target="$1" plan="$2" sha body
@@ -124,6 +140,10 @@ do_register() {
   if [[ -n "$PLAN_FILE" ]]; then plan_abs="$(abs_path "$PLAN_FILE")"; else plan_abs="$loop_abs/plan.md"; PLAN_FILE="$plan_abs"; fi
   pid="$(resolve_plan_id)"
   [[ -n "$pid" ]] || die "could not resolve a planId"
+  if [[ -n "$(header_board "$plan_abs")" ]]; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
   if [[ "$(header_engine "$plan_abs")" == skills ]]; then
     local session
     session="$("${WS_BIN:-ws}" loop create --dir "$loop_abs" --plan-id "$pid")" || return 3
@@ -242,6 +262,13 @@ archive)
   do_archive
   ;;
 get)
+  local_plan="${PLAN_FILE:-$DIR/plan.md}"
+  if board="$(header_board "$local_plan")" && [[ -n "$board" ]] &&
+      [[ -z "$PLAN_ID" || "$PLAN_ID" == "$(header_plan_id "$local_plan")" ]]; then
+    text="$(node "$SCRIPT_DIR/loop-board.mjs" export --epic "$board" --base "$local_plan")" || exit 3
+    if [[ -n "$OUT" ]]; then printf '%s\n' "$text" > "$OUT"; else printf '%s\n' "$text"; fi
+    exit 0
+  fi
   [[ -n "$PLAN_ID" ]] || die "get requires --plan-id <id>"
   if body="$(read_ws_plan "$PLAN_ID")" && jq -e '.engine == "skills" and (.text | type == "string")' >/dev/null 2>&1 <<< "$body"; then
     if [[ -n "$OUT" ]]; then jq -j '.text' <<< "$body" > "$OUT"; else jq -j '.text' <<< "$body"; fi
@@ -270,8 +297,15 @@ list)
     | .[] | "\(.runId)  ·  \(.status)  ·  \(.effort // "-")"'
   ;;
 note)
-  [[ -n "$PLAN_ID" ]] || die "note requires --plan-id <id>"
   [[ -n "$BODY" ]] || die "note requires --body <text>"
+  local_plan="${PLAN_FILE:-$DIR/plan.md}"
+  if [[ -n "$(header_board "$local_plan")" || "${LOOP_DAEMON:-on}" == off ]] &&
+      [[ -z "$PLAN_ID" || "$PLAN_ID" == "$(header_plan_id "$local_plan")" ]]; then
+    jq -cn --arg ts "$(now_iso)" --arg phase "$PHASE" --arg text "$BODY" \
+      '{ts:$ts, phase:(if $phase == "" then null else $phase end), text:$text}' >> "$DIR/board-outbox.jsonl" || exit 1
+    exit 0
+  fi
+  [[ -n "$PLAN_ID" ]] || die "note requires --plan-id <id>"
   if plan="$(read_ws_plan "$PLAN_ID")" && jq -e '.engine == "skills"' >/dev/null 2>&1 <<< "$plan"; then
     session="$("${WS_BIN:-ws}" loop get "$PLAN_ID" --json)" || exit 3
     target="$(jq -er '.id' <<< "$session")" || exit 3

@@ -29,10 +29,18 @@ The skills engine records review results with `loop-runner.sh --review-key <step
 
 The plan tools require Node >= 22.18. `node loop-plan-parse.mjs --plan .loop/plan.md` prints normalized plan JSON. Use `--plan -` to read standard input. The parser and `loop-plan.sh archive` use `loop-plan-model/` and need no `loop-web/` files. The daemon keeps its own parser until it retires.
 
-`loop-plan.sh` uses `wsd` for plans with `engine: skills` in the header. Other plans use loop-web.
-Skills writes use `ws loop create` and `ws event`. Reads and listing select the active engine's copy.
-Change the engine only while the loop is parked at a merge gate.
-For rollback, remove `engine: skills`, then run `loop-plan.sh push` to update both stores.
+The Loop skills use no `wsd` and no Loop daemon. A plan with `board: <epic key>` in its header lives
+on the Beluga board: the epic is the plan, each milestone is a sub-task and each phase is a task
+under its milestone. `.loop/plan.md` is the execution copy. `loop-board.mjs split` turns a plan into
+task specs, `export` renders the plan from `~/.beluga/board.json`, `check` compares the two and
+`keys` prints the task keys. For a board plan, `loop-plan.sh get --dir .loop` renders the plan,
+`register` and `push` only print the planId and `note` appends to `.loop/board-outbox.jsonl`.
+A plan without `board:` is a file plan: `.loop/plan.md` is the only copy.
+Every loop exports `LOOP_DAEMON=off LOOP_WS_SESSIONS=0 LOOP_EMIT_FILE=<abs .loop>/emitted.jsonl`:
+`loop-emit.sh` then writes events to that file and makes no network call.
+`loop-checkpoint.mjs --dir .loop [--since <time>] [--all]` prints the progress checkpoint data
+(stats, timeline, a beluga-graph and new proof media) for any client to render.
+The older `wsd` engine scripts below stay in the repository but no skill uses them.
 
 For the skills engine, `WS_LOOP_ID=<loop-session-id> ./loop-milestone.sh open --dir .loop`
 starts from `plan.md` alone or adopts an advanced `state.json`. It prepares missing integration

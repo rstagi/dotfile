@@ -206,7 +206,7 @@ assert_contains "$PROTOCOL" '"milestones": { "1": { "prs": { "owner/api": "<gate
 assert_contains "$PROTOCOL" '`…/<owner--repo>/integration-<branch-slug>-<hash8>`' "worktree path for milestones >= 2"
 assert_contains "$PROTOCOL" 'a parked loop keeps `sub/REVIEW_READY`' "two-tier: parked loop keeps REVIEW_READY"
 assert_contains "$PROTOCOL" '| Milestone gate (supervise, after the gate review aggregates) |' "backend mapping: parking"
-assert_contains "$PROTOCOL" 'Applies while `state.awaitingMerge` is set, whatever the plan or daemon status says.' "crash-resume: no respawn while parked"
+assert_contains "$PROTOCOL" 'Applies while `state.awaitingMerge` is set, whatever the plan status says.' "crash-resume: no respawn while parked"
 
 echo "review workflow: milestone explainers never block the park or the resume"
 assert_contains "$SKILL" '4. **Ship explainer (best-effort).**' "park runs the ship explainer"
@@ -271,7 +271,7 @@ assert_contains "$SKILL" 'exit 1 (gh/state error) → report it, stop' "gh error
 assert_contains "$SKILL" '`loop-milestone.sh advance --state .loop/state.json --next <N>' "advance runs after a merged check"
 assert_contains "$SKILL" 'Apply the printed patch with exactly one `loop-state.sh set`' "patch applied with a single set"
 assert_contains "$SKILL" 'switch `RUNTIME_ROOT` to it' "self-hosted runtime root switches to the new worktree"
-assert_contains "$SKILL" 'plan Status back to `in progress` + `loop-plan.sh push`' "resume repushes the plan as in progress"
+assert_contains "$SKILL" 'Set plan Status back to `in progress` in `.loop/plan.md`' "resume writes the plan as in progress"
 assert_contains "$SKILL" 'remove
    `sub/REVIEW_READY`' "resume clears REVIEW_READY"
 assert_contains "$SKILL" '`loop-state.sh log milestone.resumed`' "resume emits milestone.resumed"
@@ -300,7 +300,7 @@ print -r -- "$PROTOCOL" | grep -qF '`milestones[N].prs` recorded for the previou
 assert_exit "$?" "1" "protocol: ambiguous crash-after-apply predicate gone"
 assert_contains "$SKILL" '**Crash after apply:** `state.resumePending` equals `state.milestone`' "skill: crash after apply keyed on resumePending"
 assert_contains "$SKILL" "loop-state.sh set '.resumePending = null'" "skill: restart clears resumePending last"
-assert_contains "$PROTOCOL" 'run resume step 5 only (plan Status push, `milestone.resumed`, clear the marker, respawn)' "protocol: crash after apply → restart only"
+assert_contains "$PROTOCOL" 'run resume step 5 only (plan Status write, `milestone.resumed`, clear the marker, respawn)' "protocol: crash after apply → restart only"
 assert_contains "$SKILL" 'park only when a later milestone exists' "final-milestone gate never parks"
 assert_contains "$SKILL" '`[gate: merge]` on the final milestone → warn' "preflight warns on a final-milestone gate"
 

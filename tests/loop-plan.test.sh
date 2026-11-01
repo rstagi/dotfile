@@ -259,6 +259,63 @@ assert_eq "$(cat "$EMIT_LOG")" "" "no push after a failed write"
 export PATH="$OLD_PATH"
 unset FAKE_PR_STATES
 
+# A board plan: the Beluga board holds the plan. No daemon and no ws call.
+B="$TMP/board/.loop"; mkdir -p "$B"
+BOARD_FILE="$TMP/board/board.json"
+node --input-type=module -e "
+import fs from 'node:fs';
+import { splitPlan } from '$ROOT/loop-board.mjs';
+const s = splitPlan(fs.readFileSync('$FIX/plan.md', 'utf8'));
+const issues = []; let n = 1;
+const add = (f) => { const i = { id: 'i' + n, key: 'EX-' + n, status: 'todo', blockedBy: [], ...f }; n += 1; issues.push(i); return i; };
+const e = add({ title: s.epic.title, brief: { goal: s.epic.goal, decisions: s.epic.decisions, context: s.epic.context } });
+const ms = new Map(s.milestones.map((m) => [m.number, add({ title: m.title, parent: e.id, brief: { context: m.context } }).id]));
+const ph = new Map(s.phases.map((p) => [p.number, add({ title: p.title, parent: ms.get(p.milestone), brief: { context: p.context, acceptance: p.acceptance } })]));
+for (const p of s.phases) ph.get(p.number).blockedBy = p.dependsOn.map((d) => ph.get(d).id);
+fs.writeFileSync('$BOARD_FILE', JSON.stringify({ issues }));
+"
+sed -e 's|^daemon: .*|board: EX-1|' -e 's|^\*\*Status:\*\* .*|**Status:** in progress|' "$FIX/plan.md" > "$B/plan.md"
+WS_LOG="$TMP/board/ws.log"
+print -r -- "#!/bin/sh
+echo \"ws \$*\" >> '$WS_LOG'
+exit 1" > "$TMP/board/ws"; chmod +x "$TMP/board/ws"
+
+echo "loop-plan: register and push — a board plan writes nothing to the daemon or ws"
+: > "$EMIT_LOG"
+OUT="$(WS_BIN="$TMP/board/ws" plan push --dir "$B")"; rc=$?
+assert_exit "$rc" "0" "push succeeds"
+assert_eq "$OUT" "loop-archive-fixture-2026-10-01-000000" "prints the header planId"
+assert_eq "$(cat "$EMIT_LOG")" "" "no daemon emission"
+assert_eq "$(cat "$WS_LOG" 2>/dev/null)" "" "no ws call"
+
+echo "loop-plan: get — a board plan renders from the board with the local plan as base"
+OUT="$(BELUGA_BOARD_FILE="$BOARD_FILE" WS_BIN="$TMP/board/ws" plan get --dir "$B")"; rc=$?
+assert_exit "$rc" "0" "get succeeds"
+assert_contains "$OUT" "board: EX-1" "keeps the board header"
+assert_contains "$OUT" "**Status:** in progress" "keeps the local Status line"
+assert_contains "$OUT" '### Phase 4 — Call the API from the web shell `[lane: A]` `[status: in-progress]`' "keeps the local phase status"
+OUT="$(BELUGA_BOARD_FILE="$BOARD_FILE" plan get --dir "$B" --out "$TMP/board/out.md")"; rc=$?
+assert_exit "$rc" "0" "get --out succeeds"
+assert_contains "$(cat "$TMP/board/out.md")" "board: EX-1" "get --out writes the file"
+
+echo "loop-plan: note — a board plan queues the note for the coordinator"
+: > "$EMIT_LOG"
+plan note --dir "$B" --phase 4 --body 'lane A "done"'
+assert_exit "$?" "0" "note succeeds"
+assert_eq "$(jq -r '[.phase, .text] | @tsv' "$B/board-outbox.jsonl")" $'4\tlane A "done"' "appends phase and text to the outbox"
+assert_eq "$(cat "$EMIT_LOG")" "" "no daemon emission"
+assert_eq "$(cat "$WS_LOG" 2>/dev/null)" "" "no ws call"
+
+echo "loop-plan: note — a file plan with LOOP_DAEMON=off also queues the note locally"
+L="$TMP/fileplan/.loop"; mkdir -p "$L"
+printf '%s\n' '<!-- loop-plan' 'planId: loop-file-2026-11-01-000000' '-->' '# File — Multi-Phase Plan' > "$L/plan.md"
+: > "$EMIT_LOG"
+LOOP_DAEMON=off WS_BIN="$TMP/board/ws" plan note --dir "$L" --phase 2 --body 'local note'
+assert_exit "$?" "0" "note succeeds without --plan-id"
+assert_eq "$(jq -r '.text' "$L/board-outbox.jsonl")" "local note" "appends to the local outbox"
+assert_eq "$(cat "$EMIT_LOG")" "" "no daemon emission"
+assert_eq "$(cat "$WS_LOG" 2>/dev/null)" "" "no ws call"
+
 # ---------------------------------------------------------------------------------------
 # Part 2 — real daemon end-to-end (skipped when node < 22.18)
 # ---------------------------------------------------------------------------------------
