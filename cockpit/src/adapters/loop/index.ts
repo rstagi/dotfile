@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import type { CockpitEvent, EventBase, Lane } from "../../core/events.ts";
 import { readCheckpoint } from "./checkpoint.ts";
-import type { LoopPhase } from "./checkpoint.ts";
+import type { CheckpointReader, LoopPhase } from "./checkpoint.ts";
 
 export interface LoopPhaseState {
   slug?: string;
@@ -24,6 +24,7 @@ export interface LoopState {
 export interface LoopOptions {
   now?: string;
   isPidAlive?: (pid: number) => boolean;
+  checkpoint?: CheckpointReader;
 }
 
 type RecordValue = Record<string, unknown>;
@@ -44,7 +45,9 @@ export async function readLoop(directory: string, options: LoopOptions = {}): Pr
   if (markdown === null) return [];
   const state = readJson(join(dir, "state.json")) as LoopState | null;
   const now = options.now ?? new Date().toISOString();
-  const cp = await readCheckpoint(dir, now);
+  const cp = options.checkpoint
+    ? options.checkpoint({ dir, now, all: true })
+    : await readCheckpoint(dir, now);
   const runId = state?.runId ?? markdown.match(/^planId:\s*(\S+)/m)?.[1]
     ?? `loop-${hash(dir)}`;
   const fallback = fileTime(join(dir, "state.json")) ?? fileTime(join(dir, "plan.md")) ?? now;

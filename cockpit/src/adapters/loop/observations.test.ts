@@ -1,17 +1,19 @@
-import { afterEach, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readLoop } from "./index.ts";
+import type { CockpitEvent } from "../../core/events.ts";
 
 const FIXTURE = fileURLToPath(new URL("../../../../loop-web/fixtures/.loop", import.meta.url));
 const NOW = "2026-08-03T10:10:00.000Z";
 let dir = "";
+let events: CockpitEvent[];
 
-afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+afterAll(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
-it("emits computed drift, checkpoint markers, proof media and journal phase events", async () => {
+beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "cockpit-observations-"));
   cpSync(FIXTURE, dir, { recursive: true });
   const plan = readFileSync(join(dir, "plan.md"), "utf8");
@@ -37,7 +39,11 @@ it("emits computed drift, checkpoint markers, proof media and journal phase even
     "{partial",
   ].join("\n"));
 
-  const events = await readLoop(dir, { now: NOW });
+  // Keep one real checkpoint integration read. Cold module loading needs setup time under load.
+  events = await readLoop(dir, { now: NOW });
+}, 30_000);
+
+it("emits computed drift, checkpoint markers, proof media and journal phase events", () => {
   expect(events.find((event) => event.type === "drift" && event.phaseId === "3"))
     .toMatchObject({ drift: {
       phaseId: "3", estimateMinutes: 5, elapsedMinutes: 11,
@@ -51,7 +57,7 @@ it("emits computed drift, checkpoint markers, proof media and journal phase even
     { timestamp: "2026-08-03T10:05:00.000Z", checkpoint: { id: "checkpoint-2", summary: "2/4 phases done" } },
   ]);
   expect(events.filter((event) => event.type === "media")).toMatchObject([
-    { phaseId: "1", media: { path: join(proof, "01-contract-tests-pass.gif"), mimeType: "image/gif", phaseId: "1" } },
+    { phaseId: "1", media: { path: join(dir, "runs", "payments-gateway-a1", "proof", "01-contract-tests-pass.gif"), mimeType: "image/gif", phaseId: "1" } },
   ]);
   expect(events.find((event) => event.type === "phase.start" && event.timestamp === "2026-08-03T10:02:00.000Z"))
     .toMatchObject({ phaseId: "2", laneId: "B" });

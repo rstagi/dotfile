@@ -1,21 +1,38 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readLoop } from "./index.ts";
+import type { LoopOptions } from "./index.ts";
+import type { CockpitEvent } from "../../core/events.ts";
+import { readCheckpoint } from "./checkpoint.ts";
 
 const FIXTURE = fileURLToPath(new URL("../../../../loop-web/fixtures/.loop", import.meta.url));
 const NOW = "2026-08-03T10:10:00.000Z";
-const temporary: string[] = [];
+let dir: string;
+let options: LoopOptions;
+let fixtureEvents: CockpitEvent[];
+
+beforeAll(async () => {
+  dir = fixture();
+  // Load the real checkpoint module once. Lock changes do not change its result.
+  const checkpoint = await readCheckpoint(dir, NOW);
+  options = { now: NOW, checkpoint: () => checkpoint };
+  fixtureEvents = await readLoop(dir, options);
+}, 30_000);
 
 afterEach(() => {
-  for (const dir of temporary.splice(0)) rmSync(dir, { recursive: true, force: true });
+  rmSync(join(dir, "lock"), { recursive: true, force: true });
+});
+
+afterAll(() => {
+  if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("Loop adapter", () => {
-  it("reads the fixture run, lanes, phase history and human request", async () => {
-    const events = await readLoop(fixture(), { now: NOW });
+  it("reads the fixture run, lanes, phase history and human request", () => {
+    const events = fixtureEvents;
     expect(events.find((event) => event.type === "run.meta")).toMatchObject({
       runId: "loop-checkout-revamp-2026-08-03",
       meta: {
@@ -38,7 +55,6 @@ describe("Loop adapter", () => {
   });
 
   it.each(["file", "directory", "json"])("ends the run when its %s lock PID dies", async (format) => {
-    const dir = fixture();
     const lock = join(dir, "lock");
     if (format === "directory") {
       mkdirSync(lock);
@@ -46,27 +62,28 @@ describe("Loop adapter", () => {
     } else {
       writeFileSync(lock, format === "json" ? JSON.stringify({ pid: process.pid }) : String(process.pid));
     }
-    const active = await readLoop(dir, { now: NOW });
+    const active = await readLoop(dir, options);
     expect(active.find((event) => event.type === "run.meta")).toMatchObject({ meta: { status: "active" } });
-    const done = await readLoop(dir, { now: NOW, isPidAlive: () => false });
+    const done = await readLoop(dir, { ...options, isPidAlive: () => false });
     expect(done.find((event) => event.type === "run.meta")).toMatchObject({ meta: { status: "done" } });
   });
 
   it("keeps an owner-only lock active until the lock is removed", async () => {
-    const dir = fixture();
     mkdirSync(join(dir, "lock"));
     writeFileSync(join(dir, "lock", "owner"), "loop-checkout-revamp-2026-08-03");
-    expect((await readLoop(dir, { now: NOW })).find((event) => event.type === "run.meta"))
+    expect((await readLoop(dir, options)).find((event) => event.type === "run.meta"))
       .toMatchObject({ meta: { status: "active" } });
     rmSync(join(dir, "lock"), { recursive: true });
-    expect((await readLoop(dir, { now: NOW })).find((event) => event.type === "run.meta"))
+    expect((await readLoop(dir, options)).find((event) => event.type === "run.meta"))
       .toMatchObject({ meta: { status: "done" } });
   });
 });
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), "cockpit-loop-"));
-  temporary.push(dir);
-  cpSync(FIXTURE, dir, { recursive: true });
+  // These tests need no runner transcripts, logs or Git metadata.
+  for (const file of ["plan.md", "state.json", "events.jsonl", "hil"]) {
+    cpSync(join(FIXTURE, file), join(dir, file), { recursive: true });
+  }
   return dir;
 }
