@@ -42,6 +42,10 @@ export class SessionReader {
     return new SessionReader(home, options.userHome ?? homedir(), options.now ?? Date.now, await JsonlTailer.open(home), sessions);
   }
 
+  snapshot(): SessionSnapshot[] {
+    return structuredClone(Object.values(this.sessions).map(item => item.session));
+  }
+
   async poll(): Promise<CockpitEvent[]> {
     const events: CockpitEvent[] = [];
     for (const source of ["claude", "codex"] as const) {

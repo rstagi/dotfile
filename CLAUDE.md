@@ -66,6 +66,9 @@ zsh ws/tests/run.sh
 # Loop daemon (loop-web) model and server tests
 (cd loop-web && npm test)
 
+# Agent cockpit types, tests and UI build
+(cd cockpit && npm run verify)
+
 # Rust daemon and CLI tests + lint
 (cd wsd && cargo test && cargo clippy --all-targets -- -D warnings)
 
@@ -98,6 +101,8 @@ loop-models.conf        Loop engineering: model chains, budgets, timeouts
 loop-top.mjs            Loop engineering: terminal dashboard (cwd → loop inference, live phase status, notes/pause/model/tier controls). Reads a wsd loop with `ws loop get --json` and steers it with `ws loop …`. Reads every other loop from the loop-web daemon
 loop-web.sh             Loop daemon launcher (--daemon = central observer on :7717)
 loop-web/               Loop daemon: Node HTTP API, persistence and pure TypeScript model
+cockpit/                Private agent observer: session and Loop adapters, intents, event log, HTTP/SSE and React canvas
+cockpit/cli.mjs         cockpit start|stop|status|open (optional install.sh cockpit package)
 ws/ws.sh                Rust CLI launcher (see ws/README.md)
 wsd/crates/ws/src/cmd/picker.zsh  Embedded fzf picker UI
 ws/tests/               Picker smoke test and Rust picker integration shell checks

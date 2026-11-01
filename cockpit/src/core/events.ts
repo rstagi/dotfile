@@ -59,6 +59,7 @@ export interface Milestone {
 }
 
 export interface RunMeta {
+  sessions?: { id: string; chatId?: string; title?: string }[];
   title?: string;
   status?: RunStatus;
   source?: string;
