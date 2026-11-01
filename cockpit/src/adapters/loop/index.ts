@@ -76,7 +76,7 @@ export async function readLoop(directory: string, options: LoopOptions = {}): Pr
     })),
   } });
 
-  const journal = [
+  const journal: RecordValue[] = [
     ...readLines(join(dir, "events.jsonl")),
     ...readLines(join(dir, "emitted.jsonl")).map((entry) => ({ ...object(entry.body), ts: object(entry.body)?.ts ?? entry.ts })),
   ].sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
@@ -146,6 +146,8 @@ export async function readLoop(directory: string, options: LoopOptions = {}): Pr
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
+export { discoverLoopDirectories, matchLoopSession } from "./sessions.ts";
+
 function readText(file: string): string | null {
   try { return readFileSync(file, "utf8"); } catch { return null; }
 }
@@ -174,7 +176,7 @@ function runIsAlive(dir: string, alive: (pid: number) => boolean): boolean {
   const lock = join(dir, "lock");
   const pidText = readText(join(lock, "pid")) ?? readText(lock) ?? readText(join(lock, "owner"));
   if (pidText === null) return false;
-  const pid = Number(pidText.trim());
+  const pid = Number(pidText.trim().startsWith("{") ? readJson(lock)?.pid : pidText.trim());
   // New Loop locks record the run ID because sessions have no stable PID.
   if (!Number.isInteger(pid)) return true;
   return pid > 0 && alive(pid);

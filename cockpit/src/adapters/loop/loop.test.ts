@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,32 @@ describe("Loop adapter", () => {
     expect(events.filter((event) => event.type === "ask")).toMatchObject([
       { phaseId: "2", ask: { phaseId: "2", resolved: false, text: expect.stringContaining("cart API contract") } },
     ]);
+  });
+
+  it.each(["file", "directory", "json"])("ends the run when its %s lock PID dies", async (format) => {
+    const dir = fixture();
+    const lock = join(dir, "lock");
+    if (format === "directory") {
+      mkdirSync(lock);
+      writeFileSync(join(lock, "pid"), String(process.pid));
+    } else {
+      writeFileSync(lock, format === "json" ? JSON.stringify({ pid: process.pid }) : String(process.pid));
+    }
+    const active = await readLoop(dir, { now: NOW });
+    expect(active.find((event) => event.type === "run.meta")).toMatchObject({ meta: { status: "active" } });
+    const done = await readLoop(dir, { now: NOW, isPidAlive: () => false });
+    expect(done.find((event) => event.type === "run.meta")).toMatchObject({ meta: { status: "done" } });
+  });
+
+  it("keeps an owner-only lock active until the lock is removed", async () => {
+    const dir = fixture();
+    mkdirSync(join(dir, "lock"));
+    writeFileSync(join(dir, "lock", "owner"), "loop-checkout-revamp-2026-08-03");
+    expect((await readLoop(dir, { now: NOW })).find((event) => event.type === "run.meta"))
+      .toMatchObject({ meta: { status: "active" } });
+    rmSync(join(dir, "lock"), { recursive: true });
+    expect((await readLoop(dir, { now: NOW })).find((event) => event.type === "run.meta"))
+      .toMatchObject({ meta: { status: "done" } });
   });
 });
 
