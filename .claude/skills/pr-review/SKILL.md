@@ -30,23 +30,13 @@ git fetch origin pull/<number>/head
 REVIEW_REPO=$(git rev-parse --show-toplevel)
 REVIEW_REF=FETCH_HEAD
 
-if command -v ws >/dev/null 2>&1 && ws ping >/dev/null 2>&1; then
-  if REVIEW_SESSION=$(ws whoami 2>/dev/null); then
-    : # The daemon collects the worktree when this session finishes or fails.
-  else
-    REVIEW_SESSION=$(ws session create) || exit 1
-    trap 'cd "$REVIEW_REPO"; ws session stop "$REVIEW_SESSION" >/dev/null' EXIT
-  fi
-  REVIEW_WORKTREE=$(ws phase worktree --session "$REVIEW_SESSION" "$REVIEW_REPO" "$REVIEW_REF") || exit 1
-else
-  REVIEW_ROOT="${TMPDIR:-/tmp}/pr-review"
-  mkdir -p "$REVIEW_ROOT" || exit 1
-  REVIEW_ROOT=$(cd "$REVIEW_ROOT" && pwd -P) || exit 1
-  REVIEW_TMP=$(mktemp -d "$REVIEW_ROOT/review.XXXXXX") || exit 1
-  REVIEW_WORKTREE="$REVIEW_TMP/worktree"
-  trap 'cd "$REVIEW_REPO"; git worktree remove --force "$REVIEW_WORKTREE"; git worktree prune; rmdir "$REVIEW_TMP"' EXIT
-  git worktree add --detach "$REVIEW_WORKTREE" "$REVIEW_REF" || exit 1
-fi
+REVIEW_ROOT="${TMPDIR:-/tmp}/pr-review"
+mkdir -p "$REVIEW_ROOT" || exit 1
+REVIEW_ROOT=$(cd "$REVIEW_ROOT" && pwd -P) || exit 1
+REVIEW_TMP=$(mktemp -d "$REVIEW_ROOT/review.XXXXXX") || exit 1
+REVIEW_WORKTREE="$REVIEW_TMP/worktree"
+trap 'cd "$REVIEW_REPO"; git worktree remove --force "$REVIEW_WORKTREE"; git worktree prune; rmdir "$REVIEW_TMP"' EXIT
+git worktree add --detach "$REVIEW_WORKTREE" "$REVIEW_REF" || exit 1
 cd "$REVIEW_WORKTREE" || exit 1
 ```
 
@@ -54,12 +44,12 @@ In the worktree, use the project's own commands (check the README / CLAUDE.md / 
 
 - install dependencies and build,
 - run the test suite,
-- run each other deterministic check that the project has, for example architecture tests, the flag off/on test matrix and the delete test,
+- run each other deterministic check that the project has, for example architecture tests, the flag off/on test matrix, the monitoring check and the delete test,
 - run the existing tests with the flag off when the PR adds a feature flag,
 - and exercise the actual change: run the app, call the endpoint or call the function that this PR touches.
 
-Record each check that fails and each existing behavior that changes. These results are the evidence for the Blocking categories `failing-check` and `unprotected-breakage`. Report them before you continue. The daemon removes managed worktrees when their sessions finish or fail.
-The exit trap removes fallback worktrees.
+Record each check that fails and each existing behavior that changes. These results are the evidence for the Blocking categories `failing-check` and `unprotected-breakage`. Report them before you continue.
+The exit trap removes the review worktree.
 
 ## Step 2 — Classify each finding
 
@@ -73,7 +63,7 @@ A finding is `blocking` only when it is in one of these 3 categories. Each Block
 |---|---|---|
 | `security` | The PR leaks a secret, bypasses auth or a permission check, exposes data or handles user data unsafely. Or the change can cause real harm in production. | The code path, and a repro when you can make one. |
 | `unprotected-breakage` | The PR changes current behavior, and no feature flag or equivalent off switch protects the change. Or existing tests fail with the flag off. | The Step 1 result: the old and the new behavior, or the failing existing test. |
-| `failing-check` | A deterministic check fails: the build, the tests, the architecture tests, the flag off/on matrix or the delete test. | The command and its failing output from Step 1. |
+| `failing-check` | A deterministic check fails: the build, the tests, the architecture tests, the flag off/on matrix, the monitoring check or the delete test. | The command and its failing output from Step 1. |
 
 A `failing-check` item blocks because the check fails, not because you judge the code. When the project does not have a check, a probable failure of that check is `deferred`.
 
@@ -246,9 +236,8 @@ In `--headless` mode, do not ask questions.
 Do not change the starting checkout.
 Do not run `gh pr checkout`.
 Use the Step 1 block with `git fetch origin pull/<number>/head` and `REVIEW_REF=FETCH_HEAD`.
-Use `ws phase worktree` when `ws ping` succeeds.
 Skip Step 4 unless the prompt asks for it. A headless session has no person to show the checkpoint to.
-Otherwise, use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
+Use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
 Keep the same shell active until the review ends.
 
-The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as described above. Put the Blocking items inline. Put the verdict, the footprint, the split proposal and the Deferred list in a concise overall body. End the body with `:)`. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the session cleanup or the exit trap remove the worktree.
+The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as described above. Put the Blocking items inline. Put the verdict, the footprint, the split proposal and the Deferred list in a concise overall body. End the body with `:)`. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.

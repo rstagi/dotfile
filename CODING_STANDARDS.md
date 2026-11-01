@@ -35,13 +35,23 @@ These rules apply to new work. Existing code moves to this layout only in its ow
 - Each adapter has a contract test against its port.
 - Tests live in the feature folder. When you remove the feature, you also remove its tests.
 
-## Observability
+## Monitoring
 
-- Required for production paths only: code that real users or real data reach. Prototypes, spikes, scripts and one-off tools do not need telemetry.
-- On a production path, add spans, structured logs and key metrics at the entry point of the feature and at the adapter boundaries. Do not add them in the domain core.
-- Start each telemetry name with `feature.<name>.`. Then you can find the telemetry of a feature and remove it with the feature.
-- Never log secrets or raw sensitive data.
-- A missing telemetry item is a deferred issue. It never blocks.
+Each feature that merges has monitoring, also a prototype behind a flag. Merged code reaches production, and the owner must see if the feature works and if people use it. Scripts, spikes and one-off tools that do not merge into the product do not need monitoring.
+
+The minimum for each feature:
+
+- **Application monitoring (Datadog).** A span at the wiring point, with the flag state as a tag. A span at each adapter boundary that calls an external system. Errors are recorded on the span. Logs are structured and have a `feature` tag.
+- **Product monitoring (PostHog).** The flag is evaluated through PostHog, so that exposure is recorded. At least one event for the main user action of the feature.
+
+Rules:
+
+- Telemetry goes through a port, for example `Telemetry`, with Datadog and PostHog adapters. The domain core does not call telemetry. Tests use an in-memory fake of the port.
+- Start each span, metric and event name with `feature.<name>.`. Then you can find the telemetry of a feature in Datadog and PostHog, and remove it with the feature.
+- A test with the flag on asserts that the entry point emits at least one span and one product event. This is the monitoring check.
+- The PR description links to the Datadog and PostHog views for the feature, for example a saved query filtered on `feature.<name>.`.
+- Never log or send secrets or raw sensitive data. Product events identify the user only by the same ID that the flag targets.
+- The minimum above blocks only through the monitoring check, when that check exists and fails. Extra metrics, dashboards and alerts are deferred issues.
 
 ## Delete test
 
@@ -54,7 +64,7 @@ Block a plan or a PR only for these 3 reasons:
 
 1. **Security or safety.** Examples: a leaked secret, an auth or permission bypass, data exposure, and unsafe handling of user data. Also any change that can cause real harm in production.
 2. **Unprotected breakage of existing behavior.** The PR changes current behavior, and no feature flag or equivalent off switch protects it. Or the PR breaks existing tests with the flag off.
-3. **A failing deterministic check.** Examples: the architecture tests, the flag off/on test matrix or the delete test. These block because CI fails, not because a reviewer decides so.
+3. **A failing deterministic check.** Examples: the architecture tests, the flag off/on test matrix, the monitoring check or the delete test. These block because CI fails, not because a reviewer decides so.
 
 All other items are deferred issues. They never block. Examples: names, style, extra abstractions, missing edge cases in flagged code, performance ideas, more tests, cleaner refactors and documentation. Put them in a short "Deferred issues" list and continue.
 
@@ -72,6 +82,7 @@ A new repository sets up these checks in CI from the start:
 
 - Architecture tests: slice boundaries, dependency direction and import cycles.
 - The flag off/on test matrix.
+- The monitoring check: with the flag on, each feature emits at least one `feature.<name>.` span and one product event.
 - The delete test.
 
 This repository does not add them. It has no feature slices and no CI workflow, and `ws` moves to its own repository later. Here, a reviewer reports a probable failure of these rules as a deferred issue. A check blocks only when it exists and fails.

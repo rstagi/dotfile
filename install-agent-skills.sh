@@ -8,6 +8,7 @@ SHARED_SKILLS=(
   checkpoint-30
   assess
   multiphase-plan
+  loop-do
   loop-execute
   loop
   converge
