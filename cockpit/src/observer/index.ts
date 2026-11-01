@@ -64,13 +64,22 @@ export async function createObserver(options: ObserverOptions = {}) {
       batch.push(event);
       batches.set(event.runId, batch);
     };
+    const candidates = new Map<string, { events: CockpitEvent[]; state?: LoopState }>();
     for (const directory of directories) {
       try {
         const events = await readLoop(directory);
-        for (const event of events) add(event);
-        const state = JSON.parse(await readFile(join(directory, 'state.json'), 'utf8')) as LoopState;
-        if (events[0]) sources.push({ state: { ...state, runId: events[0].runId }, runId: events[0].runId });
+        if (!events[0]) continue;
+        const runId = events[0].runId;
+        let state: LoopState | undefined;
+        try { state = JSON.parse(await readFile(join(directory, 'state.json'), 'utf8')) as LoopState; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') options.onError?.(error); }
+        const previous = candidates.get(runId);
+        if (!previous || (!previous.state && state)) candidates.set(runId, { events, state });
       } catch (error) { options.onError?.(error); }
+    }
+    for (const [runId, { events, state }] of candidates) {
+      for (const event of events) add(event);
+      if (state) sources.push({ state: { ...state, runId }, runId });
     }
     const sessionStates = reader.snapshot();
     const mappings = new Map<string, { runId: string; phaseId: string; laneId?: string }>();

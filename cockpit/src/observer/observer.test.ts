@@ -51,3 +51,18 @@ it('keeps later session actions in their Loop phase after a restart', async () =
   expect(restarted.store.getRun('example-loop')?.meta.sessions).toMatchObject([{ id: 'runner' }]);
   expect(restarted.store.snapshot()).toHaveLength(1);
 }, 30_000);
+
+it('prefers the live runtime over a stale worktree copy of the same plan', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cockpit-sources-'));
+  folders.push(root);
+  const { writeFile } = await import('node:fs/promises');
+  const runtime = join(root, 'runtime/.loop');
+  const stale = join(root, 'worktree/.loop');
+  const plan = '<!-- loop-plan\nplanId: shared-loop\n-->\n# Example\n\n### Phase 1 — Implement the feature `[lane: A]` `[status: in-progress]`\n- **Depends on:** none\n';
+  for (const dir of [runtime, stale]) { await mkdir(dir, { recursive: true }); await writeFile(join(dir, 'plan.md'), plan); }
+  await writeFile(join(runtime, 'state.json'), JSON.stringify({ runId: 'shared-loop', phases: {} }));
+  await writeFile(join(runtime, 'lock'), String(process.pid));
+  const observer = await createObserver({ home: join(root, 'store'), userHome: root, loopDirectories: [runtime, stale], model: async () => '{}' });
+  await observer.pass();
+  expect(observer.store.getRun('shared-loop')?.meta.status).toBe('active');
+}, 30_000);
