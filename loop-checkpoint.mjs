@@ -74,7 +74,7 @@ export function checkpoint({ dir, since = null, all = false, now = new Date().to
     stats,
     phases: rows,
     timeline,
-    graph: buildGraph(plan, phases, statusOf, milestone, all, stats),
+    graph: buildGraph(plan, rows, milestone, all, stats, media, readHistory(dir)),
     media,
   };
 }
@@ -107,7 +107,7 @@ function phaseRow(p, rawStatus, runs, block, events, state, now) {
   if (count('phase.escalate')) drift.push({ kind: 'escalated', detail: `${count('phase.escalate')} escalation` });
 
   return {
-    phase: p.phase, title: p.title, milestone: p.milestone, lane: p.lane, kind: p.kind,
+    phase: p.phase, title: p.title, milestone: p.milestone, lane: p.lane, kind: p.kind, dependsOn: p.dependsOn,
     status, rawStatus, doneWhen: p.doneWhen, attempts: mine.length,
     start: start ? start.toISOString() : null, end: end ? end.toISOString() : null, minutes, estimate,
     engine: last?.meta?.model ?? last?.meta?.engine ?? null,
@@ -156,6 +156,19 @@ function readDiff(mine, p, state) {
   return null;
 }
 
+/** Earlier checkpoints from checkpoints.jsonl: {n, ts, done, total}. */
+function readHistory(dir) {
+  const file = path.join(dir, 'checkpoints.jsonl');
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => {
+    try {
+      return JSON.parse(l);
+    } catch {
+      return null;
+    }
+  }).filter((c) => c && Number.isFinite(Number(c.n)));
+}
+
 /** Events of events.jsonl and of the emitted journal, as {event, phase}. */
 function readEvents(dir) {
   const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : []);
@@ -172,43 +185,85 @@ function readEvents(dir) {
   ];
 }
 
-function buildGraph(plan, phases, statusOf, milestone, all, stats) {
-  const shown = all ? phases : phases.filter((p) => p.milestone === milestone);
+function buildGraph(plan, rows, milestone, all, stats, media, history) {
+  const shown = all ? rows : rows.filter((p) => p.milestone === milestone);
   const ids = new Set(shown.map((p) => p.phase));
   const nodes = [];
   for (const m of plan.milestones) {
-    const mine = phases.filter((p) => p.milestone === m.number);
+    const mine = rows.filter((p) => p.milestone === m.number);
     if (all || m.number === milestone) {
       nodes.push({ id: `m${m.number}`, type: 'group', label: `M${m.number} · ${m.title}`.slice(0, 80) });
     } else {
-      const done = mine.filter((p) => DONE.has(statusOf(p))).length;
-      const active = mine.some((p) => RUNNING.has(statusOf(p)));
+      const done = mine.filter((p) => p.status === 'done').length;
       nodes.push({
         id: `m${m.number}`, type: 'milestone', label: `M${m.number} · ${m.title}`.slice(0, 80),
         sublabel: `${done}/${mine.length} phases done`,
-        status: done === mine.length ? 'done' : active ? 'active' : 'todo',
+        status: done === mine.length ? 'done' : mine.some((p) => p.status === 'active') ? 'active' : 'todo',
       });
     }
   }
   for (const p of shown) {
-    const status = GRAPH_STATUS[statusOf(p)] ?? 'todo';
+    const time = p.minutes !== null ? `${p.minutes}m${p.estimate ? ` / ${p.estimate.max}m` : ''}` : null;
+    const verdict = p.drift.length ? `⚠ ${p.drift.length} drift` : p.status === 'done' ? 'on plan' : p.rawStatus;
     const node = {
       id: `p${p.phase}`, type: 'task', label: `P${p.phase} · ${p.title}`.slice(0, 80),
-      sublabel: [p.kind === 'pr-review' ? 'review' : `lane ${p.lane}`, statusOf(p), p.state.attempt ? `a${p.state.attempt}` : null].filter(Boolean).join(' · ').slice(0, 120),
-      group: `m${p.milestone}`, status,
+      sublabel: [p.kind === 'pr-review' ? 'review' : `lane ${p.lane}`, time, p.attempts > 1 ? `a${p.attempts}` : null, verdict]
+        .filter(Boolean).join(' · ').slice(0, 120),
+      group: `m${p.milestone}`, status: p.status,
     };
-    if (p.doneWhen) node.details = `**Done when:** ${p.doneWhen}`.slice(0, 4000);
-    if (status === 'active') node.emphasis = true;
+    const details = [];
+    if (p.doneWhen) details.push(`**Done when:** ${p.doneWhen}`);
+    if (p.drift.length) details.push(`**Drift from the plan:**\n${p.drift.map((d) => `- ${d.kind}: ${d.detail}`).join('\n')}`);
+    if (p.verify) details.push(`**Verify:** ${p.verify.passed ? 'passed' : 'not recorded'}${p.verify.summary ? ` (${p.verify.summary})` : ''}`);
+    if (p.diff) details.push(`**Diff:** +${p.diff.insertions} −${p.diff.deletions} in ${p.diff.files} files`);
+    if (details.length) node.details = details.join('\n\n').slice(0, 4000);
+    if (p.status === 'active' || p.drift.length) node.emphasis = true;
     nodes.push(node);
   }
   const edges = shown.flatMap((p) => p.dependsOn.filter((d) => ids.has(d)).map((d) => ({ from: `p${d}`, to: `p${p.phase}`, kind: 'depends' })));
+
+  const newest = new Map();
+  for (const m of media.filter((x) => x.kind === 'image' && ids.has(x.phase))) newest.set(m.phase, m);
+  const images = [...newest.values()].sort((a, b) => a.mtime - b.mtime).slice(-6);
+  for (const m of images) {
+    const id = `img-p${m.phase}`;
+    nodes.push({ id, type: 'image', image: m.path, label: path.basename(m.path).slice(0, 80), sublabel: `P${m.phase} proof`, group: `m${rows.find((r) => r.phase === m.phase).milestone}` });
+    edges.push({ from: `p${m.phase}`, to: id, kind: 'data', label: 'proof' });
+  }
+
+  if (history.length) {
+    nodes.push({ id: 'checkpoints', type: 'group', label: 'Checkpoints' });
+    history.forEach((c, k) => {
+      const id = `cp${c.n}`;
+      nodes.push({ id, type: 'milestone', label: `CP${String(c.n).padStart(2, '0')}`, sublabel: `${String(c.ts).slice(11, 16)} · ${c.done}/${c.total} done`, group: 'checkpoints', status: 'done' });
+      if (k) edges.push({ from: `cp${history[k - 1].n}`, to: id, kind: 'flow' });
+    });
+  }
+
+  const pick = (list) => list.map((p) => `p${p.phase}`);
+  const onPlan = shown.filter((p) => p.status === 'done' && !p.drift.length);
+  const drifted = shown.filter((p) => p.drift.length);
+  const active = shown.filter((p) => p.status === 'active');
+  const doneSet = new Set(rows.filter((p) => p.status === 'done').map((p) => p.phase));
+  const ready = shown.filter((p) => p.status === 'todo' && p.dependsOn.every((d) => doneSet.has(d)));
+  const gates = shown.filter((p) => p.kind === 'pr-review');
+  const steps = [{ title: 'The plan', text: `${stats.plan.done}/${stats.plan.total} phases done. ${stats.onPlan} on plan, ${stats.drifted} drifted.`, focus: plan.milestones.filter((m) => all || m.number === milestone).map((m) => `m${m.number}`) }];
+  if (onPlan.length) steps.push({ title: 'On plan', text: `${onPlan.length} finished phases match the plan.`, focus: pick(onPlan) });
+  if (drifted.length) steps.push({ title: 'Drift from the plan', text: drifted.map((p) => `P${p.phase}: ${p.drift.map((d) => d.kind).join(', ')}`).join('. '), focus: pick(drifted) });
+  if (active.length) steps.push({ title: 'Running now', text: active.map((p) => `P${p.phase} ${p.title}`).join(', '), focus: pick(active) });
+  if (ready.length) steps.push({ title: 'Next', text: `Ready to start: ${ready.map((p) => `P${p.phase}`).join(', ')}.`, focus: pick(ready) });
+  if (images.length) steps.push({ title: 'Proof', text: 'The newest proof of each phase.', focus: images.map((m) => `img-p${m.phase}`) });
+  if (history.length) steps.push({ title: 'Checkpoints', text: `${history.length} checkpoints so far.`, focus: history.map((c) => `cp${c.n}`) });
+  if (steps.length < 3 && gates.length) steps.push({ title: 'Review gates', text: 'Each milestone ends with a review.', focus: pick(gates) });
+
   const running = stats.running.map((n) => `P${n}`).join(', ');
   return {
     title: `${plan.name} — ${all ? 'all milestones' : `milestone ${milestone}`}`.slice(0, 80),
-    summary: `${stats.plan.done}/${stats.plan.total} phases done${running ? ` · ${running} running` : ''}`,
+    summary: `${stats.plan.done}/${stats.plan.total} done · ${stats.onPlan} on plan · ${stats.drifted} drifted${running ? ` · ${running} running` : ''}`.slice(0, 120),
     direction: 'right',
     nodes,
     edges,
+    steps: steps.slice(0, 7),
   };
 }
 

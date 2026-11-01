@@ -87,6 +87,36 @@ test('the checkpoint lists each phase with its estimate, its attempts and its dr
   }
 });
 
+test('the checkpoint graph shows the whole plan, the drift, the proof images, the checkpoints and a walkthrough', () => {
+  const { root, dir } = loopDir();
+  try {
+    fs.writeFileSync(path.join(dir, 'checkpoints.jsonl'), [
+      { n: 1, ts: '2026-11-01T10:30:00Z', done: 4, total: 9 },
+      { n: 2, ts: '2026-11-01T10:50:00Z', done: 5, total: 9 },
+    ].map((c) => JSON.stringify(c)).join('\n'));
+    const { graph } = checkpoint({ dir, all: true, now: '2026-11-01T11:00:00Z' });
+    const node = (id) => graph.nodes.find((n) => n.id === id);
+    assert.equal(node('p4').status, 'done');
+    assert.match(node('p4').sublabel, /⚠ 5 drift/);
+    assert.match(node('p4').sublabel, /40m \/ 20m/);
+    assert.match(node('p4').details, /over-time: 40 min \(plan 10–20\)/);
+    assert.equal(node('p4').emphasis, true);
+    assert.match(node('p1').sublabel, /on plan|lane/);
+    const image = graph.nodes.find((n) => n.type === 'image');
+    assert.match(image.image, /02-health-flow\.gif$/);
+    assert.ok(graph.edges.some((e) => e.from === 'p4' && e.to === image.id && e.label === 'proof'));
+    assert.deepEqual(['cp1', 'cp2'].map((id) => node(id)?.type), ['milestone', 'milestone']);
+    assert.match(node('cp2').sublabel, /5\/9 done/);
+    assert.ok(graph.steps.length >= 3 && graph.steps.length <= 7);
+    assert.ok(graph.steps.some((s) => s.focus.includes('p4') && /drift/i.test(s.title)));
+    const ids = new Set(graph.nodes.map((n) => n.id));
+    for (const e of graph.edges) assert.ok(ids.has(e.from) && ids.has(e.to), `${e.from} -> ${e.to}`);
+    for (const s of graph.steps) for (const f of s.focus) assert.ok(ids.has(f), f);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('the checkpoint sheet is one SVG with the whole plan, the drift and the proof images', () => {
   const { root, dir } = loopDir();
   try {

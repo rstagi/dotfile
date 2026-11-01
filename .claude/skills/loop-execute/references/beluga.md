@@ -177,7 +177,7 @@ The output has `stats`, `phases`, `timeline`, `graph` and `media`. Each item of 
 | Kind | When | Content |
 |---|---|---|
 | Merge tick | Each phase merge | One line per merged phase, its proof card image |
-| Progress checkpoint | 3 merged phases or 60 minutes with at least one merge, the first that occurs. Also when the owner asks for the status. | The checkpoint sheet and the parts below |
+| Progress checkpoint | 3 merged phases or 60 minutes with at least one merge, the first that occurs. Also when the owner asks for the status. | The graph of the whole plan, then the details in words |
 | Gate checkpoint | A review phase ends, a park at a merge gate, the finish | The verdict and the parts below |
 
 These rules replace the progress trigger of the protocol (5 merges or 90 minutes) in Beluga.
@@ -202,22 +202,31 @@ Show its proof card as a Markdown image. End with `progress:<done>/<total>`.
 
 ### Progress checkpoint
 
-The checkpoint has these parts, in this order:
+The graph is the main visual. Give the details in words after it. The checkpoint has these
+parts, in this order:
 
-1. One sentence: what changed since the last checkpoint.
-2. The checkpoint sheet. Render one SVG with all milestones, the drift list and the newest proof:
-   `loop-checkpoint.mjs --dir .loop --all --since <last> --sheet <chat folder>/.beluga/scratch/checkpoints/CP<NN>-<YYYY-MM-DD-HHMM>-m<current milestone>.svg --label "CP<NN>"`.
-   Show it as a Markdown image.
-3. On plan and drift: a Markdown table. Give one row for each phase that finished or drifted since
-   the last checkpoint. The columns are phase, minutes against the estimate, attempts, and the
-   drift kinds or "on plan". Then give one line for each plan edit.
-4. The graph: the `graph` object in a `beluga-graph` block. Add 3 to 5 `steps` that you write:
-   what merged, what runs now, what comes next.
-5. The stats: one `mcp__beluga_view__show` view of type `stats`. Use these items: phases done,
+1. The graph. Run `loop-checkpoint.mjs --dir .loop --all --since <last>`. Put its `graph` object
+   in a `beluga-graph` block without changes. The graph has these items:
+   - each milestone as a group, and each phase with its status, lane, minutes against the
+     estimate and "on plan" or "⚠ N drift"
+   - the drift, the Done when, Verify and the diff in the details of each phase
+   - the newest proof GIF or image of each phase as an image node
+   - the earlier checkpoints, from `.loop/checkpoints.jsonl`
+   - a walkthrough: the plan, on plan, drift, running now, next, proof and checkpoints
+2. The details in words, in short paragraphs:
+   - What changed since the last checkpoint: the merged phases with their `task:KEY` chips.
+   - What went according to plan.
+   - What drifted from the plan: each drifted phase, its drift kinds and what the drift means.
+     Then each plan edit since the last checkpoint.
+   - What runs now and what comes next.
+3. The stats: one `mcp__beluga_view__show` view of type `stats`. Use these items: phases done,
    on plan, drifted, running, attempts, retries.
-6. The new proof: show each new GIF or image from the proof folder as a Markdown image.
+4. The new proof: show each new GIF or image from the proof folder as a Markdown image.
    Use its absolute path, and its file name as the caption. Show at most 6.
-7. The link of the visual-explainer checkpoint page, when the generic step made one.
+
+After the answer, append `{"n", "ts", "done", "total"}` to `.loop/checkpoints.jsonl`. Also save
+the sheet as an archive file. Do not show it in the answer:
+`loop-checkpoint.mjs --dir .loop --all --sheet <chat folder>/.beluga/scratch/checkpoints/CP<NN>-<YYYY-MM-DD-HHMM>-m<current milestone>.svg --label "CP<NN>"`.
 
 ### Gate checkpoint
 
@@ -228,9 +237,9 @@ Give it when a review phase ends, when the loop parks at a merge gate and at the
    (met, partial or missing) and evidence.
 3. The findings: the number of blocking and deferred findings, and each blocking finding in one
    line. Write the full review to a report with `write_report`.
-4. The checkpoint sheet of the milestone, the on-plan and drift table of all its phases, and a
-   timeline view. When the rows cover more than one day, use a `gantt` view. Otherwise use a
-   `bar` chart of the minutes of each phase.
+4. The graph of the whole plan (as in the progress checkpoint), the details in words of all
+   phases of the milestone, and a timeline view. When the rows cover more than one day, use a
+   `gantt` view. Otherwise use a `bar` chart of the minutes of each phase.
 5. The best 3 to 6 proof GIFs or images of the milestone, from the proof folder.
 6. The ship explainer link, when it exists.
 7. The question to the owner: "Merge PR <url>?" Never merge a PR yourself.
@@ -243,6 +252,8 @@ has them. Record the answer of your owner with `loop-state.sh hil-resolve`.
 ### Rules for visuals
 
 - Use at most one graph and two views in one answer, unless the owner asks for more.
-- A graph has at most 25 nodes. Show the current milestone when the plan is larger.
+- Show the whole plan in the graph. When the graph has more than 45 nodes, run
+  `loop-checkpoint.mjs` without `--all`: it shows the current milestone and one node for each
+  other milestone.
 - Other people in the room see only the names of images. Send a file with `send_file` only when
   someone asks for it.
