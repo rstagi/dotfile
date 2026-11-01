@@ -1,12 +1,12 @@
 // Custom canvas nodes. Each node changes its detail with the zoom (semantic zoom).
 import { Handle, Position, useStore } from '@xyflow/react';
-import { fmt, PX } from './layout.js';
+import { fmt, mins, PX } from './layout.js';
 
 const useFar = () => useStore((s) => s.transform[2] < 0.5);
 
 const STATUS = {
-  done: { label: 'merged', cls: 'st-done' },
-  drift: { label: 'merged · drift', cls: 'st-drift' },
+  done: { label: 'done', cls: 'st-done' },
+  drift: { label: 'done · drift', cls: 'st-drift' },
   active: { label: 'working', cls: 'st-active' },
   hil: { label: 'needs you', cls: 'st-hil' },
   todo: { label: 'planned', cls: 'st-todo' },
@@ -34,7 +34,7 @@ export function RunNode({ data, selected }) {
         <span className="run-sub">{run.sub}</span>
         <span className="run-chips">
           {finished && <span className="chip st-done">✓ {run.result} · click to collapse</span>}
-          {!finished && summary.done + summary.drift > 0 && <span className="chip st-done">{summary.done + summary.drift} merged</span>}
+          {!finished && summary.done + summary.drift > 0 && <span className="chip st-done">{summary.done + summary.drift} done</span>}
           {summary.active > 0 && <span className="chip st-active">{summary.active} working</span>}
           {summary.hil > 0 && <span className="chip st-hil">{summary.hil} needs you</span>}
           {summary.drift > 0 && <span className="chip st-drift">⚠ {summary.drift} drift</span>}
@@ -118,7 +118,7 @@ export function PhaseNode({ data, selected }) {
                   <div key={it.index} className={`ilive ${current ? 'ilive-now' : ''}`}>
                     <div className="il-head">
                       <span className="il-text">{it.text}</span>
-                      <span className="it-time">{current ? 'now' : it.t}{it.conf ? ` · ${Math.round(it.conf * 100)}%` : ''}</span>
+                      <span className="it-time">{current ? 'now' : fmt(mins(it.t))}{it.conf ? ` · ${Math.round(it.conf * 100)}%` : ''}</span>
                     </div>
                     {current && it.actions.slice(-2).map((x) => (
                       <div key={x.t + x.text} className="il-action"><span className={`tool tool-${x.tool.toLowerCase()}`}>{x.tool}</span>{x.text}</div>
@@ -158,7 +158,7 @@ export function CheckpointNode({ data, selected }) {
     <div className={`cp ${far ? 'far' : ''} ${selected ? 'is-selected' : ''}`}>
       <div className={`diamond ${/drift/.test(cp.label) ? 'diamond-drift' : ''}`}><span>{cp.n.replace('CP', '')}</span></div>
       <div className="cp-text">
-        <div className="cp-n">{cp.n} · {cp.t}</div>
+        <div className="cp-n">{cp.n} · {fmt(mins(cp.t))}</div>
         {!far && <div className="cp-label">{cp.label}</div>}
       </div>
     </div>
@@ -166,7 +166,7 @@ export function CheckpointNode({ data, selected }) {
 }
 
 export function MergeNode({ data }) {
-  return <div className={`merge ${data.drift ? 'merge-drift' : ''}`} title={`${data.phase.key} merged`}><span className="merge-dot" />{data.phase.key}</div>;
+  return <div className={`merge ${data.drift ? 'merge-drift' : ''}`} title={`${data.phase.key} done`}><span className="merge-dot" />{data.phase.key}</div>;
 }
 
 export function RulerNode({ data }) {
@@ -201,7 +201,7 @@ export function RunCollapsedNode({ data, selected }) {
           <span className="rc-done">✓ {run.result}</span>
         </div>
         <div className="rc-meta">
-          {phases} phases · {drift ? <span className="over">⚠ {drift} drift</span> : 'on plan'} · {Math.floor(minutes / 60) ? `${Math.floor(minutes / 60)}h ` : ''}{minutes % 60}m · finished {run.finishedAt}
+          {phases} phases · {drift ? <span className="over">⚠ {drift} drift</span> : 'on plan'} · {Math.floor(minutes / 60) ? `${Math.floor(minutes / 60)}h ` : ''}{minutes % 60}m · finished {fmt(mins(run.finishedAt))}
         </div>
         <div className="rc-hint">Click to expand</div>
       </div>

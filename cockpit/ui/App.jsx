@@ -181,7 +181,7 @@ function Rail({ now, focus, scope, setScope, shownRuns, toggleRun }) {
         <h4>Needs you <span className="count">{needs.length}</span></h4>
         {needs.map((a) => (
           <button key={a.text} type="button" className="attn" onClick={() => focus(`phase:${a.run}:${a.phase}`)}>
-            <span className="attn-t">{a.t}</span>{a.text}
+            <span className="attn-t">{fmt(mins(a.t))}</span>{a.text}
           </button>
         ))}
         {!needs.length && <div className="empty">Nothing right now.</div>}
@@ -213,7 +213,7 @@ function Rail({ now, focus, scope, setScope, shownRuns, toggleRun }) {
           <h4>Finished today</h4>
           {finished.map((run) => (
             <button type="button" key={run.id} className="rail-finished" onClick={() => toggleRun(run.id)}>
-              <span className="ok">✓</span>{run.title}<span className="res">{run.finishedAt}</span>
+              <span className="ok">✓</span>{run.title}<span className="res">{fmt(mins(run.finishedAt))}</span>
             </button>
           ))}
         </section>
@@ -249,7 +249,7 @@ function SessionBar({ now, scope, setScope, shownRuns, focus }) {
       </div>
       {needs.map((a) => (
         <button key={a.text} type="button" className="attn" onClick={() => focus(`phase:${a.run}:${a.phase}`)}>
-          <span className="attn-t">{a.t}</span>{a.text}
+          <span className="attn-t">{fmt(mins(a.t))}</span>{a.text}
         </button>
       ))}
     </div>
@@ -294,7 +294,7 @@ function Details({ node, openGroup, close }) {
           <div className="d-kicker">{node.data.run.title} · {node.data.phase.key}</div>
           <h3>{node.data.media.name}</h3>
           <img className="d-big" src={node.data.media.src} alt="" />
-          <div className="d-muted">Saved {node.data.media.t}</div>
+          <div className="d-muted">Saved {fmt(mins(node.data.media.t))}</div>
         </>
       )}
       {node.type === 'checkpoint' && (
@@ -334,7 +334,7 @@ function PhaseDetails({ d, openGroup }) {
       <h3>{phase.key === phase.title ? phase.title : `${phase.key} · ${phase.title}`}</h3>
       <div className="d-row">
         {phase.task && <span className="taskchip">{phase.task}</span>}
-        <span className={`pill st-${status}`}>{{ done: 'merged', drift: 'merged · drift', active: 'working', hil: 'needs you', todo: 'planned' }[status]}</span>
+        <span className={`pill st-${status}`}>{{ done: 'done', drift: 'done · drift', active: 'working', hil: 'needs you', todo: 'planned' }[status]}</span>
         {minutes != null && <span className="d-muted">{minutes} min{phase.est ? ` · plan ${phase.est[0]}–${phase.est[1]}` : ''}</span>}
       </div>
       {ask && <div className="ask big">❓ {ask.text}</div>}
@@ -367,7 +367,7 @@ function PhaseDetails({ d, openGroup }) {
 function IntentDetail({ it }) {
   return (
     <div className="d-intent">
-      <div className="di-text"><span className="di-t">{it.t}</span>{it.text}{it.conf ? <span className="d-muted"> · {Math.round(it.conf * 100)}% sure</span> : null}</div>
+      <div className="di-text"><span className="di-t">{fmt(mins(it.t))}</span>{it.text}{it.conf ? <span className="d-muted"> · {Math.round(it.conf * 100)}% sure</span> : null}</div>
       {it.actions.map((x) => <div key={x.t + x.text} className="il-action"><span className={`tool tool-${x.tool.toLowerCase()}`}>{x.tool}</span>{x.text}</div>)}
     </div>
   );

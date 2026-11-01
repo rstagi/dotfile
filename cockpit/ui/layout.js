@@ -154,7 +154,7 @@ export function intentView(phase, now, running) {
   const groups = (phase.groups ?? [])
     .map((g, gi) => {
       const members = intents.filter((it) => g.members.includes(it.index) && !liveIdx.has(it.index));
-      return members.length ? { gi, text: g.text, members, from: members[0].t, to: members.at(-1).t } : null;
+      return members.length ? { gi, text: g.text, members, from: fmt(mins(members[0].t)), to: fmt(mins(members.at(-1).t)) } : null;
     })
     .filter(Boolean);
   return { intents, live, groups };
