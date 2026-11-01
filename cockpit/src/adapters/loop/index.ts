@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import type { CockpitEvent, EventBase, Lane } from "../../core/events.ts";
 import { readCheckpoint } from "./checkpoint.ts";
 import type { LoopPhase } from "./checkpoint.ts";
@@ -32,6 +32,10 @@ type Payload = CockpitEvent extends infer E ? E extends CockpitEvent ? Omit<E, k
 const START = new Set(["spawned", "phase.start", "phase.attempt.start"]);
 const END = new Set(["merged", "phase.merged", "phase.end"]);
 const STARTED = new Set(["running", "in-progress", "spawned", "blocked", "paused", "done", "merged", "failed", "review-ready"]);
+const MIME: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".webp": "image/webp", ".webm": "video/webm", ".mp4": "video/mp4", ".mov": "video/quicktime",
+};
 
 /** Read one Loop source. The returned events have stable, content-derived IDs. */
 export async function readLoop(directory: string, options: LoopOptions = {}): Promise<CockpitEvent[]> {
@@ -90,6 +94,39 @@ export async function readLoop(directory: string, options: LoopOptions = {}): Pr
     if (!ends.length && ["done", "merged", "failed"].includes(phase.rawStatus)) {
       emit({ type: "phase.end", phase: { ...identity, status: phase.rawStatus === "failed" ? "failed" : "done" } },
         runtime?.mergedAt ?? phase.end ?? fallback, phase);
+    }
+    if (phase.drift.length || phase.estimate || phase.diff || phase.verify) {
+      emit({ type: "drift", drift: {
+        id: `drift-${phase.phase}`, phaseId: phase.phase,
+        summary: phase.drift.map((item) => `${item.kind}: ${item.detail}`).join("\n") || "No drift from the plan.",
+        ...(phase.estimate ? { estimateMinutes: phase.estimate.max } : {}),
+        ...(phase.minutes !== null ? { elapsedMinutes: phase.minutes } : {}),
+        ...(phase.diff ? { diff: `+${phase.diff.insertions} -${phase.diff.deletions} in ${phase.diff.files} files` } : {}),
+        ...(phase.verify ? { verification: `${phase.verify.passed ? "passed" : "not recorded"}${phase.verify.summary ? `: ${phase.verify.summary}` : ""}` } : {}),
+      } }, now, phase);
+    }
+  }
+  for (const marker of readLines(join(dir, "checkpoints.jsonl"))) {
+    if (!Number.isInteger(marker.n) || Number(marker.n) < 1) continue;
+    const phase = cp.phases.find((phase) => phase.phase === String(marker.phase));
+    emit({ type: "checkpoint", checkpoint: {
+      id: `checkpoint-${marker.n}`, summary: typeof marker.summary === "string" ? marker.summary : `${marker.done}/${marker.total} phases done`,
+      ...(phase ? { phaseId: phase.phase } : {}),
+    } }, String(marker.ts ?? fallback), phase);
+  }
+  for (const attempt of directoryNames(join(dir, "runs"))) {
+    const slug = attempt.match(/^(.*)-a\d+$/)?.[1];
+    const number = Object.entries(state?.phases ?? {}).find(([, phase]) => phase.slug === slug)?.[0];
+    const phase = cp.phases.find((phase) => phase.phase === number);
+    const proof = join(dir, "runs", attempt, "proof");
+    for (const name of fileNames(proof)) {
+      const mimeType = MIME[extname(name).toLowerCase()];
+      if (!mimeType) continue;
+      const path = join(proof, name);
+      emit({ type: "media", media: {
+        id: `proof-${hash(path)}`, path, mimeType, title: name,
+        ...(phase ? { phaseId: phase.phase } : {}),
+      } }, fileTime(path) ?? fallback, phase);
     }
   }
   for (const name of fileNames(join(dir, "hil"))) {
@@ -162,5 +199,10 @@ function readLines(file: string): RecordValue[] {
 
 function fileNames(dir: string): string[] {
   try { return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name).sort(); }
+  catch { return []; }
+}
+
+function directoryNames(dir: string): string[] {
+  try { return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(); }
   catch { return []; }
 }
