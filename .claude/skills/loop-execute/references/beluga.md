@@ -97,23 +97,20 @@ A missing proof never fails the phase. Write the reason in status.json summary.
 ## Poll without a foreground turn
 
 Never keep a turn open to poll. Never use a foreground `sleep`.
-After each answer, start one background wait (Bash `run_in_background`) in the checkout:
+Use only `~/dotfile/loop-poll.sh` to poll. The user settings allow this script, so a poll
+never shows a permission prompt. A permission prompt that nobody answers stops the
+supervise session, and then the review barrier stalls.
 
-```sh
-before="$(jq -c '[.phases[] | .status]' .loop/state.json)"
-for i in {1..180}; do
-  sleep 10
-  [[ -e .loop/sub/REVIEW_READY ]] && break
-  kill -0 "$(cat .loop/sub/orch.pid 2>/dev/null)" 2>/dev/null || break
-  for b in .loop/hil/*.md(N); do
-    [[ $b == *.answer.md || -e ${b%.md}.answer.md ]] || break 2
-  done
-  [[ "$(jq -c '[.phases[] | .status]' .loop/state.json)" != "$before" ]] && break
-done
-```
+- Do not read `/private/tmp` task output files. Do not write ad hoc poll loops.
+- After each answer, start one background wait (Bash `run_in_background`, `timeout` 2000000):
+  `~/dotfile/loop-poll.sh wait --dir <abs .loop>`.
+- To wait for one review, converge or explainer runner, use
+  `~/dotfile/loop-poll.sh wait-run --dir <abs .loop> --run <abs run dir>`.
+- To read the state, use `~/dotfile/loop-poll.sh status --dir <abs .loop>`.
+- `wait` writes its result to `<abs .loop>/poll.out`, and `wait-run` writes to `<abs .loop>/poll-run.out`. Read them only through `loop-poll.sh status` or the wait output: a Read of a loop file can show a permission prompt.
 
 The wait ends on a review barrier, a dead orchestrator, an open HIL brief, a status change
-or after 30 minutes. Its end starts your next turn. In that turn, do these steps in order:
+or after about 28 minutes. Its end starts your next turn. In that turn, do these steps in order:
 
 1. Do the generic step 3b poll: compact state only.
 2. Sync the board (next section).

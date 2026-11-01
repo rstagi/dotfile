@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review a pull request or a branch in one round. First, check it out into a local git worktree and run it. Then put each finding into one of two classes. Blocking is only for security, unprotected breakage of existing behavior or a failing deterministic check. Deferred is for all other items. Report the footprint of the PR and a verdict that follows the Blocking section. Use this skill when the user asks to review a PR, a pull request or a branch, or to examine changes before a merge. Examples are "review #123", "can you look over this branch" and "review this MR". Use it also when the user does not say the word "skill". Use it instead of a quick diff-only read when the user wants a real review.
+description: Review a pull request or a branch in one round. First, check it out into a local git worktree, read its CI checks and run focused checks of the changed code. CI runs the full test suite. Then put each finding into one of two classes. Blocking is only for security, unprotected breakage of existing behavior or a failing deterministic check. Deferred is for all other items. Report the footprint of the PR and a verdict that follows the Blocking section. Use this skill when the user asks to review a PR, a pull request or a branch, or to examine changes before a merge. Examples are "review #123", "can you look over this branch" and "review this MR". Use it also when the user does not say the word "skill". Use it instead of a quick diff-only read when the user wants a real review.
 ---
 
 # PR review
@@ -8,7 +8,7 @@ description: Review a pull request or a branch in one round. First, check it out
 > Source of truth for these rules: [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md). When this skill and that file differ, the file wins. Update the file first.
 
 
-A review judges a PR on two tests. The PR does not break existing behavior. The PR is easy to remove. A diff alone does not show if the code works or if the tests exercise it. Thus this skill always runs the code first. Then it puts each finding into one of two sections: Blocking or Deferred.
+A review judges a PR on two tests. The PR does not break existing behavior. The PR is easy to remove. A diff alone does not show if the code works or if the tests exercise it. Thus this skill always reads the CI result and runs the changed code first. CI runs the full suite. The reviewer runs only focused checks. Then it puts each finding into one of two sections: Blocking or Deferred.
 
 Do not skip the worktree step when the change looks trivial. A confident but wrong review often starts with a change that looks trivial.
 
@@ -18,7 +18,7 @@ Do not skip the worktree step when the change looks trivial. A confident but wro
 
 Review a PR one time. Do not review the same PR again to find new small issues. When the user asks you to check a fix, check only the earlier Blocking items. Also check that the fix adds no new Blocking item. Do not add Deferred items in that check.
 
-## Step 1 — Check it out and run it (do this first)
+## Step 1 — Check it out, read CI and run the focused checks (do this first)
 
 Create a detached worktree before you build or test the branch.
 Run this block and all review commands in one persistent shell.
@@ -40,13 +40,21 @@ git worktree add --detach "$REVIEW_WORKTREE" "$REVIEW_REF" || exit 1
 cd "$REVIEW_WORKTREE" || exit 1
 ```
 
-In the worktree, use the project's own commands (check the README / CLAUDE.md / package manifests) to:
+CI runs the full test suite and the full build in parallel with the review. Do not run them again in the worktree.
 
-- install dependencies and build,
-- run the test suite,
-- run each other deterministic check that the project has, for example architecture tests, the flag off/on test matrix, the monitoring check and the delete test,
-- run the existing tests with the flag off when the PR adds a feature flag,
-- and exercise the actual change: run the app, call the endpoint or call the function that this PR touches.
+1. Read CI first. For a PR, run `gh pr checks <number>`. For a branch, run `gh run list --branch <branch>`.
+   - Record each failing check: its name and its log URL. This is the evidence for `failing-check`.
+   - When a check is pending, continue the review. Read the checks again before you write the verdict.
+   - When a required check is still pending at the verdict, write `CI pending: <check names>` at the top of the report.
+2. Run a full check in the worktree only in these conditions:
+   - The project has the check, for example the architecture tests, the flag off/on matrix, the monitoring check or the delete test, and CI does not run it.
+   - The PR has no CI.
+3. Use the project's own commands (README, CLAUDE.md, package manifests) for focused work only:
+   - Install dependencies only when a focused command needs them.
+   - Run the tests of the files and folders that the PR changes.
+   - Run the existing tests of the changed area with the flag off when the PR adds a feature flag.
+   - Exercise the change: run the app, call the endpoint or call the function that this PR touches.
+   - Run one focused test or command to confirm or refute one finding.
 
 Record each check that fails and each existing behavior that changes. These results are the evidence for the Blocking categories `failing-check` and `unprotected-breakage`. Report them before you continue.
 The exit trap removes the review worktree.
@@ -63,7 +71,7 @@ A finding is `blocking` only when it is in one of these 3 categories. Each Block
 |---|---|---|
 | `security` | The PR leaks a secret, bypasses auth or a permission check, exposes data or handles user data unsafely. Or the change can cause real harm in production. | The code path, and a repro when you can make one. |
 | `unprotected-breakage` | The PR changes current behavior, and no feature flag or equivalent off switch protects the change. Or existing tests fail with the flag off. | The Step 1 result: the old and the new behavior, or the failing existing test. |
-| `failing-check` | A deterministic check fails: the build, the tests, the architecture tests, the flag off/on matrix, the monitoring check or the delete test. | The command and its failing output from Step 1. |
+| `failing-check` | A deterministic check fails: the build, the tests, the architecture tests, the flag off/on matrix, the monitoring check or the delete test. | The failing CI check name and its log URL, or the focused command and its failing output from Step 1. |
 
 A `failing-check` item blocks because the check fails, not because you judge the code. When the project does not have a check, a probable failure of that check is `deferred`.
 

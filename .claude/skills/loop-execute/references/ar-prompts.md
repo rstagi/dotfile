@@ -128,8 +128,9 @@ mechanism -- use it to request evidence, not to suppress findings.
   - `[blocking: unprotected-breakage]`: the change breaks existing behavior, and no
     feature flag or equivalent off switch protects it. Existing tests that fail with
     the flag off are also in this category.
-  - `[blocking: failing-check]`: a deterministic check fails. Give the command and
-    its failure output.
+  - `[blocking: failing-check]`: a deterministic check fails. Give the failing CI
+    check name and its log URL (`gh pr checks`), or the focused command and its
+    failure output. Do not run the full test suite or the full build: CI runs them.
   - `[deferred]`: all other findings. Examples: names, style, extra abstractions,
     missing edge cases in flagged code, performance, more tests, refactors, and docs.
 - A blocking finding gives evidence for its category.

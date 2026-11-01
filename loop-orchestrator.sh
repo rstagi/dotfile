@@ -289,7 +289,10 @@ while :; do
     ;;
   review-ready)
     touch "$SUB/REVIEW_READY"
-    notify info "review phase ready — handing control to supervise"
+    # Loud: only the supervise chat starts the review, so a silent barrier stalls the loop.
+    notify question "review phase ready — open the Beluga chat or run /loop-execute resume"
+    nohup "$SCRIPT_DIR/loop-poll.sh" nag --dir "${DIR:A}" > "$SUB/nag.log" 2>&1 &
+    disown
     rm -f "$PIDFILE"
     exit 0
     ;;
