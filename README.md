@@ -38,8 +38,11 @@ task specs, `export` renders the plan from `~/.beluga/board.json`, `check` compa
 A plan without `board:` is a file plan: `.loop/plan.md` is the only copy.
 Every loop exports `LOOP_DAEMON=off LOOP_WS_SESSIONS=0 LOOP_EMIT_FILE=<abs .loop>/emitted.jsonl`:
 `loop-emit.sh` then writes events to that file and makes no network call.
-`loop-checkpoint.mjs --dir .loop [--since <time>] [--all]` prints the progress checkpoint data
-(stats, timeline, a beluga-graph and new proof media) for any client to render.
+`loop-checkpoint.mjs --dir .loop [--since <time>] [--all] [--sheet <file.svg>]` prints the progress
+checkpoint data (stats, per-phase drift from the plan, timeline, a beluga-graph and new proof
+media) for any client to render. `--sheet` also writes one SVG of the whole plan, the drift and
+the newest proof. `loop-proof.mjs publish --dir .loop --out <folder>` copies the proof of each
+finished phase to one folder as `M<m>-P<NN>-<title>--<file>` and adds a proof card SVG.
 The older `wsd` engine scripts below stay in the repository but no skill uses them.
 
 For the skills engine, `WS_LOOP_ID=<loop-session-id> ./loop-milestone.sh open --dir .loop`

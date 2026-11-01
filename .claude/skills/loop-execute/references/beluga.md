@@ -63,24 +63,35 @@ The gate has these parts:
 
 Add these items to `.loop/sub/prompt-seed.md` before the first spawn:
 
-- The proof block below, for each phase that changes a user interface. A phase changes a user
-  interface when its Touches line names a page or a component, or its block has `Demo: yes`.
+- The proof block below, for every phase. Each phase must leave proof of its work.
 - The standing rules of the plan (for example Monitoring lines and PR proof rules), as the
   epic decisions and handoff notes give them.
 
 ### Proof block for runner prompts
 
 ```text
-Proof (after Verify passes):
-1. Start the app on this worktree as the repository instructions tell you. Use test data only.
-2. Use agent-browser to take one screenshot of each changed screen.
-   Save each file as <runDir>/proof/NN-<what-it-shows>.png.
-3. For a flow of more than one step, record a video:
-   agent-browser record start <runDir>/proof/flow.webm <url>, do the flow, agent-browser record stop.
-4. Make a GIF of the video:
-   ffmpeg -y -i flow.webm -vf "fps=8,scale=960:-1:flags=lanczos" -loop 0 NN-flow.gif
-   Keep each GIF smaller than 10 MB. Lower the fps or the width when it is larger.
-5. Never commit proof files. Never show secrets, keys or real user data in a proof file.
+Proof (after Verify passes). Save each file in <runDir>/proof/.
+Name each file NN-<what-it-shows>.<ext>: NN is 01, 02, … and <what-it-shows> is 3 to 6 words in
+kebab case that say what a person sees, for example 02-task-list-shows-live-scores.gif.
+1. A phase that changes a user interface (its Touches line names a page or a component):
+   a. Start the app on this worktree as the repository instructions tell you. Use test data only.
+   b. Use agent-browser to take one screenshot of each changed screen (.png).
+   c. Record each flow of more than one step:
+      agent-browser record start <runDir>/proof/flow.webm <url>, do the flow, agent-browser record stop.
+      ffmpeg -y -i flow.webm -vf "fps=8,scale=960:-1:flags=lanczos" -loop 0 NN-<what-it-shows>.gif
+      Remove flow.webm after the GIF exists.
+2. A phase with no user interface: record its new tests in a terminal GIF with vhs.
+   Write <runDir>/proof/tests.tape with these lines, then run `vhs <runDir>/proof/tests.tape`:
+      Output <runDir>/proof/01-tests-<topic>-pass.gif
+      Set Width 1200
+      Set Height 640
+      Type "<the command that runs only the new or changed tests>"
+      Enter
+      Sleep <the time the command needs, at most 60s>
+3. Keep each GIF smaller than 10 MB and shorter than 60 seconds. Lower the fps or the width
+   when it is larger.
+4. Never commit proof files. Never show secrets, keys or real user data in a proof file.
+A missing proof never fails the phase. Write the reason in status.json summary.
 ```
 
 ## Poll without a foreground turn
@@ -127,7 +138,7 @@ Record each done action in `.loop/board-sync.json` (phase → last synced status
 | A milestone PR opens | `task_attach_proof` (kind `url`) on the milestone task, one time. |
 | The owner merges a milestone PR (resume check exit 0) | `task_update` each phase task of that milestone to `done`. |
 | `.loop/board-outbox.jsonl` has lines | Move the file to `.loop/board-outbox.<time>.sent.jsonl` first. Then post each line as a `task_note` on its phase task, or on the epic when `phase` is null. |
-| A proof file is new | `task_attach_proof` (kind `image`) on its phase task. |
+| `loop-proof.mjs publish` prints new files | `task_attach_proof` (kind `image` for .png and .gif, kind `file` for .svg) on the phase task. |
 
 Rules:
 
@@ -139,34 +150,74 @@ Rules:
   Then run `loop-board.mjs check` and `keys` again.
 - Steering from the owner in chat goes to `loop-state.sh note <N> "<text>"`.
 
+## Proof folder
+
+All proof goes to `<chat folder>/.beluga/scratch/proof/`. The owner opens it from Beluga.
+After each merge, publish the proof of the merged phases:
+
+```sh
+node ~/dotfile/loop-proof.mjs publish --dir .loop --out <chat folder>/.beluga/scratch/proof
+```
+
+- Each file name starts with the milestone, the phase and its title:
+  `M1-P04-put-tasks-at-the-top-level-with-live--02-task-list-shows-live-scores.gif`.
+- Each finished phase also gets a proof card, `…--00-proof-card.svg`. The card shows the Done
+  when, the Verify result, the time against the estimate, the changed files and the drift.
+  Files outside the Touches of the phase have a ⚠ mark.
+- The command copies a file one time only. It prints the new files as a JSON array.
+
 ## Checkpoints
 
 Get the data with `loop-checkpoint.mjs --dir .loop --since <time of the last checkpoint>`.
-Keep that time in `.loop/beluga-checkpoint.json` as `{"last": "<ISO time>"}`.
-The output has `stats`, `timeline`, `graph` and `media`. Use only these facts and the plan.
-Never show secrets, diffs or transcripts.
+Keep that time and the last checkpoint number in `.loop/beluga-checkpoint.json` as
+`{"last": "<ISO time>", "n": <number>}`.
+The output has `stats`, `phases`, `timeline`, `graph` and `media`. Each item of `phases` has a
+`drift` list. Use only these facts and the plan. Never show secrets, diffs or transcripts.
+
+| Kind | When | Content |
+|---|---|---|
+| Merge tick | Each phase merge | One line per merged phase, its proof card image |
+| Progress checkpoint | 3 merged phases or 60 minutes with at least one merge, the first that occurs. Also when the owner asks for the status. | The checkpoint sheet and the parts below |
+| Gate checkpoint | A review phase ends, a park at a merge gate, the finish | The verdict and the parts below |
+
+These rules replace the progress trigger of the protocol (5 merges or 90 minutes) in Beluga.
+
+### Drift from the plan
+
+A phase drifts when it has one of these `drift` kinds:
+
+- `over-time`: it took longer than the upper value of its Estimate.
+- `retried`: it needed more than one attempt.
+- `unplanned-files`: it changed files outside its Touches paths.
+- `verify-fail`, `merge-conflict`, `hil`, `escalated`: these events occurred.
+
+Also report each plan edit since the last checkpoint: added, canceled or moved phases on the
+board, and gap phases from converge. A finished phase with no drift is on plan.
 
 ### Merge tick
 
-Give one line for each phase that merged since your last answer:
-`task:KEY` merged · attempt aK · Verify passed. End with `progress:<done>/<total>`.
+Give one line for each phase that merged since your last answer.
+Use this form: `task:KEY` merged · attempt aK · Verify passed · on plan, or the drift kinds.
+Show its proof card as a Markdown image. End with `progress:<done>/<total>`.
 
 ### Progress checkpoint
 
-Use the trigger of the protocol (§ Progress checkpoints). Also give one when the owner asks for
-the status. The checkpoint has these parts, in this order:
+The checkpoint has these parts, in this order:
 
 1. One sentence: what changed since the last checkpoint.
-2. The graph: the `graph` object in a `beluga-graph` block. Add 3 to 5 `steps` that you write:
+2. The checkpoint sheet. Render one SVG with all milestones, the drift list and the newest proof:
+   `loop-checkpoint.mjs --dir .loop --all --since <last> --sheet <chat folder>/.beluga/scratch/checkpoints/CP<NN>-<YYYY-MM-DD-HHMM>-m<current milestone>.svg --label "CP<NN>"`.
+   Show it as a Markdown image.
+3. On plan and drift: a Markdown table. Give one row for each phase that finished or drifted since
+   the last checkpoint. The columns are phase, minutes against the estimate, attempts, and the
+   drift kinds or "on plan". Then give one line for each plan edit.
+4. The graph: the `graph` object in a `beluga-graph` block. Add 3 to 5 `steps` that you write:
    what merged, what runs now, what comes next.
-3. The stats: one `mcp__beluga_view__show` view of type `stats`. Use these items: phases done,
-   milestone phases done, running, attempts, retries, blocked.
-4. The timeline: one view. When the rows cover more than one day, use a `gantt` view (task
-   `P<n> <title>`, start and end dates, group `M<n>`, status). Otherwise use a `bar` chart with
-   one bar for each phase and the minutes as the value.
-5. The media: each new image as a Markdown image with its absolute path and a short caption.
-   Convert a video to a GIF first (see the proof block). Show at most 6 images.
-6. The link of the visual-explainer checkpoint page, when the generic step made one.
+5. The stats: one `mcp__beluga_view__show` view of type `stats`. Use these items: phases done,
+   on plan, drifted, running, attempts, retries.
+6. The new proof: show each new GIF or image from the proof folder as a Markdown image.
+   Use its absolute path, and its file name as the caption. Show at most 6.
+7. The link of the visual-explainer checkpoint page, when the generic step made one.
 
 ### Gate checkpoint
 
@@ -177,8 +228,10 @@ Give it when a review phase ends, when the loop parks at a merge gate and at the
    (met, partial or missing) and evidence.
 3. The findings: the number of blocking and deferred findings, and each blocking finding in one
    line. Write the full review to a report with `write_report`.
-4. The graph of the milestone and the timeline view.
-5. The best 3 to 6 proof images of the milestone.
+4. The checkpoint sheet of the milestone, the on-plan and drift table of all its phases, and a
+   timeline view. When the rows cover more than one day, use a `gantt` view. Otherwise use a
+   `bar` chart of the minutes of each phase.
+5. The best 3 to 6 proof GIFs or images of the milestone, from the proof folder.
 6. The ship explainer link, when it exists.
 7. The question to the owner: "Merge PR <url>?" Never merge a PR yourself.
 
