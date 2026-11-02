@@ -194,26 +194,25 @@ Use the writing rules of the report: be concise, and use no em-dashes or en-dash
 
 ## Posting to GitHub
 
-Default to one GitHub review with `event: "COMMENT"`. Put each Blocking item in an inline review comment on the relevant diff line. Do not repeat Blocking items in the overall body. Put the Deferred items only in the overall body, so that the author does not fix them in this PR.
+Post one GitHub review with `event: "COMMENT"`. The review has only these parts:
 
-The overall review body must be concise and contain:
+1. **One inline comment for each issue**, Blocking and Deferred, on its diff line. Start the comment with its label (`[blocking: <category>]` or `[deferred]`). Then write the mechanism, the evidence and the fix in a few sentences.
+2. **A short body.** Do not put the validation, the footprint, the split proposal, a list of the issues or the Step 4 media in it. End it with `:)`.
+   - Deferred issues only: `We found N issues. We defer their fix to follow-up work. :)`
+   - One or more blocking issues: `We found N blocking issues. Fix them before the merge.` Then add `We also found M issues. We defer their fix to follow-up work.` when deferred issues exist. End with `:)`.
+   - No issues: `We found no issues. :)`
+   - Write "issues", not "items".
 
-- the verdict and the counts,
-- the validation result,
-- the footprint, and the split proposal or `No split recommended.`,
-- the Deferred list, with a `path:line` for each item,
-- the media block of Step 4, when the page rendered,
-- and `:)` as its final characters.
+Show blocking issues in a posted review only in a single-shot review or in the last round of an adversarial review. In an earlier round, the fixer fixes the blocking issues at once, and you post nothing.
 
-**Media block.** Upload the screenshots of Step 4 to the `explainer-media` branch of the repository, and get the Markdown block:
+**Media of the feature in the PR description.** When screenshots or recordings of the feature exist, add them to the PR description, not to the review. Examples are UI screenshots, GIFs of a flow and terminal recordings that show the feature at work. A recording that only runs tests is not correct. Never add the Step 4 screenshots of the review page. When no media of the feature exists, add no media.
 
-```bash
-node <visual-explainer>/scripts/gh-media.mjs --repo <owner>/<repo> --key pr-<n> --dir pr-review-output/<repo>-<pr> --url "$(cat pr-review-output/<repo>-<pr>/link.txt)"
-```
+- Upload the files to the `explainer-media` branch with the git data API: blobs, a tree based on the branch head, a commit, then a fast-forward of the branch. Put them in the folder `pr-<n>-feature/`.
+- Use a repository that you can push to. When you cannot push to the PR repository, use the fork of the PR head.
+- In the description, add a `## Screenshots` section. Show the most important GIF or screenshot first. Put the other files in a `<details>` list. Link each file as `https://github.com/<owner>/<repo>/blob/explainer-media/pr-<n>-feature/<file>?raw=true`.
+- Keep the other text of the description. Replace an earlier media section. Do not add a second one.
 
-`<visual-explainer>` is the directory of the `visual-explainer` skill. For the preview, add `--dry-run`: the command uploads nothing and prints the same block. Upload only after the approval. Put the printed block in the review body before `:)`. Omit `--url` when `link.txt` holds a local path. The block shows the header and the TL;DR screenshots, and the other sections in a collapsed list. The header screenshot links to the page. When the command fails, post the review without the block and state the failure.
-
-**Always show a preview and wait for approval before posting.** Step 4 is that checkpoint. Print the review body, then each comment with its `path:line`. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
+**Always show a preview and wait for approval before posting.** Step 4 is that checkpoint. Print the review body, then each inline comment with its `path:line`, then the media files for the PR description. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
 
 Getting the line anchors right, which is the part that bites:
 
@@ -247,4 +246,4 @@ Skip Step 4 unless the prompt asks for it. A headless session has no person to s
 Use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
 Keep the same shell active until the review ends.
 
-The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as described above. Put the Blocking items inline. Put the verdict, the footprint, the split proposal and the Deferred list in a concise overall body. End the body with `:)`. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.
+The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as [Posting to GitHub](#posting-to-github) tells you: one inline comment for each issue and the short body. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.
