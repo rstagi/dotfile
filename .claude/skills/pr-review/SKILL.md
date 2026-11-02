@@ -40,18 +40,17 @@ git worktree add --detach "$REVIEW_WORKTREE" "$REVIEW_REF" || exit 1
 cd "$REVIEW_WORKTREE" || exit 1
 ```
 
-CI runs the full test suite and the full build in parallel with the review. Do not run them again in the worktree.
+CI runs the full test suite in parallel with the review. NEVER run the full test suite in the worktree. Build the project when you must run it to exercise the change. Run only the targeted tests of the changed code.
 
 1. Read CI first. For a PR, run `gh pr checks <number>`. For a branch, run `gh run list --branch <branch>`.
    - Record each failing check: its name and its log URL. This is the evidence for `failing-check`.
    - When a check is pending, continue the review. Read the checks again before you write the verdict.
    - When a required check is still pending at the verdict, write `CI pending: <check names>` at the top of the report.
-2. Run a full check in the worktree only in these conditions:
-   - The project has the check, for example the architecture tests, the flag off/on matrix, the monitoring check or the delete test, and CI does not run it.
-   - The PR has no CI.
+2. Run a project check that is not the test suite (for example the architecture tests, the flag off/on matrix, the monitoring check or the delete test) only when CI does not run it. When the PR has no CI, write `No CI: full test suite not run` at the top of the report. Do not run the full test suite instead.
 3. Use the project's own commands (README, CLAUDE.md, package manifests) for focused work only:
    - Install dependencies only when a focused command needs them.
-   - Run the tests of the files and folders that the PR changes.
+   - Build the project when you must run the changed code.
+   - Run only the tests of the files and folders that the PR changes.
    - Run the existing tests of the changed area with the flag off when the PR adds a feature flag.
    - Exercise the change: run the app, call the endpoint or call the function that this PR touches.
    - Run one focused test or command to confirm or refute one finding.

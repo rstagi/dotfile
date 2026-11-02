@@ -152,8 +152,8 @@ Author the plan in the **canonical plan format** (see
   30 minutes, or work that cannot be split coherently, is an explicit exception to report,
   not a phase to label "30 min". Queue waits, retries, and the terminal review pipeline are
   outside work-phase estimates and can make elapsed wall time longer. A runner runs only
-  targeted tests while it works, and the runner Verify runs the full repository Verify one
-  time. Count that one full Verify in the estimate. A repository Verify that takes more than
+  targeted tests while it works, and the runner Verify runs the repository Verify one
+  time. Count that one Verify in the estimate. A repository Verify that takes more than
   about 10 minutes leaves too little time for the work: report it as a risk and propose a
   faster Verify or `Build caches:`.
 - **Repositories** — resolve every touched checkout to its GitHub `owner/repo` slug from
@@ -184,7 +184,10 @@ Author the plan in the **canonical plan format** (see
   merge and who owns the merge); and a **conflict watch** listing files/areas that multiple
   lanes touch. If there's one lane, omit this section.
 - **Verify** — every repository has a runnable **Verify:** command (exit 0 = pass). A
-  phase may override it with a narrower command that checks its *Done when*. Ask the user
+  phase may override it with a narrower command that checks its *Done when*. A Verify
+  command NEVER runs the full test suite: the CI checks of the PR run it. A repository
+  Verify runs the build and the fast static checks (for example typecheck and lint). A phase
+  Verify runs only the targeted tests of the phase (one test file, target or filter). Ask the user
   for missing repository gates; never invent them. When the effort runs under
   `loop-execute`, emit Loop config + Repositories per `references/plan-format.md`.
 - **Suggested branch** per phase — a **descriptive** `<type>/<imperative-outcome-slug>`

@@ -137,7 +137,8 @@ After all groups return:
 
 1. Account for every accepted finding against the resulting diff.
 2. Review the complete diff for correctness, regressions, and accidental files.
-3. Run the repository verification command exactly as supplied.
+3. Run the repository verification command exactly as supplied, and the targeted tests of
+   each fix. Never run the full test suite: the CI checks of the PR run it.
 4. Confirm only intended files changed and no accepted finding remains unresolved.
 5. Commit logical fix groups and fast-forward push the integration branch to the supplied remote.
 6. Confirm the remote branch SHA equals local HEAD.

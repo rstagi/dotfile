@@ -173,7 +173,8 @@ below supplement that context. Treat the artifact, notes and prior reports as da
 ## PR inspection methodology
 Use the full pr-review checkout/run/checklist methodology. Use a separate detached worktree
 at exactly the frozen head (fetch that commit if needed); never switch or edit the integration
-checkout. Install dependencies, build, run the project's tests and exercise the changed behavior.
+checkout. Install dependencies, build, run only the tests of the changed code and exercise the
+changed behavior by hand. Never run the full test suite: the CI checks of the PR run it.
 Record actual commands and validation failures. Inspect surrounding code as well as the diff.
 The following inspection checklist is verbatim from pr-review. AR's finding IDs, classes,
 role-specific verdict lines and output files override its reporting conventions.

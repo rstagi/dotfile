@@ -43,7 +43,10 @@ between repositories.
   exists and must match one declared slug. A work phase with another output may omit it. When
   it names a repository, the slug must match a declared one. A PR-review phase covers every
   repository and omits `Repository:`. Repository `Verify:` is mandatory; a work phase
-  `Verify:` overrides it. For an output other than `pr`, `Verify:` is optional.
+  `Verify:` overrides it. For an output other than `pr`, `Verify:` is optional. A `Verify:`
+  command never runs the full test suite: the CI checks of the PR run it. A repository
+  `Verify:` runs the build and the fast static checks. A phase `Verify:` runs only the
+  targeted tests of the phase.
 - `Build caches:` is optional on a repository. It lists gitignored build-cache paths relative
   to the repository root (for example `target`, `wsd/target`, `node_modules`). `loop-execute`
   clones them from the integration worktree into each new lane worktree, so a phase does not

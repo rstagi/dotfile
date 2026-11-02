@@ -33,6 +33,12 @@ At the end of each plan give me a list of unresolved questions, if any. Make the
 - When working on the frontend, TDD is not mandatory unless we're working on a piece of business logic.
 - For EVERYTHING ELSE (backend, business logics in general, libraries, etc), use the tdd skill.
 
+## Running Tests Locally
+
+- NEVER run the full test suite locally. The CI checks of the PR run it.
+- Run only the targeted tests of the change: one test file, one test target or one test filter.
+- This rule applies to PR reviews too. Build the project and exercise the changed behavior by hand, but do not run the full test suite again. Read the CI checks of the PR (`gh pr checks`) for the full-suite result.
+
 ## Backend vs Frontend in monorepos
 
 - Unless the feature is frontend only, you must always start with implementing it on the backend (in a TDD fashion, as specified above), and only when that's done you tap that into the frontend as well

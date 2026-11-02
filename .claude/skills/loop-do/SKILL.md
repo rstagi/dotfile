@@ -59,7 +59,9 @@ in one line. Never run the multiphase-plan plan-review rounds from this skill.
 3. Get the GitHub `owner/repo` slug of each touched checkout from its `origin`.
 4. Find the `Verify:` command of each repository. Look in the repository instructions, then
    in `package.json` scripts, `Makefile`, `justfile` or the CI workflow files. Never invent a
-   Verify command.
+   Verify command. A Verify command never runs the full test suite: CI runs it on the PR. Use
+   the build and the fast static checks (for example typecheck and lint). Give a `pr` phase a
+   phase `Verify:` that runs only the targeted tests of its change.
 5. Choose the output kind of the work: `pr` for a change to a repository, `file`, `doc`, or
    `output.md` for a short answer. Use the rules in
    `../multiphase-plan/references/plan-format.md` → Output kinds.
@@ -126,6 +128,9 @@ the command `/loop-execute <planId>` (Codex: `$loop-execute`).
 
 ## Hard rules
 
+- You MUST run with the minimum human input possible. The `loop-execute` confirm gate is the
+  only go. After the go, follow the `loop-execute` rule "Minimum human input": never wait for
+  the owner to say "continue".
 - Never remove the terminal review phase. The adversarial review is the reason to use this
   skill.
 - Never invent a Verify command. A `pr` phase without a Verify command does not start.

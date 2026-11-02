@@ -803,6 +803,23 @@ Use `loop-state.sh note <key> "text"` (or omit text and pipe multiline stdin),
 
 ## Hard rules
 
+- **Minimum human input.** After the go, you MUST run the loop to its end with the minimum
+  human input possible. The confirm gate, a true HIL decision and the final merge are the only
+  points where you ask the owner.
+  - Never end a turn idle while the loop waits for you. After each event, do the next loop
+    step in the same turn.
+  - Never ask the owner to "continue". A tool denial or a cancelled read-only status command
+    is not a stop order. Do the next step with a different call. Stop only when the owner
+    writes in chat that the loop must stop.
+  - Before you raise HIL, apply each earlier owner decision of this run or of memory to the
+    same kind of problem. Example: the owner accepted environment-only test failures one time.
+    Accept them again for the next phase and for the review fixer, and continue.
+  - Answer runner and fixer questions yourself from the plan, the code and earlier owner
+    decisions. Raise HIL only when no earlier decision or default applies.
+- **Never run the full test suite locally.** The CI checks of the PR run it. Runners,
+  reviewers and fixers run only the targeted tests of the change (one test file, target or
+  filter). A repository Verify that runs the full test suite is a plan defect: replace it
+  with the build and the fast static checks before the go.
 - Never force-push anything; integration pushes are fast-forward via loop-merge, except step
   3's initial branch push and verified remediation commits pushed by the Opus coordinator.
 - Never steal a foreign lock — it means a colleague exists.

@@ -797,6 +797,9 @@ install_claude_config() {
     replace_with_link "$HOME/dotfile/CLAUDE_GLOBAL.md" "$HOME/.claude/CLAUDE.md" || return 1
     mkdir -p ~/.codex
     replace_with_link "$HOME/dotfile/AGENTS_GLOBAL.md" "$HOME/.codex/AGENTS.md" || return 1
+    # Grok Build reads global rules from ~/.grok/AGENTS.md
+    mkdir -p ~/.grok
+    replace_with_link "$HOME/dotfile/AGENTS_GLOBAL.md" "$HOME/.grok/AGENTS.md" || return 1
     # Share Loop, ws, asd-ste100 + visual-explainer skills through current/legacy Codex discovery and Ratel Local.
     if ! ~/dotfile/install-agent-skills.sh --source ~/dotfile/.claude/skills; then
       echo "Failed to install shared agent skills" >&2
