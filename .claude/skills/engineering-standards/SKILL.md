@@ -37,6 +37,19 @@ Source: `CODING_STANDARDS.md` → Review rules.
 - All other items are **deferred**. They never block. When you are not sure, the item is deferred. Never raise an item to blocking.
 - Do not widen the scope of a PR to fix deferred items. Keep the deferred list short. Remove each item that does not deserve a follow-up ticket.
 
+### Where deferred items go in Beluga
+
+This applies to each deferred item that you keep: the items in `## Deferred / Not now` and the deferred review findings.
+
+- **A later milestone of the same plan fixes it.** When the item is in the scope of a milestone of this plan that has not started, put it in that milestone as a phase or as a *Done when* criterion. Do not make a separate task for it.
+- **All other items become follow-up tasks** on the board of the project, with `task_create`:
+  - Do not make the task a sub-task of the plan epic or of a milestone. An epic follows its sub-tasks, so a follow-up sub-task stops the epic from reaching Done, or closes with it.
+  - Put the task in Backlog. Give it a goal in one sentence, the file:line, the source (review finding ID or `planner`) and the PR link.
+  - Relate it to the epic with `task_relate`, so the source stays visible.
+  - Before you create a task, look for an open task with the same problem (`task_list`). When one exists, add a note to it with `task_note`. Do not make a duplicate.
+- Write the task key next to the item in `## Deferred / Not now` and in the review Follow-ups list.
+- Outside Beluga (no board tools), keep the items only in `## Deferred / Not now` and in the review.
+
 ## 2. Planning
 
 - Explore the code that the work touches before you plan. Do not plan blind.
