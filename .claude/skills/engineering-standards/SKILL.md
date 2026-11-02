@@ -42,11 +42,12 @@ Source: `CODING_STANDARDS.md` → Review rules.
 This applies to each deferred item that you keep: the items in `## Deferred / Not now` and the deferred review findings.
 
 - **A later milestone of the same plan fixes it.** When the item is in the scope of a milestone of this plan that has not started, put it in that milestone as a phase or as a *Done when* criterion. Do not make a separate task for it.
-- **All other items become follow-up tasks** on the board of the project, with `task_create`:
-  - Do not make the task a sub-task of the plan epic or of a milestone. An epic follows its sub-tasks, so a follow-up sub-task stops the epic from reaching Done, or closes with it.
-  - Put the task in Backlog. Give it a goal in one sentence, the file:line, the source (review finding ID or `planner`) and the PR link.
-  - Relate it to the epic with `task_relate`, so the source stays visible.
-  - Before you create a task, look for an open task with the same problem (`task_list`). When one exists, add a note to it with `task_note`. Do not make a duplicate.
+- **All other items become follow-up tasks** in one follow-up epic for the plan:
+  - Never make a follow-up a sub-task of the plan epic or of a milestone. An epic follows its sub-tasks, so a follow-up there stops the plan epic from reaching Done, or closes with it.
+  - **The follow-up epic.** Each plan has at most one. Create it only for the first follow-up of the plan, with `task_create` on the same board, in Backlog, with the title `Follow-ups · <plan title>`. Relate it to the plan epic with `task_relate` (`related`). Use the same follow-up epic for all later follow-ups of the plan, also from later milestones and review rounds.
+  - **Each follow-up task.** Create it with `task_create` and `parent` set to the follow-up epic, in Backlog. Give it a goal in one sentence, the file:line, the source (review finding ID or `planner`) and the PR link. Add one type label from the board's set (`bug`, `chore`, `docs`, `design` or `feature`). Add the `follow-up` label only when the board has it. Never make up a label.
+  - **No duplicates.** Before you create a follow-up, look for an open task with the same problem on the whole board (`task_list`). When one exists, add a note to it with `task_note`. Do not make a second task.
+  - Never move the follow-up epic by hand. It reaches Done when all its follow-ups are Done. The owner triages it one time each week.
 - Write the task key next to the item in `## Deferred / Not now` and in the review Follow-ups list.
 - Outside Beluga (no board tools), keep the items only in `## Deferred / Not now` and in the review.
 
