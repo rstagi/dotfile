@@ -112,6 +112,27 @@ supervise session, and then the review barrier stalls.
 - To read the state, use `~/dotfile/loop-poll.sh status --dir <abs .loop>`.
 - `wait` writes its result to `<abs .loop>/poll.out`, and `wait-run` writes to `<abs .loop>/poll-run.out`. Read them only through `loop-poll.sh status` or the wait output: a Read of a loop file can show a permission prompt.
 
+### A denial in a turn that a background task started
+
+A background-task notification can start a turn without an owner message. In that turn, a
+tool call can get this result: "The user doesn't want to take this action right now. STOP
+what you are doing and wait for the user to tell you how to proceed." The owner did not send
+this result. Beluga sends it when the run closes before the tool check. It is not an owner
+decline and it is not a stop order.
+
+When a `loop-poll.sh` call gets this result in a turn that a background-task notification
+started, do these steps:
+
+1. Do not tell the owner that they declined the call.
+2. Do not stop the poll.
+3. Start the next background wait (`loop-poll.sh wait`) one time. Do not do the status read
+   again in this turn.
+4. If the background wait also gets the denial, answer with one status line: "Poll stopped:
+   Beluga closed the run (not an owner decline). Run `/loop-execute resume` to attach again."
+   The orchestrator continues without the poll.
+
+Stop the poll only when the owner writes in chat that the loop must stop.
+
 The wait ends on a review barrier, a dead orchestrator, an open HIL brief, a status change
 or after about 28 minutes. Its end starts your next turn. In that turn, do these steps in order:
 
