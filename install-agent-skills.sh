@@ -10,17 +10,16 @@ SHARED_SKILLS=(
   multiphase-plan
   loop-do
   loop-execute
-  loop
   converge
   loop-pickup
   loop-handoff
-  loop-review
   pr-review
   pr-review-fix-all
   ws-sessions
   ws-orchestrate
   asd-ste100
   visual-explainer
+  engineering-standards
 )
 
 usage() {

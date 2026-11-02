@@ -78,7 +78,7 @@ python3 -I docs/ws-v6/spikes/s1/relocate-codex.test.py
 
 ```
 install.sh              Main installer - 25 packages, dependency resolution
-install-agent-skills.sh Shares Loop (incl. loop + loop-do + assess + converge + loop-review), ws (sessions + orchestrate), asd-ste100 + visual-explainer skills across Claude Code, Codex, and Ratel Local
+install-agent-skills.sh Shares Loop (incl. loop-do + assess + converge), ws (sessions + orchestrate), asd-ste100 + visual-explainer + engineering-standards skills across Claude Code, Codex, and Ratel Local
 loop-runner.sh          Loop engineering: one headless phase attempt w/ model-fallback chain
 loop-orchestrator.sh    Loop engineering: two-tier — sequential SUB respawner (self-recycling orchestrator)
 loop-merge.sh           Loop engineering: lane→integration merges (conflict = exit 2)
@@ -112,6 +112,7 @@ wsd/crates/ws-daemon/tests/fixtures/spikes/  S2 telemetry and S3 quota samples
 .claude/skills/loop-do/ Front end to loop-execute for any request: no plan (≤3 work phases + terminal AR review) or `multiphase-plan light`, then the one loop-execute confirm gate
 .claude/skills/converge/ Read-only Done-when check vs built code (met|partial|missing) → .loop/converge/p<N>.md. loop-execute §8 runs it once per review phase and inserts one gap phase per missing criterion
 .claude/skills/visual-explainer/ Props JSON → concept graph (graph.mjs: nodes, edges, fixed layout) → one self-contained surfable HTML page (plan|ship), zero-dep render.mjs + schemas. Narration JSON (one commentary text per report section) → report walkthrough that spotlights each section (template/walkthrough.js)
+.claude/skills/engineering-standards/ One-file rules for plan, execution and review (blocking vs deferred, coding standards, TDD, tests, escalation, review rounds, human gates). Point a planner (for example Beluga advanced planning) at it. CODING_STANDARDS.md wins on conflict
 .zshrc                  Main shell config, sources extensions
 .zshrc_*_ext            Modular configs (git, python, node, terraform, docker, gcloud, k8s, vim, claude, ws)
 ~/.zshrc_ext            User's local overrides (created by install.sh, not in repo)
