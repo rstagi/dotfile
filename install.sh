@@ -513,7 +513,7 @@ install_cockpit() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key><array><string>$escaped_node</string><string>--experimental-transform-types</string><string>$escaped_home/dotfile/cockpit/server/index.mjs</string></array>
+  <key>ProgramArguments</key><array><string>$escaped_node</string><string>$escaped_home/dotfile/cockpit/server/index.mjs</string></array>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>WorkingDirectory</key><string>$escaped_home</string>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>$escaped_path</string><key>COCKPIT_HOME</key><string>$escaped_home/.cockpit</string></dict>

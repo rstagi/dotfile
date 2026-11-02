@@ -23,13 +23,19 @@ interface ObservedSession {
 type Sessions = Record<string, ObservedSession>;
 
 export class SessionReader {
-  private constructor(
-    private readonly home: string,
-    private readonly userHome: string,
-    private readonly now: () => number,
-    private readonly tailer: JsonlTailer,
-    private readonly sessions: Sessions,
-  ) {}
+  private readonly home: string;
+  private readonly userHome: string;
+  private readonly now: () => number;
+  private readonly tailer: JsonlTailer;
+  private readonly sessions: Sessions;
+
+  private constructor(home: string, userHome: string, now: () => number, tailer: JsonlTailer, sessions: Sessions) {
+    this.home = home;
+    this.userHome = userHome;
+    this.now = now;
+    this.tailer = tailer;
+    this.sessions = sessions;
+  }
 
   static async open(options: SessionReaderOptions = {}): Promise<SessionReader> {
     const home = options.home ?? process.env.COCKPIT_HOME ?? join(homedir(), ".cockpit");

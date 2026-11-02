@@ -13,6 +13,7 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "erasableSyntaxOnly": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "types": ["node", "vitest/globals"]

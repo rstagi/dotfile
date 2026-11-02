@@ -29,8 +29,10 @@ export class SessionBuilder {
   readonly state: SessionSnapshot;
   private offset = -1;
   private timestamp: string;
+  private readonly context: SessionContext;
 
-  constructor(source: "claude" | "codex", private readonly context: SessionContext, previous?: SessionSnapshot) {
+  constructor(source: "claude" | "codex", context: SessionContext, previous?: SessionSnapshot) {
+    this.context = context;
     this.state = previous ? structuredClone(previous) : {
       runId: `${source}-${digest(resolve(context.path))}`,
       meta: { source, title: source === "claude" ? "Claude Code session" : "Codex session", isSidechain: false },

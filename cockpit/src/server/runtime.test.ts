@@ -10,7 +10,7 @@ it('starts the real daemon and reports its selected URL through the CLI', async 
   const root = await mkdtemp(join(tmpdir(), 'cockpit-runtime-'));
   await mkdir(join(root, 'user'));
   const env = { ...process.env, COCKPIT_HOME: join(root, 'store'), COCKPIT_USER_HOME: join(root, 'user'), COCKPIT_PORT: '0', COCKPIT_LOOP_DIRS: '', COCKPIT_RULE_NAMES: '1' };
-  const child = spawn(process.execPath, ['--experimental-transform-types', fileURLToPath(new URL('../../server/index.mjs', import.meta.url))], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../../server/index.mjs', import.meta.url))], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   const exit = new Promise<number | null>(resolve => { child.on('exit', resolve); });
   try {
     const url = await new Promise<string>((resolve, reject) => {

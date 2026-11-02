@@ -21,7 +21,13 @@ interface Cursor {
 type Offsets = Record<string, Cursor>;
 
 export class JsonlTailer {
-  private constructor(private readonly home: string, private readonly offsets: Offsets) {}
+  private readonly home: string;
+  private readonly offsets: Offsets;
+
+  private constructor(home: string, offsets: Offsets) {
+    this.home = home;
+    this.offsets = offsets;
+  }
 
   static async open(home: string): Promise<JsonlTailer> {
     let offsets: Offsets = {};
