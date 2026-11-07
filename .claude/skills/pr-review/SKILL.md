@@ -184,13 +184,13 @@ Run the `visual-explainer` skill in `ship` mode with this output directory. Writ
 - `reviews[0].split`: the stacked-PR split proposal, or `No split recommended.`
 - `handTest`: the commands that exercise the change, in order. Give each command a `path:line` reference in the PR head.
 - `rollback`: the steps that undo the merge, for example `git revert -m1 <merge-sha>`. Add any data or configuration undo.
-- `media`: optional screenshots of the changed behavior that you captured in Step 1, for example a UI state or a terminal output. Give each one a caption and the `change` area that it shows.
+- `media`: optional screenshots of the changed behavior that you captured in Step 1, for example a UI state. These are for the review page only. Give each one a caption and the `change` area that it shows.
 
 Use the writing rules of the report: be concise, and use no em-dashes or en-dashes.
 
 **Walkthrough.** Write `narration.json` as the skill tells you. It is the commentary of the page walkthrough: one short text for each section. It explains what the PR does, how it does it, the findings and the hand test. It does not repeat the page. The skill renders the page with the walkthrough, and the screenshots.
 
-**Checkpoint.** Publish the page as the skill tells you. Then show the user the page link, the walkthrough result and the review preview of the next section in one message. Wait for the approval before you post. When the render fails, keep the written report, state the failure and continue to the post.
+**Checkpoint.** Publish the page as the skill tells you. Then show the user the page link, the walkthrough result and the review preview of the next section in one message. Wait for the approval before you post. When the render fails, keep the written report, state the failure and continue to the preview.
 
 ## Posting to GitHub
 
@@ -205,14 +205,14 @@ Post one GitHub review with `event: "COMMENT"`. The review has only these parts:
 
 Show blocking issues in a posted review only in a single-shot review or in the last round of an adversarial review. In an earlier round, the fixer fixes the blocking issues at once, and you post nothing.
 
-**Media of the feature in the PR description.** When screenshots or recordings of the feature exist, add them to the PR description, not to the review. Examples are UI screenshots, GIFs of a flow and terminal recordings that show the feature at work. A recording that only runs tests is not correct. Never add the Step 4 screenshots of the review page. When no media of the feature exists, add no media.
+**Proof of work in the PR description.** Each PR needs proof of the changed behavior in an actual run: screenshots, screen recordings or terminal sessions of the real program. When the PR description has no proof, capture it in Step 1 and add it. Do not add proof to the review or to a PR comment. A terminal GIF of the program at work is good proof. Never upload a recording or a screenshot that only shows a test suite or a unit test run. Never add the Step 4 screenshots of the review page.
 
 - Upload the files to the `explainer-media` branch with the git data API: blobs, a tree based on the branch head, a commit, then a fast-forward of the branch. Put them in the folder `pr-<n>-feature/`.
 - Use a repository that you can push to. When you cannot push to the PR repository, use the fork of the PR head.
-- In the description, add a `## Screenshots` section. Show the most important GIF or screenshot first. Put the other files in a `<details>` list. Link each file as `https://github.com/<owner>/<repo>/blob/explainer-media/pr-<n>-feature/<file>?raw=true`.
-- Keep the other text of the description. Replace an earlier media section. Do not add a second one.
+- In the description, add a `## Proof` section. Show the most important GIF or screenshot first. Put the other files in a `<details>` list. Link each file as `https://github.com/<owner>/<repo>/blob/explainer-media/pr-<n>-feature/<file>?raw=true`.
+- Keep the other text of the description. Replace an earlier proof section. Do not add a second one.
 
-**Always show a preview and wait for approval before posting.** Step 4 is that checkpoint. Print the review body, then each inline comment with its `path:line`, then the media files for the PR description. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
+**Never post before a human approves the review in chat.** Step 4 is that checkpoint. Print the review body, then each inline comment with its `path:line`, then the proof files for the PR description. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
 
 Getting the line anchors right, which is the part that bites:
 
@@ -234,7 +234,7 @@ Then post one review:
 gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input review.json
 ```
 
-Use `APPROVE` or `REQUEST_CHANGES` only when the user tells you to. The merge decision belongs to the user. When the user tells you to post the verdict as the event, use `APPROVE` for `Approve` and `REQUEST_CHANGES` for `Request changes`. Never post an event that does not agree with the verdict. Pin `commit_id` to the head SHA that you reviewed. After the post, read the posted comments again. Check that the review has the state that you intended.
+Use `APPROVE` or `REQUEST_CHANGES` only when the user tells you to. Use `COMMENT` on a draft PR. The merge decision belongs to the user. When the user tells you to post the verdict as the event, use `APPROVE` for `Approve` and `REQUEST_CHANGES` for `Request changes`. Never post an event that does not agree with the verdict. Pin `commit_id` to the head SHA that you reviewed. After the post, read the posted comments again. Check that the review has the state that you intended.
 
 ## Headless mode
 
@@ -246,4 +246,4 @@ Skip Step 4 unless the prompt asks for it. A headless session has no person to s
 Use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
 Keep the same shell active until the review ends.
 
-The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Post one `COMMENT` review as [Posting to GitHub](#posting-to-github) tells you: one inline comment for each issue and the short body. Headless mode skips the preview gate because nobody is present to approve it. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.
+The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Write one `COMMENT` review payload to `review.json` as [Posting to GitHub](#posting-to-github) tells you: one inline comment for each issue and the short body. Never post it. Headless mode has no person to approve it, so a human approves it in chat later. Report the path of `review.json`. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.

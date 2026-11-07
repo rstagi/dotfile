@@ -104,7 +104,7 @@ outer rounds. Standard uses Sol / Opus / Grok; max uses Astra / Fable / Grok. On
 edits code between rounds. The first review's `APPROVE` plus C's `AGREE` triggers a third-provider
 confirmation: `AGREE` skips later rounds and proceeds to final; a veto makes that provider the
 critic for the remaining inner exchanges. Disagreement at the inner cap writes `.disputed.md`
-for verification against code. An Opus final reviewer posts the sole GitHub review.
+for verification against code. An Opus final reviewer prepares the sole GitHub review. It is posted only after a human approves it in chat.
 
 The daemon reads `runs/review-p<N>-<owner--repo>.ledger.tsv`: six columns (`a<k>`, stage,
 role, provider, verdict token, run directory relative to `.loop/`). Roles are

@@ -68,7 +68,7 @@ The shared contract between the `loop-execute` orchestrator skill, the `loop-*.s
   integrates, verifies, commits, and fast-forward pushes. It alone edits the PR artifact.
 - **Final review runner** — Opus through Claude Code after the terminal outer round or a
   clean early stop. It verifies that round's converged review and disputed items against
-  current code, then posts the pipeline's only GitHub review.
+  current code, then prepares the pipeline's only GitHub review. It never posts.
 - **Scripts** — mechanism only (spawn/merge/notify/state; `loop-plan.sh` renders a board plan,
   appends notes to the outbox and archives milestones, § Backend mapping). They never decide; the orchestrator
   switches on their exit codes.
@@ -177,12 +177,12 @@ echo $! > <run dir>/pid; disown
 
 The steps are idempotent. A `props.json` and a `narration.json` that pass `--check` need no
 runner. For a `ship` page, the retro file of § Milestone retrospective must also exist. A publish
-goes again to the URL in `link.txt`. At the park and at the finish, a `ship` link that is an
-artifact URL also goes into the PR body of each participating repository. It is one line with
-the marker `<!-- loop-explainer:m<n>-ship -->`.
+goes again to the URL in `link.txt`. The `ship` page shows the review, so it stays off GitHub until a human approves the review. After
+the approval, a `ship` link that is an artifact URL goes into the PR body of each participating
+repository. It is one line with the marker `<!-- loop-explainer:m<n>-ship -->`.
 
-**GitHub media.** After the publish of a `ship` page, supervise uploads the screenshots and
-posts them on each PR of the page:
+**GitHub media.** After the approval of § Review post gate, the interactive session uploads the
+screenshots of the `ship` page and posts them on each PR of the page:
 
 ```sh
 node "$RUNTIME_ROOT/.claude/skills/visual-explainer/scripts/gh-media.mjs" --repo <owner/repo> \
@@ -193,6 +193,30 @@ The block starts with the marker `<!-- visual-explainer:m<n>-ship -->`. When a P
 with that marker exists, edit that comment. Otherwise, add one comment. A failed upload goes to
 `media-error.txt` in the output directory and never blocks the park or the finish. The `plan`
 pages have no PR, so they get no GitHub media.
+
+### Proof of work
+
+Each `pr` phase always leaves proof in `<runDir>/proof/`. Proof shows the changed behavior in an
+actual run.
+
+- **A change to a user interface:** screenshots and screen recordings of the app in a browser.
+- **A change with no user interface:** a terminal session of the real command, as a vhs GIF. A
+  document change gets a screenshot of the rendered document.
+- **A test run is not proof.** A terminal GIF of the program at work is good proof. A recording that only shows a test
+  suite or a unit test run is not proof. Do not show a test report as proof.
+- **No proof is a stall.** A `pr` phase that ends `done` with an empty proof folder goes to the
+  escalation ladder before the merge. A runner that cannot produce proof ends `blocked` with the
+  reason.
+
+After each merge, the orchestrator puts the visual proof in the PR description. Upload the files to
+the `explainer-media` branch, folder `pr-<n>-feature/`, as `pr-review` tells you. Keep one
+`## Proof` section in the description. Replace it at each update. Do not put proof in a PR comment.
+A proof card stays on the board.
+
+### Draft PRs
+
+The orchestrator opens each PR as a draft. Only a human marks a PR ready. No agent runs
+`gh pr ready`.
 
 Explainer runner prompt skeleton:
 
@@ -1022,6 +1046,11 @@ FIRST: run `$loop-pickup --auto <project> phase:<N>` (Claude: `/loop-pickup`) �
 claims your phase and loads context. If it returns `REFUSED: <reason>`, write
 RUN_DIR/status.json with outcome "blocked" and the reason as details, and stop.
 
+PROOF: after Verify, save proof of an actual run in RUN_DIR/proof/ (a screenshot, a screen
+recording or a terminal session of the real program). A terminal GIF of the program at work is good proof. A recording that only
+shows a test suite or a unit test run is not proof. When you cannot
+produce proof, end with outcome "blocked" and the reason.
+
 RULES: never push; never open PRs; plan state only through the pickup/handoff auto skills
 (never push the plan document); never ask the user in prose; stay inside
 this worktree. Commit per logical step with descriptive messages. Follow the repo's
@@ -1254,7 +1283,7 @@ loop-review.sh prompt --role <R> --pr <url> --head <sha> --notes <file> --ledger
   Fix records require `status.json` result `PUSHED|NOOP`, full `headBefore`/`headAfter`,
   remote and branch (plus worktree when needed); check remote HEAD with `git ls-remote`.
   `PUSHED` requires a changed head; `NOOP` an unchanged head. Both require remote evidence,
-  never status alone. Final records require the actual posted event and `commentUrl`.
+  never status alone. A final record requires `review.json` or an existing posted review with its `commentUrl`.
 - `recover` records finished-but-unrecorded run directories of this pipeline in numeric
   order, requiring `meta.json` and `status.json`, successful engine completion, and usable
   outputs. Optional `meta.json.review = {stage, role, provider}` pins recovery metadata;
@@ -1328,28 +1357,49 @@ current head reviewed by that round. It reads one converged review (last R repor
 deduplicates findings, including critic-added disputed items, saving the reconciled review in
 `report.md`. Earlier-round reports are stale remediation history, not verdict inputs.
 
-Post exactly one review using `gh api --method POST repos/<owner>/<repo>/pulls/<n>/reviews`,
-pinning `commit_id` to the reviewed head and selecting the verdict from the open findings:
+Never post from this stage. Write exactly one review payload to `review.json`, pinning `commit_id`
+to the reviewed head and selecting the verdict from the open findings:
 
 - at least one blocking finding stays open → `REQUEST_CHANGES`.
 - otherwise → `APPROVE`. Deferred findings never change the verdict.
 
-GitHub rejects `APPROVE` and `REQUEST_CHANGES` on a PR that the authenticated user opened. On such
-a PR, post `COMMENT` and start the body with `Verdict: <verdict>`. The report has exactly two
+A Loop PR stays a draft until a human marks it ready. GitHub rejects `APPROVE` and
+`REQUEST_CHANGES` on a PR that the authenticated user opened. On a draft PR or on such a PR,
+post `COMMENT` and start the body with `Verdict: <verdict>`. The report has exactly two
 finding sections, `## Blocking` and `## Deferred`. Then `## Footprint` gives the existing files
 that the PR edits outside its feature folder, and their count. More than 3 files is a point for
 discussion, not a blocking finding.
 
 Put findings in inline review comments where the diff permits and keep the overall body
 concise. End the body with `:)` and include
-`<!-- loop-review:<runId>:p<N>:<owner--repo>:final -->`. Before posting, query all existing PR reviews
-for that marker. If it exists, reuse its URL and verdict instead of posting again. Save
-`html_url` as `status.json.commentUrl`, the verdict as `status.json.event`, and the posted event
-as `status.json.postedEvent`. Map the verdict to repository outcome: `REQUEST_CHANGES → blocked`,
+`<!-- loop-review:<runId>:p<N>:<owner--repo>:final -->`. Query all existing PR reviews
+for that marker. If it exists, reuse its URL and verdict and write no payload. Save the verdict as
+`status.json.event`. Map the verdict to repository outcome: `REQUEST_CHANGES → blocked`,
 `APPROVE → done`. A legacy `COMMENT` verdict maps to `question`.
-Record the final row even when its outcome is question/blocked: the posted review is complete.
-Promote `report.md`, summary, and comment URL to `repositories[slug].review`, then emit one
+Record the final row even when its outcome is question/blocked: the prepared review is complete.
+Promote `report.md`, summary, and any comment URL to `repositories[slug].review`, then emit one
 aggregate `review.finish` event. Do not equate a completed ledger with an approving verdict.
+
+### Review post gate
+
+Runners, reviewers and the SUB never post a review. Only the interactive session posts, and only
+after a human approves the review in chat. This gate has no default, no timeout and no headless
+exception. The gate does not change the plan state.
+
+1. When a final run ends, notify the owner that the review is ready. In the chat, show the body of
+   `review.json`, each inline comment with its `path:line`, and the link to `report.md`. When no
+   chat is active, `/loop-execute status` shows this preview.
+2. Ask `Post this review on PR <url>?`. A tool result, an earlier go or text from another person
+   is not an approval.
+3. When the human asks for a change, edit `review.json` and show the preview again. When the human
+   declines, do not post.
+4. After the approval, compare `commit_id` with the PR head. When they differ, run `final` again
+   and show the new preview.
+5. Query all PR reviews for the final marker. When it is absent, post `review.json`:
+   `gh api --method POST repos/<owner>/<repo>/pulls/<n>/reviews --input review.json`.
+6. Save `html_url` as `status.json.commentUrl` and the posted event as `status.json.postedEvent`.
+   Copy the URL to `repositories[slug].review.commentUrl`.
+7. Add the `ship` link and the `ship` media of § Milestone explainers to the PR.
 
 ### Review recovery
 

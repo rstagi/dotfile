@@ -69,7 +69,7 @@ Each task prompt must state these items:
 1. Scope: the changes to make and the changes not to make.
 2. Done when: the checks that show completion, for example passing tests.
 3. Branch: the branch name for the work.
-4. Report: when the work is complete, run `ws done -` with a summary on stdin. Include the PR URL if you open a PR.
+4. Report: when the work is complete, run `ws done -` with a summary on stdin. Include the PR URL if you open a PR. Open each PR as a draft. Only a human marks a PR ready.
 5. Questions: for a question about a different repo or about a shared contract, run `ws send <orchestrator> <question>`. Do not guess.
 
 Write your session name in the prompt as `<orchestrator>`.

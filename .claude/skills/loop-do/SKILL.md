@@ -26,7 +26,8 @@ plan with the same engine as a full plan:
 - a proof folder for each phase and progress checkpoints,
 - the escalation ladder (retry, stronger model, HIL pause),
 - converge, then the tiered adversarial review with `## Blocking` and `## Deferred` findings,
-- one final verdict on each PR.
+- one draft PR for each repository, with proof of work in its description,
+- one final verdict on each PR, posted only after a human approves it in chat.
 
 Do not copy the logic of `loop-execute`, `multiphase-plan` or `pr-review` into this skill.
 Call them.
@@ -120,8 +121,8 @@ or step 5.
 
 Run `loop-execute <planId>`. Add `--inline` when the user gave it. The `loop-execute`
 confirm gate is the only go from the user. Do not add a second confirm gate. From this
-point, `loop-execute` owns the run, the HIL questions, the checkpoints, the review and the
-final report.
+point, `loop-execute` owns the run, the HIL questions, the checkpoints, the review, the review
+post gate and the final report.
 
 When the user says to register only, stop after step 3 or step 4. Then report the planId and
 the command `/loop-execute <planId>` (Codex: `$loop-execute`).
@@ -137,3 +138,9 @@ the command `/loop-execute <planId>` (Codex: `$loop-execute`).
 - Never write the plan or `.loop/` in the Beluga chat folder.
 - Never ask a question that the request, the repository or a default answers.
 - Never edit the code yourself. The `loop-execute` runners do the work.
+- Each PR opens as a draft. Only a human marks a PR ready. Never run `gh pr ready`.
+- Never post a review before a human approves it in chat.
+- Always produce proof of work: screenshots, screen recordings or terminal sessions of an actual
+  run. A terminal GIF of the program at work is good proof. A recording that only shows a test suite or a
+  unit test run is not proof. Attach the visual proof to the PR description. See `loop-execute`
+  protocol § Proof of work.

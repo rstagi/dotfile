@@ -11,8 +11,9 @@
 # recover replays next with the supplied configuration (defaults match next).
 # Fix status: {outcome:"done", result:"PUSHED|NOOP", headBefore, headAfter, remote,
 # branch, worktree?}; runner meta headBefore/headAfter may supply the SHAs instead.
-# Final status: {event:"REQUEST_CHANGES|APPROVE" (the verdict, or legacy COMMENT), postedEvent,
-# commentUrl, outcome, summary}. postedEvent is COMMENT on a PR that the posting user opened.
+# Final status: {event:"REQUEST_CHANGES|APPROVE" (the verdict, or legacy COMMENT), outcome, summary}.
+# The final run writes RUN_DIR/review.json and never posts. A human approves it in chat, and then
+# the orchestrator posts it and adds postedEvent + commentUrl. A final needs review.json or commentUrl.
 set -u
 SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/loop-ar.sh"
@@ -103,7 +104,10 @@ review_record() {
     review|respond) verdict="$(ar_parse_verdict "$run_dir/report.md" reviewer)" || return 2 ;;
     critic|confirm) verdict="$(ar_parse_verdict "$run_dir/report.md" critic)" || return 2 ;;
     fix) verdict="$(ar_prove_fix "$run_dir")" || return 1 ;;
-    final) verdict="$(jq -er 'select(.commentUrl | type == "string" and length > 0) | .event // .reviewEvent' "$run_dir/status.json")" || return 1 ;;
+    final)
+      local prepared=false
+      [[ -f "$run_dir/review.json" ]] && prepared=true
+      verdict="$(jq -er --argjson prepared "$prepared" 'select($prepared or (.commentUrl | type == "string" and length > 0)) | .event // .reviewEvent' "$run_dir/status.json")" || return 1 ;;
     *) die "invalid role '$role'"; return 1 ;;
   esac
   relative="${run_dir#$loop_dir/}"
@@ -299,7 +303,9 @@ review_final_instructions() {
   fi
   cat <<'FINAL'
 
-## Final review (the only GitHub mutation stage)
+## Final review (prepare only)
+Never post a review or a comment to GitHub. A human approves the review in chat. Then the
+orchestrator posts it.
 Independently verify and deduplicate the converged review against the current code and exact
 PR head. Verify disputed items against code; never accept or dismiss them solely by consensus.
 Earlier rounds are stale remediation history. Do not edit code, commit, push, or open a PR.
@@ -312,22 +318,25 @@ deferred list short and concrete. Then add "## Footprint": the existing files th
 outside its feature folder, and their count. More than 3 files is a point for discussion only.
 The verdict is REQUEST_CHANGES when at least one blocking finding stays open. Otherwise the
 verdict is APPROVE. Deferred findings never change the verdict.
-GitHub rejects APPROVE and REQUEST_CHANGES on a PR that the authenticated user opened. On such
-a PR, post the event COMMENT, and start the body with "Verdict: <verdict>".
+Write the GitHub review payload to RUN_DIR/review.json:
+{commit_id, event, body, comments:[{path, line, side:"RIGHT", body}]}.
+A Loop PR stays a draft until a human marks it ready. GitHub rejects APPROVE and REQUEST_CHANGES
+on a PR that the authenticated user opened. On a draft PR or on such a PR, use the event COMMENT
+in the payload, and start the body with "Verdict: <verdict>".
 Pin commit_id to the reviewed PR head. Use the real unified PR diff for inline anchors
 (added RIGHT-side lines, never cumulative format-patch offsets). Put findings inline where
 possible, keep the body concise, and end it with :).
 FINAL
   printf 'Use the phase-scoped idempotency marker: <!-- loop-review:%s:p%s:%s:final -->\n' "$run_id" "$phase" "$repo"
   cat <<'FINAL'
-Resolve <runId>, if still a placeholder, from the loop plan's canonical planId before posting.
-Before posting, query all existing PR reviews for that exact marker. If present, reuse its URL
-and verdict, and do not post again. Otherwise post exactly one review with that marker in the body.
-Write RUN_DIR/status.json only after you check the posted review. Include event (the verdict:
-REQUEST_CHANGES or APPROVE), postedEvent (the event that GitHub shows), commentUrl (html_url),
-summary, and outcome (blocked for REQUEST_CHANGES, done for APPROVE). An existing marked review
-is a completed final run. Its verdict is its "Verdict:" line. Without that line, its verdict is
-its event, and an old COMMENT review gives the outcome question.
+Resolve <runId>, if still a placeholder, from the loop plan's canonical planId before you write
+the payload. Query all existing PR reviews for that exact marker. If present, reuse its URL and
+verdict, and write no payload. Otherwise put that marker in the payload body.
+Write RUN_DIR/status.json only after you write the payload. Include event (the verdict:
+REQUEST_CHANGES or APPROVE), summary, and outcome (blocked for REQUEST_CHANGES, done for APPROVE).
+An existing marked review is a completed final run. Add its postedEvent (the event that GitHub
+shows) and commentUrl (html_url). Its verdict is its "Verdict:" line. Without that line, its
+verdict is its event, and an old COMMENT review gives the outcome question.
 FINAL
 }
 

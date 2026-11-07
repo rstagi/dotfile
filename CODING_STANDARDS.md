@@ -78,14 +78,28 @@ Process:
 
 Posting a review to GitHub:
 
-- Post only after the owner approves the preview. A headless run has no owner, so it posts without a preview.
+- Post only after a human approves the preview in chat. This rule applies to each run, also to a headless run. A headless run writes the review to a file and does not post it.
 - Put each issue in an inline comment on its diff line. Start each comment with its class: `[blocking: <category>]` or `[deferred]`.
 - Keep the review body short. Do not put the validation, the footprint or a list of the issues in it.
   - For deferred issues, write: "We found N issues. We defer their fix to follow-up work."
   - For blocking issues, write: "We found N blocking issues. Fix them before the merge."
   - Write "issues", not "items".
 - A posted review shows blocking issues only for a single-shot review or for the last round of an adversarial review. In an earlier round, the fixer fixes the blocking issues at once, and nothing is posted.
-- Put the screenshots and the recordings of the feature in the PR description, not in the review. A terminal recording is correct when it shows the feature at work. A recording that only runs tests is not correct. When no media of the feature exists, add no media. Never put screenshots of the review page in the PR.
+- Put the proof of work in the PR description, as "Pull requests and proof of work" tells you. Do not put it in the review or in a PR comment.
+- Never put screenshots of the review page in the PR.
+
+## Pull requests and proof of work
+
+- An agent opens each PR as a draft (`gh pr create --draft`). Only a human marks a PR ready. An agent never runs `gh pr ready`.
+- An agent never posts a review before a human approves it in chat.
+- An agent always produces proof of work for each PR.
+  - Proof shows the changed behavior in an actual run: a screenshot, a screen recording or a terminal session of the real program.
+  - A terminal GIF of the program at work is good proof. A recording that only shows a test suite or a unit test run is not proof. Do not show a test report as proof.
+  - A change with no user interface gets a terminal session of the real command. A document change gets a screenshot of the rendered document.
+  - Use test data. Never show secrets, keys or real user data.
+  - Never commit proof files.
+- An agent attaches the visual proof to the PR description, in one `## Proof` section. Convert each recording to a GIF so that GitHub shows it in the description.
+- Work with no proof is not done. When you cannot produce proof, stop and tell a human why.
 
 ## Deterministic checks
 

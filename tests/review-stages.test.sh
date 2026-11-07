@@ -222,7 +222,9 @@ done
 rendered="$(prompt final)"
 assert_contains "$rendered" 'REQUEST_CHANGES' 'final preserves severity-event mapping'
 assert_contains "$rendered" '<!-- loop-review:' 'final preserves idempotency marker'
-assert_contains "$rendered" 'commentUrl' 'final records posted event and URL'
+assert_contains "$rendered" 'RUN_DIR/review.json' 'final writes the review payload'
+assert_contains "$rendered" 'Never post a review or a comment to GitHub.' 'final never posts before a human approves it'
+assert_eq "$([[ "$rendered" == *'post exactly one review'* ]] && echo posts || echo prepares)" prepares 'final has no post instruction'
 # New outer round must not consume the old sidecar or old reviewer report.
 run_dir="${LEDGER%.ledger.tsv}-a6"
 mkdir -p "$run_dir"
@@ -303,7 +305,7 @@ assert_contains "$rendered" '"## Footprint"' 'final report adds the footprint'
 assert_contains "$rendered" 'More than 3 files is a point for discussion' 'footprint over 3 files is a discussion flag'
 assert_contains "$rendered" 'REQUEST_CHANGES when at least one blocking finding stays open' 'only open blocking findings request changes'
 assert_contains "$rendered" 'Deferred findings never change the verdict.' 'deferred-only final approves'
-assert_contains "$rendered" 'post the event COMMENT' 'self-PR posts COMMENT with the verdict'
+assert_contains "$rendered" 'use the event COMMENT' 'draft or self-PR payload uses COMMENT with the verdict'
 run_dir="${LEDGER%.ledger.tsv}-a3"
 mkdir -p "$run_dir"
 printf '{"outcome":"done","event":"APPROVE","postedEvent":"COMMENT","commentUrl":"https://example.test/review/5"}\n' > "$run_dir/status.json"
@@ -311,6 +313,21 @@ cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage final --role final --
 assert_exit "$?" 0 'self-PR final records'
 assert_eq "$(tail -1 "$LEDGER" | cut -f5)" APPROVE 'ledger keeps the verdict, not the posted COMMENT'
 assert_eq "$(next)" done 'approve-equivalent final ends the pipeline'
+
+echo 'review: an unposted final needs its review payload'
+LEDGER="$TMP/loop/runs/review-p11-unposted.ledger.tsv"
+record_report 1 round1 review gpt $'## Blocking\nNone.\n## Deferred\nNone.\nAPPROVE'
+record_report 2 round1 critic claude AGREE
+run_dir="${LEDGER%.ledger.tsv}-a3"
+mkdir -p "$run_dir"
+printf '{"outcome":"done","event":"APPROVE"}\n' > "$run_dir/status.json"
+cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage final --role final --provider claude >/dev/null 2>&1
+assert_exit "$?" 1 'a final with no payload and no posted review does not record'
+printf '{"commit_id":"abc","event":"COMMENT","body":"Verdict: APPROVE","comments":[]}\n' > "$run_dir/review.json"
+cli record --ledger "$LEDGER" --run-dir "$run_dir" --stage final --role final --provider claude
+assert_exit "$?" 0 'a final with a payload records before any post'
+assert_eq "$(tail -1 "$LEDGER" | cut -f5)" APPROVE 'the unposted final keeps its verdict'
+assert_eq "$(next)" done 'the unposted final ends the pipeline'
 
 echo 'review: a blocking finding gets one fix, then a round scoped to that fix'
 LEDGER="$TMP/loop/runs/review-p11-blocking.ledger.tsv"

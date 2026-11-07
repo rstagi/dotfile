@@ -131,7 +131,7 @@ milestones.
   phase. When the milestone has no PR output, the gate is `` `[gate: accept]` `` and the human
   accepts the outputs in `.loop/outputs/` in place of a merge. The root phases of milestone N+1 must list the gate in `Depends on` explicitly (the
   parser warns, `loop-execute` preflight rejects if missing). Milestones always block the next;
-  there is no stacking. After the gate review verdict is posted the loop parks in
+  there is no stacking. After the gate review verdict is ready the loop parks in
   `awaiting-merge` (plan Status `awaiting merge`) until a human merges and runs
   `/loop-execute resume`.
 - **Worktrees.** Milestone 1 keeps `…/<owner--repo>/integration`; milestones ≥2 use

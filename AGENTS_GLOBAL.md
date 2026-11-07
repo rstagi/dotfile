@@ -22,6 +22,13 @@ Fight entropy. Leave the code better than you found it.
 </pr-comment-rule>
 - When tagging Claude in GitHub issues, tag `@claude`.
 
+## Pull requests and proof of work
+
+- Always open a PR as a draft (`gh pr create --draft`). A human marks it ready. Never run `gh pr ready`.
+- Never post a PR review before a human approves it in chat. This rule also applies to headless runs: write the review to a file and do not post it.
+- Always produce proof of work for a PR: screenshots, screen recordings or terminal sessions of an actual run. A terminal GIF of the program at work is good proof. A recording that only shows a test suite or a unit test run is not proof.
+- Attach the visual proof to the PR description, in one `## Proof` section. Convert each recording to a GIF. Never show secrets or real user data.
+
 ## GitHub
 
 - The primary way to interact with GitHub must be the GitHub CLI.

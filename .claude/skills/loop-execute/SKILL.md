@@ -5,10 +5,11 @@ description: >-
   in `.loop/plan.md` end-to-end — spawn a fresh headless runner per phase (Codex
   or Claude, parallel lanes in separate worktrees, cap 3), verify and merge each lane into its
   repository integration branch, escalate stuck work (retry → stronger model → HIL pause),
-  open one effort PR per repository, execute each explicit review phase as a tiered adversarial
+  open one draft effort PR per repository with proof of work in its description, execute each explicit review phase as a tiered adversarial
   pipeline (standard/max, rotating reviewer ↔ critic, N outer rounds) with remediation between
-  rounds, post one final Opus
-  verdict, then stop for humans to merge.
+  rounds, prepare one final Opus
+  verdict, post it only after a human approves it in chat, then stop for humans to mark the PR
+  ready and merge.
   By default the heavy orchestration runs in a detached, self-recycling sub-orchestrator so
   the interactive chat stays thin. Use when asked to
   "run the loop", "execute the multi-phase plan", "run the published plan autonomously",
@@ -383,7 +384,9 @@ Serialize merges globally (one at a time), targeting the phase repository.
   Cleanup removes the worktree on a repository hop; otherwise it may switch to the next lane
   branch. First merge in each repository → `gh pr create --draft` from that repository's
   integration branch, PR URL into `state.repositories[slug]` + its plan block. Later merges
-  update only that PR. With milestones: one PR per milestone per participant, created on that
+  update only that PR. **Proof** (protocol § Proof of work): after each merge, put the visual proof
+  of the phase in the PR description. A terminal GIF of the program at work is good proof. Never upload a recording that only shows a test suite or a unit test run. A human marks the
+  PR ready. Never run `gh pr ready`. With milestones: one PR per milestone per participant, created on that
   milestone's first merge in the repository; body = Goal + that milestone's phases only; the
   URL goes into `state.repositories[slug]` and the milestone's `PR` bullet (`- **PR (owner/repo):**`
   when several repositories participate), never the `## Repositories` `PR:` line. Schedule globally by DAG/lane capacity.
@@ -453,9 +456,9 @@ runner and wait for its `meta.json`. Then read the last line of `.loop/converge/
 Add the path of the converge report to the review notes of every repository. The `Partial`
 and `Unplanned work` lines are information for the reviewers, not findings.
 
-Otherwise mark every repository PR ready on the first review round; later rounds reuse those PRs. Each PR body
+Otherwise keep every repository PR as a draft through all review rounds. A human marks each PR ready. Later rounds reuse those PRs. Each PR body
 contains the Goal and only
-that repository's phases (with milestones: that milestone's phases in that repository) plus a progress digest. Then record completion: flip plan
+that repository's phases (with milestones: that milestone's phases in that repository) plus a progress digest and the `## Proof` section. Then record completion: flip plan
 **Status: integrating** in `.loop/plan.md`, append `.loop/progress.md`. The plan Status
 records the completion. The coordinator copies it to the board.
 
@@ -560,18 +563,17 @@ It adds no new deferred finding, and a new blocking finding only when the fix ca
   `record` can verify remote HEAD. A no-op makes no empty commit or push.
 - `final` (`review-final`): receives the last converged review + current disputed items and
   current code at that round's pinned head. Earlier-round reports are stale history. It
-  independently verifies each finding and disputed item, then posts the pipeline's **only**
-  GitHub review. The verdict is `REQUEST_CHANGES` when at least one blocking finding stays
+  independently verifies each finding and disputed item, then prepares the pipeline's **only**
+  GitHub review in `review.json`. It never posts. The verdict is `REQUEST_CHANGES` when at least one blocking finding stays
   open. Otherwise the verdict is `APPROVE`. Deferred findings never change the verdict.
   GitHub rejects `APPROVE` and `REQUEST_CHANGES` on a PR that the authenticated user opened.
-  On such a PR, the final posts `COMMENT` and starts the body with `Verdict: <verdict>`.
+  On such a PR and on a draft PR, the payload uses `COMMENT` and starts the body with `Verdict: <verdict>`.
   The report has exactly two finding sections, `## Blocking` and `## Deferred`. Then
   `## Footprint` gives the existing files that the PR edits outside its feature folder,
   and their count. More than 3 files is a point for discussion, not a blocking finding.
-  Include the protocol's phase-scoped idempotency marker; query all PR reviews for it before
-  posting, reusing an existing marked review. Save the API response URL in
-  `status.json.commentUrl`, the verdict in `status.json.event`, and the posted event in
-  `status.json.postedEvent`.
+  Include the protocol's phase-scoped idempotency marker. Query all PR reviews for it, and reuse
+  an existing marked review. Save the verdict in `status.json.event`. The post gate (protocol
+  § Review post gate) adds `status.json.commentUrl` and `status.json.postedEvent`.
 
 After `final`, promote its outcome (`REQUEST_CHANGES → blocked`, `APPROVE → done`, legacy
 `COMMENT → question`), report path, and comment URL into `state.repositories[slug].review`, clear
@@ -605,10 +607,8 @@ final milestone is an ordinary terminal review (finish below):
    - The explainer runner also writes `narration.json`, the walkthrough commentary.
    - Then supervise renders the page with `--narration`, publishes and writes `link.txt`, as
      the skill tells it.
-   - When the link is an artifact URL, add or replace one line in each gate PR body:
-     `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
-   - Post the media on each gate PR (protocol § Milestone explainers → GitHub media): the
-     screenshots, in one PR comment.
+   - Do not put the link or the media on a PR. The page shows the review, so the post gate adds
+     them after a human approves the review (protocol § Review post gate).
    - On any failure, write the reason to `error.txt` in the output directory and go on
      with the park. A failed explainer never blocks the park.
 5. Notify once (`loop-notify.sh --level info --event milestone.awaiting-merge`): PR URLs, the
@@ -643,10 +643,8 @@ milestone of a plan, or the final review of a plan with no milestones.
    - The explainer runner also writes `narration.json`, the walkthrough commentary.
    - Then supervise renders the page with `--narration`, publishes and writes `link.txt`, as
      the skill tells it.
-   - When the link is an artifact URL, add or replace one line in the PR body of each
-     participating repository: `Explainer: <url> <!-- loop-explainer:m<n>-ship -->`.
-   - Post the media on the PR of each participating repository (protocol § Milestone
-     explainers → GitHub media).
+   - Do not put the link or the media on a PR. The post gate adds them after a human approves
+     the review (protocol § Review post gate).
    - On any failure, write the reason to `error.txt` in the output directory and go on
      with the finish. A failed explainer never blocks the finish.
 3. Notify once (`loop-notify.sh --level info`): the final PRs and verdicts, and the
@@ -779,7 +777,7 @@ recycle. When the next ready phase is a review, write `{outcome:"review-ready"}`
 `{outcome:"complete"}` only for a legacy plan without explicit review phases; on an unrecoverable
 error `{outcome:"fatal"}` (bad config / lost lock) or `{outcome:"blocked"}` (HIL is the only
 thing left and no lane can progress).
-- **status** — print the lane table from state + live pids + last events; read-only.
+- **status** — print the lane table from state + live pids + last events, and the preview of each unposted `review.json` (protocol § Review post gate); read-only.
 - **abort** — kill live runners, `--abort` any merge, flip in-progress phases back to
   todo, write `.loop/plan.md`, notify, unlock. Leave worktrees for autopsy; tell the user the
   cleanup commands — never for an adopted integration worktree (it is the user's).
@@ -803,9 +801,15 @@ Use `loop-state.sh note <key> "text"` (or omit text and pipe multiline stdin),
 
 ## Hard rules
 
+- **Draft PRs only.** Open each PR with `gh pr create --draft`. Only a human marks a PR ready.
+  Never run `gh pr ready`.
+- **Never post a review before a human approves it in chat.** Runners, reviewers and the SUB never
+  post. Only the interactive session posts, at the post gate (protocol § Review post gate).
+- **Always produce proof.** A `pr` phase that ends `done` with an empty `<runDir>/proof/` is a
+  stall. Use the escalation ladder before the merge (protocol § Proof of work).
 - **Minimum human input.** After the go, you MUST run the loop to its end with the minimum
-  human input possible. The confirm gate, a true HIL decision and the final merge are the only
-  points where you ask the owner.
+  human input possible. The confirm gate, a true HIL decision, the review post and the final
+  merge are the only points where you ask the owner.
   - Never end a turn idle while the loop waits for you. After each event, do the next loop
     step in the same turn.
   - Never ask the owner to "continue". A tool denial or a cancelled read-only status command
