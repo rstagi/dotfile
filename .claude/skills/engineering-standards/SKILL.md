@@ -34,7 +34,14 @@ Source: `CODING_STANDARDS.md` → Review rules.
   1. **Security or safety.** A leaked secret, an auth or permission bypass, data exposure, unsafe handling of user data, or real harm in production.
   2. **Unprotected breakage.** A change to current behavior that no flag or off switch protects. Or existing tests that fail with the flag off.
   3. **A failing deterministic check.** The build, the tests, the architecture tests, the flag off/on matrix, the monitoring check or the delete test. When the project does not have the check, a probable failure is deferred.
-- All other items are **deferred**. They never block. When you are not sure, the item is deferred. Never raise an item to blocking.
+- These 3 are **hard blocks**. Nobody defers them.
+- **Severity (on the PR).** Each review finding is `[major]` (a real defect with evidence, also behind a flag) or `[minor]` (all other findings). A hard block is always major. When you are not sure, the finding is minor. Never raise a severity.
+- **Disposition (only in the chat).** Each finding is "fix now" or "defer". The defer policy of the repository gives the default proposal. The agent proposes, with a reason. The owner and the agent decide in the chat, case by case. Never write the disposition on the PR.
+- **Defer policy** (`CODING_STANDARDS.md` → Defer policy of a repository). The repository CLAUDE.md or AGENTS.md sets it with `Review defer policy: flag|strict`.
+  - `flag` (Ratel Cloud): defer a major behind an off-by-default flag. Fix now a major with no flag. Defer a minor.
+  - `strict` (Beluga and other open-source repositories): fix now each major, also behind a flag, and each small minor in scope. Defer only with a reason and the owner's agreement.
+  - Unknown repository: propose `strict` when it is public and `flag` when it is private, and ask the owner.
+- For a plan, use only the hard blocks. All other plan items go to `## Deferred / Not now`.
 - Do not widen the scope of a PR to fix deferred items. Keep the deferred list short. Remove each item that does not deserve a follow-up ticket.
 
 ### Where deferred items go in Beluga
@@ -129,14 +136,14 @@ Skill: `pr-review` for each review.
 
 ### Adversarial rounds
 - Default 2 outer rounds and 2 inner exchanges. A reviewer and a critic from different providers rotate each round. A clean round ends the review early.
-- Each finding has one class: `[blocking: security]`, `[blocking: unprotected-breakage]`, `[blocking: failing-check]` or `[deferred]`. A blocking finding needs evidence (a repro or failing output). Reasoning alone makes it deferred.
+- Inside a Loop run, each finding has one internal class: `[blocking: security]`, `[blocking: unprotected-breakage]`, `[blocking: failing-check]` or `[deferred]`. Only the hard blocks are blocking. A blocking finding needs evidence (a repro or failing output). Reasoning alone makes it deferred. These classes never go on the PR.
 - The critic answers AGREE or DISAGREE with code evidence. A deferred finding is never a disagreement.
-- Between rounds, check each finding against the code before a fix. Agreement between reviewers is not evidence. Fix only blocking findings, test-first. Put deferred findings in a Follow-ups list.
+- Between rounds, check each finding against the code before a fix. Agreement between reviewers is not evidence. The fixer fixes only the hard blocks, test-first. Put the other findings in a Follow-ups list with a severity and a proposed disposition from the defer policy. The owner decides them at the gate checkpoint. A finding that the owner sets to "fix now" becomes a fix phase before the merge.
 - A round after a fix checks only the fix and the earlier blocking findings.
 
 ### Verdict and posting
-- One final verdict per PR: REQUEST_CHANGES when a blocking finding is open, else APPROVE. Deferred findings never change the verdict.
-- Write one review with one inline comment per issue and a short body. Proof goes in the PR description, not in the review.
+- One final verdict per PR: REQUEST_CHANGES when a fix-now finding is open, else APPROVE. Deferred findings never change the verdict.
+- Write one review with one inline comment per issue and a short body. Start each comment with `[major]` or `[minor]`. The body counts the major and the minor issues. No disposition on the PR. Proof goes in the PR description, not in the review.
 - Never post a review before a human approves it in chat. A headless run writes the review to a file and does not post it.
 
 ## 8. Humans and stopping

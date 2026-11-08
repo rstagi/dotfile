@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review a pull request or a branch in one round. First, check it out into a local git worktree, read its CI checks and run focused checks of the changed code. CI runs the full test suite. Then put each finding into one of two classes. Blocking is only for security, unprotected breakage of existing behavior or a failing deterministic check. Deferred is for all other items. Report the footprint of the PR and a verdict that follows the Blocking section. Use this skill when the user asks to review a PR, a pull request or a branch, or to examine changes before a merge. Examples are "review #123", "can you look over this branch" and "review this MR". Use it also when the user does not say the word "skill". Use it instead of a quick diff-only read when the user wants a real review.
+description: Review a pull request or a branch in one round. First, check it out into a local git worktree, read its CI checks and run focused checks of the changed code. CI runs the full test suite. Then give each finding a severity, major or minor, for the PR comments, and a disposition, fix now or defer, for the chat. Security, unprotected breakage and a failing check are always major and fix now. The defer policy of the repository (flag or strict) and the owner decide the disposition of the other findings. Report the footprint of the PR and a verdict that follows the fix-now list. Use this skill when the user asks to review a PR, a pull request or a branch, or to examine changes before a merge. Examples are "review #123", "can you look over this branch" and "review this MR". Use it also when the user does not say the word "skill". Use it instead of a quick diff-only read when the user wants a real review.
 ---
 
 # PR review
@@ -8,7 +8,7 @@ description: Review a pull request or a branch in one round. First, check it out
 > Source of truth for these rules: [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md). When this skill and that file differ, the file wins. Update the file first.
 
 
-A review judges a PR on two tests. The PR does not break existing behavior. The PR is easy to remove. A diff alone does not show if the code works or if the tests exercise it. Thus this skill always reads the CI result and runs the changed code first. CI runs the full suite. The reviewer runs only focused checks. Then it puts each finding into one of two sections: Blocking or Deferred.
+A review judges a PR on two tests. The PR does not break existing behavior. The PR is easy to remove. A diff alone does not show if the code works or if the tests exercise it. Thus this skill always reads the CI result and runs the changed code first. CI runs the full suite. The reviewer runs only focused checks. Then it gives each finding a severity (`[major]` or `[minor]`) and a disposition (fix now or defer). The severity goes on the PR. The disposition goes only in the chat.
 
 Do not skip the worktree step when the change looks trivial. A confident but wrong review often starts with a change that looks trivial.
 
@@ -16,7 +16,7 @@ Do not skip the worktree step when the change looks trivial. A confident but wro
 
 ## One round
 
-Review a PR one time. Do not review the same PR again to find new small issues. When the user asks you to check a fix, check only the earlier Blocking items. Also check that the fix adds no new Blocking item. Do not add Deferred items in that check.
+Review a PR one time. Do not review the same PR again to find new small issues. When the user asks you to check a fix, check only the earlier fix-now items. Also check that the fix adds no new major finding. Do not add new findings to defer in that check.
 
 ## Step 1 — Check it out, read CI and run the focused checks (do this first)
 
@@ -55,16 +55,16 @@ CI runs the full test suite in parallel with the review. NEVER run the full test
    - Exercise the change: run the app, call the endpoint or call the function that this PR touches.
    - Run one focused test or command to confirm or refute one finding.
 
-Record each check that fails and each existing behavior that changes. These results are the evidence for the Blocking categories `failing-check` and `unprotected-breakage`. Report them before you continue.
+Record each check that fails and each existing behavior that changes. These results are the evidence for the hard blocks `failing-check` and `unprotected-breakage`. Report them before you continue.
 The exit trap removes the review worktree.
 
 ## Step 2 — Classify each finding
 
-Give each finding exactly one class: `blocking` or `deferred`. Point to the file and the line. Say what is wrong and why.
+Give each finding one severity (`major` or `minor`) and one disposition (fix now or defer). Point to the file and the line. Say what is wrong and why.
 
-### Blocking
+### Hard blocks
 
-A finding is `blocking` only when it is in one of these 3 categories. Each Blocking item names its category and its evidence.
+A hard block is always `major` and always fix now. Nobody defers it. A finding is a hard block only when it is in one of these 3 categories. Each hard block names its category and its evidence.
 
 | Category | The finding is blocking when | Evidence |
 |---|---|---|
@@ -72,11 +72,11 @@ A finding is `blocking` only when it is in one of these 3 categories. Each Block
 | `unprotected-breakage` | The PR changes current behavior, and no feature flag or equivalent off switch protects the change. Or existing tests fail with the flag off. | The Step 1 result: the old and the new behavior, or the failing existing test. |
 | `failing-check` | A deterministic check fails: the build, the tests, the architecture tests, the flag off/on matrix, the monitoring check or the delete test. | The failing CI check name and its log URL, or the focused command and its failing output from Step 1. |
 
-A `failing-check` item blocks because the check fails, not because you judge the code. When the project does not have a check, a probable failure of that check is `deferred`.
+A `failing-check` item blocks because the check fails, not because you judge the code. When the project does not have a check, a probable failure of that check is `minor`.
 
-### Deferred
+### Severity of the other findings
 
-All other findings are `deferred`. They never block. Use these lenses to find them:
+Use these lenses to find the other findings:
 
 - **Bugs in protected code**: wrong logic or missing edge cases in new code that a flag or an off switch protects. A new entry point that no caller uses yet is an off switch.
 - **Tests**: tests that do not exercise the new behavior, and important cases that are missing.
@@ -85,7 +85,19 @@ All other findings are `deferred`. They never block. Use these lenses to find th
 - **Docs**: docs that do not agree with the code.
 - **Performance**: ideas that make the code faster.
 
-Keep the Deferred list short and concrete. Remove each item that does not deserve a follow-up ticket.
+A finding is `major` when it is a real defect and you have evidence: wrong behavior or a data bug in new code (also behind a flag), a missing test for the main new behavior, or code that breaks a contract that the author wrote. All other findings are `minor`. A finding with only reasoning and no evidence is `minor`.
+
+### Disposition and the defer policy
+
+The disposition says if this PR fixes the finding (fix now) or if follow-up work fixes it (defer). It never goes on the PR.
+
+1. Find the defer policy of the repository. Read the line `Review defer policy: flag|strict` in the repository CLAUDE.md or AGENTS.md. When it is not there, use the table in `CODING_STANDARDS.md` (Ratel Cloud is `flag`, Beluga and other open-source repositories are `strict`). When the repository is in neither, propose `strict` for a public repository and `flag` for a private repository, and ask the owner at the checkpoint.
+2. Propose a disposition for each finding that is not a hard block:
+   - `flag`: defer a major behind an off-by-default flag. Fix now a major with no flag. Defer a minor.
+   - `strict`: fix now each major, also behind a flag. Fix now a minor when the fix is small and in the scope of the PR. Propose defer only with a strong reason, for example a fix that needs a separate design or another repository.
+3. Give the reason for each proposal in one sentence. The owner and you decide in the chat. The owner can change any proposal, except a hard block.
+
+Keep the defer list short and concrete. Remove each item that does not deserve a follow-up ticket.
 
 ### Footprint
 
@@ -103,41 +115,46 @@ When the PR mixes the feature with unrelated changes, propose a split. Examples 
 
 ## Prevention pass
 
-For each Blocking item, give the smallest fix that removes the block. Then find the condition that let the problem occur, for example a missing check, test, type, validation or boundary. When the evidence shows a structural cause, add the preventive change as a Deferred item. When the evidence shows an isolated problem, say so. Do not invent a broad refactor.
+For each fix-now item, give the smallest fix. Then find the condition that let the problem occur, for example a missing check, test, type, validation or boundary. When the evidence shows a structural cause, add the preventive change as a `minor` finding with its own proposed disposition. When the evidence shows an isolated problem, say so. Do not invent a broad refactor.
 
 ## Step 3 — Report
 
 Write the report in this order:
 
-1. **Verdict**: `Approve` when Blocking is empty. `Request changes` when Blocking has one or more items. Add the counts, for example `Request changes. 1 Blocking, 3 Deferred.`
+This report goes in the chat. It is the only place for the dispositions.
+
+1. **Verdict**: `Approve` when no finding is fix now. `Request changes` when one or more findings are fix now. Add the counts and the policy, for example `Request changes. 1 major, 3 minor. Fix now: 2, defer: 2. Defer policy: strict (CLAUDE.md).`
 2. **Validation**: the Step 1 commands and the result of each command.
 3. **Footprint**: the count, the list, the discussion flag when the count is more than 3, and the split proposal or `No split recommended.`
-4. **Blocking**: each item with its label, its file:line, its evidence and its fix. When Blocking is empty, write `None.`
-5. **Deferred**: each item with its label, its file:line and one or two sentences. When Deferred is empty, write `None.`
+4. **Fix now**: each item with its label, its file:line, its evidence, its fix and, when it is not a hard block, the reason for the disposition. When the list is empty, write `None.`
+5. **Defer**: each item with its label, its file:line, one or two sentences and the reason that it can wait. When the list is empty, write `None.`
+6. **Decisions for the owner**: each proposal that the owner must confirm, for example a major that you propose to defer, or a policy that you guessed. When there is none, omit this section.
 
-The report has exactly these two finding sections. Do not add other finding sections. When the PR is clean, say so. Do not invent findings to fill a section.
+The report has exactly two finding sections: Fix now and Defer. Do not add other finding sections. When the PR is clean, say so. Do not invent findings to fill a section.
 
-Before you give the report, compare the verdict with the sections. The verdict is `Approve` only when Blocking is empty. When the counts in the verdict do not agree with the lists, fix the counts.
+Before you give the report, compare the verdict with the sections. The verdict is `Approve` only when Fix now is empty. When the counts in the verdict do not agree with the lists, fix the counts. When the owner changes a disposition, move the item and update the verdict.
 
 ## Finding labels
 
-Each finding has exactly one label at the start of its title. A short summary in lowercase follows the label:
+Each finding has exactly one severity label at the start of its title. A short summary in lowercase follows the label. A hard block names its category after the label:
 
 ```
-[blocking: failing-check] the migration test fails on an empty database
-[deferred] the retry helper has one caller
+[major] failing-check: the migration test fails on an empty database
+[major] the retry drops the last event when the queue is full
+[minor] the retry helper has one caller
 ```
 
-The labels are `[blocking: security]`, `[blocking: unprotected-breakage]`, `[blocking: failing-check]` and `[deferred]`.
+The labels are `[major]` and `[minor]`. The hard-block categories are `security`, `unprotected-breakage` and `failing-check`.
 
 How to choose:
 
-- **Never raise the class of an item to put it in Blocking.** When you are not sure, the item is `deferred`.
-- **A Blocking item needs evidence.** Use the repro or the failing output from Step 1. When you only reasoned about a problem, the item is `deferred`.
-- **The consequence sets the class, not the size of the fix.** A one-line fix for an unprotected break is still Blocking. A large refactor that only makes the code clearer is still Deferred.
-- **Say what the problem does not affect.** For example: "Plain semantic search is not affected." This makes the class credible. It also stops a reaction from the author that is too strong.
-- **Keep the label and the text in agreement.** Do not write a `[deferred]` item whose text says that the process becomes unusable.
-- When the user changes the class of an item, change the label and keep the technical content. When the new label does not agree with the text, tell the user. Do not make a verified finding weaker without a statement.
+- **Never raise a severity.** When you are not sure, the item is `minor`.
+- **A major item needs evidence.** Use the repro or the failing output from Step 1, or the code path. When you only reasoned about a problem, the item is `minor`.
+- **The consequence sets the severity, not the size of the fix.** A one-line fix for wrong behavior is still major. A large refactor that only makes the code clearer is still minor.
+- **The severity does not depend on the flag.** A bug behind a flag is still major. The flag changes only the disposition, through the defer policy.
+- **Say what the problem does not affect.** For example: "Plain semantic search is not affected." This makes the severity credible. It also stops a reaction from the author that is too strong.
+- **Keep the label and the text in agreement.** Do not write a `[minor]` item whose text says that the process becomes unusable.
+- When the user changes the severity of an item, change the label and keep the technical content. When the new label does not agree with the text, tell the user. Do not make a verified finding weaker without a statement.
 
 ## Writing the findings
 
@@ -180,7 +197,7 @@ Run the `visual-explainer` skill in `ship` mode with this output directory. Writ
 - `deviations`: each difference between the PR description and the observed behavior. Use an empty array when there is none.
 - `process` and `setbacks`: optional. Take them from the review rounds, the fix rounds and the CI failures of the PR. Count only what the PR shows. Omit both fields when the PR shows no process cost. Do not write a retro file outside a Loop run.
 - `reviews`: one entry with `repository`, `pr`, `head` (the reviewed SHA) and `verdict`. The verdict is the event that you will post, or `COMMENT` when you post nothing. Put the verdict sentence and the footprint in `summary`. Put the Step 1 commands in `validation`.
-- `reviews[0].findings`: each Blocking item and each Deferred item. For a Blocking item, set `severity` to `blocker` and `status` to `open`, and start `title` with its category. For a Deferred item, set `severity` to `minor` and `status` to `deferred`. Put the file and the line in `location`. Put the mechanism and the evidence in `detail`. Put the fix or the follow-up in `fix`.
+- `reviews[0].findings`: each finding. Set `severity` to `major` or `minor`. Set `status` to `open` for a fix-now item and to `deferred` for a defer item. Start `title` with the category of a hard block. Put the file and the line in `location`. Put the mechanism and the evidence in `detail`. Put the fix or the follow-up in `fix`.
 - `reviews[0].split`: the stacked-PR split proposal, or `No split recommended.`
 - `handTest`: the commands that exercise the change, in order. Give each command a `path:line` reference in the PR head.
 - `rollback`: the steps that undo the merge, for example `git revert -m1 <merge-sha>`. Add any data or configuration undo.
@@ -196,14 +213,15 @@ Use the writing rules of the report: be concise, and use no em-dashes or en-dash
 
 Post one GitHub review with `event: "COMMENT"`. The review has only these parts:
 
-1. **One inline comment for each issue**, Blocking and Deferred, on its diff line. Start the comment with its label (`[blocking: <category>]` or `[deferred]`). Then write the mechanism, the evidence and the fix in a few sentences.
+1. **One inline comment for each issue**, fix now and defer, on its diff line. Start the comment with its severity label (`[major]` or `[minor]`). Then write the mechanism, the evidence and the fix in a few sentences.
 2. **A short body.** Do not put the validation, the footprint, the split proposal, a list of the issues or the Step 4 media in it. End it with `:)`.
-   - Deferred issues only: `We found N issues. We defer their fix to follow-up work. :)`
-   - One or more blocking issues: `We found N blocking issues. Fix them before the merge.` Then add `We also found M issues. We defer their fix to follow-up work.` when deferred issues exist. End with `:)`.
+   - Issues: `We found N major issues and M minor issues. :)` Omit a part with a count of zero, for example `We found 2 minor issues. :)`.
    - No issues: `We found no issues. :)`
    - Write "issues", not "items".
 
-Show blocking issues in a posted review only in a single-shot review or in the last round of an adversarial review. In an earlier round, the fixer fixes the blocking issues at once, and you post nothing.
+**Never put the disposition on the PR.** Do not write "defer", "follow-up", "fix before the merge" or the defer policy in a comment or in the body. The dispositions stay in the chat report.
+
+Post the findings only in a single-shot review or in the last round of an adversarial review. In an earlier round, the fixer fixes the fix-now items at once, and you post nothing.
 
 **Proof of work in the PR description.** Each PR needs proof of the changed behavior in an actual run: screenshots, screen recordings or terminal sessions of the real program. When the PR description has no proof, capture it in Step 1 and add it. Do not add proof to the review or to a PR comment. A terminal GIF of the program at work is good proof. Never upload a recording or a screenshot that only shows a test suite or a unit test run. Never add the Step 4 screenshots of the review page.
 
@@ -212,7 +230,7 @@ Show blocking issues in a posted review only in a single-shot review or in the l
 - In the description, add a `## Proof` section. Show the most important GIF or screenshot first. Put the other files in a `<details>` list. Link each file as `https://github.com/<owner>/<repo>/blob/explainer-media/pr-<n>-feature/<file>?raw=true`.
 - Keep the other text of the description. Replace an earlier proof section. Do not add a second one.
 
-**Never post before a human approves the review in chat.** Step 4 is that checkpoint. Print the review body, then each inline comment with its `path:line`, then the proof files for the PR description. The preview lets the user find a wrong class or unclear text. A posted review is hard to undo.
+**Never post before a human approves the review in chat.** Step 4 is that checkpoint. Print the review body, then each inline comment with its `path:line`, then the proof files for the PR description. The preview lets the user find a wrong severity, a wrong disposition or unclear text. A posted review is hard to undo.
 
 Getting the line anchors right, which is the part that bites:
 
@@ -246,4 +264,4 @@ Skip Step 4 unless the prompt asks for it. A headless session has no person to s
 Use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
 Keep the same shell active until the review ends.
 
-The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Write one `COMMENT` review payload to `review.json` as [Posting to GitHub](#posting-to-github) tells you: one inline comment for each issue and the short body. Never post it. Headless mode has no person to approve it, so a human approves it in chat later. Report the path of `review.json`. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.
+The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Write one `COMMENT` review payload to `review.json` as [Posting to GitHub](#posting-to-github) tells you: one inline comment for each issue and the short body. Never post it. Headless mode has no person to approve it, so a human approves it in chat later. Write the chat report of Step 3, with the proposed dispositions, next to it as `report.md`. Report the paths of `review.json` and `report.md`. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.

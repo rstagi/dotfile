@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Follow `CODING_STANDARDS.md` for plans, code and reviews. A plan or a PR blocks only on security, unprotected breakage of existing behavior, or a failing deterministic check. All other items are deferred.
+Follow `CODING_STANDARDS.md` for plans, code and reviews. A plan or a PR blocks only on security, unprotected breakage of existing behavior, or a failing deterministic check. These hard blocks are always fixed. A PR review labels each finding `[major]` or `[minor]`. The repository defer policy (`flag` or `strict`) and the owner decide in the chat which other findings the PR fixes and which it defers.
 
 ## Repository Overview
 

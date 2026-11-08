@@ -60,7 +60,7 @@ assert_contains "$PR_REVIEW_FLAT" 'Do not write a retro file outside a Loop run.
 assert_contains "$PR_REVIEW_FLAT" 'Wait for the approval before you post.' "the checkpoint waits for approval"
 assert_contains "$PR_REVIEW" 'add them to the PR description, not to the review' "the PR description carries the feature media"
 assert_contains "$PR_REVIEW" 'Never add the Step 4 screenshots of the review page.' "the review page screenshots stay out of the PR"
-assert_contains "$PR_REVIEW" 'We found N issues. We defer their fix to follow-up work.' "the review body names the deferred issues"
+assert_contains "$PR_REVIEW" 'We found N major issues and M minor issues. :)' "the review body counts major and minor issues"
 assert_lacks "$PR_REVIEW" 'video' "Step 4 makes no video"
 [[ "${PR_REVIEW%%'## Step 4'*}" != *'## Posting to GitHub'* ]]
 assert_exit "$?" "0" "Step 4 comes before the post"

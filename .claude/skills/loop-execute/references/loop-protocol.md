@@ -1371,7 +1371,11 @@ that the PR edits outside its feature folder, and their count. More than 3 files
 discussion, not a blocking finding.
 
 Put findings in inline review comments where the diff permits and keep the overall body
-concise. End the body with `:)` and include
+concise. Each inline comment starts with its severity, `[major]` or `[minor]`. A blocking
+finding is always major. The internal class and the disposition (fix now or defer) never go on
+the PR. The report gives each deferred finding its severity and a proposed disposition from the
+repository defer policy (`CODING_STANDARDS.md`). The owner decides it at the gate checkpoint.
+End the body with `:)` and include
 `<!-- loop-review:<runId>:p<N>:<owner--repo>:final -->`. Query all existing PR reviews
 for that marker. If it exists, reuse its URL and verdict and write no payload. Save the verdict as
 `status.json.event`. Map the verdict to repository outcome: `REQUEST_CHANGES → blocked`,

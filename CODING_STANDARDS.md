@@ -1,6 +1,6 @@
 # Coding standards: fast and erasable
 
-A plan or a PR passes on two tests. It does not break existing behavior. It is easy to remove. Write down all other concerns as deferred issues. Do not block on them.
+A plan or a PR passes on two tests. It does not break existing behavior. It is easy to remove. The defer policy of the repository and the owner decide which other concerns the PR fixes and which concerns go to follow-up work.
 
 These rules apply to new work. Existing code moves to this layout only in its own refactor PR.
 
@@ -60,31 +60,53 @@ Rules:
 
 ## Review rules
 
-Block a plan or a PR only for these 3 reasons:
+A review gives each finding two things: a **severity** and a **disposition**. The severity goes on the PR. The disposition goes only in the chat.
+
+### Hard blocks
+
+These 3 reasons always block a plan or a PR. Nobody defers a hard block:
 
 1. **Security or safety.** Examples: a leaked secret, an auth or permission bypass, data exposure, and unsafe handling of user data. Also any change that can cause real harm in production.
 2. **Unprotected breakage of existing behavior.** The PR changes current behavior, and no feature flag or equivalent off switch protects it. Or the PR breaks existing tests with the flag off.
 3. **A failing deterministic check.** Examples: the architecture tests, the flag off/on test matrix, the monitoring check or the delete test. These block because CI fails, not because a reviewer decides so.
 
-All other items are deferred issues. They never block. Examples: names, style, extra abstractions, missing edge cases in flagged code, performance ideas, more tests, cleaner refactors and documentation. Put them in a short "Deferred issues" list and continue.
+### Severity: major or minor
+
+- `[major]`: a real defect, with evidence (a repro, a failing output or the code path). A hard block is always major. Other examples: wrong behavior or a data bug in new code, also in flagged code, a missing test for the main new behavior, and code that breaks a contract that the author wrote.
+- `[minor]`: all other findings. Examples: names, style, extra abstractions, performance ideas, more tests for edge cases, cleaner refactors and documentation.
+- Do not raise a severity. When you are not sure, the finding is minor. A finding with only reasoning and no evidence is minor.
+
+### Disposition: fix now or defer
+
+- A hard block is always "fix now".
+- For each other finding, the agent proposes "fix now" or "defer" with a reason in one sentence. The defer policy of the repository gives the default proposal. The owner and the agent decide in the chat, one finding at a time when necessary.
+- In a run with no owner in the chat (headless, Loop), the run fixes only the hard blocks. It lists each other finding with its proposed disposition for the owner at the next checkpoint. The owner decides there.
+
+### Defer policy of a repository
+
+| Policy | Default proposal | Repositories |
+|---|---|---|
+| `flag` | Defer a major behind an off-by-default feature flag. Fix now a major with no flag. Defer a minor. | Ratel Cloud |
+| `strict` | Fix now each major, also behind a flag. Fix now a minor when the fix is small and in the scope of the PR. Defer only with a reason, and only when the owner agrees. | Beluga and the other open-source repositories |
+
+Find the policy in this order: the line `Review defer policy: flag` or `Review defer policy: strict` in the repository CLAUDE.md or AGENTS.md, then the table above, then the owner. Until the owner answers, use `strict` for a public repository and `flag` for a private repository.
 
 Process:
 
-- An adversarial review has at most 2 rounds by default. A round that finds no blocking item ends the review. A later round checks only the fix of the blocking items. It does not look for new deferred issues.
+- An adversarial review has at most 2 rounds by default. A round that finds no blocking item ends the review. A blocking item is a finding with the disposition "fix now". A later round checks only the fix of the blocking items. It does not look for new findings to defer.
 - Keep the deferred list short and concrete. Remove each item that does not deserve a follow-up ticket.
 - Do not widen the scope of a PR to fix deferred items.
 - Triage deferred issues one time each week, not in the PR.
-- Do not raise the severity of an item to put it in the blocking list. When you are not sure, the item is deferred.
 
 Posting a review to GitHub:
 
 - Post only after a human approves the preview in chat. This rule applies to each run, also to a headless run. A headless run writes the review to a file and does not post it.
-- Put each issue in an inline comment on its diff line. Start each comment with its class: `[blocking: <category>]` or `[deferred]`.
+- Put each issue in an inline comment on its diff line. Start each comment with its severity: `[major]` or `[minor]`.
+- Never write the disposition on the PR: no "defer", no "follow-up", no "fix before the merge". Report the dispositions in the chat.
 - Keep the review body short. Do not put the validation, the footprint or a list of the issues in it.
-  - For deferred issues, write: "We found N issues. We defer their fix to follow-up work."
-  - For blocking issues, write: "We found N blocking issues. Fix them before the merge."
+  - Write: "We found N major issues and M minor issues." Omit a part with a count of zero. With no issues, write: "We found no issues."
   - Write "issues", not "items".
-- A posted review shows blocking issues only for a single-shot review or for the last round of an adversarial review. In an earlier round, the fixer fixes the blocking issues at once, and nothing is posted.
+- A posted review shows the findings only for a single-shot review or for the last round of an adversarial review. In an earlier round, the fixer fixes the blocking items at once, and nothing is posted.
 - Put the proof of work in the PR description, as "Pull requests and proof of work" tells you. Do not put it in the review or in a PR comment.
 - Never put screenshots of the review page in the PR.
 
@@ -110,4 +132,4 @@ A new repository sets up these checks in CI from the start:
 - The monitoring check: with the flag on, each feature emits at least one `feature.<name>.` span and one product event.
 - The delete test.
 
-This repository does not add them. It has no feature slices and no CI workflow, and `ws` moves to its own repository later. Here, a reviewer reports a probable failure of these rules as a deferred issue. A check blocks only when it exists and fails.
+This repository does not add them. It has no feature slices and no CI workflow, and `ws` moves to its own repository later. Here, a reviewer reports a probable failure of these rules as a minor issue. A check blocks only when it exists and fails.

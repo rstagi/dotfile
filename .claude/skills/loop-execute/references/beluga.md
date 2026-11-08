@@ -261,8 +261,11 @@ Give it when a review phase ends, when the loop parks at a merge gate and at the
 1. The verdict of each repository: `badge:approved` or `badge:changes-requested`, with the PR link.
 2. A Markdown table of the *Done when* results from the converge report: criterion, state
    (met, partial or missing) and evidence.
-3. The findings: the number of blocking and deferred findings, and each blocking finding in one
-   line. Write the full review to a report with `write_report`.
+3. The findings: the number of major and minor findings, and each blocking finding in one
+   line. Then the defer policy of the repository and each deferred finding with its severity,
+   its proposed disposition (fix now or defer) and the reason. Ask the owner to confirm or change
+   the dispositions. A finding that the owner sets to fix now becomes a fix phase before the
+   merge. Write the full review to a report with `write_report`.
 4. The graph of the whole plan (as in the progress checkpoint), the details in words of all
    phases of the milestone, and a timeline view. When the rows cover more than one day, use a
    `gantt` view. Otherwise use a `bar` chart of the minutes of each phase.

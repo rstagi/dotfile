@@ -318,6 +318,11 @@ deferred list short and concrete. Then add "## Footprint": the existing files th
 outside its feature folder, and their count. More than 3 files is a point for discussion only.
 The verdict is REQUEST_CHANGES when at least one blocking finding stays open. Otherwise the
 verdict is APPROVE. Deferred findings never change the verdict.
+Give each finding a severity: major (a real defect with evidence, also behind a flag) or minor
+(all other findings). A blocking finding is always major. Find the defer policy of the
+repository (the line "Review defer policy: flag|strict" in CLAUDE.md or AGENTS.md, else the
+table in CODING_STANDARDS.md). In "## Deferred", give each finding its severity and a proposed
+disposition (fix now or defer) with a reason in one sentence. The owner decides it in the chat.
 Write the GitHub review payload to RUN_DIR/review.json:
 {commit_id, event, body, comments:[{path, line, side:"RIGHT", body}]}.
 A Loop PR stays a draft until a human marks it ready. GitHub rejects APPROVE and REQUEST_CHANGES
@@ -325,7 +330,9 @@ on a PR that the authenticated user opened. On a draft PR or on such a PR, use t
 in the payload, and start the body with "Verdict: <verdict>".
 Pin commit_id to the reviewed PR head. Use the real unified PR diff for inline anchors
 (added RIGHT-side lines, never cumulative format-patch offsets). Put findings inline where
-possible, keep the body concise, and end it with :).
+possible. Start each inline comment with [major] or [minor]. Never write the class, the
+disposition, "defer" or "follow-up" on the PR. Keep the body concise: "We found N major issues
+and M minor issues." (omit a part with a count of zero), and end it with :).
 FINAL
   printf 'Use the phase-scoped idempotency marker: <!-- loop-review:%s:p%s:%s:final -->\n' "$run_id" "$phase" "$repo"
   cat <<'FINAL'
