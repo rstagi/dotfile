@@ -128,10 +128,12 @@ milestones.
 - **Participants.** A milestone's participants are the repositories of its work phases.
   Prepare, PR creation, review, and the merge gate are scoped to participants.
 - **Gate.** Every non-final milestone ends with a `` `[kind: pr-review]` `` `` `[gate: merge]` ``
-  phase. When the milestone has no PR output, the gate is `` `[gate: accept]` `` and the human
+  `` `[rounds: 1]` `` `` `[inner: 1]` `` phase. Only the terminal review of the plan has the full
+  adversarial rounds. When the milestone has no PR output, the gate is `` `[gate: accept]` `` and the human
   accepts the outputs in `.loop/outputs/` in place of a merge. The root phases of milestone N+1 must list the gate in `Depends on` explicitly (the
-  parser warns, `loop-execute` preflight rejects if missing). Milestones always block the next;
-  there is no stacking. After the gate review verdict is ready the loop parks in
+  parser warns, `loop-execute` preflight rejects if missing). Milestones always block the next.
+  The Loop does not stack milestone PRs. When the owner wants stacked PRs, use only the GitHub
+  stacked PRs feature (`gh stack`, see `engineering-standards` § Stacked PRs). After the gate review verdict is ready the loop parks in
   `awaiting-merge` (plan Status `awaiting merge`) until a human merges and runs
   `/loop-execute resume`.
 - **Worktrees.** Milestone 1 keeps `…/<owner--repo>/integration`; milestones ≥2 use
@@ -324,7 +326,7 @@ the structure is shown):
 - **Depends on:** none
 - ...
 
-### Phase 2 — Review milestone 1 `[lane: review]` `[status: todo]` `[kind: pr-review]` `[gate: merge]`
+### Phase 2 — Review milestone 1 `[lane: review]` `[status: todo]` `[kind: pr-review]` `[gate: merge]` `[rounds: 1]` `[inner: 1]`
 - **Depends on:** Phase 1
 - **Done when:** every participating repository PR has a non-blocking review verdict
 
@@ -450,9 +452,9 @@ A board plan maps to the Beluga board as follows:
   Split phases whose likely upper bound exceeds 25 minutes without making artificial
   parallel lanes. The runner's 30-minute cutoff is a checkpoint, not proof that a phase
   will finish in one attempt.
-- **Loop mode ships one PR per repository.** Per-phase Suggested branches are short-lived
+- **Loop mode ships one PR per repository** (per milestone with milestones). Per-phase Suggested branches are short-lived
   lane branches cut from that repository's integration tip and merged back; no per-phase
-  PRs; `[status: done]` = merged into the phase repository's integration branch.
+  PRs. Several PRs that depend on each other are stacked only with `gh stack` (`engineering-standards` § Stacked PRs); `[status: done]` = merged into the phase repository's integration branch.
 - **Status agrees across copies:** for a board plan, the document and the board have the same
   status for each phase. `loop-handoff` updates the board.
 - **Naming: describe the work, never the index.** Phase titles, `Suggested branch`,

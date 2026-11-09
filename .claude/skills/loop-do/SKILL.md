@@ -26,7 +26,7 @@ plan with the same engine as a full plan:
 - a proof folder for each phase and progress checkpoints,
 - the escalation ladder (retry, stronger model, HIL pause),
 - converge, then the tiered adversarial review with `## Blocking` and `## Deferred` findings,
-- one draft PR for each repository, with proof of work in its description,
+- one draft PR for each repository, with proof of work in its description (several PRs that depend on each other are stacked only with `gh stack`),
 - one final verdict on each PR, posted only after a human approves it in chat.
 
 Do not copy the logic of `loop-execute`, `multiphase-plan` or `pr-review` into this skill.

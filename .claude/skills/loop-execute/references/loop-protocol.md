@@ -102,8 +102,9 @@ single-milestone path is unchanged). The one exception is the finish `ship` page
 explainers: it also runs for a plan with no milestones. Phase numbers stay global and stable.
 Each milestone ships as its own PR per participating repository (the repositories of its work
 phases) and, unless final, ends with a `[kind: pr-review]` `[gate: merge]` phase that every root
-phase of the next milestone lists in `Depends on` explicitly. Milestones always block the next —
-no stacking.
+phase of the next milestone lists in `Depends on` explicitly. Milestones always block the next.
+The Loop does not stack milestone PRs. When the owner wants stacked PRs, use only `gh stack`
+(`engineering-standards` § Stacked PRs). Never make a stack by hand with `gh pr create --base`.
 
 - **Branches.** Precedence: milestone repository line (`Integration branch (owner/repo)`) >
   milestone line > (milestone 1 only) `## Repositories` override > Loop config. Milestones ≥2

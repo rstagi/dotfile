@@ -803,6 +803,9 @@ Use `loop-state.sh note <key> "text"` (or omit text and pipe multiline stdin),
 
 - **Draft PRs only.** Open each PR with `gh pr create --draft`. Only a human marks a PR ready.
   Never run `gh pr ready`.
+- **Stacked PRs only with `gh stack`.** The Loop does not stack milestone PRs. When the owner
+  wants stacked PRs, use only the GitHub stacked PRs feature (`engineering-standards` § Stacked
+  PRs). Never use `--open` and never run `gh stack merge`.
 - **Never post a review before a human approves it in chat.** Runners, reviewers and the SUB never
   post. Only the interactive session posts, at the post gate (protocol § Review post gate).
 - **Always produce proof.** A `pr` phase that ends `done` with an empty `<runDir>/proof/` is a

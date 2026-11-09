@@ -73,7 +73,8 @@ This applies to each deferred item that you keep: the items in `## Deferred / No
 - **Vertical slices, not layers.** One phase ships the backend and the frontend of one capability. Backend first, then the frontend, on the same branch and in the same PR.
 - **Seams first.** A new seam in existing code is its own refactor phase with no behavior change, before the feature phase.
 - **Lanes.** Default to one sequential lane. Put two phases in parallel lanes only when all 3 are true: no dependency, low file contention, no coordination tax (no stubs, mocks, frozen interfaces or extra flags). Never reshape phases to make parallelism.
-- **Milestones.** Default: none, one PR per repository. Use milestones only when one PR is too big and each milestone leaves main shippable. Each non-final milestone ends with a review and a merge gate.
+- **Milestones.** Default: none, one PR per repository. Use milestones only when one PR is too big and each milestone leaves main shippable. Each non-final milestone ends with a short review (`[rounds: 1]` `[inner: 1]`) and a merge gate. Only the terminal review of the plan has the full adversarial rounds.
+- **Multiple PRs.** The execution of a plan can open more than one PR in one repository, for example one PR for each milestone. When a PR depends on an earlier PR that is not merged, stack the PRs (section 6, Stacked PRs).
 - **Branches:** `<type>/<imperative-outcome-slug>` (feat, fix, refactor, chore, docs, test). Never a phase number.
 - Every plan ends with one terminal review phase and has a `## Deferred / Not now` section (item · source · why it can wait).
 - **Review tier:** `standard` by default. `max` for large work or for security, auth, money or data integrity.
@@ -118,12 +119,31 @@ Skills: `loop-pickup` and `loop-handoff` when a person or a chat continues the w
 - One integration branch per repository, cut from the freshly fetched default branch. One draft PR per repository (per milestone with milestones). An agent always opens a PR as a draft. Only a human marks a PR ready. Never run `gh pr ready`.
 - At most 3 lanes at one time. Each lane works in its own worktree. Lane branches are never pushed.
 - A runner works only in its worktree, commits per logical step, and never pushes, opens a PR, edits the plan or asks the owner. It ends with exactly one outcome: done, question (one question with options) or blocked (with what it tried). "Done" with no new commits or with no proof is a stall.
+- **Engines.** Codex runs each work phase. Claude runs a phase only as a fallback or an escalation (`CHAIN_TASK` and `CHAIN_ESCALATE` in `loop-models.conf`). Do not run one phase on two engines. Only reviews use more than one provider.
 - An attempt has a hard limit of 30 minutes, with a checkpoint at about 25 minutes.
 - Merge conflicts: resolve them so that both phases still meet their *Done when*. Never widen scope. When not confident, stop and ask a human. When Verify fails on the merged tree, revert the merge and escalate.
 - Escalate in this order: retry, next model, orchestrator answers from the plan and the code, one attempt on a stronger model, then a human pause for that lane only. Apply earlier owner decisions before a human pause.
 - Always save proof after Verify. Proof shows the changed behavior in an actual run: a screenshot, a screen recording or a terminal session of the real program. A terminal GIF of the program at work is good proof. A recording that only shows a test suite or a unit test run is not proof. Never commit proof. Never show secrets or real user data.
 - Attach the visual proof to the PR description, in one `## Proof` section. Work with no proof is not done. When a runner cannot produce proof, it ends blocked with the reason.
 - **Never merge a PR or merge to main. Never force-push.** Only humans merge.
+
+### Stacked PRs
+
+A plan can have more than one PR in one repository. You can stack these PRs: each PR uses the branch of the PR below it as its base.
+
+- Stack PRs only when a PR depends on a PR below it that is not merged. When the PRs are independent, open each PR on the default branch.
+- The Loop does not stack milestone PRs: the next milestone starts after the merge gate. Stack PRs only when the owner wants a stack.
+- To stack PRs, use only the GitHub stacked PRs feature with the `gh stack` commands. Reference: <https://docs.github.com/en/pull-requests/reference/stacked-prs-cli-commands>. Do not make a stack by hand with `gh pr create --base <branch>`, and do not use other stack tools.
+- Commands:
+  1. `gh stack init -b <default-branch> <first-branch>` starts the stack.
+  2. `gh stack add <next-branch>` adds a branch on top. Run it on the top branch of the stack.
+  3. `gh stack submit --auto` pushes all the branches and creates or updates the PRs and the stack on GitHub. It opens new PRs as drafts.
+  4. `gh stack sync` fetches, rebases the stack on its parents, pushes and updates the PR state. When it reports a conflict, run `gh stack rebase`, resolve the conflict, then run `gh stack rebase --continue`.
+  5. `gh stack view` shows the stack.
+- Never use `gh stack submit --open` or `gh stack link --open`. These mark PRs ready. Only a human marks a PR ready.
+- Never run `gh stack merge`. Only humans merge.
+- `gh stack sync`, `gh stack rebase` and `gh stack push` push the rebased stack branches with `--force-with-lease`. This is the only permitted force-push.
+- When a `gh stack` command ends with exit code 9, stacked PRs are not enabled for the repository. Do not make a manual stack. Ask the owner as a human-pause question (section 8).
 
 ## 7. Review
 
@@ -135,6 +155,7 @@ Skill: `pr-review` for each review.
 - Each missing criterion becomes a new fix phase before the review. List unplanned work as information, not as a gap.
 
 ### Adversarial rounds
+- Run the full rounds one time for each plan, in the terminal review. A review at a non-final milestone gate has 1 outer round and 1 inner exchange.
 - Default 2 outer rounds and 2 inner exchanges. A reviewer and a critic from different providers rotate each round. A clean round ends the review early.
 - Inside a Loop run, each finding has one internal class: `[blocking: security]`, `[blocking: unprotected-breakage]`, `[blocking: failing-check]` or `[deferred]`. Only the hard blocks are blocking. A blocking finding needs evidence (a repro or failing output). Reasoning alone makes it deferred. These classes never go on the PR.
 - The critic answers AGREE or DISAGREE with code evidence. A deferred finding is never a disagreement.

@@ -81,7 +81,8 @@ work well — **do not plan blind**:
   - hard constraints and sequencing (deadlines, must-land-first, compatibility)
   - repositories touched and each repository's `Verify:` gate (never invent one)
   - integration branch, when the default would be wrong
-  - milestones: one PR, or several (propose several only when the effort is too big for one PR)
+  - milestones: one PR, or several (propose several only when the effort is too big for one PR).
+    Several PRs that depend on each other are stacked only with `gh stack` (`engineering-standards` § Stacked PRs)
   - review tier (`standard`/`max`, outer rounds, inner cap) — propose one from size and risk
 
   Do not ask about a detail that does not block the plan, for example a name or a file
@@ -115,7 +116,7 @@ Author the plan in the **canonical plan format** (see
 - **Deferred / Not now** — every plan has this section. Write one line for each item that the
   plan does not need to pass the 3 blocking rules. Do not add phases, fields or notes for
   these items.
-- **Milestones** — default to none (one `## Phases` list, one PR per repository). Propose milestones only when the effort is too big for one PR and each milestone leaves main shippable on its own; confirm in the step-1 question gate. Each non-final milestone ends with a `[kind: pr-review]` `[gate: merge]` phase, and the next milestone's root phases list that gate in `Depends on`; milestones ≥2 must declare their own integration branch; milestone 1 may fall back to Loop config. Grammar and template: `references/plan-format.md` → Milestones.
+- **Milestones** — default to none (one `## Phases` list, one PR per repository). Propose milestones only when the effort is too big for one PR and each milestone leaves main shippable on its own; confirm in the step-1 question gate. Each non-final milestone ends with a `[kind: pr-review]` `[gate: merge]` `[rounds: 1]` `[inner: 1]` phase, and the next milestone's root phases list that gate in `Depends on`; milestones ≥2 must declare their own integration branch; milestone 1 may fall back to Loop config. Grammar and template: `references/plan-format.md` → Milestones.
   A plan keeps full phase blocks only for milestones that have not shipped. When the gate PRs of a milestone merge, `loop-execute` archives the milestone. Its phase blocks and its progress-log entries move to `.loop/milestones/m<N>.md`. `plan.md` keeps a short `[archived]` stub. When you edit an existing plan, do not copy archived blocks back into it. A phase that an `[archived]` stub lists is an existing phase with status `done`. Grammar: `references/plan-format.md` → Archived milestones.
   **Lessons.** Before you change the phases of a plan with archived milestones, read the `### Lessons` of the last 3 archive files. These are the `.loop/milestones/m<N>.md` files with the 3 highest N. An archive file without a `### Lessons` section gives no lessons. Apply each lesson that fits a phase that you add or change. For example, change its *Done when*, its `Verify:` command or its estimate. In the step 3 disposition table or the report, name each lesson that you applied and its archive file.
 - **Output kind** — choose the output of each work phase and tag it
