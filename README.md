@@ -15,102 +15,11 @@ Bare-minimum Conductor in tmux: a git worktree + tmux session per branch, one ta
 
 ## Agent checkpoints
 
-Invoke `/checkpoint-30` in Claude or `$checkpoint-30` in Codex to request a status report and guidance after 30 minutes on one interactive task. Interactive timing is advisory. Loop phase attempts have a hard 30-minute cutoff and return a checkpoint to the orchestrator; other phases continue.
+Invoke `/checkpoint-30` in Claude or `$checkpoint-30` in Codex to request a status report and guidance after 30 minutes on one interactive task. Interactive timing is advisory.
 
-Loop defaults: latest Opus orchestrator; latest GPT Sol phase executor with latest Sonnet fallback. Escalation (Fable, Opus fallback) and review use separate model chains. Effort is per role: implementing `high`, Opus fixes `medium`, orchestrating `high`, reviewing by tier. PR-review phases accept `[review: standard|max]` (default standard): standard uses Sol / Opus / Grok; max uses Astra / Fable / Grok. `[rounds: N]` sets the maximum number of outer rounds (default 2) and `[inner: N]` caps reviewer/critic exchanges per round (default 2). Both accept 1..5. Chains in `loop-models.conf` track the newest model of each family — Claude aliases (`opus`, `sonnet`, `fable`), Codex `@<family>` legs (`codex:@sol`, resolved at launch from `codex debug models`) and `grok:default` (the Grok CLI's default model) — so new releases need no edit; pin a full model name to freeze one. Grok reviewers need `grok` installed + logged in (`./install.sh grok`, then `grok login`) and send the reviewed repo to xAI (see the Grok caveat in [ws/README.md](ws/README.md)); a failed Grok reviewer blocks that repository's review like any other reviewer.
+## Loop Do
 
-Adversarial Review (AR) freezes the artifact while reviewer R reports numbered findings and critic C audits them with full code context. Disagreements require code evidence; R responds and C audits again within the inner cap. Only the fixer (or planner for plan review) edits the artifact, between outer rounds. Providers rotate: GPT reviews / Claude critiques in round 1, Claude / Grok in round 2, Grok / GPT in round 3, then repeat. When R and C agree that no blocking finding is open, the review skips later rounds and goes to the final review. Unresolved disagreements at the cap produce `.disputed.md`, never a clean round. Each finding is blocking (a security problem, unprotected breakage or a failing check) or deferred. Only blocking findings make R say `NEEDS_CHANGES`, start fixes or make the final review request changes. Before the last outer round, Opus fixes run when the last review says `NEEDS_CHANGES` or the round is disputed. The next round checks only the fix diff and the open blocking items. The final Opus reviewer checks the last converged review, disputed items, and current code, then posts the only GitHub review.
-
-New Loop plans include an estimate and confidence for each work phase. The planner targets 20–25 minutes of active work per phase, leaving room for the 30-minute runner checkpoint. The terminal review phase uses a per-repository AR ledger. `loop-review.sh next --tier standard --rounds 2 --inner 2 --ledger <file>` returns the next reviewer, critic, response, fix, or final run; a clean round stops later rounds. `record` appends completed evidence atomically, `recover` replays finished runs after a crash, and `prompt` renders each role’s instructions. The CLI rejects legacy shallow/medium tiers. Recovery retains custom limits in the ledger’s `.config.json` sidecar. Retries and queue waits can take longer.
-
-Each `runs/review-p<N>-<owner--repo>.ledger.tsv` row contains `a<k>`, stage, role, provider, verdict token, and run directory relative to `.loop/`. Roles are `review|critic|respond|confirm|disputed|fix|final`; a clean round implies skipped rounds without writing skipped rows. Old ledgers with third-provider `confirm` rows still replay. Resume recovers completed runs, reconciles the GitHub final marker, then calls `next`. Plan review uses the same shared `loop-ar.sh` core: `loop-plan-review.sh run --round r` runs one independent round; the planner verifies findings and disputes against code and edits between rounds (at most 2 via `LOOP_PLAN_REVIEW_ROUNDS`, round 2 only after a blocking fix). `multiphase-plan light <goal>` skips plan review and the plan explainer. See [the AR protocol](.claude/skills/loop-execute/references/loop-protocol.md) and [rollout steps](CLAUDE.md#architecture) before upgrading an active loop.
-
-The skills engine records review results with `loop-runner.sh --review-key <step key> --publish-output <report>` and `WS_LOOP_ID`. Keys use `review:<phase>:<repo or none>:<role>:<round>:<inner>:attempt:<k>`. Each published result appends one `loop.review` event with the key suffix `:result`. Final verdicts come from `status.json`, including `COMMENT` and `REQUEST_CHANGES`. Fixes need remote-head proof from `loop-ar.sh prove-fix`. `loop-ar.sh disputed --ledger <file> --review-key <step key>` records its sidecar without a runner session. Checkpoints and unsuccessful runs append no result. Keyed reviews append no `loop.attempt` result. Without these options, the old engine retains its behavior.
-
-The plan tools require Node >= 22.18. `node loop-plan-parse.mjs --plan .loop/plan.md` prints normalized plan JSON. Use `--plan -` to read standard input. The parser and `loop-plan.sh archive` use `loop-plan-model/` and need no `loop-web/` files. The daemon keeps its own parser until it retires.
-
-The Loop skills use no `wsd` and no Loop daemon. A plan with `board: <epic key>` in its header lives
-on the Beluga board: the epic is the plan, each milestone is a sub-task and each phase is a task
-under its milestone. `.loop/plan.md` is the execution copy. `loop-board.mjs split` turns a plan into
-task specs, `export` renders the plan from `~/.beluga/board.json`, `check` compares the two and
-`keys` prints the task keys. For a board plan, `loop-plan.sh get --dir .loop` renders the plan,
-`register` and `push` only print the planId and `note` appends to `.loop/board-outbox.jsonl`.
-A plan without `board:` is a file plan: `.loop/plan.md` is the only copy.
-Every loop exports `LOOP_DAEMON=off LOOP_WS_SESSIONS=0 LOOP_EMIT_FILE=<abs .loop>/emitted.jsonl`:
-`loop-emit.sh` then writes events to that file and makes no network call.
-`loop-checkpoint.mjs --dir .loop [--since <time>] [--all] [--sheet <file.svg>]` prints the progress
-checkpoint data (stats, per-phase drift from the plan, timeline, new proof media and a
-beluga-graph of the plan with drift, proof image nodes, earlier checkpoints and a walkthrough) for any client to render. `--sheet` also writes one SVG of the whole plan, the drift and
-the newest proof. `loop-proof.mjs publish --dir .loop --out <folder>` copies the proof of each
-finished phase to one folder as `M<m>-P<NN>-<title>--<file>` and adds a proof card SVG.
-The older `wsd` engine scripts below stay in the repository but no skill uses them.
-
-For the skills engine, `WS_LOOP_ID=<loop-session-id> ./loop-milestone.sh open --dir .loop`
-starts from `plan.md` alone or adopts an advanced `state.json`. It prepares missing integration
-worktrees and records the current milestone, phases and merged gates in the loop session.
-A second call changes nothing. Without `WS_LOOP_ID`, it exits 1. A parked loop exits 3 and
-requires `loop-milestone.sh resume`. The `check` and `advance` commands retain their existing behavior.
-
-After the gate PRs merge, run `./loop-milestone.sh resume --dir .loop`, then `ws loop start .loop`.
-The resume command checks the PRs, archives shipped milestones, prepares the next integration
-worktrees, and applies one state patch. With `WS_LOOP_ID`, it records keyed gate, milestone and
-phase events. Without that variable, it updates the files and the plan only. A retry after the
-apply continues from `resumePending`. Open or closed PRs stop the command without changes.
-`ws loop resume` only clears a pause.
-
-## Loop dashboard (`loop-top`)
-
-`loop-top` shows the phases of a Loop run in the terminal, live from the central daemon (`:7717`). Run it anywhere: it infers the loop from cwd (coordinator worktree, phase worktree, or git branch + origin) and otherwise opens an fzf picker over active + finished loops. HIL questions are still answered through the orchestrating agent.
-
-- Rows show the model that actually ran (`codex:gpt-6.1-sol`), 📝 on phases with a note, deps (`← 2a, 2b`), and `waiting on 2a` for a todo phase with unmerged deps.
-- `↑↓`/`j k` select a phase, `⏎` opens its details (attempts, heartbeat, HIL text, note), `esc` goes back.
-- `n` edits the phase's steering note in `$EDITOR` (empty = clear). A running phase picks it up within ~2s: the runner interrupts the engine and resumes the same session with the note.
-- `x` pauses/resumes the selected phase; `X` pauses/resumes the whole loop (asks y/n). Pausing halts the runners (and the orchestrator for `X`) within ~2s; resuming continues the same engine session.
-- Review phases show their tier and rounds (`standard review ×2`); change them with `[review: standard|max]` / `[rounds: N]` / `[inner: N]` in the plan.
-- A running review phase shows its current stage and progress, plus one pipeline per repository. Completed runs come from the AR ledger; the remaining path is planned, and a clean third-provider confirmation marks later rounds skipped. Skipped stages do not count as pending or become the current stage. Its `⏎` details list every run (`a<k>`, stage, chain, state, model — planned model in parens — and summary). The Observatory drawer also shows role, provider, and verdict.
-- A shipped (archived or gate-merged) milestone is one line, `M5 — <title> ✓ completed 2026-10-26 11:02` (local time; no time when the source has none). Its phases are hidden. A done phase shows how long it took from its first start and when it finished: `42m · 10-26 11:02`.
-- Model column: `codex:gpt-6.1-sol` = what ran / is running now (live from the runner's `leg.json`), `→ claude:opus` = your override, `(codex:@sol)` = planned (first `CHAIN_TASK` leg; the light/default route is decided at launch), `standard review ×2` = review tier (untagged review phases use the default tier).
-- `m` on a review phase that hasn't started picks `standard` or `max`, showing rounds, inner cap, R/C rotation, fixer, and final models from `loop-models.conf` — the daemon rewrites its `[review: …]` tag in `.loop/plan.md`. Historical shallow/medium tiers still render, but cannot be selected for execution. The tier can also be named up front when calling `multiphase-plan` ("review: max"); otherwise it's proposed and confirmed there.
-- `m` sets the model for a phase that hasn't started (fzf over `loop-models.conf` legs, or type `engine:model`); the default chain stays as fallback.
-- `p` opens the plan in `$PAGER`; `g` toggles a git-log-style dependency graph; `w` toggles `branch → worktree`; `l` switches loop; `q` quits.
-- `loop-top <runId>` opens a specific loop; `loop-top --once [--worktrees] [--graph]` prints one frame.
-- Loop picker (start without an inferable loop, or `l`): opens in navigation mode — `⏎` open · `a` archive (reloads) · `j`/`k` move · `q` quit; `/` shows the search box (`esc` hides it).
-- `ltop` is a shorthand alias for `loop-top`.
-- `loop-top archive [runId]` hides a loop from the picker (default: the one inferred from cwd; asks first, `--yes` skips) without touching its worktree; `loop-top unarchive <runId>` brings it back. Loops whose coordinator worktree is gone are archived automatically.
-- Daemon down → renders the last stored snapshot from `~/.loop/loops` (`daemon offline · from store`); actions need the daemon.
-
-## Jev decisions in Loop
-
-Loop can ask Jev for bounded route, runner-question, and pre-merge-risk recommendations. Put a
-single-line key in `~/dotfile/.loop-secrets/typesafe-api-key` (gitignored; owner-readable only),
-or set `TYPESAFE_API_KEY` in the supervisor environment. The environment value takes precedence;
-`LOOP_JEV_KEY_FILE` can select another local file. Then choose a mode:
-
-- `LOOP_JEV_MODE=off` disables calls explicitly. With no mode and no key, Loop is also off and
-  records `missing_credentials`; explicit `off` records `disabled`.
-- `LOOP_JEV_MODE=shadow` records advice but preserves the established route and triage behavior.
-- `LOOP_JEV_MODE=active` may apply only allowlisted, above-threshold decisions. Routing remains
-  opt-in until shadow replay supports the configured threshold.
-
-Routing sends bounded phase title, Done when, and Estimate text after redacting common credential
-forms. Without Done when and Estimate evidence, active routing keeps the default task chain.
-Pre-merge risk requests send changed paths, diff totals, Done when, and a bounded verification
-summary; they omit patch contents. The mandatory full diff skim still runs locally.
-
-Verification, full diff review, merge checks, escalation, and human gates remain authoritative in
-every mode. Observatory shows the current mode and fallback count in the header, decision badges on
-phases, and proposal-versus-applied details in the phase drawer. Archived loop snapshots retain the
-same decision history.
-
-Replay one or more stored loop records locally without modifying them:
-
-```bash
-node loop-jev-replay.mjs ~/.loop/loops/<run-id>.json | jq .
-```
-
-The report includes agreement and fallback rates. Latency, runner retries, and cost are shown only
-when present in the records and otherwise read `unavailable`. Synthetic fixtures validate report
-mechanics only; they do not support savings claims.
+Invoke `/loop-do <request>` in Claude or `$loop-do <request>` in Codex. The skill plans the request in chat, does the work, checks the plan against the code, opens one draft PR with proof and reviews it. It uses no scripts.
 
 ## Manual configurations
 

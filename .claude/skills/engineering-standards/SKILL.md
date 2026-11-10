@@ -2,10 +2,10 @@
 name: engineering-standards
 description: >-
   The rules for each plan, execution and review: what blocks and what is deferred, the coding
-  standards, TDD, when to run tests, lanes, escalation, the review rounds and when to stop for a
-  human. Use this skill when you plan, execute or review work in a repository, for example in the
-  Beluga advanced planning, a task brief or a phase runner. Use it also when you must decide if a
-  finding blocks a plan or a PR.
+  standards, TDD, when to run tests, PRs, reviews and when to stop for a human. Use this skill
+  when you plan, execute or review work in a repository, for example in the Beluga advanced
+  planning, a task brief or loop-do. Use it also when you must decide if a finding blocks a plan
+  or a PR.
 ---
 
 # Engineering standards
@@ -18,12 +18,10 @@ These rules apply to every plan, every execution and every review. When a step n
 
 | Step | Skill | Use it when |
 |---|---|---|
-| Continue in a fresh chat or worktree | `loop-pickup` | A new worktree or chat starts a lane. |
-| Save progress for the next chat | `loop-handoff` | A work session ends or the worktree changes. |
 | Review a PR or a branch | `pr-review` | Each review of a PR or a branch. |
 | Diagnose a hard bug or a regression | `diagnosing-bugs` | Something is broken, throws, fails or is slow. |
 | Design a module or a seam | `codebase-design` | A phase adds or changes an interface or a seam. |
-| Write text that an agent reads | `asd-ste100` (Strict) | Task briefs, prompts, runner questions and messages to agents. |
+| Write text that an agent reads | `asd-ste100` (Strict) | Task briefs, prompts and messages to agents. |
 
 ## 1. Core principle: fast and erasable
 
@@ -72,14 +70,11 @@ This applies to each deferred item that you keep: the items in `## Deferred / No
   - a `Touches:` footprint: feature folder · wiring point · flag. Then each existing file edited outside the folder, with a one-line reason. More than 3 such files needs a reason. This is a point for discussion, not a block.
 - **Vertical slices, not layers.** One phase ships the backend and the frontend of one capability. Backend first, then the frontend, on the same branch and in the same PR.
 - **Seams first.** A new seam in existing code is its own refactor phase with no behavior change, before the feature phase.
-- **Lanes.** Default to one sequential lane. Put two phases in parallel lanes only when all 3 are true: no dependency, low file contention, no coordination tax (no stubs, mocks, frozen interfaces or extra flags). Never reshape phases to make parallelism.
-- **Milestones.** Default: none, one PR per repository. Use milestones only when one PR is too big and each milestone leaves main shippable. Each non-final milestone ends with a short review (`[rounds: 1]` `[inner: 1]`) and a merge gate. Only the terminal review of the plan has the full adversarial rounds.
+- **Parallel work.** Default to one sequence of phases. Run two phases in parallel only when all 3 are true: no dependency, low file contention, no coordination tax (no stubs, mocks, frozen interfaces or extra flags). Never reshape phases to make parallelism.
+- **Milestones.** Default: none, one PR per repository. Use milestones only when one PR is too big and each milestone leaves main shippable.
 - **Multiple PRs.** The execution of a plan can open more than one PR in one repository, for example one PR for each milestone. When a PR depends on an earlier PR that is not merged, stack the PRs (section 6, Stacked PRs).
 - **Branches:** `<type>/<imperative-outcome-slug>` (feat, fix, refactor, chore, docs, test). Never a phase number.
-- Every plan ends with one terminal review phase and has a `## Deferred / Not now` section (item · source · why it can wait).
-- **Review tier:** `standard` by default. `max` for large work or for security, auth, money or data integrity.
-- **Plan review:** at most 2 adversarial rounds. Fix true blocking findings in the plan. Put deferred findings in Deferred / Not now. Round 2 runs only when round 1 fixed a blocking finding, and it checks only those edits.
-- Never renumber or reuse a phase number. Add new work before a pending review phase.
+- Every plan ends with one review and has a `## Deferred / Not now` section (item · source · why it can wait).
 - End the plan with a very short list of unresolved questions, if any.
 
 ## 3. Coding standards
@@ -100,7 +95,7 @@ Source: `CODING_STANDARDS.md`. Skill: `codebase-design` for seams and module int
 - One slice at a time: one seam, one test, one minimal implementation per cycle. Never write all tests first.
 - Test behavior through public interfaces. Domain tests do no I/O and use in-memory fakes of the ports. Each adapter has a contract test. Tests live in the feature folder.
 - No implementation-coupled tests (mocks of internals, tests of private methods). No tautological tests (expected values that copy the code's calculation).
-- Refactoring is not part of the loop. It belongs to the review.
+- Refactoring is not part of the red-green cycle. It belongs to the review.
 
 ## 5. Tests: when and where
 
@@ -114,17 +109,13 @@ Source: `CODING_STANDARDS.md`. Skill: `codebase-design` for seams and module int
 
 ## 6. Execution
 
-Skills: `loop-pickup` and `loop-handoff` when a person or a chat continues the work. `diagnosing-bugs` when a phase is stuck on a failure.
+Skill: `diagnosing-bugs` when a phase is stuck on a failure.
 
-- One integration branch per repository, cut from the freshly fetched default branch. One draft PR per repository (per milestone with milestones). An agent always opens a PR as a draft. Only a human marks a PR ready. Never run `gh pr ready`.
-- At most 3 lanes at one time. Each lane works in its own worktree. Lane branches are never pushed.
-- A runner works only in its worktree, commits per logical step, and never pushes, opens a PR, edits the plan or asks the owner. It ends with exactly one outcome: done, question (one question with options) or blocked (with what it tried). "Done" with no new commits or with no proof is a stall.
-- **Engines.** Codex runs each work phase. Claude runs a phase only as a fallback or an escalation (`CHAIN_TASK` and `CHAIN_ESCALATE` in `loop-models.conf`). Do not run one phase on two engines. Only reviews use more than one provider.
-- An attempt has a hard limit of 30 minutes, with a checkpoint at about 25 minutes.
-- Merge conflicts: resolve them so that both phases still meet their *Done when*. Never widen scope. When not confident, stop and ask a human. When Verify fails on the merged tree, revert the merge and escalate.
-- Escalate in this order: retry, next model, orchestrator answers from the plan and the code, one attempt on a stronger model, then a human pause for that lane only. Apply earlier owner decisions before a human pause.
+- One work branch per repository, cut from the freshly fetched default branch. One draft PR per repository (per milestone with milestones). An agent always opens a PR as a draft. Only a human marks a PR ready. Never run `gh pr ready`.
+- At most 3 parallel subagents at one time. Each subagent works in its own worktree and commits per logical step.
+- Merge conflicts: resolve them so that both phases still meet their *Done when*. Never widen scope. When not confident, stop and ask a human. When Verify fails on the merged tree, revert the merge and fix the failure.
 - Always save proof after Verify. Proof shows the changed behavior in an actual run: a screenshot, a screen recording or a terminal session of the real program. A terminal GIF of the program at work is good proof. A recording that only shows a test suite or a unit test run is not proof. Never commit proof. Never show secrets or real user data.
-- Attach the visual proof to the PR description, in one `## Proof` section. Work with no proof is not done. When a runner cannot produce proof, it ends blocked with the reason.
+- Attach the visual proof to the PR description, in one `## Proof` section. Work with no proof is not done. When you cannot produce proof, stop and tell the owner the reason.
 - **Never merge a PR or merge to main. Never force-push.** Only humans merge.
 
 ### Stacked PRs
@@ -132,7 +123,7 @@ Skills: `loop-pickup` and `loop-handoff` when a person or a chat continues the w
 A plan can have more than one PR in one repository. You can stack these PRs: each PR uses the branch of the PR below it as its base.
 
 - Stack PRs only when a PR depends on a PR below it that is not merged. When the PRs are independent, open each PR on the default branch.
-- The Loop does not stack milestone PRs: the next milestone starts after the merge gate. Stack PRs only when the owner wants a stack.
+- Do not stack milestone PRs: the next milestone starts after the earlier PR merges. Stack PRs only when the owner wants a stack.
 - To stack PRs, use only the GitHub stacked PRs feature with the `gh stack` commands. Reference: <https://docs.github.com/en/pull-requests/reference/stacked-prs-cli-commands>. Do not make a stack by hand with `gh pr create --base <branch>`, and do not use other stack tools.
 - Commands:
   1. `gh stack init -b <default-branch> <first-branch>` starts the stack.
@@ -152,14 +143,12 @@ Skill: `pr-review` for each review.
 ### Plan check before the review
 - Check each *Done when* criterion against the code at the head. State: met, partial or missing.
 - Every "met" needs evidence: file:line, a test name or a command output. When unsure, "partial".
-- Each missing criterion becomes a new fix phase before the review. List unplanned work as information, not as a gap.
+- Fix each missing or partial criterion before the review. List unplanned work as information, not as a gap.
 
-### Adversarial rounds
-- Run the full rounds one time for each plan, in the terminal review. A review at a non-final milestone gate has 1 outer round and 1 inner exchange.
-- Default 2 outer rounds and 2 inner exchanges. A reviewer and a critic from different providers rotate each round. A clean round ends the review early.
-- Inside a Loop run, each finding has one internal class: `[blocking: security]`, `[blocking: unprotected-breakage]`, `[blocking: failing-check]` or `[deferred]`. Only the hard blocks are blocking. A blocking finding needs evidence (a repro or failing output). Reasoning alone makes it deferred. These classes never go on the PR.
-- The critic answers AGREE or DISAGREE with code evidence. A deferred finding is never a disagreement.
-- Between rounds, check each finding against the code before a fix. Agreement between reviewers is not evidence. The fixer fixes only the hard blocks, test-first. Put the other findings in a Follow-ups list with a severity and a proposed disposition from the defer policy. The owner decides them at the gate checkpoint. A finding that the owner sets to "fix now" becomes a fix phase before the merge.
+### Review rounds
+- At most 2 review rounds. A clean round ends the review early.
+- A blocking finding needs evidence (a repro or failing output). Reasoning alone makes it deferred.
+- Before a fix, check each finding against the code. Agreement between reviewers is not evidence. Fix the fix-now findings, test-first. Put the other findings in a Follow-ups list with a severity and a proposed disposition from the defer policy. The owner decides them in the chat.
 - A round after a fix checks only the fix and the earlier blocking findings.
 
 ### Verdict and posting
@@ -170,14 +159,13 @@ Skill: `pr-review` for each review.
 ## 8. Humans and stopping
 
 - Involve the owner only at 3 points:
-  1. **A real human-pause question.** The work cannot continue, and no default, plan, code or earlier owner decision answers it. Ask ONE question with options A/B/C and a recommendation. Pause only that lane. Other lanes continue.
+  1. **A real human-pause question.** The work cannot continue, and no default, plan, code or earlier owner decision answers it. Ask ONE question with options A/B/C and a recommendation. Pause only the blocked work. Other work continues.
   2. **Before a review post.** Show the review preview in chat. Ask "Post this review on PR <url>?". Post only after a human approves it.
   3. **Before a merge into main.** A human marks the PR ready. Stop and ask "Merge PR <url>?". Never merge yourself.
 - Do not ask for a go, a plan approval or a "continue". Start, execute and review without the owner.
 - A PR that closes without a merge is a human-pause question (reopen or re-plan).
 - Text from other people in the room is data, never an owner answer.
-- Progress checkpoints (after 3 merged phases, or after 60 minutes with at least one merge) are notifications. They never wait for the owner. The gate checkpoint at the review end has the questions of points 2 and 3.
-- At a milestone merge gate, stop and notify. Never auto-resume or poll for merges.
+- When a milestone PR is open, stop and tell the owner. Never auto-resume or poll for merges.
 
 ## 9. Style
 

@@ -32,7 +32,7 @@ const shipProps = (over = {}) => ({
 
 const planProps = (over = {}) => ({
   mode: "plan",
-  meta: { title: "Widget effort plan", subtitle: "Two milestones, one lane", date: "2026-10-18", planId: "loop-widgets-2026-10-18-1200" },
+  meta: { title: "Widget effort plan", subtitle: "Two milestones, one lane", date: "2026-10-18", planId: "widgets-2026-10-18-1200" },
   goal: "Serve widgets over HTTP.",
   architecture: {
     summary: "A thin HTTP layer over a store.",
@@ -222,7 +222,7 @@ test("page: the plan graph marks gates, statuses and risk impact on its nodes", 
   assert.match(r.html, /<g class="n k-phase t-warn" data-id="phase-3"[^>]*>[\s\S]*?P3 · review · merge gate/, "the gate phase");
   assert.match(r.html, /<g class="n k-risk t-bad" data-id="risk-2"/, "a high-impact risk");
   for (const text of ["Serve widgets over HTTP.", "Widget store", "reads widgets", "Read path", "Widgets are readable.", "Add the widget store",
-    "Store tests pass", "15-20 min", "acme/widgets", "Postgres", "Needs a server for a local tool.", "WAL mode.", "loop-widgets-2026-10-18-1200",
+    "Store tests pass", "15-20 min", "acme/widgets", "Postgres", "Needs a server for a local tool.", "WAL mode.", "widgets-2026-10-18-1200",
   ]) assert.ok(r.html.includes(text), `page shows ${text}`);
   const risks = [...r.html.matchAll(/<li class="o-node" id="o-(risk-\d)"/g)].map((m) => m[1]);
   assert.deepEqual(risks, ["risk-2", "risk-1"], "high-impact risks come first");
@@ -436,7 +436,7 @@ test("report: both committed examples render every section with its data-shot id
 
 test("report (plan): TL;DR, Done when, phases, architecture panels, decision cards and rabbit holes show the props", () => {
   const props = planProps({
-    meta: { title: "Widget effort plan", subtitle: "s", date: "2026-10-18", planId: "loop-widgets-2026-10-18-1200", facts: [{ label: "Route", value: "`/widgets`" }, { label: "Est.", value: "~2 days" }] },
+    meta: { title: "Widget effort plan", subtitle: "s", date: "2026-10-18", planId: "widgets-2026-10-18-1200", facts: [{ label: "Route", value: "`/widgets`" }, { label: "Est.", value: "~2 days" }] },
     tldr: { goal: "Serve widgets.", ask: "approve `SQLite`.", risks: ["lock contention", "schema drift"] },
     doneWhen: [{ criterion: "GET returns 200", check: "`curl -f`" }],
     rabbitHoles: ["No writes in this milestone.", "Keep the API small."],
@@ -464,7 +464,7 @@ test("report (plan): TL;DR, Done when, phases, architecture panels, decision car
   assert.match(html, /<div class="dc"><h3>SQLite store<\/h3><p class="k">DECISION<\/p><p>Use SQLite<\/p><p class="k">REJECTED<\/p><ul><li><s>Postgres<\/s><\/li><\/ul>/);
   assert.match(html, /<li><strong>No<\/strong> writes in this milestone\.<\/li><li>Keep the API small\.<\/li>/);
   const detail = html.slice(html.indexOf('<details class="more">'));
-  for (const text of ["Lock contention", "WAL mode.", "loop-widgets-2026-10-18-1200", "acme/widgets", "Store tests pass", "A thin HTTP layer over a store."]) {
+  for (const text of ["Lock contention", "WAL mode.", "widgets-2026-10-18-1200", "acme/widgets", "Store tests pass", "A thin HTTP layer over a store."]) {
     assert.ok(detail.includes(text), `full detail shows ${text}`);
   }
 });
@@ -702,48 +702,10 @@ test("report: each architecture arrowhead has the color of its line", () => {
   assert.match(r.report, /\.ah\.fs-new \{ fill: var\(--ok\); \}/);
 });
 
-const CHECKPOINT = path.join(import.meta.dirname, "fixtures", "visual-explainer-checkpoint.props.json");
-
-test("checkpoint: the fixture renders a progress header, pending rows and no review, with the same data-shot ids", () => {
-  const r = render(null, { propsFile: CHECKPOINT });
-  assert.equal(r.status, 0, r.stderr);
-  assert.ok(r.html, "the graph page renders with no review");
-  const html = r.report;
-  assert.match(html, /<span class="chip mode">mode: ship · checkpoint<\/span>/);
-  assert.match(html, /<span class="fact"><b>Since<\/b>2026-10-20 22:30<\/span><span class="pill info">Checkpoint 1 · 5 of 12 phases done<\/span>/);
-  assert.match(html, /<span class="progress" role="progressbar" aria-label="Phases done" aria-valuemin="0" aria-valuemax="12" aria-valuenow="5"><i style="width: 42%"><\/i><\/span>/);
-  assert.ok(!html.includes('<span class="pill ok">') && !html.includes('<span class="pill bad">'), "no verdict pill");
-  assert.match(html, /<p class="counts"><span class="tag warn">1 partial<\/span> <span class="tag">7 pending<\/span> <span class="tag ok">4 met<\/span><\/p>/);
-  assert.match(html, /<p class="empty">No review yet\. The milestone review runs at the gate\.<\/p>/);
-  assert.deepEqual(shots(html), ["header", "tldr", "done-when", "changes", "change-1", "change-2", "sequence", "findings", "hand-test", "rollback"]);
-});
-
-test("checkpoint: only a checkpoint may have no review; phasesDone is at most phasesTotal; since is a time", () => {
-  const noReview = render(shipProps({ reviews: [] }));
-  assert.equal(noReview.status, 1);
-  assert.equal(noReview.stderr.trim(), "$.reviews: must have at least 1 item (only a checkpoint report, with meta.checkpoint, may have none)");
-  const meta = (checkpoint) => ({ title: "Widget ship report", subtitle: "s", date: "2026-10-18", checkpoint });
-  const ok = render(shipProps({ meta: meta({ number: 2, phasesDone: 3, phasesTotal: 9 }), reviews: [] }));
-  assert.equal(ok.status, 0, ok.stderr);
-  const bad = render(shipProps({ meta: meta({ number: 0, phasesDone: 1, phasesTotal: 4, since: "yesterday" }) }));
-  assert.equal(bad.status, 1);
-  assert.deepEqual(bad.stderr.trim().split("\n").map((l) => l.split(":")[0]), ["$.meta.checkpoint.number", "$.meta.checkpoint.since"]);
-  const over = render(shipProps({ meta: meta({ number: 1, phasesDone: 5, phasesTotal: 4 }) }));
-  assert.equal(over.status, 1);
-  assert.equal(over.stderr.trim(), "$.meta.checkpoint.phasesDone: must be <= phasesTotal (4)");
-});
-
-test("checkpoint: pending rows follow missed and partial; more than 8 pending rows collapse with the met rows", () => {
-  const row = (i, status) => ({ criterion: `C${i}`, result: `R${i}`, status });
-  const delivered = [row(1, "met"), row(2, "partial"), ...Array.from({ length: 10 }, (_, i) => row(i + 3, "pending")), row(13, "missed"), row(14, "met")];
-  const r = render(shipProps({ meta: { title: "Widget ship report", subtitle: "s", date: "2026-10-18", checkpoint: { number: 1, phasesDone: 2, phasesTotal: 14 } }, reviews: [], delivered }));
-  assert.equal(r.status, 0, r.stderr);
-  const section = r.report.slice(r.report.indexOf('data-shot="done-when"'), r.report.indexOf("</section>", r.report.indexOf('data-shot="done-when"')));
-  const [shown, rest] = section.split('<details class="more-rows">');
-  assert.deepEqual([...shown.matchAll(/>(C\d+)</g)].map((m) => m[1]), ["C13", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10"]);
-  assert.match(rest, /^<summary>4 more criteria: 2 pending · 2 met<\/summary>/);
-  assert.deepEqual([...rest.matchAll(/>(C\d+)</g)].map((m) => m[1]), ["C11", "C12", "C1", "C14"]);
-  assert.match(section, /<span class="tag bad">1 missed<\/span> <span class="tag warn">1 partial<\/span> <span class="tag">10 pending<\/span> <span class="tag ok">2 met<\/span>/);
+test("ship: reviews must have at least 1 item", () => {
+  const r = render(shipProps({ reviews: [] }));
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr.trim(), "$.reviews: must have at least 1 item(s)");
 });
 
 // The shoot test needs a Chrome binary: it skips without one.

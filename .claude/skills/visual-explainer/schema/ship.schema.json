@@ -116,7 +116,7 @@
           "phase": { "type": "integer", "minimum": 0 },
           "criterion": { "$ref": "#/$defs/text" },
           "result": { "$ref": "#/$defs/text" },
-          "status": { "enum": ["met", "partial", "missed", "pending"], "description": "pending: the phase is not done yet (checkpoint reports only)." }
+          "status": { "enum": ["met", "partial", "missed"] }
         }
       }
     },
@@ -137,7 +137,7 @@
       }
     },
     "process": {
-      "description": "Optional process numbers of the work. In a Loop run, copy them from loop-retro.mjs totals. Omit a number that you do not know.",
+      "description": "Optional process numbers of the work. Copy each number from a source. Omit a number that you do not know.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -173,8 +173,9 @@
       }
     },
     "reviews": {
-      "description": "One entry for each reviewed repository or PR. At least one, except in a checkpoint report (meta.checkpoint), where it may be empty.",
+      "description": "One entry for each reviewed repository or PR.",
       "type": "array",
+      "minItems": 1,
       "maxItems": 10,
       "items": { "$ref": "#/$defs/review" }
     },
@@ -288,18 +289,6 @@
         "planId": { "$ref": "#/$defs/label" },
         "milestone": { "type": "integer", "minimum": 1 },
         "facts": { "$ref": "#/$defs/facts" },
-        "checkpoint": {
-          "description": "Optional: this report is a progress checkpoint in the middle of a milestone, not the merge gate.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["number", "phasesDone", "phasesTotal"],
-          "properties": {
-            "number": { "type": "integer", "minimum": 1 },
-            "phasesDone": { "type": "integer", "minimum": 0 },
-            "phasesTotal": { "type": "integer", "minimum": 1 },
-            "since": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$", "description": "YYYY-MM-DD HH:MM, the start of the period that this checkpoint covers" }
-          }
-        },
         "links": {
           "type": "array",
           "maxItems": 10,

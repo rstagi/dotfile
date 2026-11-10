@@ -105,17 +105,12 @@ function sceneErrors(narration, props) {
     if (index < 0) errors.push({ path: at, message: `"${scene}" is not a ${props.mode} scene (${order.join(", ")})` });
     else if (seen.has(scene)) errors.push({ path: at, message: `"${scene}" appears more than once` });
     else if (index < last) errors.push({ path: at, message: `"${scene}" must come before "${order[last]}" (scene order: ${order.join(", ")})` });
-    else if (!hasSceneData(props, scene)) errors.push({ path: at, message: `the props have no data for "${scene}" (${DATA[props.mode][scene][0]})${noDataHint(props, scene)}` });
+    else if (!hasSceneData(props, scene)) errors.push({ path: at, message: `the props have no data for "${scene}" (${DATA[props.mode][scene][0]})` });
     seen.add(scene);
     last = Math.max(last, index);
   });
   if (!seen.has("intro")) errors.push({ path: "$.scenes", message: 'must have the "intro" scene' });
   return [...errors, ...wordErrors(narration.scenes)];
-}
-
-// A progress checkpoint (meta.checkpoint) comes before the review, so it has no findings yet.
-function noDataHint(props, scene) {
-  return scene === "findings" && props.meta?.checkpoint ? ": a progress checkpoint has no review yet, omit the scene" : "";
 }
 
 function wordErrors(scenes) {

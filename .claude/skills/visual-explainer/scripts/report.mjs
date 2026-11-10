@@ -14,10 +14,9 @@ export const SEVERITIES = ["blocker", "major", "minor", "nit", "style"];
 const FINDING_STATUSES = ["open", "deferred", "fixed"];
 const IMPACTS = ["high", "medium", "low"];
 const SEVERITY_TONE = { blocker: "bad", major: "orange", minor: "warn", nit: "", style: "" };
-const DELIVERED_TONE = { met: "ok", partial: "warn", missed: "bad", pending: "" };
-// Not met first: the order of the Done when rows and of the status counts. "pending" is a
-// checkpoint row of a phase that is not done yet.
-const DELIVERED_ORDER = ["missed", "partial", "pending", "met"];
+const DELIVERED_TONE = { met: "ok", partial: "warn", missed: "bad" };
+// Not met first: the order of the Done when rows and of the status counts.
+const DELIVERED_ORDER = ["missed", "partial", "met"];
 // A Done when table or a hand test with more rows than this one gets the short form.
 const LONG_LIST = 8;
 const RESULT_TONE = { pass: "ok", fail: "bad", skipped: "" };
@@ -74,43 +73,24 @@ function section({ id, title, body }, n) {
   return `<section class="sec" id="${id}" data-shot="${id}"><h2><span class="n">${n}</span>${esc(title)}</h2>\n${body}\n</section>`;
 }
 
-// "N more met criteria", or "N more criteria: 2 pending · 5 met" when the rest is not all met.
-function moreLabel(rest, statusOf) {
-  const noun = `criteri${rest.length === 1 ? "on" : "a"}`;
-  const pending = rest.filter((r) => statusOf(r) === "pending").length;
-  return pending ? `${rest.length} more ${noun}: ${pending} pending · ${rest.length - pending} met` : `${rest.length} more met ${noun}`;
-}
 
 // ---- header and TL;DR ----
 
 function header(props) {
   const meta = props.meta;
   const chips = [meta.date, meta.milestone && `Milestone ${meta.milestone}`].filter(Boolean).map((c) => `<span class="chip">${esc(c)}</span>`);
-  const cp = meta.checkpoint;
-  chips.push(`<span class="chip mode">${props.mode === "plan" ? "mode: plan" : cp ? "mode: ship · checkpoint" : "mode: ship · PR review"}</span>`);
+  chips.push(`<span class="chip mode">${props.mode === "plan" ? "mode: plan" : "mode: ship · PR review"}</span>`);
   const facts = (meta.facts ?? []).map((f) => `<span class="fact"><b>${esc(f.label)}</b>${inline(f.value)}</span>`);
   if (props.mode === "ship") {
     if (props.stats) {
       const s = props.stats;
       facts.push(`<span class="stat"><span class="add">+${s.additions}</span> <span class="del">−${s.deletions}</span> across ${s.files} file${s.files === 1 ? "" : "s"}</span>`);
     }
-    if (cp) {
-      if (cp.since) facts.push(`<span class="fact"><b>Since</b>${esc(cp.since)}</span>`);
-      facts.push(checkpointPill(cp));
-    } else {
-      const v = verdict(props);
-      facts.push(`<span class="pill ${v.tone}">${esc(v.text)}</span>`);
-    }
+    const v = verdict(props);
+    facts.push(`<span class="pill ${v.tone}">${esc(v.text)}</span>`);
   }
   return `<header data-shot="header"><p class="chips">${chips.join("")}</p><h1>${esc(meta.title)}</h1>`
     + `<p class="sub">${inline(meta.subtitle)}</p>${facts.length ? `<p class="facts">${facts.join("")}</p>` : ""}</header>`;
-}
-
-// A checkpoint is progress, not a verdict: a blue pill and a small bar of the phases done.
-function checkpointPill(cp) {
-  const pct = Math.round((100 * cp.phasesDone) / cp.phasesTotal);
-  return `<span class="pill info">Checkpoint ${cp.number} · ${cp.phasesDone} of ${cp.phasesTotal} phases done</span>`
-    + `<span class="progress" role="progressbar" aria-label="Phases done" aria-valuemin="0" aria-valuemax="${cp.phasesTotal}" aria-valuenow="${cp.phasesDone}"><i style="width: ${pct}%"></i></span>`;
 }
 
 function tldr(props) {
@@ -234,7 +214,6 @@ function findings(props) {
     .sort((a, b) => SEVERITIES.indexOf(a.f.severity) - SEVERITIES.indexOf(b.f.severity)
       || FINDING_STATUSES.indexOf(a.f.status) - FINDING_STATUSES.indexOf(b.f.status) || a.i - b.i)
     .map(({ f }) => f);
-  if (!props.reviews.length) return `<p class="empty">No review yet. The milestone review runs at the gate.</p>`;
   if (!list.length) return `<p class="empty">No findings.</p>`;
   return `<div class="findings">${list.map((f) => {
     const status = f.status === "open" ? "" : tag(f.status, f.status === "fixed" ? "ok" : "");
@@ -345,8 +324,8 @@ function metaRows(meta) {
 
 // shortTable(headers, rows, cells, statusOf) -> a Done when table of at most LONG_LIST rows; the
 // other rows sit in a collapsed <details>. With `statusOf`, the rows show in DELIVERED_ORDER: every
-// missed and partial row stays visible, then at most LONG_LIST pending rows, then met rows up to
-// LONG_LIST rows in total. A chip line above the table counts each status.
+// missed and partial row stays visible, then met rows up to LONG_LIST rows in total. A chip line
+// above the table counts each status.
 function shortTable(headers, rows, cells, statusOf) {
   if (rows.length <= LONG_LIST) return table(headers, rows.map(cells), "stack");
   let shown = rows.slice(0, LONG_LIST);
@@ -355,14 +334,13 @@ function shortTable(headers, rows, cells, statusOf) {
   const of = (st) => rows.filter((r) => statusOf(r) === st);
   if (statusOf) {
     const failed = [...of("missed"), ...of("partial")];
-    const pending = of("pending");
-    const visible = [...failed, ...pending.slice(0, LONG_LIST)];
-    const fill = Math.max(0, LONG_LIST - visible.length);
-    shown = [...visible, ...of("met").slice(0, fill)];
-    rest = [...pending.slice(LONG_LIST), ...of("met").slice(fill)];
+    const fill = Math.max(0, LONG_LIST - failed.length);
+    shown = [...failed, ...of("met").slice(0, fill)];
+    rest = of("met").slice(fill);
     counts = `<p class="counts">${DELIVERED_ORDER.filter((st) => of(st).length).map((st) => tag(`${of(st).length} ${st}`, DELIVERED_TONE[st])).join(" ")}</p>`;
   }
-  const label = statusOf ? moreLabel(rest, statusOf) : `${rest.length} more criteri${rest.length === 1 ? "on" : "a"}`;
+  const noun = `criteri${rest.length === 1 ? "on" : "a"}`;
+  const label = statusOf ? `${rest.length} more met ${noun}` : `${rest.length} more ${noun}`;
   const more = rest.length ? `<details class="more-rows"><summary>${label}</summary>${table(headers, rest.map(cells), "stack")}</details>` : "";
   return `${counts}${table(headers, shown.map(cells), "stack")}${more}`;
 }

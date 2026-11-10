@@ -62,16 +62,6 @@ const shipProps = (over = {}) => ({
   ...over,
 });
 
-// A mid-milestone progress checkpoint: no review yet, some delivered rows still pending.
-const checkpointProps = () => shipProps({
-  meta: { title: "Widget ship report", subtitle: "Checkpoint", date: "2026-10-18", checkpoint: { number: 2, phasesDone: 3, phasesTotal: 5 } },
-  reviews: [],
-  delivered: [
-    { criterion: "a", result: "ra", status: "pending" }, { criterion: "b", result: "rb", status: "met" },
-    { criterion: "c", result: "rc", status: "partial" }, { criterion: "d", result: "rd", status: "pending" },
-  ],
-});
-
 // Narration helpers: a text of `n` words, and a v3 narration of the given scenes.
 const words = (n, word = "word") => Array.from({ length: n }, () => word).join(" ");
 const scene = (id, n = 20) => ({ scene: id, text: words(n) });
@@ -153,13 +143,6 @@ test("narration: a scene whose props data is empty is rejected with the field pa
   delete noDoneWhen.milestones[0].phases[0].doneWhen;
   assert.equal(hasSceneData(noDoneWhen, "done-when"), false);
   assert.equal(hasSceneData(shipProps(), "outro"), true, "intro, tldr and outro always have data");
-});
-
-test("narration: a progress checkpoint has no review yet, so a findings scene is rejected; the other ship scenes stay valid", () => {
-  const props = checkpointProps();
-  const bad = check(v3("ship", [scene("intro", 30), scene("done-when", 30), scene("findings", 30)]), props);
-  assert.deepEqual(lines(bad.errors), ['narration.scenes[2].scene: the props have no data for "findings" ($.reviews[].findings): a progress checkpoint has no review yet, omit the scene']);
-  assert.deepEqual(check(v3("ship", [scene("intro", 30), scene("done-when", 30), scene("hand-test", 30), scene("outro", 30)]), props).errors, []);
 });
 
 test("narration: 10 to 90 words in each scene and 80 to 450 words in total", () => {

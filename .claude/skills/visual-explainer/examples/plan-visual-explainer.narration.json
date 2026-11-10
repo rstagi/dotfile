@@ -4,23 +4,23 @@
   "scenes": [
     {
       "scene": "intro",
-      "text": "This is the plan for a shared visual explainer. One skill renders one fixed HTML page from a props file, for every plan, milestone gate and pull request review."
+      "text": "This is the plan for a shared visual explainer. One skill renders one fixed HTML page from a props file, for every plan and pull request review."
     },
     {
       "scene": "tldr",
-      "text": "The goal: one shared skill renders every explainer from a props JSON file, so each run looks the same. I need you to approve two things: a fixed HTML page instead of a per-run Remotion video, and a path and line reference on each hand-test step. The top risks: a failed explainer could block a milestone, and a wrong code reference could look like proof."
+      "text": "The goal: one shared skill renders every explainer from a props JSON file, so each run looks the same. I need you to approve two things: a fixed HTML page instead of a per-run Remotion video, and a path and line reference on each hand-test step. The top risks: a failed explainer could block the caller, and a wrong code reference could look like proof."
     },
     {
       "scene": "done-when",
-      "text": "We are done when the render script writes one self-contained page in both modes, invalid props fail with one field-path error each, props text cannot inject markup, the three callers run the right mode, and a failed explainer never blocks a park or a resume."
+      "text": "We are done when the render script writes one self-contained page in both modes, invalid props fail with one field-path error each, props text cannot inject markup, both callers run the right mode, and a failed explainer never blocks the caller."
     },
     {
       "scene": "phases",
-      "text": "Four phases in one lane. First the renderer, the schemas and the template, test-first. Then the skill text and the example props. Then the three callers. A review phase closes the milestone."
+      "text": "Four phases in one lane. First the renderer, the schemas and the template, test-first. Then the skill text and the example props. Then the two callers. A review phase closes the milestone."
     },
     {
       "scene": "architecture",
-      "text": "Before, each run built its own Remotion project. After, the three callers use one shared renderer. The skill text, the schemas, the render script and the page template are new. The check mode prints one field-path error for each line."
+      "text": "Before, each run built its own Remotion project. After, the two callers use one shared renderer. The skill text, the schemas, the render script and the page template are new. The check mode prints one field-path error for each line."
     },
     {
       "scene": "decisions",

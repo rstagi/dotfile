@@ -1,9 +1,0 @@
-{
-  "engine": "claude",
-  "model": "fable",
-  "sessionId": "sess-cart-2",
-  "headBefore": "d4d4d4d",
-  "headAfter": "d4d4d4d",
-  "engineExit": 0,
-  "timedOut": false
-}

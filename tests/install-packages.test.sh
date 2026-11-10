@@ -68,7 +68,7 @@ reset_home() {
   local home="$TMP/home" skill
   local dot="$home/dotfile"
   rm -rf "$home"
-  mkdir -p "$dot/nvim" "$dot/loop-web" "$dot/ws" "$dot/wsd/launchd" "$dot/wsd/target/release" \
+  mkdir -p "$dot/nvim" "$dot/ws" "$dot/wsd/launchd" "$dot/wsd/target/release" \
     "$dot/.claude/agents" "$home/brew/opt/fzf"
   print -r -- "# dotfile tmux config" > "$dot/.tmux.conf"
   print -r -- "# dotfile git config" > "$dot/.gitconfig"
@@ -232,14 +232,9 @@ assert_eq "${#new_backups}" 1 "neovim makes one new backup"
 assert_eq "$(cat $new_backups < /dev/null)" "-- user nvim config" "neovim moves the user folder to the new backup"
 
 echo "install: each configure step is idempotent"
-for package in tmux python node terraform gcloud kubectl docker ws loop-web claude-config gh fzf zsh; do
+for package in tmux python node terraform gcloud kubectl docker ws claude-config gh fzf zsh; do
   reset_home
   assert_idempotent "$package" run_step "install_package $package"
-  if [[ "$package" == loop-web ]]; then
-    assert_eq "$(calls npm | sed '/^install --global /d')" $'install\ninstall' "loop-web installs dependencies without a UI build"
-    assert_contains "$(cat "$TMP/home/Library/LaunchAgents/com.rstagi.loop-web.plist")" \
-      "$TMP/home/dotfile/loop-web/server/index.mjs" "loop-web keeps the daemon LaunchAgent"
-  fi
 done
 reset_home
 assert_idempotent "core setup" run_step setup_core
@@ -265,7 +260,7 @@ printf 'export EDITOR=nvim' > "$TMP/home/.zshrc_ext"
 run_installer false 'install_package terraform'
 assert_eq "$(<"$TMP/home/.zshrc_ext")" "export EDITOR=nvim"$'\n'"source $TMP/home/dotfile/.zshrc_terraform_ext" "terraform adds its line after a last line with no newline"
 # Only the exact line counts. A line in a comment does not stop the installer.
-for package ext in ws ws loop-web loop_web claude-config claude; do
+for package ext in ws ws claude-config claude; do
   reset_home
   print -r -- "# source $TMP/home/dotfile/.zshrc_${ext}_ext" > "$TMP/home/.zshrc_ext"
   run_installer false "install_package $package"

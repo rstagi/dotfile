@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Global variables
-AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "rust" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "claude-config" "loop-web" "ws" "grok")
+AVAILABLE_PACKAGES=("arc" "warp" "cursor" "rectangle" "fzf" "zsh" "python" "gh" "rust" "node" "terraform" "gcloud" "kubectl" "helm" "docker" "tmux" "neovim" "raycast" "ghostty" "slack" "1password" "appcleaner" "google-chrome" "ripgrep" "tailscale" "claude-code" "claude-config" "ws" "grok")
 REQUESTED_PACKAGES=()
 INTERACTIVE_MODE=true
 DRY_RUN=false
@@ -15,7 +15,6 @@ get_dependencies() {
     "docker") echo "gcloud" ;;
     "zsh") echo "" ;;
     "python") echo "pyenv pipx" ;;
-    "loop-web") echo "node" ;;
     "ws") echo "tmux fzf neovim rust" ;;
     "claude-config") echo "claude-code" ;;
     *) echo "" ;;
@@ -277,7 +276,6 @@ install_package() {
     "ripgrep") install_pkg_if_needed "ripgrep" ;;
     "tailscale") install_tailscale ;;
     "claude-code") install_claude_code ;;
-    "loop-web") install_loop_web ;;
     "ws") install_ws ;;
     "grok") install_grok ;;
     "claude-config") install_claude_config ;;
@@ -422,76 +420,6 @@ install_terraform() {
       echo "Configuring terraform..."
       configure_terraform
     fi
-  fi
-}
-
-install_loop_web() {
-  # Render + (re)bootstrap the central daemon LaunchAgent (auto-start on login + KeepAlive).
-  # Node's abs path is hardcoded (deterministic); re-run 'install.sh loop-web' after a node
-  # upgrade. See .claude/skills/loop-execute/references/loop-protocol.md → Daemon & events.
-  configure_loop_web_daemon() {
-    local node_bin label plist uid
-    node_bin="$(command -v node)" || { echo "loop-web: node not found — skipping daemon setup" >&2; return 0; }
-    label="com.rstagi.loop-web"
-    plist="$HOME/Library/LaunchAgents/$label.plist"
-    uid="$(id -u)"
-    # One-time best-effort migration of the legacy store dir (~/.kestral/loops → ~/.loop/loops).
-    # The launchd plist runs the daemon directly (not via loop-web.sh), so migrate here too.
-    if [ -d "$HOME/.kestral/loops" ] && [ ! -e "$HOME/.loop/loops" ]; then
-      mkdir -p "$HOME/.loop"
-      mv "$HOME/.kestral/loops" "$HOME/.loop/loops" 2>/dev/null || true
-    fi
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.loop/loops"
-    cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$node_bin</string>
-    <string>$HOME/dotfile/loop-web/server/index.mjs</string>
-    <string>--daemon</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>WorkingDirectory</key><string>$HOME</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>$PATH</string>
-    <key>LOOP_WEB_PORT</key><string>7717</string>
-    <key>LOOP_STORE_DIR</key><string>$HOME/.loop/loops</string>
-  </dict>
-  <key>StandardOutPath</key><string>$HOME/.loop/daemon.log</string>
-  <key>StandardErrorPath</key><string>$HOME/.loop/daemon.log</string>
-</dict>
-</plist>
-PLIST
-    launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-    launchd_wait_unloaded "gui/$uid/$label"
-    launchd_bootstrap "gui/$uid" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
-    launchctl enable "gui/$uid/$label" 2>/dev/null || true
-    launchctl kickstart -k "gui/$uid/$label" 2>/dev/null || true
-    echo "loop-web: central daemon LaunchAgent installed → http://localhost:7717 ($plist)"
-  }
-  configure_loop_web() {
-    if ! command -v npm >/dev/null 2>&1; then
-      echo "loop-web: npm not found — install the 'node' package first" >&2
-      return 1
-    fi
-    ( cd "$HOME/dotfile/loop-web" && npm install )
-    append_line "source $HOME/dotfile/.zshrc_loop_web_ext" "$HOME/.zshrc_ext"
-    configure_loop_web_daemon
-    echo "loop-web installed — the central daemon runs on login. Use 'ws top' to view loops."
-  }
-  if [ "$INTERACTIVE_MODE" = true ]; then
-    if read_yes "Do you want to configure the loop-web daemon?"; then
-      configure_loop_web
-    fi
-  else
-    echo "Configuring loop-web..."
-    configure_loop_web
   fi
 }
 

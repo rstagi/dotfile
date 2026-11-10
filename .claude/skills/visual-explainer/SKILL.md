@@ -6,16 +6,13 @@ description: >-
   shows the summary box with the requests to the reader, the Done when table and the phases. It
   also shows one before/after architecture diagram, the decision cards and the rabbit holes. Mode `ship`
   shows the verdict, the summary box, the Done when results and the changes in reading order with
-  one sequence diagram. It also shows the findings by severity, the hand test and the rollback. With
-  `meta.checkpoint`, `ship` mode shows a progress checkpoint of a running milestone. The
+  one sequence diagram. It also shows the findings by severity, the hand test and the rollback. The
   walkthrough focuses one section at a time and shows the narration text as the commentary. A
-  concept graph of the same props is a second page. Use it in multiphase-plan step 5 and in pr-review Step 4. Also use it at Loop
-  progress checkpoints, at a Loop milestone merge gate and at a Loop milestone resume. Explore mode draws any free-form graph that you write as JSON (an
+  concept graph of the same props is a second page. Use it in pr-review Step 4. Also use it to
+  explain a plan before the work starts. Explore mode draws any free-form graph that you write as JSON (an
   architecture, a flow, a data model, dependencies) as one interactive page. The reader hovers a node
   to see what it touches, clicks it for details, drags nodes, turns the layout and steps through a
   walkthrough. Use it when a picture explains better than prose and there is no plan or ship report.
-  The run graph shows one Loop milestone as it ran. It shows the plan lanes, the events of each
-  phase, the review and a time bar with the checkpoints. Use it at a Loop milestone merge gate.
 argument-hint: "plan|ship <output-dir>"
 ---
 
@@ -27,8 +24,7 @@ Zero-dependency Node scripts check both files and write `index.html` (the report
 walkthrough) and `graph.html` (a concept graph of the same facts). A second script takes
 screenshots of the report sections. A third script puts the screenshots on GitHub for a PR.
 
-`<skill>` below is the directory of this file. In a self-hosted Loop run, use
-`$RUNTIME_ROOT/.claude/skills/visual-explainer`.
+`<skill>` below is the directory of this file.
 
 ## Files
 
@@ -40,8 +36,6 @@ screenshots of the report sections. A third script puts the screenshots on GitHu
 | `template/explore.html` | The explore page: ELK layout in the browser, hover, details, drag, minimap, walkthrough |
 | `scripts/explore.mjs`, `scripts/explore-spec.mjs` | Explore mode: the graph check and the page writer |
 | `scripts/timeline.mjs` | The check of the optional time bar data of an explore page |
-| `scripts/run-graph.mjs` | The run graph: one Loop milestone as it ran, as an explore page with a time bar |
-| `scripts/run-facts.mjs`, `scripts/run-model.mjs` | The run graph facts of both Loop engines, and the graph and timeline from those facts |
 | `vendor/elk.bundled.js` | elkjs 0.11.0, inlined into the explore page (EPL-2.0, see `vendor/NOTICE`) |
 | `examples/explore-login.graph.json` | One valid example of an explore graph |
 | `scripts/render.mjs` | Checks the props and the narration, then writes `index.html` and `graph.html` (Node 20.11 or later) |
@@ -59,7 +53,7 @@ screenshots of the report sections. A third script puts the screenshots on GitHu
 
 1. Write only the props JSON file and the narration JSON file. Do not write HTML, CSS or JS.
 2. Do not edit the templates, the scripts or the schemas during a run.
-3. Write facts only. Take each fact from the plan, the ledger, a review report, the PR or
+3. Write facts only. Take each fact from the plan, a review report, the PR or
    the code. Do not invent a count, a result, a finding, a file or a relation.
 4. Omit an optional field when you do not know its value.
 5. Write plain text. A pair of backticks marks inline code. A newline is a line break.
@@ -76,8 +70,7 @@ The caller names the mode and the output directory. Write the props to
 `<output-dir>/props.json` and the narration to `<output-dir>/narration.json`.
 
 - `plan` explains work that starts. Use it for a whole plan or for one milestone.
-- `ship` explains work that is ready to merge. Use it for a milestone gate or for one PR.
-- `ship` with `meta.checkpoint` explains the progress of a running milestone.
+- `ship` explains work that is ready to merge. Use it for a milestone or for one PR.
 
 ### 2. Collect the facts
 
@@ -110,7 +103,7 @@ section of the page comes from the fields after its name.
 - summary box: `tldr.changed`, `tldr.lookFirst` (the file or the module to read first) and
   `tldr.risk` (the risk level and the reason). `summary` is a longer version for Full detail.
 - Done when: `delivered`, one row for each Done when in scope. Set `status` to `met`,
-  `partial`, `missed` or, in a checkpoint only, `pending`. Give each row its `phase` number.
+  `partial` or `missed`. Give each row its `phase` number.
 - Changes: `changes` in reading order: the order in which a reviewer reads the change. Each
   group has `area`, `how`, `why` and its `files` with their real additions and deletions. Give
   a `sequence` to the one group where the interactions between components changed. Only one
@@ -122,16 +115,10 @@ section of the page comes from the fields after its name.
 - Rollback: `rollback`, the ordered steps that undo the change.
 - Full detail: `deviations` (each difference between the plan and the result, or an empty
   array), `process` and `setbacks`.
-  - `process`: in a Loop run, copy each number from the `totals` of the retro facts
-    (`loop-retro.mjs --json`). Omit a number that you do not know. Do not count by hand.
+  - `process`: copy each number from a source. Omit a number that you do not know.
   - `setbacks`: the process costs, for example a retry, a timeout, a HIL or a review fix round.
-    In a Loop run, take each setback from the `setbackCandidates` of the retro facts. Find the
-    cause in the evidence files of the candidate, or write `Cause: unknown`. Write `cost` from
-    the candidate facts. Write `lesson` only when the evidence supports a rule.
-
-**Checkpoint (`ship` mode):** set `meta.checkpoint` to `{number, phasesDone, phasesTotal, since}`.
-`reviews` is an empty array. A phase that has not merged gets `delivered` rows with the status
-`pending`. The page shows the progress instead of a verdict.
+    Find the cause in the evidence, or write `Cause: unknown`. Write `lesson` only when the
+    evidence supports a rule.
 
 **Media (both modes):** `media` adds screenshots that you captured, for example a UI state or a
 terminal output. `path` is relative to the props file and ends in `.png`, `.jpg`, `.jpeg`, `.webp`
@@ -190,15 +177,15 @@ Plan the steps by these rules:
 1. Start with `intro`. Keep the order above. Use each id one time at most.
 2. Omit a step to make the walkthrough shorter. The walkthrough has no step that the narration
    omits.
-3. Do not add a step whose section has no data, for example `findings` in a checkpoint. The
-   check rejects it.
+3. Do not add a step whose section has no data, for example `rabbit-holes` without
+   `rabbitHoles`. The check rejects it.
 
 Write the text by these rules:
 
 1. Explain. Do not repeat the section. Say what the reader must see in it and why it matters.
 2. Take facts only from the props. Do not add a fact that the props do not support.
 3. Write short sentences, active voice and simple tenses.
-4. Write code names as the page writes them, for example `loop-plan.sh`. Do not spell them for a voice.
+4. Write code names as the page writes them, for example `render.mjs`. Do not spell them for a voice.
 5. Do not use backticks, markup or lists in the text.
 6. Use 10 to 90 words for each step and 80 to 450 words in total. Keep most steps under
    60 words, so that the card stays short.
@@ -240,9 +227,8 @@ node <skill>/scripts/shoot.mjs --page <output-dir>/index.html --out <output-dir>
 ### 7. Publish
 
 - When the session has the Artifact tool, publish `index.html` as a private artifact. Pass the
-  Artifact `files` map `{"graph.html": "<output-dir>/graph.html"}`. When `run.html` is in the
-  output directory, also put `"run.html": "<output-dir>/run.html"` in the map. Write the artifact
-  URL to `<output-dir>/link.txt`.
+  Artifact `files` map `{"graph.html": "<output-dir>/graph.html"}`. Write the artifact URL to
+  `<output-dir>/link.txt`.
 - When the session has no Artifact tool, write the absolute path of `index.html` to
   `<output-dir>/link.txt`.
 - A later run with the same output directory publishes to the same artifact. Pass the URL
@@ -366,47 +352,13 @@ node <skill>/scripts/explore.mjs --graph <output-dir>/graph.json --out <output-d
 The page follows the Artifact page contract of the report (see `## The page`). It has one
 exception: it inlines elkjs (about 1.6 MB) as its only script.
 
-## Run graph
-
-The run graph shows one Loop milestone as it ran. Its base is the plan of the milestone. It has
-one box for each lane and one node for each work phase. It has the dependency lines and the gate
-node at the end.
-Each phase node shows its attempts, its setbacks, its merge commit and its converge rows. The gate
-node shows the review rounds, the verdict, the converge result and the deviations. It also shows
-the hand test, the rollback and the links to the PR, the ship page and each checkpoint page.
-
-The time bar has a slider, a play button and one mark for each event: the start, each progress
-checkpoint, the review and the ship. At a time, each phase shows its status: `todo` is faded,
-`active` has a blue ring, `failed` is red and `done` is green. A checkpoint mark links to its
-page. Each walkthrough step moves the slider to its time.
-
-```bash
-node <skill>/scripts/run-graph.mjs --loop <.loop dir> --milestone <n> [--notes <file>] --out <dir>
-```
-
-- It writes `run.html`, `run.graph.json` and `run.timeline.json` in `<dir>`. It prints the
-  absolute path of `run.html`. It writes nothing in the Loop dir.
-- The phases come from `milestones/m<n>.md` when the milestone is archived. Else they come from
-  `plan.md`.
-- The facts come from `events.jsonl`, the retro facts, `state.json`, the
-  review ledger, `converge/p<gate>.md` and the git commit times of the merges.
-- The checkpoints come from `explainers/m<n>-cp<k>/`. The verdict, the hand test
-  and the rollback come from `explainers/m<n>-ship/props.json`.
-- When no fact has a time, the page has no time bar. It still shows the graph with the outcomes.
-  A stderr line `warning: no timestamps ...` tells this.
-- `--notes` adds text that the facts do not have: `{title, summary, story, lanes: {<lane>:
-  {what, why}}, joins: {<phase>: text}, findings: {<phase>: text}, gate: text}`. Each key is
-  optional. A finding puts a ring on its phase and adds a walkthrough step.
-- Exit 0: the page is written. Exit 1: the milestone has no phases, or the plan cannot be
-  parsed. Exit 2: a usage error or an I/O error.
-
 ## The page
 
 The report page is one centered column. It reads from top to bottom:
 
 - `plan`: the header and the summary box. Then 1 Done when, 2 Phases, 3 Architecture
   before/after, the screenshots, 4 Decisions, 5 Rabbit holes and no-gos, and Full detail.
-- `ship`: the header with the verdict pill or the checkpoint progress, and the summary box.
+- `ship`: the header with the verdict pill, and the summary box.
   Then 1 Done when planned vs delivered, 2 Changes in reading order and the screenshots.
   Then 3 Findings by severity, 4 Hand test, 5 Rollback, and Full detail.
 - A Done when table with more than 8 rows shows the rows that are not met first and folds the

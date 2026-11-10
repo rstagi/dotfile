@@ -10,8 +10,7 @@ case "${1:-} ${2:-} ${3:-}" in
   "skill list --discovered")
     jq -cn --arg root "$FAKE_SKILL_SOURCE" '
       {candidates: [
-        "checkpoint-30", "assess", "multiphase-plan", "loop-do", "loop-execute", "converge", "loop-pickup", "loop-handoff",
-        "pr-review", "pr-review-fix-all", "ws-sessions", "ws-orchestrate", "asd-ste100",
+        "checkpoint-30", "assess", "loop-do", "pr-review", "ws-sessions", "ws-orchestrate", "asd-ste100",
         "visual-explainer", "engineering-standards"
       ] | map({
         candidateId: ("cand-" + .), id: ., source: "claude",
@@ -19,8 +18,8 @@ case "${1:-} ${2:-} ${3:-}" in
       })}' >&2
     ;;
   "skill import "*)
-    if [[ -L "$HOME/.agents/skills/pr-review-fix-all" ||
-      -L "$HOME/.codex/skills/pr-review-fix-all" ]]; then
+    if [[ -L "$HOME/.agents/skills/pr-review" ||
+      -L "$HOME/.codex/skills/pr-review" ]]; then
       printf 'ambiguous discovered skill %s; use its candidateId\n' "${3:-unknown}" >&2
       exit 1
     fi
