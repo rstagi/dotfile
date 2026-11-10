@@ -7,14 +7,8 @@ USE_RATEL=true
 SHARED_SKILLS=(
   checkpoint-30
   assess
-  multiphase-plan
   loop-do
-  loop-execute
-  converge
-  loop-pickup
-  loop-handoff
   pr-review
-  pr-review-fix-all
   ws-sessions
   ws-orchestrate
   asd-ste100

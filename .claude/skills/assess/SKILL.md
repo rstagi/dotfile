@@ -3,9 +3,9 @@ name: assess
 description: >-
   Decide if an idea deserves a plan, before you write one. Collect evidence about the problem,
   the alternatives and the cost, shape the smallest useful version, and give one decision:
-  go, clarify or kill. A go decision writes a handoff that multiphase-plan reads as its goal.
+  go, clarify or kill. A go decision writes a handoff that loop-do reads as its goal.
   Triggers: requests to "assess this idea", "is this worth building", "should we do X", "go or
-  kill". Use it also when a goal for multiphase-plan is still an idea and not a defined effort. Do not
+  kill". Use it also when a goal for loop-do is still an idea and not a defined effort. Do not
   use it for a defined task, a bug fix or a small change.
 argument-hint: "<idea> [slug=<slug>]"
 ---
@@ -85,13 +85,13 @@ Date: <YYYY-MM-DD>
 - <question that blocks a go> (clarify only, else `- none`)
 
 ## Handoff
-<go only: the goal for multiphase-plan in 3 to 6 lines — outcome, scope, non-goals, success
+<go only: the goal for loop-do in 3 to 6 lines — outcome, scope, non-goals, success
 measure. Else `- none`.>
 ```
 
 ## Next step
 
-- `go`: tell the user to run `/multiphase-plan` with the decision file. It reads the
+- `go`: tell the user to run `/loop-do` with the decision file. It reads the
   `## Handoff` section as the goal.
 - `clarify`: show the open questions. When the user answers, run `assess` again with the
   same slug.

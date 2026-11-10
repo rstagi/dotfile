@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Run every shell suite and the picker smoke test. Fail if any suite fails.
-# Check the Loop scripts, launcher and picker syntax first.
-# Discard caller loop/color settings; each suite configures its own environment.
+# Check the launcher and picker syntax first.
+# Discard caller ws/color settings; each suite configures its own environment.
 set -u
 for inherited in ${(k)parameters}; do
   case "$inherited" in
@@ -45,14 +45,14 @@ else # copied-runner fixtures (runner.test.sh) ship run.sh alone: sandbox HOME, 
 fi
 
 echo "== zsh -n (syntax) =="
-ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh(N) tests/loop-e2e/*.sh(N))"}) # relative to $ROOT
-for s in loop-state.sh loop-orchestrator.sh loop-runner.sh loop-merge.sh loop-notify.sh loop-emit.sh loop-plan.sh loop-plan-review.sh loop-repo.sh loop-milestone.sh loop-review.sh loop-ar.sh $ws_scripts; do
+ws_scripts=(${(f)"$(cd "$ROOT" && print -l ws/ws.sh wsd/crates/ws/src/cmd/picker.zsh ws/tests/*.sh(N))"}) # relative to $ROOT
+for s in $ws_scripts; do
   [[ -f "$ROOT/$s" ]] || continue
   if zsh -n "$ROOT/$s"; then echo "  ok: $s"; else echo "  FAIL: $s"; failed_suites+=("zsh -n: $s"); fi
 done
 echo
 
-# The picker smoke test uses its own sandbox and runs with the Loop suites.
+# The picker smoke test uses its own sandbox and runs with the shell suites.
 ws_pid=""
 if [[ -f "$ROOT/ws/tests/run.sh" ]]; then # needs the repo's ws/; absent from copied-runner fixtures
   zsh "$ROOT/ws/tests/run.sh" > "$TEST_HOME_DIR/ws.log" 2>&1 &

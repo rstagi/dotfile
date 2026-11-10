@@ -1,12 +1,12 @@
 ---
 name: checkpoint-30
-description: Keep one agent task to 30-minute work blocks with a status report and a request for guidance before continuing. Use when the user invokes checkpoint-30 for interactive Claude or Codex work; Loop phase runners follow the same checkpoint through loop-runner.sh.
+description: Keep one agent task to 30-minute work blocks with a status report and a request for guidance before continuing. Use when the user invokes checkpoint-30 for interactive Claude or Codex work.
 disable-model-invocation: true
 ---
 
 # 30-minute checkpoint
 
-Apply this to the current task only. A Loop run gets a separate clock for each phase attempt; the overall plan and other lanes keep moving.
+Apply this to the current task only.
 
 ## Interactive task
 
@@ -16,9 +16,3 @@ Apply this to the current task only. A Loop run gets a separate clock for each p
 4. If an unexpected long tool call crosses the deadline, report immediately when control returns. Never reset the clock merely by sending a progress update.
 
 This is a model instruction, not a wall-clock interrupt. An agent may miss a check while inside a long tool call or generation. Do not claim it is a hard guarantee.
-
-## Loop phase runner
-
-The orchestrator puts a checkpoint deadline in each phase prompt. Before that deadline, finish a safe step and write `$RUN_DIR/status.json` with `outcome: "question"`, a concise `summary`, and one concrete `question` for the orchestrator. End the attempt. The orchestrator answers and resumes the phase in a fresh attempt directory; it does not wait for the user or stop other lanes. If the phase is done first, use the normal `done` handoff.
-
-`loop-runner.sh` enforces a 30-minute attempt cutoff for work and review stages, and writes a fallback checkpoint when the agent misses the deadline. A fallback report reflects only observable worktree state; it cannot replace the agent's own account of its reasoning.

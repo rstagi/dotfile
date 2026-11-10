@@ -1,3 +1,0 @@
-> npm run test:payments
-PASS  src/payments/gateway.test.ts (24 tests)
-All files | 96.4% coverage

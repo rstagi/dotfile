@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Shared Loop, ws, writing + explainer skill installer: Claude Code, current/legacy Codex, and Ratel Local.
+# Shared loop-do, ws, writing + explainer skill installer: Claude Code, current/legacy Codex, and Ratel Local.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -10,7 +10,7 @@ trap 'rm -rf "$TMP"' EXIT
 SOURCE="$TMP/source"
 TEST_HOME="$TMP/home"
 FAKE_BIN="$TMP/bin"
-SKILLS=(checkpoint-30 assess multiphase-plan loop-do loop-execute converge loop-pickup loop-handoff pr-review pr-review-fix-all ws-sessions ws-orchestrate asd-ste100 visual-explainer engineering-standards)
+SKILLS=(checkpoint-30 assess loop-do pr-review ws-sessions ws-orchestrate asd-ste100 visual-explainer engineering-standards)
 mkdir -p "$SOURCE" "$TEST_HOME/.agents/skills/unrelated" "$FAKE_BIN"
 SOURCE="$(cd "$SOURCE" && pwd -P)"
 print -r -- keep > "$TEST_HOME/.agents/skills/unrelated/marker"
@@ -29,7 +29,7 @@ HOME="$TEST_HOME" PATH="$FAKE_BIN:$PATH" bash "$ROOT/install-agent-skills.sh" \
   --source "$SOURCE" > "$TMP/install.out" 2>&1
 RC=$?
 
-echo "skill install: shares Loop and ws skills across hosts"
+echo "skill install: shares loop-do and ws skills across hosts"
 assert_exit "$RC" "0" "installer succeeds"
 for skill in "${SKILLS[@]}"; do
   assert_eq "$(readlink "$TEST_HOME/.claude/skills/$skill")" "$SOURCE/$skill" "Claude exposes $skill"
@@ -39,8 +39,8 @@ done
 assert_eq "$(cat "$TEST_HOME/.agents/skills/unrelated/marker")" "keep" "preserves unrelated Codex skills"
 assert_eq "$(grep -c '^skill import ' "$FAKE_RATEL_LOG")" "${#SKILLS[@]}" "registers every shared skill with Ratel"
 assert_contains "$(cat "$FAKE_RATEL_LOG")" \
-  'skill import cand-pr-review-fix-all --scope user --mode reference --yes' \
-  "registers pr-review-fix-all by stable candidate id"
+  'skill import cand-pr-review --scope user --mode reference --yes' \
+  "registers pr-review by stable candidate id"
 
 echo "skill install: rerun is idempotent"
 export FAKE_RATEL_CONFIGURED_JSON="$(printf '%s\n' "${SKILLS[@]}" | jq -Rsc 'split("\n")[:-1] | map({id: .})')"
@@ -72,12 +72,12 @@ done
 
 echo "skill install: refuses conflicting native paths"
 CONFLICT_HOME="$TMP/conflict-home"
-mkdir -p "$CONFLICT_HOME/.agents/skills/pr-review-fix-all"
-print -r -- keep > "$CONFLICT_HOME/.agents/skills/pr-review-fix-all/marker"
+mkdir -p "$CONFLICT_HOME/.agents/skills/pr-review"
+print -r -- keep > "$CONFLICT_HOME/.agents/skills/pr-review/marker"
 HOME="$CONFLICT_HOME" PATH="$FAKE_BIN:$PATH" bash "$ROOT/install-agent-skills.sh" \
   --source "$SOURCE" --no-ratel > "$TMP/conflict.out" 2>&1
 RC=$?
 assert_exit "$RC" "1" "conflicting skill fails safely"
-assert_eq "$(cat "$CONFLICT_HOME/.agents/skills/pr-review-fix-all/marker")" "keep" "does not overwrite conflict"
+assert_eq "$(cat "$CONFLICT_HOME/.agents/skills/pr-review/marker")" "keep" "does not overwrite conflict"
 
 test_summary

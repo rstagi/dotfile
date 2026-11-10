@@ -38,10 +38,7 @@ export function checkProps(file) {
 export function reportErrors(props, dir) {
   const errors = [];
   const add = (at, message) => errors.push({ path: at, message });
-  if (props.mode === "ship") {
-    checkpointErrors(props, add);
-    sequenceErrors(props.changes ?? [], add);
-  }
+  if (props.mode === "ship") sequenceErrors(props.changes ?? [], add);
   const areas = new Set((props.changes ?? []).map((c) => c.area));
   (props.media ?? []).forEach((m, i) => {
     const at = `$.media[${i}]`;
@@ -50,13 +47,6 @@ export function reportErrors(props, dir) {
     if (m.change !== undefined && !areas.has(m.change)) add(`${at}.change`, `no change with the area ${JSON.stringify(m.change)}`);
   });
   return errors;
-}
-
-// A checkpoint report may have no review yet. Any other ship report needs one.
-function checkpointErrors(props, add) {
-  const cp = props.meta.checkpoint;
-  if (!cp && !props.reviews.length) add("$.reviews", "must have at least 1 item (only a checkpoint report, with meta.checkpoint, may have none)");
-  if (cp && cp.phasesDone > cp.phasesTotal) add("$.meta.checkpoint.phasesDone", `must be <= phasesTotal (${cp.phasesTotal})`);
 }
 
 function sequenceErrors(changes, add) {

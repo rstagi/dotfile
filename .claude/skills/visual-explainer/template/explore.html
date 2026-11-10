@@ -740,7 +740,7 @@ svg.graph.grabbing { cursor: grabbing; }
     relayout();
   });
 
-  // ---- the time bar: each node's status at a moment, one mark per checkpoint ----
+  // ---- the time bar: each node's status at a moment, one mark per event ----
   var TL = JSON.parse($("timeline").textContent), playing = null, t0 = 0, t1 = 1, now = 1;
   var range = $("tl-range"), marksEl = $("tl-marks");
   function statusAt(id, t) { var s = "todo"; (TL.nodes[id] || []).forEach(function (x) { if (Date.parse(x.at) <= t) s = x.status; }); return s; }

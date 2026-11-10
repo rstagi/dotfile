@@ -195,7 +195,7 @@ Run the `visual-explainer` skill in `ship` mode with this output directory. Writ
 - `changes`: the groups of the change in reading order: the order in which a reviewer reads the PR. Each group has `area`, `how`, `why` and its `files` with their additions and deletions. Give a `sequence` to the one group where the interactions between components changed. No other group gets a diagram.
 - `delivered`: one row for each claim of the PR description or of its linked issue. Use the Step 1 result as the evidence.
 - `deviations`: each difference between the PR description and the observed behavior. Use an empty array when there is none.
-- `process` and `setbacks`: optional. Take them from the review rounds, the fix rounds and the CI failures of the PR. Count only what the PR shows. Omit both fields when the PR shows no process cost. Do not write a retro file outside a Loop run.
+- `process` and `setbacks`: optional. Take them from the review rounds, the fix rounds and the CI failures of the PR. Count only what the PR shows. Omit both fields when the PR shows no process cost.
 - `reviews`: one entry with `repository`, `pr`, `head` (the reviewed SHA) and `verdict`. The verdict is the event that you will post, or `COMMENT` when you post nothing. Put the verdict sentence and the footprint in `summary`. Put the Step 1 commands in `validation`.
 - `reviews[0].findings`: each finding. Set `severity` to `major` or `minor`. Set `status` to `open` for a fix-now item and to `deferred` for a defer item. Start `title` with the category of a hard block. Put the file and the line in `location`. Put the mechanism and the evidence in `detail`. Put the fix or the follow-up in `fix`.
 - `reviews[0].split`: the stacked-PR split proposal, or `No split recommended.`
@@ -221,7 +221,7 @@ Post one GitHub review with `event: "COMMENT"`. The review has only these parts:
 
 **Never put the disposition on the PR.** Do not write "defer", "follow-up", "fix before the merge" or the defer policy in a comment or in the body. The dispositions stay in the chat report.
 
-Post the findings only in a single-shot review or in the last round of an adversarial review. In an earlier round, the fixer fixes the fix-now items at once, and you post nothing.
+Post the findings only in a single-shot review or in the last review round. In an earlier round, fix the fix-now items at once, and post nothing.
 
 **Proof of work in the PR description.** Each PR needs proof of the changed behavior in an actual run: screenshots, screen recordings or terminal sessions of the real program. When the PR description has no proof, capture it in Step 1 and add it. Do not add proof to the review or to a PR comment. A terminal GIF of the program at work is good proof. Never upload a recording or a screenshot that only shows a test suite or a unit test run. Never add the Step 4 screenshots of the review page.
 
@@ -253,15 +253,3 @@ gh api "repos/<owner>/<repo>/pulls/<n>/reviews" --method POST --input review.jso
 ```
 
 Use `APPROVE` or `REQUEST_CHANGES` only when the user tells you to. Use `COMMENT` on a draft PR. The merge decision belongs to the user. When the user tells you to post the verdict as the event, use `APPROVE` for `Approve` and `REQUEST_CHANGES` for `Request changes`. Never post an event that does not agree with the verdict. Pin `commit_id` to the head SHA that you reviewed. After the post, read the posted comments again. Check that the review has the state that you intended.
-
-## Headless mode
-
-In `--headless` mode, do not ask questions.
-Do not change the starting checkout.
-Do not run `gh pr checkout`.
-Use the Step 1 block with `git fetch origin pull/<number>/head` and `REVIEW_REF=FETCH_HEAD`.
-Skip Step 4 unless the prompt asks for it. A headless session has no person to show the checkpoint to.
-Use the absolute `${TMPDIR:-/tmp}/pr-review/` path and the `trap … EXIT` cleanup from Step 1.
-Keep the same shell active until the review ends.
-
-The detached worktree sidesteps the branch-already-checked-out error when lane or integration worktrees still exist. Run Step 1 and Step 2 in that worktree as usual. Write one `COMMENT` review payload to `review.json` as [Posting to GitHub](#posting-to-github) tells you: one inline comment for each issue and the short body. Never post it. Headless mode has no person to approve it, so a human approves it in chat later. Write the chat report of Step 3, with the proposed dispositions, next to it as `report.md`. Report the paths of `review.json` and `report.md`. Never use `APPROVE` or `REQUEST_CHANGES` unprompted. Let the exit trap remove the worktree.

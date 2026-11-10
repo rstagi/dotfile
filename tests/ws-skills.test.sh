@@ -27,7 +27,6 @@ assert_contains "$ORCH" 'session_create' "MCP start tool"
 assert_contains "$ORCH" 'ws done -' "child reports with ws done"
 assert_contains "$ORCH" 'ws send <orchestrator>' "child asks orchestrator"
 assert_contains "$ORCH" 'Do not merge' "no merge"
-assert_contains "$ORCH" 'loop-execute' "Loop plans go to loop-execute"
 assert_eq "$(( $(wc -l < "$ORCH_FILE") < 150 ))" "1" "skill stays under 150 lines"
 
 test_summary

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Minimal shell test lib for the loop-engineering scripts. Source it, run assert_*,
+# Minimal shell test lib for the shell scripts. Source it, run assert_*,
 # end with test_summary (exits 0 all-pass / 1 any-fail). tests/run.sh aggregates files.
 set -u
 

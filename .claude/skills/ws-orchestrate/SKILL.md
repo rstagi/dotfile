@@ -25,7 +25,6 @@ Use this skill when these two conditions are true:
 Do not use this skill in these conditions:
 
 - Your session is in the workspace of a single repo. Do the work in that workspace.
-- The Loop daemon has a registered plan for the work. Use the loop-execute skill.
 
 ## Rules
 
