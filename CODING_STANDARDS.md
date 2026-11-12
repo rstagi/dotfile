@@ -24,10 +24,28 @@ These rules apply to new work. Existing code moves to this layout only in its ow
 
 ## Feature flags
 
+The flag policy of the repository sets how strict this section is. The goal is the same in each repository: each behavior change can be switched off, and each flag goes away soon.
+
+| Policy | Rule | Repositories |
+|---|---|---|
+| `required` | Each behavior change ships behind a flag. A change with no flag is unprotected breakage, a hard block. | Ratel Cloud |
+| `recommended` | A flag is the default proposal. You can ship a behavior change with no flag when it is small, the revert is easy and no user data is at risk. Write `No flag: <reason>` in the plan and in the PR description. The owner agrees at the checkpoint. A change with no flag and no such line is a major finding, not a hard block. | Beluga |
+
+Find the policy in this order: the line `Feature flag policy: required` or `Feature flag policy: recommended` in the repository CLAUDE.md or AGENTS.md, then the table above, then the owner. Until the owner answers, use `required`.
+
+The rules below apply to each change that has a flag, in each policy.
+
 - Each behavior change ships behind a flag that is off by default. An equivalent off switch is also good, for example a config toggle or a new endpoint that no caller uses yet.
+- An existing flag also protects a change when these 2 conditions are true:
+  1. The changed code runs only when that flag is on. With the flag off, the current behavior does not change.
+  2. The flag is not on for all users. Its rollout is less than 100%, or its targeting excludes some users.
+  Then the change does not need a new flag. Do not propose one.
+- When the existing flag is on for all users, it does not protect the change. Stop and ask the owner: "Flag `<key>` is on for all users. Do we remove it first, or do we add a new flag for this change?" Do not add a new flag before the owner answers. The removal of a flag is its own PR.
+- When you cannot read the rollout of the flag, ask the owner. Do not guess.
 - The code checks the flag one time, at the wiring point. Do not put flag checks in other places.
 - The relevant tests run with the flag off and with the flag on.
 - Each flag has an owner and a removal note. The removal of a flag is its own small PR.
+- Open the removal PR at the same time as the feature PR. Stack it on the feature PR with `gh stack` (engineering-standards, Stacked PRs). It removes the flag, the off path and the flag-off tests. Its title starts with `chore: remove flag <key>`, and its description says "Do not merge before the flag is on for all users." Each of the 2 PRs links to the other. Nobody merges the removal PR before the owner confirms the full rollout.
 
 ## Test-driven development
 
@@ -67,7 +85,7 @@ A review gives each finding two things: a **severity** and a **disposition**. Th
 These 3 reasons always block a plan or a PR. Nobody defers a hard block:
 
 1. **Security or safety.** Examples: a leaked secret, an auth or permission bypass, data exposure, and unsafe handling of user data. Also any change that can cause real harm in production.
-2. **Unprotected breakage of existing behavior.** The PR changes current behavior, and no feature flag or equivalent off switch protects it. Or the PR breaks existing tests with the flag off.
+2. **Unprotected breakage of existing behavior.** The PR changes current behavior, and no feature flag or equivalent off switch protects it. An existing flag that is on for all users does not protect it (see Feature flags). Or the PR breaks existing tests with the flag off. In a `recommended` repository, a change with an agreed `No flag: <reason>` line is not unprotected breakage.
 3. **A failing deterministic check.** Examples: the architecture tests, the flag off/on test matrix, the monitoring check or the delete test. These block because CI fails, not because a reviewer decides so.
 
 ### Severity: major or minor
